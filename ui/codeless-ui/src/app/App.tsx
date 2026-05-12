@@ -84,7 +84,13 @@ function sameOrigin(a: string, b: string): boolean {
 
 export default function App() {
   const rpc = useRpc();
-  configureNative(rpc);
+  // Bind the module-level `native` surface once. The setter is
+  // idempotent (single-tenant: one RpcClient for the app's lifetime
+  // per R5), so re-running has no effect; calling from useEffect
+  // keeps the binding out of the render path.
+  useEffect(() => {
+    configureNative(rpc);
+  }, [rpc]);
   const {
     tabs,
     activeId,

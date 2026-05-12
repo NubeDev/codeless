@@ -7,8 +7,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useRpc } from "./provider";
-import type { EventFilter, ListJobsArgs } from "./methods";
-import type { EventEnvelope, Job, JobId, Repo } from "./wire";
+import type { EventFilter, ListJobsArgs, ListReviewsArgs } from "./methods";
+import type { EventEnvelope, Job, JobId, Repo, Review } from "./wire";
 
 export interface QueryState<T> {
   data: T | null;
@@ -125,6 +125,77 @@ export function useJob(jobId: JobId | null): QueryState<Job> {
       cancelled = true;
     };
   }, [jobId, rpc]);
+  return state;
+}
+
+// Live reviews for a scope. Refetches `list_reviews` on any `review-*`
+// event so an approve from another client (or the Phase 2c CLI)
+// reflects without polling. Stage gating in `codeless-runtime` emits
+// `review-requested` when a stage enters AwaitingReview, so a cold
+// mount can rely on the initial fetch alone — the stream is for
+// keeping live.
+export function useReviews(args: ListReviewsArgs): QueryState<Review[]> {
+  const rpc = useRpc();
+  const key = JSON.stringify(args);
+  const [state, setState] = useState<QueryState<Review[]>>({
+    data: null,
+    error: null,
+    loading: true,
+  });
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    rpc
+      .call("list_reviews", args)
+      .then((r) => {
+        if (cancelled) return;
+        setState({ data: r.reviews, error: null, loading: false });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setState({
+          data: null,
+          error: err instanceof Error ? err : new Error(String(err)),
+          loading: false,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, rpc, tick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const filter: EventFilter =
+      args.job_id != null ? { scope: "job", job_id: args.job_id } : { scope: "all" };
+    const stream = rpc.subscribe(filter);
+    (async () => {
+      try {
+        for await (const env of stream) {
+          if (cancelled) return;
+          const t = env.event.type;
+          if (
+            t === "review-requested" ||
+            t === "review-approved" ||
+            t === "review-commented" ||
+            t === "review-stopped"
+          ) {
+            setTick((n) => n + 1);
+          }
+        }
+      } catch {
+        // Stream errors end the iteration; consumer can re-mount.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args.job_id, rpc]);
+
   return state;
 }
 

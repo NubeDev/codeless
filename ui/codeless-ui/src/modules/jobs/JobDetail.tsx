@@ -1,6 +1,7 @@
 import { useJob, type JobId } from "@/lib/rpc";
 
 import { JobTimeline } from "./JobTimeline";
+import { ReviewPanel } from "./ReviewPanel";
 import { StatusBadge } from "./StatusBadge";
 
 // Side-panel content for a single selected job. The header pulls fresh
@@ -37,6 +38,7 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
           </>
         )}
       </div>
+      <ReviewPanel jobId={jobId} />
       <div className="min-h-0 flex-1">
         <JobTimeline jobId={jobId} />
       </div>

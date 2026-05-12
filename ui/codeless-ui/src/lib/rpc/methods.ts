@@ -14,10 +14,13 @@ import type {
   JobId,
   Repo,
   RepoId,
+  Review,
+  ReviewId,
   ShellBgEntry,
   ShellBgLogChunk,
   ShellCommandOutput,
   ShellSessionRunOutput,
+  StageId,
 } from "./wire";
 
 export interface AddRepoArgs {
@@ -206,6 +209,37 @@ export interface RpcMethodMap {
   shell_bg_logs: { args: ShellBgLogsArgs; result: ShellBgLogChunk };
   shell_bg_kill: { args: ShellBgKillArgs; result: null };
   shell_bg_list: { args: Record<string, never>; result: { entries: ShellBgEntry[] } };
+
+  list_reviews: { args: ListReviewsArgs; result: ListReviewsResult };
+  approve_review: { args: ReviewActionArgs; result: Review };
+  comment_review: { args: CommentReviewArgs; result: Review };
+  stop_review: { args: ReviewActionArgs; result: Review };
+}
+
+// Review RPC surface. Mirrored from the Phase 2c additions on
+// `codeless-rpc::methods` (`list_reviews`, `approve_review`,
+// `comment_review`, `stop_review`). The state machine lives in
+// `codeless-runtime` and matches the `ReviewStatus` enum in wire.ts.
+
+export interface ListReviewsArgs {
+  // Filter by job. `null` returns every pending/recent review across
+  // the host — the dashboard uses that; per-job panels narrow it.
+  job_id: JobId | null;
+  stage_id: StageId | null;
+  pending_only: boolean;
+}
+
+export interface ListReviewsResult {
+  reviews: Review[];
+}
+
+export interface ReviewActionArgs {
+  review_id: ReviewId;
+}
+
+export interface CommentReviewArgs {
+  review_id: ReviewId;
+  comment: string;
 }
 
 // Shell RPC surface. Provisional: hand-mirrored from the forthcoming

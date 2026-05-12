@@ -9,6 +9,7 @@ export {
   useRepos,
   useJobs,
   useJob,
+  useReviews,
   useEventStream,
   type QueryState,
 } from "./hooks";

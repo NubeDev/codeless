@@ -22,6 +22,7 @@ import type {
   FsReadResult,
   Job,
   Repo,
+  Review,
   ShellBgEntry,
   ShellCommandOutput,
 } from "./wire";
@@ -102,6 +103,10 @@ export class MockRpcClient implements RpcClient {
   private nextShellSession = 1;
   private shellBg: Map<number, ShellBgEntry> = new Map();
   private nextShellBg = 1;
+  private reviews: Map<string, Review> = new Map();
+  // Index of review_id -> job_id so list_reviews can filter by job
+  // without bloating the Review wire type.
+  private reviewJob: Map<string, string> = new Map();
 
   async call<M extends RpcMethod>(
     method: M,
@@ -500,6 +505,60 @@ export class MockRpcClient implements RpcClient {
         return { entries: [...this.shellBg.values()] } as RpcResultOf<M>;
       }
 
+      case "list_reviews": {
+        const a = args as RpcArgs<"list_reviews">;
+        const out: Review[] = [];
+        for (const r of this.reviews.values()) {
+          if (a.stage_id && r.stage_id !== a.stage_id) continue;
+          if (a.job_id) {
+            const job = this.reviewJob.get(r.id);
+            if (job !== a.job_id) continue;
+          }
+          if (a.pending_only && r.status !== "pending") continue;
+          out.push(r);
+        }
+        return { reviews: out } as RpcResultOf<M>;
+      }
+
+      case "approve_review": {
+        const a = args as RpcArgs<"approve_review">;
+        const r = this.reviews.get(a.review_id);
+        if (!r) throw new RpcError("not_found", `review ${a.review_id}`);
+        if (r.status !== "pending") {
+          throw new RpcError("conflict", `review ${a.review_id} is ${r.status}`);
+        }
+        r.status = "approved";
+        r.resolved_at = Date.now();
+        this.emit({ type: "review-approved", review_id: r.id });
+        return r as RpcResultOf<M>;
+      }
+
+      case "comment_review": {
+        const a = args as RpcArgs<"comment_review">;
+        const r = this.reviews.get(a.review_id);
+        if (!r) throw new RpcError("not_found", `review ${a.review_id}`);
+        r.comment = a.comment;
+        this.emit({
+          type: "review-commented",
+          review_id: r.id,
+          comment: a.comment,
+        });
+        return r as RpcResultOf<M>;
+      }
+
+      case "stop_review": {
+        const a = args as RpcArgs<"stop_review">;
+        const r = this.reviews.get(a.review_id);
+        if (!r) throw new RpcError("not_found", `review ${a.review_id}`);
+        if (r.status !== "pending") {
+          throw new RpcError("conflict", `review ${a.review_id} is ${r.status}`);
+        }
+        r.status = "stopped";
+        r.resolved_at = Date.now();
+        this.emit({ type: "review-stopped", review_id: r.id });
+        return r as RpcResultOf<M>;
+      }
+
       default:
         throw new RpcError("internal", `mock: unhandled method ${method}`);
     }
@@ -629,6 +688,31 @@ export class MockRpcClient implements RpcClient {
           stageId,
         ),
       );
+      // After the plan stage, register a pending review so the
+      // review-approval surfaces have something to drive against
+      // /?mock=1. Real runtime gates the stage transition on the
+      // review; the mock leaves the synthesised lifecycle moving so
+      // the dashboard still animates without a hand-approve.
+      if (name === "plan") {
+        const reviewId = ulid();
+        schedule(t + 850, () => {
+          const review: Review = {
+            id: reviewId,
+            stage_id: stageId,
+            status: "pending",
+            comment: null,
+            requested_at: Date.now(),
+            resolved_at: null,
+          };
+          this.reviews.set(reviewId, review);
+          this.reviewJob.set(reviewId, job.id);
+          this.emit(
+            { type: "review-requested", review_id: reviewId, stage_id: stageId },
+            job.id,
+            stageId,
+          );
+        });
+      }
       t += 1000;
     }
 
