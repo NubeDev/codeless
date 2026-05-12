@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use clap::Args;
-use codeless_rpc::{EventFilter, RpcServer};
+use codeless_rpc::EventFilter;
 use codeless_types::{Event, EventCursor, JobId};
 use futures_util::StreamExt;
 
@@ -38,17 +38,27 @@ pub struct TailArgs {
     pub timeout_secs: u64,
 }
 
-pub fn handle(args: TailArgs, db: Option<PathBuf>) -> Result<ExitCode> {
+pub fn handle(
+    args: TailArgs,
+    core: Option<String>,
+    token: Option<String>,
+    db: Option<PathBuf>,
+) -> Result<ExitCode> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run(args, db))
+    rt.block_on(run(args, core, token, db))
 }
 
-async fn run(args: TailArgs, db: Option<PathBuf>) -> Result<ExitCode> {
+async fn run(
+    args: TailArgs,
+    core: Option<String>,
+    token: Option<String>,
+    db: Option<PathBuf>,
+) -> Result<ExitCode> {
     let job_id = JobId::from_str(&args.job_id)
         .map_err(|e| anyhow!("invalid job id {:?}: {e}", args.job_id))?;
-    let rpc = rpc_open::open(db.as_deref()).await?;
+    let rpc = rpc_open::build_dual_mode(core, token, db).await?;
     let mut stream = rpc
         .subscribe(EventFilter::Job { job_id }, Some(EventCursor(0)))
         .await

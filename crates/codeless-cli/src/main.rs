@@ -183,7 +183,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Run(args) => run::handle(args, cli.db),
         Cmd::Review { verb } => review::handle(verb, cli.db),
         Cmd::Job { verb } => job::handle(verb, cli.db),
-        Cmd::Tail(args) => tail::handle(args, cli.db),
+        Cmd::Tail(args) => tail::handle(args, cli.core, cli.token, cli.db),
         Cmd::Serve(args) => {
             let secrets_path = resolve_secrets_path(cli.secrets_file)?;
             serve::handle(args, secrets_path, cli.db)
