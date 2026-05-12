@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:10
-Current stage: 3 / 10
+Last tick: 2026-05-13 05:11
+Current stage: 4 / 10
 
 Repo:        codeless
 Branch:      master
@@ -66,8 +66,8 @@ Max ticks:   30
 
 - [x] 1. [S] Verify existing DEMO-UI.md path still works on master
 - [x] 2. [S] Jobs list view: seeded demo job visible with status
-- [ ] 3. [M] Job detail view: stages + live SSE event stream  ← next
-- [ ] 4. [S] "Run mock job" button: create + start a new mock job
+- [x] 3. [M] Job detail view: stages + live SSE event stream
+- [ ] 4. [S] "Run mock job" button: create + start a new mock job  ← next
 - [ ] 5. [M] Live stage tree: checklist updated from event stream
 - [ ] 6. [S] Cost + wall-clock badges on the job row
 - [ ] 7. [M] Handover preview pane (runs/<name>/handover.md)
@@ -92,6 +92,13 @@ Max ticks:   30
   job with `StatusBadge` (queued/running/completed), runner badge,
   branch, relative age, cost, and activity chip. The seeded mock
   job appears as `completed` (mock runner ran it on serve start).
+- Stage 3 met by existing surface from the prior ux-grind work (no
+  code change). `/jobs/:id` opens `JobDetail` in a Sheet; the panel
+  shows status, runner, repo, branch, worktree path, prompt, plus
+  Timeline + Files-changed tabs. `JobTimeline` imports
+  `useEventStream` from `@/lib/rpc` and subscribes per-job, so mock
+  runner events stream live as they fire. No `@tauri-apps/api/core`
+  imports (R2 satisfied).
 
 ## Blockers
 (none)
