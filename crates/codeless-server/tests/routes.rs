@@ -342,3 +342,67 @@ async fn events_sse_streams_live_event() {
     server.abort();
     let _ = url; // suppress unused warning if logging is added later
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_round_trip_through_router() {
+    use codeless_adapters_host::HostFs;
+    use tempfile::tempdir;
+
+    let tmp = tempdir().unwrap();
+    let rpc = Arc::new(
+        InProcessRpc::new()
+            .await
+            .expect("rpc init")
+            .with_fs(Arc::new(HostFs::new(tmp.path()).unwrap())),
+    );
+    let state = AppState::new(rpc, TOKEN);
+    let app = build_router(state);
+
+    let write = app
+        .clone()
+        .oneshot(post(
+            "/rpc/fs_write_file",
+            json!({ "path": "hello.txt", "content": "world" }),
+            Some(TOKEN),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(write.status(), StatusCode::OK);
+
+    let read = app
+        .clone()
+        .oneshot(post(
+            "/rpc/fs_read_file",
+            json!({ "path": "hello.txt" }),
+            Some(TOKEN),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+    let body = body_json(read).await;
+    assert_eq!(body["content"], "world");
+
+    let escape = app
+        .oneshot(post(
+            "/rpc/fs_read_file",
+            json!({ "path": "../etc/passwd" }),
+            Some(TOKEN),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(escape.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_without_root_returns_internal() {
+    let (app, _) = fresh_app().await;
+    let resp = app
+        .oneshot(post(
+            "/rpc/fs_read_dir",
+            json!({ "path": "." }),
+            Some(TOKEN),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}

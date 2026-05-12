@@ -83,6 +83,14 @@ pub struct ServeArgs {
     /// sees a clear error in the server log.
     #[arg(long)]
     pub enable_anthropic: bool,
+
+    /// Root directory the `fs.*` RPC surface is allowed to read and
+    /// write under. When unset, `fs_*` methods return `Internal` —
+    /// useful for hosted deployments that want the runtime up before
+    /// the editor surfaces are wired. The host adapter rejects any
+    /// path that escapes this root after canonicalisation.
+    #[arg(long, env = "CODELESS_FS_ROOT")]
+    pub fs_root: Option<PathBuf>,
 }
 
 pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
@@ -129,7 +137,14 @@ async fn run_server(
         )
     })?;
 
-    let rpc: Arc<InProcessRpc> = Arc::new(rpc_open::open(db.as_deref()).await?);
+    let mut runtime = rpc_open::open(db.as_deref()).await?;
+    if let Some(root) = &args.fs_root {
+        let host_fs = codeless_adapters_host::HostFs::new(root)
+            .map_err(|e| anyhow!("fs root {}: {e}", root.display()))?;
+        runtime = runtime.with_fs(Arc::new(host_fs));
+        eprintln!("codeless-server: fs root = {}", root.display());
+    }
+    let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
     let state = AppState::new(rpc_dyn, token);
 

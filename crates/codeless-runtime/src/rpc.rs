@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use codeless_adapters_host::{FsError, HostFs};
 use codeless_rpc::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsReadDirArgs,
     FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
@@ -28,6 +29,12 @@ use crate::time::now_ms;
 pub struct InProcessRpc {
     store: Arc<SqliteStore>,
     bus: Arc<EventBus>,
+    /// Optional filesystem adapter. When `None`, every `fs_*` method
+    /// returns `Internal` so callers see a typed failure rather than a
+    /// panic — this is the path tests and CLI-local mode take when no
+    /// workspace root is configured. The hosted server constructs the
+    /// runtime with `with_fs` to expose the explorer/editor surfaces.
+    fs: Option<Arc<HostFs>>,
 }
 
 /// Default event-broadcast lag tolerance per subscriber. See
@@ -82,7 +89,19 @@ impl InProcessRpc {
         if reclaimed > 0 {
             tracing::info!(reclaimed, "released expired task leases at startup");
         }
-        Ok(Self { store, bus })
+        Ok(Self {
+            store,
+            bus,
+            fs: None,
+        })
+    }
+
+    /// Attach a filesystem adapter so the `fs_*` RPC surface becomes
+    /// live. Without this call those methods return `Internal` so
+    /// transports get a typed failure rather than a panic.
+    pub fn with_fs(mut self, fs: Arc<HostFs>) -> Self {
+        self.fs = Some(fs);
+        self
     }
 
     pub fn store(&self) -> &Arc<SqliteStore> {
@@ -353,27 +372,63 @@ impl RpcServer for InProcessRpc {
         self.bus.subscribe_since(local, since).await.map_err(db_err)
     }
 
-    async fn fs_read_dir(&self, _args: FsReadDirArgs) -> RpcResult<FsReadDirResult> {
-        Err(unimplemented_fs())
+    async fn fs_read_dir(&self, args: FsReadDirArgs) -> RpcResult<FsReadDirResult> {
+        let fs = self.fs.as_ref().ok_or_else(fs_not_configured)?;
+        let entries = fs.read_dir(&args.path).await.map_err(fs_err)?;
+        Ok(FsReadDirResult { entries })
     }
 
-    async fn fs_read_file(&self, _args: FsReadFileArgs) -> RpcResult<FsReadFileResult> {
-        Err(unimplemented_fs())
+    async fn fs_read_file(&self, args: FsReadFileArgs) -> RpcResult<FsReadFileResult> {
+        let fs = self.fs.as_ref().ok_or_else(fs_not_configured)?;
+        let content = fs.read_file(&args.path).await.map_err(fs_err)?;
+        Ok(FsReadFileResult { content })
     }
 
-    async fn fs_write_file(&self, _args: FsWriteFileArgs) -> RpcResult<()> {
-        Err(unimplemented_fs())
+    async fn fs_write_file(&self, args: FsWriteFileArgs) -> RpcResult<()> {
+        let fs = self.fs.as_ref().ok_or_else(fs_not_configured)?;
+        fs.write_file(&args.path, &args.content)
+            .await
+            .map_err(fs_err)?;
+        Ok(())
     }
 
-    async fn fs_stat(&self, _args: FsStatArgs) -> RpcResult<FsStatResult> {
-        Err(unimplemented_fs())
+    async fn fs_stat(&self, args: FsStatArgs) -> RpcResult<FsStatResult> {
+        let fs = self.fs.as_ref().ok_or_else(fs_not_configured)?;
+        let entry = fs.stat(&args.path).await.map_err(fs_err)?;
+        Ok(match entry {
+            Some((kind, size, mtime)) => FsStatResult {
+                kind: Some(kind),
+                size,
+                mtime,
+            },
+            None => FsStatResult {
+                kind: None,
+                size: None,
+                mtime: None,
+            },
+        })
     }
 }
 
-/// The `fs_*` surface is wired only by the host adapter; the in-process
-/// runtime returns `Internal` so callers see a typed RPC failure rather
-/// than a panic. Replaced when `codeless-adapters-host::fs` lands and
-/// the runtime gains an `Arc<dyn FsAdapter>` to delegate to.
-fn unimplemented_fs() -> RpcError {
-    RpcError::Internal("fs.* not implemented in InProcessRpc; needs host adapter".to_owned())
+fn fs_not_configured() -> RpcError {
+    RpcError::Internal("fs.* not available: runtime has no filesystem root configured".to_owned())
+}
+
+/// Map host-side `FsError` to the wire `RpcError` so transports can
+/// surface the right status code. Path-escape is `InvalidArgument`
+/// rather than a 4xx-with-no-clue because the caller supplied a path
+/// the server refused; non-utf8 is the same. IO errors map to
+/// `Internal` (typically permission/disk).
+fn fs_err(e: FsError) -> RpcError {
+    match e {
+        FsError::Escape(p) => RpcError::InvalidArgument(format!("path escapes root: {p}")),
+        FsError::NotUtf8(p) => RpcError::InvalidArgument(format!("not a utf-8 text file: {p}")),
+        FsError::BadRoot(p) => {
+            RpcError::Internal(format!("fs root misconfigured: {}", p.display()))
+        }
+        FsError::Io(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            RpcError::NotFound(err.to_string())
+        }
+        FsError::Io(err) => RpcError::Internal(format!("fs io: {err}")),
+    }
 }

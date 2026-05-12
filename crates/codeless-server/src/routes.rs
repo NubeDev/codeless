@@ -6,9 +6,10 @@ use axum::{
     Json, Router,
 };
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, GetJobArgs, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RpcError, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    RemoveRepoArgs, RpcError, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -30,6 +31,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/approve_review", post(approve_review))
         .route("/rpc/comment_review", post(comment_review))
         .route("/rpc/stop_review", post(stop_review))
+        .route("/rpc/fs_read_dir", post(fs_read_dir))
+        .route("/rpc/fs_read_file", post(fs_read_file))
+        .route("/rpc/fs_write_file", post(fs_write_file))
+        .route("/rpc/fs_stat", post(fs_stat))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -172,4 +177,36 @@ async fn stop_review(
     Json(args): Json<StopReviewArgs>,
 ) -> HandlerResult<Review> {
     st.rpc.stop_review(args).await.map(Json).map_err(map_err)
+}
+
+async fn fs_read_dir(
+    State(st): State<AppState>,
+    Json(args): Json<FsReadDirArgs>,
+) -> HandlerResult<FsReadDirResult> {
+    st.rpc.fs_read_dir(args).await.map(Json).map_err(map_err)
+}
+
+async fn fs_read_file(
+    State(st): State<AppState>,
+    Json(args): Json<FsReadFileArgs>,
+) -> HandlerResult<FsReadFileResult> {
+    st.rpc.fs_read_file(args).await.map(Json).map_err(map_err)
+}
+
+async fn fs_write_file(
+    State(st): State<AppState>,
+    Json(args): Json<FsWriteFileArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .fs_write_file(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn fs_stat(
+    State(st): State<AppState>,
+    Json(args): Json<FsStatArgs>,
+) -> HandlerResult<FsStatResult> {
+    st.rpc.fs_stat(args).await.map(Json).map_err(map_err)
 }
