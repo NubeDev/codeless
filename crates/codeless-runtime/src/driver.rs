@@ -124,9 +124,14 @@ pub async fn drive_job(
     };
     if is_terminal_job(current.status) {
         tracing::info!(status = ?current.status, "runner returned after stop");
-        if let Some(p) = provisioned.as_ref() {
-            release_worktree(p);
-        }
+        // Worktree is intentionally left on disk. SCOPE.md "Crash
+        // recovery": "Worktrees: a job whose task crashed leaves its
+        // worktree on disk. The reaper either preserves it (default —
+        // user can inspect / re-run from where it was) or removes it
+        // (configurable). It does not silently delete user-visible
+        // work." The user-driven cleanup path (a future
+        // `gc_worktrees` RPC + UI button) reaps; the driver never
+        // does. `worktree_path` on the job row still points at it.
         return Ok(());
     }
 
@@ -147,9 +152,10 @@ pub async fn drive_job(
     bus.publish(Some(job_id), None, None, event, ended)
         .await
         .map_err(db_err)?;
-    if let Some(p) = provisioned.as_ref() {
-        release_worktree(p);
-    }
+    // Same preservation rule as the early-terminal branch above:
+    // the worktree stays on disk so the user can inspect or re-run
+    // from where it left off. `release_worktree` is kept around for
+    // an upcoming user-driven `gc_worktrees` RPC, not auto-fired.
     Ok(())
 }
 
@@ -185,6 +191,11 @@ async fn provision_worktree(
     })
 }
 
+// Kept for the upcoming user-driven `gc_worktrees` RPC. The driver no
+// longer auto-reaps on terminal status (SCOPE.md "Crash recovery"
+// makes preservation the default); cleanup will land as an explicit
+// user action.
+#[allow(dead_code)]
 fn release_worktree(p: &ProvisionedWorktree) {
     if let Err(e) = p.manager.remove(&p.repo_path, &p.worktree) {
         tracing::warn!(

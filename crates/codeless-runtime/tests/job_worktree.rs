@@ -1,12 +1,15 @@
 //! `drive_job` with a real `WorktreeManager` — pins the per-job
 //! `git worktree` lifecycle promised by SCOPE.md "Workspace = one
-//! `git worktree` per job":
+//! `git worktree` per job" and "Crash recovery":
 //!
 //! - The worktree exists on disk while the runner is executing.
-//! - It is removed on every terminal status (completed, failed,
-//!   stopped) so a finished job leaves no leaked checkouts behind.
-//! - The path is persisted on the job row, so a crash + restart
-//!   reaper has somewhere to look.
+//! - It is **preserved** on every terminal status (completed, failed,
+//!   stopped) so the user can inspect or re-run from where the job
+//!   left off. SCOPE.md: "The reaper either preserves it (default —
+//!   user can inspect / re-run from where it was) or removes it
+//!   (configurable). It does not silently delete user-visible work."
+//! - The path is persisted on the job row, so the UI and a future
+//!   user-driven `gc_worktrees` action can both find it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -115,7 +118,7 @@ async fn submit(rpc: &InProcessRpc, repo_path: &Path) -> codeless_types::JobId {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worktree_exists_during_run_then_removed_on_completion() {
+async fn worktree_preserved_after_completion() {
     let (_repo_dir, repo_path) = fresh_repo();
     let base = TempDir::new().unwrap();
     let mgr = Arc::new(WorktreeManager::new(base.path()));
@@ -139,8 +142,8 @@ async fn worktree_exists_during_run_then_removed_on_completion() {
     assert_eq!(seen, mgr.path_for(&job_id.to_string()));
     assert!(p.existed_during_run, "worktree must exist while running");
     assert!(
-        !seen.exists(),
-        "worktree must be removed at terminal status"
+        seen.exists(),
+        "worktree must be preserved at terminal status so the user can inspect / re-run",
     );
 
     let job = rpc
@@ -156,7 +159,7 @@ async fn worktree_exists_during_run_then_removed_on_completion() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worktree_removed_on_failure() {
+async fn worktree_preserved_on_failure() {
     let (_repo_dir, repo_path) = fresh_repo();
     let base = TempDir::new().unwrap();
     let mgr = Arc::new(WorktreeManager::new(base.path()));
@@ -179,8 +182,8 @@ async fn worktree_removed_on_failure() {
 
     let seen = probe.lock().seen_path.clone().unwrap();
     assert!(
-        !seen.exists(),
-        "worktree must be removed on Failed terminal too"
+        seen.exists(),
+        "worktree must be preserved on Failed terminal — debugging needs it",
     );
     let job = rpc
         .get_job(codeless_rpc::GetJobArgs { job_id })
@@ -190,7 +193,7 @@ async fn worktree_removed_on_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worktree_removed_when_stop_wins_against_completion() {
+async fn worktree_preserved_when_stop_wins_against_completion() {
     let (_repo_dir, repo_path) = fresh_repo();
     let base = TempDir::new().unwrap();
     let mgr = Arc::new(WorktreeManager::new(base.path()));
@@ -223,8 +226,8 @@ async fn worktree_removed_when_stop_wins_against_completion() {
 
     let seen = probe.lock().seen_path.clone().unwrap();
     assert!(
-        !seen.exists(),
-        "worktree must be removed when stop wins (terminal-after-run branch)"
+        seen.exists(),
+        "worktree must be preserved when stop wins — the user stopped it precisely to inspect the partial state",
     );
     let job = rpc_ref
         .get_job(codeless_rpc::GetJobArgs { job_id })
