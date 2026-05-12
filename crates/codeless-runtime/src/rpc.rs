@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, GetJobArgs,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
     SubmitJobArgs,
 };
@@ -351,4 +352,28 @@ impl RpcServer for InProcessRpc {
         };
         self.bus.subscribe_since(local, since).await.map_err(db_err)
     }
+
+    async fn fs_read_dir(&self, _args: FsReadDirArgs) -> RpcResult<FsReadDirResult> {
+        Err(unimplemented_fs())
+    }
+
+    async fn fs_read_file(&self, _args: FsReadFileArgs) -> RpcResult<FsReadFileResult> {
+        Err(unimplemented_fs())
+    }
+
+    async fn fs_write_file(&self, _args: FsWriteFileArgs) -> RpcResult<()> {
+        Err(unimplemented_fs())
+    }
+
+    async fn fs_stat(&self, _args: FsStatArgs) -> RpcResult<FsStatResult> {
+        Err(unimplemented_fs())
+    }
+}
+
+/// The `fs_*` surface is wired only by the host adapter; the in-process
+/// runtime returns `Internal` so callers see a typed RPC failure rather
+/// than a panic. Replaced when `codeless-adapters-host::fs` lands and
+/// the runtime gains an `Arc<dyn FsAdapter>` to delegate to.
+fn unimplemented_fs() -> RpcError {
+    RpcError::Internal("fs.* not implemented in InProcessRpc; needs host adapter".to_owned())
 }

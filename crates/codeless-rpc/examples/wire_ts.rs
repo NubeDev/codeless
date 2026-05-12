@@ -22,15 +22,16 @@
 use std::path::{Path, PathBuf};
 
 use codeless_rpc::methods::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, GetJobArgs, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
-    CostCents, Event, EventCursor, EventEnvelope, GitAuth, Job, JobId, JobStatus, Repo, RepoId,
-    Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId,
-    TaskStatus, UnixMillis,
+    CostCents, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId,
+    JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus,
+    StopReason, Task, TaskId, TaskStatus, UnixMillis,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -65,6 +66,8 @@ fn collect() -> TypeCollection {
         .register_mut::<ReviewStatus>()
         .register_mut::<Event>()
         .register_mut::<EventEnvelope>()
+        .register_mut::<FsEntry>()
+        .register_mut::<FsEntryKind>()
         .register_mut::<AddRepoArgs>()
         .register_mut::<RemoveRepoArgs>()
         .register_mut::<ListReposResult>()
@@ -78,7 +81,14 @@ fn collect() -> TypeCollection {
         .register_mut::<ApproveReviewArgs>()
         .register_mut::<CommentReviewArgs>()
         .register_mut::<StopReviewArgs>()
-        .register_mut::<EventFilter>();
+        .register_mut::<EventFilter>()
+        .register_mut::<FsReadDirArgs>()
+        .register_mut::<FsReadDirResult>()
+        .register_mut::<FsReadFileArgs>()
+        .register_mut::<FsReadFileResult>()
+        .register_mut::<FsWriteFileArgs>()
+        .register_mut::<FsStatArgs>()
+        .register_mut::<FsStatResult>();
     types
 }
 

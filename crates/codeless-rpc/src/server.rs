@@ -3,9 +3,10 @@ use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, GetJobArgs, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -51,4 +52,24 @@ pub trait RpcServer: Send + Sync + 'static {
     /// Streaming subscription. The returned stream replays events
     /// strictly after `since` (if `Some`) and then continues live.
     async fn subscribe(&self, filter: EventFilter, since: Since) -> RpcResult<EventStream>;
+
+    /// List one directory's immediate children. The path is relative
+    /// to the server root; traversal outside the root is rejected by
+    /// the host adapter, not at the wire level.
+    async fn fs_read_dir(&self, args: FsReadDirArgs) -> RpcResult<FsReadDirResult>;
+
+    /// Read a utf-8 text file. Binary and over-limit handling are not
+    /// yet wired; non-utf-8 content surfaces as `InvalidArgument`.
+    async fn fs_read_file(&self, args: FsReadFileArgs) -> RpcResult<FsReadFileResult>;
+
+    /// Write a utf-8 text file. Parent directories must already exist
+    /// — `fs_write_file` is for editor saves on known paths, not for
+    /// scaffolding new project layouts (that surface arrives with the
+    /// explorer's "new file" affordance and gets its own method).
+    async fn fs_write_file(&self, args: FsWriteFileArgs) -> RpcResult<()>;
+
+    /// Stat a single path. Missing paths return `kind: None` rather
+    /// than `NotFound` so callers can probe existence without catching
+    /// errors.
+    async fn fs_stat(&self, args: FsStatArgs) -> RpcResult<FsStatResult>;
 }

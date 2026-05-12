@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, GetJobArgs,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
     SubmitJobArgs,
 };
@@ -214,6 +215,22 @@ impl RpcServer for HttpRpcClient {
             }
         };
         Ok(Box::pin(stream))
+    }
+
+    async fn fs_read_dir(&self, args: FsReadDirArgs) -> RpcResult<FsReadDirResult> {
+        self.call("fs_read_dir", &args).await
+    }
+
+    async fn fs_read_file(&self, args: FsReadFileArgs) -> RpcResult<FsReadFileResult> {
+        self.call("fs_read_file", &args).await
+    }
+
+    async fn fs_write_file(&self, args: FsWriteFileArgs) -> RpcResult<()> {
+        self.call_void("fs_write_file", &args).await
+    }
+
+    async fn fs_stat(&self, args: FsStatArgs) -> RpcResult<FsStatResult> {
+        self.call("fs_stat", &args).await
     }
 }
 

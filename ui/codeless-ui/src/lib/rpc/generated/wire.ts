@@ -104,6 +104,78 @@ export type EventFilter =
 // Only events tagged with this job (and its stages and tasks).
 { scope: "job"; "job-id": JobId };
 
+/**
+ *  One entry from a directory listing. `size` and `mtime` are
+ *  `Option` because not every filesystem entry has them in the same
+ *  way — a symlink to a non-existent target carries no `mtime` from
+ *  the target, and a directory's `size` is platform-dependent and not
+ *  useful for UI display.
+ */
+export type FsEntry = {
+	name: string,
+	kind: FsEntryKind,
+	size: number | null,
+	mtime: UnixMillis | null,
+};
+
+/**
+ *  Type of one directory entry. Symlinks are surfaced as their own
+ *  kind rather than dereferenced because the explorer UI wants to
+ *  distinguish them (different icon, optional target reveal); the
+ *  reader follows the link only when the user opens it.
+ */
+export type FsEntryKind = "file" | "dir" | "symlink";
+
+/**
+ *  Paths in every `fs_*` arg are interpreted relative to the
+ *  configured server root. The host adapter rejects any path that
+ *  escapes the root (`..` segments, absolute paths, symlinks pointing
+ *  outside) before touching disk — the wire shape carries no notion
+ *  of "outside root" because callers should never need to express it.
+ */
+export type FsReadDirArgs = {
+	path: string,
+};
+
+export type FsReadDirResult = {
+	entries: FsEntry[],
+};
+
+export type FsReadFileArgs = {
+	path: string,
+};
+
+/**
+ *  Result of `fs_read_file`. Binary and over-limit cases will gain
+ *  their own variants on this struct when the editor needs them;
+ *  the explorer/editor MVP only handles utf-8 text. Files that fail
+ *  to decode return `InvalidArgument` for now.
+ */
+export type FsReadFileResult = {
+	content: string,
+};
+
+export type FsStatArgs = {
+	path: string,
+};
+
+/**
+ *  Single-entry stat. `kind` is `None` if the path does not exist —
+ *  the call still succeeds so callers can probe existence without
+ *  catching `NotFound`. Present-entry stats populate `kind`, `size`,
+ *  `mtime` from the same source as `fs_read_dir`.
+ */
+export type FsStatResult = {
+	kind: FsEntryKind | null,
+	size: number | null,
+	mtime: UnixMillis | null,
+};
+
+export type FsWriteFileArgs = {
+	path: string,
+	content: string,
+};
+
 export type GetJobArgs = {
 	job_id: JobId,
 };

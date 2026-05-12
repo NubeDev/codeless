@@ -1,4 +1,7 @@
-use codeless_types::{GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, StageId};
+use codeless_types::{
+    FsEntry, FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus,
+    StageId, UnixMillis,
+};
 use serde::{Deserialize, Serialize};
 
 /// Arguments and result types for the typed RPC methods. Kept in their
@@ -102,4 +105,55 @@ pub struct CommentReviewArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct StopReviewArgs {
     pub review_id: ReviewId,
+}
+
+/// Paths in every `fs_*` arg are interpreted relative to the
+/// configured server root. The host adapter rejects any path that
+/// escapes the root (`..` segments, absolute paths, symlinks pointing
+/// outside) before touching disk — the wire shape carries no notion
+/// of "outside root" because callers should never need to express it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsReadDirArgs {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsReadDirResult {
+    pub entries: Vec<FsEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsReadFileArgs {
+    pub path: String,
+}
+
+/// Result of `fs_read_file`. Binary and over-limit cases will gain
+/// their own variants on this struct when the editor needs them;
+/// the explorer/editor MVP only handles utf-8 text. Files that fail
+/// to decode return `InvalidArgument` for now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsReadFileResult {
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsWriteFileArgs {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsStatArgs {
+    pub path: String,
+}
+
+/// Single-entry stat. `kind` is `None` if the path does not exist —
+/// the call still succeeds so callers can probe existence without
+/// catching `NotFound`. Present-entry stats populate `kind`, `size`,
+/// `mtime` from the same source as `fs_read_dir`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsStatResult {
+    pub kind: Option<FsEntryKind>,
+    pub size: Option<i64>,
+    pub mtime: Option<UnixMillis>,
 }
