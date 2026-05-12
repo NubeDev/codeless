@@ -5,8 +5,10 @@
 //! DOCS/SCOPE.md. Process spawning is gated here so mobile builds
 //! physically cannot pull it in via Cargo features.
 
+pub mod ai_runner_bridge;
 pub mod secrets;
 pub mod worktree;
 
+pub use ai_runner_bridge::{forward_events, map_event};
 pub use secrets::{SecretError, SecretStore};
 pub use worktree::{WorktreeError, WorktreeHandle, WorktreeManager};

@@ -11,10 +11,15 @@ description = "Codeless: worktree manager, shell, PTY, CLI/REST runners, local F
 workspace = true
 
 [dependencies]
+ai-runner = { path = "../../../ai-runner" }
+codeless-types = { path = "../codeless-types" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 thiserror = "1"
+tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
