@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { useJob, useRepos, useRpc, type JobId } from "@/lib/rpc";
 
-import { CostCell } from "./JobRow";
+import { CostCell, WallClockCell } from "./JobRow";
 import { FilesChanged } from "./FilesChanged";
 import { JobTimeline } from "./JobTimeline";
 import { ReviewPanel } from "./ReviewPanel";
@@ -73,6 +73,14 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
               >
                 {rerunning ? "queuing…" : "re-run"}
               </Button>
+              <span>
+                <WallClockCell
+                  startedAt={job.started_at}
+                  endedAt={job.ended_at}
+                  capMs={job.wall_clock_cap_ms}
+                  now={Date.now()}
+                />
+              </span>
               <span>
                 <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
               </span>

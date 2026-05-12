@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:18
-Current stage: 6 / 10
+Last tick: 2026-05-13 05:22
+Current stage: 7 / 10
 
 Repo:        codeless
 Branch:      master
@@ -69,8 +69,8 @@ Max ticks:   30
 - [x] 3. [M] Job detail view: stages + live SSE event stream
 - [x] 4. [S] "Run mock job" button: create + start a new mock job
 - [x] 5. [M] Live stage tree: checklist updated from event stream
-- [ ] 6. [S] Cost + wall-clock badges on the job row  ← next
-- [ ] 7. [M] Handover preview pane (runs/<name>/handover.md)
+- [x] 6. [S] Cost + wall-clock badges on the job row
+- [ ] 7. [M] Handover preview pane (runs/<name>/handover.md)  ← next
 - [ ] 8. [S] Review queue badge in the top bar
 - [ ] 9. [M] Ad-hoc job form: New Job button + repo dropdown
 - [ ] 10. [S] Polish pass: theme toggle, empty states, CTA
@@ -99,6 +99,15 @@ Max ticks:   30
   `useEventStream` from `@/lib/rpc` and subscribes per-job, so mock
   runner events stream live as they fire. No `@tauri-apps/api/core`
   imports (R2 satisfied).
+- Stage 6 added `WallClockCell` in `JobRow.tsx` and mounted it next
+  to the existing `CostCell` in both the dashboard row and the
+  `JobDetail` header. Live elapsed = `(ended_at ?? now) - started_at`,
+  formatted as `Hh MMm` / `Mm SSs` / `Ss` for compact width; flips
+  to amber at 80% of `wall_clock_cap_ms`. The dashboard's existing
+  30s `now` clock drives row re-renders; the detail panel uses a
+  one-shot `Date.now()` (it re-renders on each event arrival).
+  Visible-in-browser: every job row and the detail header now read
+  e.g. `2m04s / 30m00s` next to the cost badge.
 - Stage 5 added `StageTree`, mounted in `JobDetail` above `ReviewPanel`.
   Subscribes to the same per-job `useEventStream` filter as
   `JobTimeline`, folds `stage-started` / `stage-completed` /

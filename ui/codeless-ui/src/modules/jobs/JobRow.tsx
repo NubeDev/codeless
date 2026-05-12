@@ -81,6 +81,12 @@ export function JobRow({ job, now, lastSummary, onSelect }: Props) {
         )}
         {error && <div className="text-destructive mt-1 text-xs">{error}</div>}
       </div>
+      <WallClockCell
+        startedAt={job.started_at}
+        endedAt={job.ended_at}
+        capMs={job.wall_clock_cap_ms}
+        now={now}
+      />
       <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
       {canStop && (
         <Button size="sm" variant="ghost" onClick={stop} disabled={stopping}>
@@ -114,4 +120,51 @@ export function CostCell({ cost, cap }: { cost: number; cap: number }) {
 function formatCents(n: number): string {
   if (n < 100) return `${n}¢`;
   return `$${(n / 100).toFixed(2)}`;
+}
+
+// Wall-clock spent vs. cap. "Spent" is `ended_at - started_at` for
+// terminated jobs and `now - started_at` for live ones. Renders "—"
+// until the job has started; flips to amber at 80% of the cap to
+// signal an approaching wall-clock kill (mirrors `CostCell`).
+export function WallClockCell({
+  startedAt,
+  endedAt,
+  capMs,
+  now,
+}: {
+  startedAt: number | null;
+  endedAt: number | null;
+  capMs: number;
+  now: number;
+}) {
+  if (startedAt === null) {
+    return <span className="text-muted-foreground font-mono text-[11px]">—</span>;
+  }
+  const spentMs = (endedAt ?? now) - startedAt;
+  const ratio = capMs > 0 ? spentMs / capMs : 0;
+  const warn = ratio >= 0.8;
+  return (
+    <span
+      className={`font-mono text-[11px] ${warn ? "text-amber-500" : "text-muted-foreground"}`}
+      title={`${formatDuration(spentMs)} of ${capMs > 0 ? formatDuration(capMs) : "no"} cap`}
+    >
+      {formatDuration(spentMs)}
+      {capMs > 0 && (
+        <span className="opacity-60"> / {formatDuration(capMs)}</span>
+      )}
+    </span>
+  );
+}
+
+// Compact "Hh Mm" or "Mm Ss" form: enough resolution for jobs that
+// run seconds or hours without ever spilling past 5-6 characters.
+function formatDuration(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h${m.toString().padStart(2, "0")}m`;
+  if (m > 0) return `${m}m${s.toString().padStart(2, "0")}s`;
+  return `${s}s`;
 }
