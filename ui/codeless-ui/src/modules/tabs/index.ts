@@ -9,6 +9,7 @@ export {
   type AiDiffTab,
   type AiDiffStatus,
   type JobsTab,
+  type JobDetailTab,
   type TabPatch,
 } from "./lib/useTabs";
 export { useWorkspaceCwd } from "./lib/useWorkspaceCwd";

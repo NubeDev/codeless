@@ -66,7 +66,25 @@ export type JobsTab = {
   title: string;
 };
 
-export type Tab = TerminalTab | EditorTab | PreviewTab | AiDiffTab | JobsTab;
+// Per-job workspace tab. Distinct from `JobsTab` (the global list) so
+// the user can have several jobs open in parallel — the natural read
+// of "I want to watch run A finish while I drive run B". Title is
+// derived from the job's prompt or its template name; the tab carries
+// the id so `JobPage` can subscribe to that specific job's events.
+export type JobDetailTab = {
+  id: number;
+  kind: "job-detail";
+  title: string;
+  jobId: string;
+};
+
+export type Tab =
+  | TerminalTab
+  | EditorTab
+  | PreviewTab
+  | AiDiffTab
+  | JobsTab
+  | JobDetailTab;
 
 export type TabPatch = Partial<{
   title: string;
@@ -302,6 +320,37 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     return targetId;
   }, []);
 
+  // Per-job tab. Unlike the singleton jobs dashboard, each job-detail
+  // tab is keyed by `jobId` — opening the same job twice focuses the
+  // existing tab rather than appending a duplicate. The `title` is
+  // re-derived from the job by `JobPage` after fetch; the initial
+  // value the caller passes is what shows up until that lands.
+  const newJobDetailTab = useCallback((jobId: string, initialTitle: string) => {
+    let targetId = -1;
+    setTabs((curr) => {
+      const existing = curr.find(
+        (t): t is JobDetailTab => t.kind === "job-detail" && t.jobId === jobId,
+      );
+      if (existing) {
+        targetId = existing.id;
+        return curr;
+      }
+      const id = nextIdRef.current++;
+      targetId = id;
+      return [
+        ...curr,
+        {
+          id,
+          kind: "job-detail",
+          title: initialTitle,
+          jobId,
+        } satisfies JobDetailTab,
+      ];
+    });
+    setActiveId(targetId);
+    return targetId;
+  }, []);
+
   const closeTab = useCallback((id: number) => {
     setTabs((curr) => {
       if (curr.length <= 1) return curr;
@@ -493,6 +542,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     pinTab,
     newPreviewTab,
     newJobsTab,
+    newJobDetailTab,
     openAiDiffTab,
     setAiDiffStatus,
     closeTab,

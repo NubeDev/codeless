@@ -10,7 +10,18 @@ import { useRpc, type JobDiffResult, type JobId } from "@/lib/rpc";
 // the tab. Worktrees may be reaped between job completion and view,
 // but the branch survives in the source repo, so this works whether
 // or not the worktree directory still exists on disk.
-export function FilesChanged({ jobId }: { jobId: JobId }) {
+interface FilesChangedProps {
+  jobId: JobId;
+  /**
+   * Open the given path in an editor tab. Receives the worktree-
+   * relative path as it comes back from `job_diff`; the host wires
+   * the resolution against the worktree root (the dashboard does not
+   * know the worktree root from this surface alone).
+   */
+  onOpenFile?: (relPath: string) => void;
+}
+
+export function FilesChanged({ jobId, onOpenFile }: FilesChangedProps) {
   const rpc = useRpc();
   const [state, setState] = useState<
     | { kind: "loading" }
@@ -87,7 +98,7 @@ export function FilesChanged({ jobId }: { jobId: JobId }) {
         </div>
         <ul className="space-y-2">
           {diff.files.map((f) => (
-            <FileBlock key={f.path} file={f} />
+            <FileBlock key={f.path} file={f} onOpen={onOpenFile} />
           ))}
         </ul>
       </div>
@@ -95,17 +106,25 @@ export function FilesChanged({ jobId }: { jobId: JobId }) {
   );
 }
 
-function FileBlock({ file }: { file: JobDiffResult["files"][number] }) {
+function FileBlock({
+  file,
+  onOpen,
+}: {
+  file: JobDiffResult["files"][number];
+  onOpen?: (relPath: string) => void;
+}) {
   const [open, setOpen] = useState(file.additions + file.deletions <= 40);
   return (
     <li className="border-border/50 rounded border bg-card/30">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="hover:bg-accent/20 flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs"
-      >
+      <div className="hover:bg-accent/20 flex w-full items-center gap-2 px-2 py-1.5 text-xs">
         <StatusPill status={file.status} />
-        <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="min-w-0 flex-1 truncate text-left font-mono"
+        >
+          {file.path}
+        </button>
         {!file.is_binary && (
           <span className="text-muted-foreground font-mono text-[11px]">
             <span className="text-emerald-500">+{file.additions}</span>{" "}
@@ -117,10 +136,28 @@ function FileBlock({ file }: { file: JobDiffResult["files"][number] }) {
             binary
           </span>
         )}
-        <span className="text-muted-foreground text-[10px]">
+        {onOpen && file.status !== "D" && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(file.path);
+            }}
+            className="text-muted-foreground hover:text-foreground rounded px-1.5 py-0.5 text-[10px]"
+            title="Open in editor"
+          >
+            open
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="text-muted-foreground text-[10px]"
+          aria-label={open ? "collapse" : "expand"}
+        >
           {open ? "−" : "+"}
-        </span>
-      </button>
+        </button>
+      </div>
       {open && !file.is_binary && file.patch && (
         <DiffBody patch={file.patch} />
       )}

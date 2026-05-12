@@ -38,7 +38,17 @@ import { summariseEnvelope } from "./eventFormat";
 // works without an in-app share affordance.
 const JOB_ID_FROM_ROUTE = /^\/jobs\/([A-Z0-9]+)$/;
 
-export function JobsDashboard() {
+interface JobsDashboardProps {
+  /**
+   * Open a job in a dedicated workspace tab. When provided, clicking
+   * a row in the dashboard takes this path instead of the legacy
+   * right-side sheet. App.tsx supplies it; tests / Storybook can
+   * omit it to keep the sheet behaviour visible.
+   */
+  onOpenJob?: (job: Job) => void;
+}
+
+export function JobsDashboard({ onOpenJob }: JobsDashboardProps = {}) {
   const repos = useRepos();
   const jobs = useJobs();
   const [overlay, setOverlay] = useState<Map<string, Job>>(new Map());
@@ -47,8 +57,22 @@ export function JobsDashboard() {
   >(new Map());
   const route = useRoute();
   const matched = JOB_ID_FROM_ROUTE.exec(route.pathname);
-  const selectedJobId = (matched ? matched[1] : null) as JobId | null;
-  const openJob = useCallback((id: JobId) => navigate(`/jobs/${id}`), []);
+  // The legacy sheet path keys off the route. When `onOpenJob` is
+  // wired, we never set this URL anymore so the sheet stays closed —
+  // the job-detail tab is the canonical workspace surface.
+  const selectedJobId = (
+    onOpenJob ? null : matched ? matched[1] : null
+  ) as JobId | null;
+  const openJob = useCallback(
+    (job: Job) => {
+      if (onOpenJob) {
+        onOpenJob(job);
+      } else {
+        navigate(`/jobs/${job.id}`);
+      }
+    },
+    [onOpenJob],
+  );
   const closeJob = useCallback(() => navigate("/jobs"), []);
 
   // Tick a "now" clock every 30s so relative ages re-render without
@@ -174,7 +198,7 @@ export function JobsDashboard() {
                   job={j}
                   now={now}
                   lastSummary={lastSummaries.get(j.id)?.text ?? null}
-                  onSelect={(job) => openJob(job.id)}
+                  onSelect={(job) => openJob(job)}
                 />
               ))
             )}

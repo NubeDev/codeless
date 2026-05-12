@@ -35,7 +35,7 @@ import {
   type EditorPaneHandle,
 } from "@/modules/editor";
 import { FileExplorer } from "@/modules/explorer";
-import { JobsDashboard } from "@/modules/jobs";
+import { JobDetailStack, JobsDashboard } from "@/modules/jobs";
 import {
   Header,
   type SearchInlineHandle,
@@ -83,6 +83,22 @@ function sameOrigin(a: string, b: string): boolean {
   }
 }
 
+// Best-guess title for a fresh job-detail tab. `JobPage` overwrites
+// this once it loads the job and parses the template name, so the
+// initial value only matters for the gap between the row click and
+// the first render — short and informative beats clever.
+function friendlyTabTitle(job: { id: string; prompt: string | null }): string {
+  if (job.prompt) {
+    const firstLine = job.prompt.split("\n")[0].trim();
+    if (firstLine.length > 0) {
+      return firstLine.length > 32
+        ? `${firstLine.slice(0, 29)}…`
+        : firstLine;
+    }
+  }
+  return `Job ${job.id.slice(0, 6)}`;
+}
+
 export default function App() {
   const rpc = useRpc();
   // Bind the module-level `native` surface once. The setter is
@@ -101,6 +117,7 @@ export default function App() {
     pinTab,
     newPreviewTab,
     newJobsTab,
+    newJobDetailTab,
     openAiDiffTab,
     setAiDiffStatus,
     closeTab,
@@ -268,6 +285,7 @@ export default function App() {
   const isPreviewTab = activeTab?.kind === "preview";
   const isAiDiffTab = activeTab?.kind === "ai-diff";
   const isJobsTab = activeTab?.kind === "jobs";
+  const isJobDetailTab = activeTab?.kind === "job-detail";
 
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
@@ -916,7 +934,27 @@ export default function App() {
                       aria-hidden={!isJobsTab}
                     >
                       {tabs.some((t) => t.kind === "jobs") ? (
-                        <JobsDashboard />
+                        <JobsDashboard
+                          onOpenJob={(job) =>
+                            newJobDetailTab(job.id, friendlyTabTitle(job))
+                          }
+                        />
+                      ) : null}
+                    </div>
+                    <div
+                      className={cn(
+                        "absolute inset-0",
+                        !isJobDetailTab && "invisible pointer-events-none",
+                      )}
+                      aria-hidden={!isJobDetailTab}
+                    >
+                      {tabs.some((t) => t.kind === "job-detail") ? (
+                        <JobDetailStack
+                          tabs={tabs}
+                          activeId={activeId}
+                          onOpenFile={(abs) => openFileTab(abs, true)}
+                          onUpdateTab={updateTab}
+                        />
                       ) : null}
                     </div>
                   </div>

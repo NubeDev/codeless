@@ -228,6 +228,19 @@ function TabIcon({ tab }: { tab: Tab }) {
       />
     );
   }
+  if (tab.kind === "job-detail") {
+    // Same briefcase icon as the jobs list, but in muted tone so the
+    // strip reads "this is a job thing" at a glance and the
+    // list-vs-detail distinction comes from the label.
+    return (
+      <HugeiconsIcon
+        icon={Briefcase01Icon}
+        size={14}
+        strokeWidth={2}
+        className="text-muted-foreground shrink-0"
+      />
+    );
+  }
   return (
     <HugeiconsIcon
       icon={ComputerTerminal02Icon}
@@ -243,6 +256,7 @@ function labelFor(t: Tab): string {
   if (t.kind === "preview") return t.title;
   if (t.kind === "ai-diff") return t.title;
   if (t.kind === "jobs") return t.title;
+  if (t.kind === "job-detail") return t.title;
   if (!t.cwd) return t.title;
   const parts = t.cwd.split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : "/";
