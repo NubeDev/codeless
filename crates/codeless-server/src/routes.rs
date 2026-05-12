@@ -1,0 +1,175 @@
+use axum::{
+    extract::State,
+    http::StatusCode,
+    middleware,
+    routing::{get, post},
+    Json, Router,
+};
+use codeless_rpc::{
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, GetJobArgs, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RpcError, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
+};
+use codeless_types::{Job, Repo, Review};
+use serde_json::Value;
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
+
+use crate::{auth::bearer_layer, sse::events_handler, AppState};
+
+pub(crate) fn router(state: AppState) -> Router {
+    let rpc_routes = Router::new()
+        .route("/rpc/add_repo", post(add_repo))
+        .route("/rpc/remove_repo", post(remove_repo))
+        .route("/rpc/list_repos", post(list_repos))
+        .route("/rpc/submit_job", post(submit_job))
+        .route("/rpc/get_job", post(get_job))
+        .route("/rpc/list_jobs", post(list_jobs))
+        .route("/rpc/stop_job", post(stop_job))
+        .route("/rpc/list_reviews", post(list_reviews))
+        .route("/rpc/approve_review", post(approve_review))
+        .route("/rpc/comment_review", post(comment_review))
+        .route("/rpc/stop_review", post(stop_review))
+        .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
+
+    let events = Router::new().route("/events", get(events_handler));
+
+    // `/healthz` and `/version` sit outside the bearer gate so probes
+    // and human curl-the-server checks work without provisioning a
+    // token. Neither leaks state: healthz returns a constant, version
+    // returns the crate version baked in at build time.
+    let unauthenticated = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route(
+            "/version",
+            get(|| async { env!("CARGO_PKG_VERSION").to_string() }),
+        );
+
+    // Permissive CORS is correct for the single-tenant MVP: the
+    // server binds loopback by default (R5), so "any origin" only
+    // covers other processes on the same host that already have
+    // local-file access — i.e. no real reduction in trust boundary.
+    // Phase 7's OIDC story will replace this with an explicit
+    // allowlist alongside cookie-based auth.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    // Request-tracing layer. The defaults emit a span per request
+    // (method + uri + status + latency); operator-facing logs land
+    // on stderr through whatever `tracing-subscriber` the binary
+    // initialised. Subscribers that don't filter `tower_http` in
+    // see one event per request at info level.
+    let trace = TraceLayer::new_for_http();
+
+    Router::new()
+        .merge(rpc_routes)
+        .merge(events)
+        .merge(unauthenticated)
+        .layer(cors)
+        .layer(trace)
+        .with_state(state)
+}
+
+/// Map a typed `RpcError` to the HTTP response shape the browser
+/// client decodes in `RpcError.fromHttpStatus`. The mapping is
+/// wire-stable: renaming a variant on the Rust side or changing the
+/// status here is a breaking change for the UI.
+fn map_err(err: RpcError) -> (StatusCode, String) {
+    match err {
+        RpcError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+        RpcError::InvalidArgument(m) => (StatusCode::BAD_REQUEST, m),
+        RpcError::Conflict(m) => (StatusCode::CONFLICT, m),
+        RpcError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+    }
+}
+
+type HandlerResult<T> = Result<Json<T>, (StatusCode, String)>;
+
+async fn add_repo(
+    State(st): State<AppState>,
+    Json(args): Json<AddRepoArgs>,
+) -> HandlerResult<Repo> {
+    st.rpc.add_repo(args).await.map(Json).map_err(map_err)
+}
+
+async fn remove_repo(
+    State(st): State<AppState>,
+    Json(args): Json<RemoveRepoArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .remove_repo(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+/// `list_repos` takes no args but the browser still sends `{}` (the
+/// TS type is `Record<string, never>`). Accept the body as
+/// `Option<Json<Value>>` so missing, empty, or `{}` payloads all
+/// succeed — anything richer is silently ignored, which matches the
+/// trait method's actual signature.
+async fn list_repos(
+    State(st): State<AppState>,
+    _body: Option<Json<Value>>,
+) -> HandlerResult<ListReposResult> {
+    st.rpc.list_repos().await.map(Json).map_err(map_err)
+}
+
+async fn submit_job(
+    State(st): State<AppState>,
+    Json(args): Json<SubmitJobArgs>,
+) -> HandlerResult<Job> {
+    st.rpc.submit_job(args).await.map(Json).map_err(map_err)
+}
+
+async fn get_job(State(st): State<AppState>, Json(args): Json<GetJobArgs>) -> HandlerResult<Job> {
+    st.rpc.get_job(args).await.map(Json).map_err(map_err)
+}
+
+async fn list_jobs(
+    State(st): State<AppState>,
+    Json(args): Json<ListJobsArgs>,
+) -> HandlerResult<ListJobsResult> {
+    st.rpc.list_jobs(args).await.map(Json).map_err(map_err)
+}
+
+async fn stop_job(
+    State(st): State<AppState>,
+    Json(args): Json<StopJobArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .stop_job(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn list_reviews(
+    State(st): State<AppState>,
+    Json(args): Json<ListReviewsArgs>,
+) -> HandlerResult<ListReviewsResult> {
+    st.rpc.list_reviews(args).await.map(Json).map_err(map_err)
+}
+
+async fn approve_review(
+    State(st): State<AppState>,
+    Json(args): Json<ApproveReviewArgs>,
+) -> HandlerResult<Review> {
+    st.rpc.approve_review(args).await.map(Json).map_err(map_err)
+}
+
+async fn comment_review(
+    State(st): State<AppState>,
+    Json(args): Json<CommentReviewArgs>,
+) -> HandlerResult<Review> {
+    st.rpc.comment_review(args).await.map(Json).map_err(map_err)
+}
+
+async fn stop_review(
+    State(st): State<AppState>,
+    Json(args): Json<StopReviewArgs>,
+) -> HandlerResult<Review> {
+    st.rpc.stop_review(args).await.map(Json).map_err(map_err)
+}

@@ -1,0 +1,54 @@
+import { create } from "zustand";
+
+import { getCrossWindowEvents } from "@/lib/shell";
+
+import {
+  loadSnippets,
+  newSnippetId,
+  saveSnippets,
+  type Snippet,
+} from "../lib/snippets";
+
+const CHANGED_EVENT = "codeless://ai-snippets-changed";
+
+function broadcast(): void {
+  void getCrossWindowEvents().emit(CHANGED_EVENT);
+}
+
+type State = {
+  hydrated: boolean;
+  snippets: Snippet[];
+  hydrate: () => Promise<void>;
+  upsert: (snippet: Snippet) => void;
+  remove: (id: string) => void;
+};
+
+let initialized = false;
+
+export const useSnippetsStore = create<State>((set, get) => ({
+  hydrated: false,
+  snippets: [],
+  hydrate: async () => {
+    if (initialized) return;
+    initialized = true;
+    set({ snippets: await loadSnippets(), hydrated: true });
+    void getCrossWindowEvents().listen(CHANGED_EVENT, async () => {
+      set({ snippets: await loadSnippets() });
+    });
+  },
+  upsert: (snippet) => {
+    const list = get().snippets;
+    const idx = list.findIndex((s) => s.id === snippet.id);
+    const next =
+      idx === -1 ? [...list, snippet] : list.map((s) => (s.id === snippet.id ? snippet : s));
+    set({ snippets: next });
+    void saveSnippets(next).then(broadcast);
+  },
+  remove: (id) => {
+    const next = get().snippets.filter((s) => s.id !== id);
+    set({ snippets: next });
+    void saveSnippets(next).then(broadcast);
+  },
+}));
+
+export { newSnippetId };

@@ -1,0 +1,18 @@
+[package]
+name = "codeless-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: transport-agnostic RPC trait and client glue. iOS- and Android-safe."
+
+[lints]
+workspace = true
+
+[dependencies]
+codeless-types = { path = "../codeless-types" }
+serde = { version = "1", features = ["derive"] }
+async-trait = "0.1"
+futures-core = "0.3"
+thiserror = "2"

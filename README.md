@@ -1,5 +1,210 @@
 # codeless
 
+Rust workspace for the Codeless project — a staged, reviewable AI coding
+job runner. This repo is the **inner** repo; design docs, the
+multi-repo `mani.yaml`, the autonomous-build loop, and active session
+files live in the parent workspace at
+[`codeless-workspace`](https://github.com/NubeDev/codeless-workspace).
+
+Start here if you are reading this for the first time:
+
+- Agent-facing rules for this repo: [`CLAUDE.md`](./CLAUDE.md)
+- Durable per-repo memory: [`CODELESS.md`](./CODELESS.md)
+- Project scope, crate layout, all open questions:
+  [`../DOCS/SCOPE.md`](../DOCS/SCOPE.md)
+- Autonomous build loop: [`../DOCS/JOB-LOOP.md`](../DOCS/JOB-LOOP.md)
+
+## Quickstart
+
+```sh
+# from the inner repo
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
+
+# end-to-end dogfood: pick a runner and stream events to stdout as
+# JSON lines. --runner defaults to `mock`; `claude` shells out to
+# the `claude` binary (or $CLAUDE_BINARY); `anthropic` talks REST
+# and reads ANTHROPIC_API_KEY (or --api-key).
+cargo run -p codeless-cli -- run --repo /path/to/repo "hello"
+cargo run -p codeless-cli -- run --repo /path/to/repo --runner claude "rename foo to bar"
+
+# stateful subcommands need --db <path> (or CODELESS_DB env) so
+# successive invocations share state.
+export CODELESS_DB=~/.local/share/codeless/codeless.db
+
+# submit a typed YAML job template
+cargo run -p codeless-cli -- job submit job.yaml
+
+# follow a job to completion (replays persisted events first)
+cargo run -p codeless-cli -- tail <job-id>
+
+# drive a review gate (after a stage hits AwaitingReview)
+cargo run -p codeless-cli -- review list
+cargo run -p codeless-cli -- review approve <review-id>
+cargo run -p codeless-cli -- review comment <review-id> "looks good but rerun verify"
+cargo run -p codeless-cli -- review stop <review-id>
+
+# manage the chmod-600 secrets store
+cargo run -p codeless-cli -- secrets list
+cargo run -p codeless-cli -- secrets set ANTHROPIC_API_KEY --from-env ANTHROPIC_API_KEY
+```
+
+### Run the browser demo
+
+`codeless serve` runs the hosted HTTP surface that the React UI in
+[`ui/codeless-ui/`](./ui/codeless-ui/) talks to. One-shot setup:
+
+```sh
+# pick a DB and mint the shared bearer token; prints it once
+cargo run -p codeless-cli -- --db ~/.local/share/codeless/demo.db \
+    serve --init-token
+
+# run the server (defaults to 127.0.0.1:7777)
+cargo run -p codeless-cli -- --db ~/.local/share/codeless/demo.db serve
+
+# in another terminal, run the UI dev server
+pnpm -C ui/codeless-ui install   # first time only
+pnpm -C ui/codeless-ui dev
+```
+
+Full instructions (including the `localStorage` keys the browser
+reads) live in the workspace
+[`DEMO-UI.md`](../DEMO-UI.md) quickstart.
+
+### YAML job template shape
+
+`codeless job submit` parses a strict typed shape — unknown keys are a
+parse error with line/column, so a `runneer:` typo never silently
+defaults:
+
+```yaml
+repo: 01J...            # repo id (ULID)
+runner: claude          # mock | claude | anthropic
+prompt: refactor parser
+branch: codeless/refactor-parser
+stages:
+  - name: plan
+  - name: verify
+    verify_cmd: cargo test
+caps:
+  cost_cents: 500       # 0 = unlimited
+  wall_clock_ms: 600000 # 0 = unlimited
+```
+
+### Outbound webhook notifier
+
+`codeless-runtime::WebhookNotifier` POSTs JSON to a configurable URL
+on `JobFailed` and `ReviewRequested`. The body is HMAC-SHA256 signed
+with a shared key; the signature lands on the
+`x-codeless-signature` header as lowercase hex. Config is TOML-shaped
+so it can sit in the secrets file:
+
+```toml
+[notifier.webhook]
+url = "https://hooks.example.com/codeless"
+hmac_key_hex = "deadbeef..."
+```
+
+Wire it into a running core with `spawn_notifier(bus,
+Arc::new(WebhookNotifier::from_config(cfg)?))`.
+
+State lives in SQLite. The runtime builds against a caller-supplied
+`SqlitePool` (or `InProcessRpc::new()` for an in-memory pool in tests);
+the Appendix A migrations apply on construction. Repos, jobs, stages,
+tasks, and events all persist; a fresh runtime against the same DB
+file resumes where the previous one left off, including a startup
+reaper that returns expired task leases to the queue.
+
+### Driving a real runner from Rust
+
+The CLI's `run --runner {claude,anthropic}` covers the common path.
+Embed the runtime directly when you need finer control over the
+`RunnerAdapter` (custom prompt, base URL override for tests, etc.):
+
+```rust
+use std::sync::Arc;
+use codeless_runtime::{drive_job, ClaudeRunnerAdapter, InProcessRpc};
+use codeless_rpc::{AddRepoArgs, RpcServer, SubmitJobArgs};
+use codeless_types::{GitAuth, TaskId};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let rpc = InProcessRpc::new().await?;
+    let repo = rpc.add_repo(AddRepoArgs {
+        name: "demo".into(),
+        clone_url: "https://example.test/demo.git".into(),
+        default_branch: "main".into(),
+        local_path: "/path/to/repo".into(),
+        git_auth: GitAuth::Token { env_var: "GITHUB_TOKEN".into() },
+        concurrency_cap: None,
+        default_runner: None,
+    }).await?;
+    let job = rpc.submit_job(SubmitJobArgs {
+        repo_id: repo.id,
+        prompt: Some("rename `foo` to `bar` everywhere".into()),
+        template_yaml: None,
+        runner: "claude".into(),
+        branch: "codeless/job-demo".into(),
+        cost_cap_cents: 200,   // 0 = unlimited
+        wall_clock_cap_ms: 600_000,
+    }).await?;
+
+    let adapter: Arc<dyn codeless_runtime::Runner> = Arc::new(
+        ClaudeRunnerAdapter::new("rename `foo` to `bar` everywhere", TaskId::new()),
+    );
+    drive_job(&rpc, job.id, adapter, /* worktrees= */ None).await?;
+    Ok(())
+}
+```
+
+Swap in `AnthropicRunnerAdapter::new(...)` for the REST path; set
+`adapter.base_url` to redirect the SDK (used by tests against a
+`wiremock` stub). Pass `Some(Arc::new(WorktreeManager::new(...)))` as
+the fourth `drive_job` arg in production so every run gets its own
+isolated `git worktree`; the worktree is removed on every terminal
+exit. The cap watcher inside `drive_job` reads
+`jobs.cost_cents` (auto-rolled by `EventBus::publish` on every
+`ai-message-complete`) against `cost_cap_cents`, and races
+`wall_clock_cap_ms` in parallel; either tripping the cap stops the
+job and emits `JobStopped { reason: CostCap | WallClock }`.
+
+## UI
+
+The React UI lives at [`ui/codeless-ui/`](./ui/codeless-ui/) — a
+Terax-derived React 19 + TypeScript app that already includes editor
+(CodeMirror 6), terminal (xterm.js), file explorer, AI chat panel,
+settings, and themes. It is the **single** UI that ships to all four
+shells (browser, Tauri desktop, iOS, Android); per-shell files are
+forbidden by R3 in [`CLAUDE.md`](./CLAUDE.md).
+
+The transport boundary lives at
+[`ui/codeless-ui/src/lib/rpc/`](./ui/codeless-ui/src/lib/rpc/): a
+typed `RpcClient` interface with `HttpSseClient` (browser/mobile),
+`TauriIpcClient` (desktop, stub), and `MockRpcClient` (tests). Each
+shell entry under
+[`ui/codeless-ui/src/shells/`](./ui/codeless-ui/src/shells/)
+constructs the right client and mounts the same `<App />`.
+
+Active UI work is the Tauri-conversion grind — 31 files still import
+`@tauri-apps/*` and need rerouting through `RpcClient` or a
+shell-injected capability adapter. Architectural rationale in
+[`../DOCS/UI-ARCHITECTURE.md`](../DOCS/UI-ARCHITECTURE.md); per-file
+worklist in [`../DOCS/UI-PORT-AUDIT.md`](../DOCS/UI-PORT-AUDIT.md).
+
+```sh
+cd ui/codeless-ui
+pnpm install
+pnpm dev        # browser shell against MockRpcClient by default
+```
+
+## Origin
+
+The original fork rationale (Terax as a starting point) lives below
+for the history; the active design lives in
+[`../DOCS/SCOPE.md`](../DOCS/SCOPE.md).
+
+---
 
 see existing code we can use
 - /home/user/code/rubix-workspace/rubix-agent/crates/ai-runner/src/runners
