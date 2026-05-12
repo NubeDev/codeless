@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{anyhow, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -53,9 +53,23 @@ struct RunArgs {
     /// Local path to a checked-out repository.
     #[arg(long)]
     repo: PathBuf,
-    /// Runner kind. Only `mock` is wired in Phase 1.
-    #[arg(long, default_value = "mock")]
-    runner: String,
+    /// Runner kind. `mock` stays the default so existing JSON-line
+    /// consumers and tests that do not provision external resources
+    /// keep working unchanged; `claude` shells out via
+    /// `ClaudeRunnerAdapter` (CLI wrapper, requires the `claude`
+    /// binary on PATH or `CLAUDE_BINARY`); `anthropic` talks to the
+    /// REST API via `AnthropicRunnerAdapter` and reads the key from
+    /// `ANTHROPIC_API_KEY` or `--api-key`.
+    #[arg(long, value_enum, default_value_t = RunnerKind::Mock)]
+    runner: RunnerKind,
+    /// Override for the Anthropic API key. Falls back to the
+    /// `ANTHROPIC_API_KEY` env var. Ignored for non-anthropic runners.
+    #[arg(long)]
+    api_key: Option<String>,
+    /// Optional REST base URL override (for testing against a local
+    /// fixture). Ignored for non-anthropic runners.
+    #[arg(long)]
+    base_url: Option<String>,
     /// Phase 1 only supports the `--once` shape (run a single job and
     /// exit). The flag is accepted to keep the documented invocation
     /// shape stable as daemon mode lands.
@@ -63,6 +77,28 @@ struct RunArgs {
     once: bool,
     /// The user prompt to forward to the runner.
     prompt: String,
+}
+
+/// Runner adapter selectable from the CLI. The string form
+/// (`as_wire()`) is what lands on the `Job.runner` column and
+/// `Repo.default_runner` — keeping it stable means existing rows
+/// continue to round-trip through `SubmitJobArgs` after future
+/// additions.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum RunnerKind {
+    Mock,
+    Claude,
+    Anthropic,
+}
+
+impl RunnerKind {
+    pub(crate) fn as_wire(self) -> &'static str {
+        match self {
+            RunnerKind::Mock => "mock",
+            RunnerKind::Claude => "claude",
+            RunnerKind::Anthropic => "anthropic",
+        }
+    }
 }
 
 fn main() -> ExitCode {

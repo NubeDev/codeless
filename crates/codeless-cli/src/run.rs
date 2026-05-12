@@ -4,11 +4,14 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use codeless_rpc::{AddRepoArgs, EventFilter, RpcServer, SubmitJobArgs};
-use codeless_runtime::{drive_job, InProcessRpc, MockRunner, MockStep, RunnerOutcome};
-use codeless_types::{Event, GitAuth};
+use codeless_runtime::{
+    drive_job, AnthropicRunnerAdapter, ClaudeRunnerAdapter, InProcessRpc, MockRunner, MockStep,
+    Runner, RunnerOutcome,
+};
+use codeless_types::{Event, GitAuth, TaskId};
 use futures_util::StreamExt;
 
-use crate::RunArgs;
+use crate::{RunArgs, RunnerKind};
 
 /// End-to-end runner for `codeless run --once`. Builds an
 /// in-process RPC, registers the repo, submits the job, subscribes to
@@ -22,12 +25,6 @@ use crate::RunArgs;
 /// not on the runner's `RunnerOutcome` directly, so the exit code
 /// reflects what an outside observer would see on the wire.
 pub fn handle(args: RunArgs) -> Result<ExitCode> {
-    if args.runner != "mock" {
-        bail!(
-            "runner {:?} is not wired in Phase 1; only `mock` is available",
-            args.runner
-        );
-    }
     let repo_path = args
         .repo
         .canonicalize()
@@ -39,16 +36,17 @@ pub fn handle(args: RunArgs) -> Result<ExitCode> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run_once(args.prompt, repo_path))
+    rt.block_on(run_once(args, repo_path))
 }
 
-async fn run_once(prompt: String, repo_path: std::path::PathBuf) -> Result<ExitCode> {
+async fn run_once(args: RunArgs, repo_path: std::path::PathBuf) -> Result<ExitCode> {
     let rpc = Arc::new(
         InProcessRpc::new()
             .await
             .map_err(|e| anyhow!("init runtime: {e}"))?,
     );
 
+    let wire_runner = args.runner.as_wire();
     let repo = rpc
         .add_repo(AddRepoArgs {
             name: repo_path
@@ -61,11 +59,13 @@ async fn run_once(prompt: String, repo_path: std::path::PathBuf) -> Result<ExitC
             // The mock runner never reaches a remote; the token env
             // var below is a placeholder that satisfies the wire
             // contract without requiring `GITHUB_TOKEN` to be set.
+            // Real runners that push their work will fail here until
+            // git auth is threaded through — tracked separately.
             git_auth: GitAuth::Token {
                 env_var: "GITHUB_TOKEN".into(),
             },
             concurrency_cap: None,
-            default_runner: Some("mock".into()),
+            default_runner: Some(wire_runner.to_string()),
         })
         .await
         .map_err(|e| anyhow!("add_repo: {e}"))?;
@@ -73,9 +73,9 @@ async fn run_once(prompt: String, repo_path: std::path::PathBuf) -> Result<ExitC
     let job = rpc
         .submit_job(SubmitJobArgs {
             repo_id: repo.id,
-            prompt: Some(prompt.clone()),
+            prompt: Some(args.prompt.clone()),
             template_yaml: None,
-            runner: "mock".into(),
+            runner: wire_runner.to_string(),
             branch: "codeless/job-once".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
@@ -88,7 +88,7 @@ async fn run_once(prompt: String, repo_path: std::path::PathBuf) -> Result<ExitC
         .await
         .map_err(|e| anyhow!("subscribe: {e}"))?;
 
-    let runner = Arc::new(MockRunner::new(scripted_for(&prompt)));
+    let runner = build_runner(&args)?;
     let drive_rpc = Arc::clone(&rpc);
     let drive_job_id = job.id;
     let drive = tokio::spawn(async move {
@@ -126,12 +126,35 @@ async fn run_once(prompt: String, repo_path: std::path::PathBuf) -> Result<ExitC
     Ok(exit)
 }
 
+/// Build the concrete adapter for the chosen runner kind. The mock
+/// path keeps the Phase 1 scripted transcript so tests asserting
+/// `task-started` + `task-completed` framing keep passing without an
+/// external binary. The claude and anthropic paths share a fresh
+/// `TaskId` so AI events carry a stable correlator on the bus.
+fn build_runner(args: &RunArgs) -> Result<Arc<dyn Runner>> {
+    Ok(match args.runner {
+        RunnerKind::Mock => Arc::new(MockRunner::new(scripted_for(&args.prompt))),
+        RunnerKind::Claude => {
+            Arc::new(ClaudeRunnerAdapter::new(args.prompt.clone(), TaskId::new()))
+        }
+        RunnerKind::Anthropic => {
+            let key = args
+                .api_key
+                .clone()
+                .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok());
+            if key.is_none() {
+                bail!("--runner anthropic requires --api-key or ANTHROPIC_API_KEY env var");
+            }
+            let mut adapter = AnthropicRunnerAdapter::new(args.prompt.clone(), TaskId::new());
+            adapter.api_key = key;
+            adapter.base_url = args.base_url.clone();
+            Arc::new(adapter)
+        }
+    })
+}
+
 fn scripted_for(_prompt: &str) -> Vec<MockStep> {
-    // Phase 1 mock script: emit a single task-started + task-completed
-    // pair so the streamed output has structure beyond just the
-    // framing events, then finish clean. Real runners replace this
-    // with their own event stream.
-    use codeless_types::{TaskId, TaskStatus};
+    use codeless_types::TaskStatus;
     let task = TaskId::new();
     vec![
         MockStep::Emit(Event::TaskStarted { task_id: task }),
