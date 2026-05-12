@@ -14,6 +14,13 @@ import {
   readToken,
   type RpcClient,
 } from "../../lib/rpc";
+import { ShellProvider, type ShellCapabilities } from "../../lib/shell";
+
+// Browser does not own its window chrome — the host browser draws the
+// frame. The no-op `WindowControlsAdapter` is supplied by default.
+const capabilities: ShellCapabilities = {
+  customWindowControls: false,
+};
 
 // `?mock=1` swaps the transport for an in-memory `MockRpcClient` —
 // useful for dev'ing UI surfaces without a running codeless-server.
@@ -24,7 +31,9 @@ function buildClient(): RpcClient {
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <RpcProvider client={buildClient()}>
-    <App />
-  </RpcProvider>,
+  <ShellProvider capabilities={capabilities}>
+    <RpcProvider client={buildClient()}>
+      <App />
+    </RpcProvider>
+  </ShellProvider>,
 );

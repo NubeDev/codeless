@@ -6,17 +6,30 @@ import "../../styles/globals.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ReactDOM from "react-dom/client";
 import App from "../../app/App";
-import { USE_CUSTOM_WINDOW_CONTROLS } from "../../lib/platform";
+import { IS_MAC } from "../../lib/platform";
 import { RpcProvider, TauriIpcClient } from "../../lib/rpc";
+import { ShellProvider, type ShellCapabilities } from "../../lib/shell";
+import { tauriWindowControls } from "./window-controls";
 
-if (USE_CUSTOM_WINDOW_CONTROLS) {
+// Desktop owns its own window chrome on every platform except macOS,
+// which keeps the native traffic lights via Tauri's overlay title bar.
+const capabilities: ShellCapabilities = {
+  customWindowControls: !IS_MAC,
+};
+
+if (capabilities.customWindowControls) {
   document.documentElement.dataset.chrome = "borderless";
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <RpcProvider client={new TauriIpcClient()}>
-    <App />
-  </RpcProvider>,
+  <ShellProvider
+    capabilities={capabilities}
+    windowControls={tauriWindowControls}
+  >
+    <RpcProvider client={new TauriIpcClient()}>
+      <App />
+    </RpcProvider>
+  </ShellProvider>,
 );
 
 // Window starts hidden (per tauri.conf.json) so users never see a transparent
