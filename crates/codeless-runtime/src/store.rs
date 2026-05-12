@@ -430,23 +430,32 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// List reviews, optionally narrowed to a single stage or a single
-    /// status. The two filters compose with AND. Ordered by
-    /// `requested_at` so the UI gets a stable oldest-first list.
+    /// List reviews, optionally narrowed by job, stage, or status. The
+    /// filters compose with AND. Ordered by `requested_at` so the UI
+    /// gets a stable oldest-first list. The job filter joins through
+    /// `stages` so the per-job review panel does not need to map stages
+    /// to jobs client-side.
     pub async fn list_reviews(
         &self,
+        job_id: Option<JobId>,
         stage_id: Option<StageId>,
         status: Option<ReviewStatus>,
     ) -> sqlx::Result<Vec<Review>> {
         let status_label = status.map(review_status_label);
+        let job_str = job_id.map(|j| j.to_string());
+        let stage_str = stage_id.map(|s| s.to_string());
         let rows = sqlx::query(
-            "SELECT * FROM reviews \
-             WHERE (? IS NULL OR stage_id = ?) \
-               AND (? IS NULL OR status = ?) \
-             ORDER BY requested_at",
+            "SELECT reviews.* FROM reviews \
+             LEFT JOIN stages ON stages.id = reviews.stage_id \
+             WHERE (? IS NULL OR stages.job_id = ?) \
+               AND (? IS NULL OR reviews.stage_id = ?) \
+               AND (? IS NULL OR reviews.status = ?) \
+             ORDER BY reviews.requested_at",
         )
-        .bind(stage_id.map(|s| s.to_string()))
-        .bind(stage_id.map(|s| s.to_string()))
+        .bind(&job_str)
+        .bind(&job_str)
+        .bind(&stage_str)
+        .bind(&stage_str)
         .bind(status_label)
         .bind(status_label)
         .fetch_all(&self.pool)

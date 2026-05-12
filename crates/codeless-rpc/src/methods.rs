@@ -67,12 +67,15 @@ pub struct StopJobArgs {
     pub job_id: JobId,
 }
 
-/// Filter for `list_reviews`. Both fields compose with AND; `None`
+/// Filter for `list_reviews`. All fields compose with AND; `None`
 /// means "do not narrow on this column". Returned rows are ordered by
 /// `requested_at` ascending so a UI can render the oldest pending
-/// review first without re-sorting.
+/// review first without re-sorting. The per-job filter joins through
+/// `stages` so the UI's per-job review panel does not need to map
+/// stages to jobs client-side.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, specta::Type)]
 pub struct ListReviewsArgs {
+    pub job_id: Option<JobId>,
     pub stage_id: Option<StageId>,
     pub status: Option<ReviewStatus>,
 }

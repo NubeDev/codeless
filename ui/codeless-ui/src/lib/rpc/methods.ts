@@ -15,12 +15,10 @@ import type {
   Repo,
   RepoId,
   Review,
-  ReviewId,
   ShellBgEntry,
   ShellBgLogChunk,
   ShellCommandOutput,
   ShellSessionRunOutput,
-  StageId,
 } from "./wire";
 
 export interface AddRepoArgs {
@@ -216,31 +214,28 @@ export interface RpcMethodMap {
   stop_review: { args: ReviewActionArgs; result: Review };
 }
 
-// Review RPC surface. Mirrored from the Phase 2c additions on
-// `codeless-rpc::methods` (`list_reviews`, `approve_review`,
-// `comment_review`, `stop_review`). The state machine lives in
-// `codeless-runtime` and matches the `ReviewStatus` enum in wire.ts.
+// Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,
+// `ApproveReviewArgs`, `CommentReviewArgs`, and `StopReviewArgs` are
+// generated from `codeless-rpc::methods` and re-exported via `./wire`.
+// `ReviewActionArgs` is a UI-side alias used by the panel because
+// approve and stop share the same single-field shape.
 
-export interface ListReviewsArgs {
-  // Filter by job. `null` returns every pending/recent review across
-  // the host — the dashboard uses that; per-job panels narrow it.
-  job_id: JobId | null;
-  stage_id: StageId | null;
-  pending_only: boolean;
-}
+import type {
+  ApproveReviewArgs,
+  CommentReviewArgs,
+  ListReviewsArgs,
+  ListReviewsResult,
+  StopReviewArgs,
+} from "./wire";
 
-export interface ListReviewsResult {
-  reviews: Review[];
-}
-
-export interface ReviewActionArgs {
-  review_id: ReviewId;
-}
-
-export interface CommentReviewArgs {
-  review_id: ReviewId;
-  comment: string;
-}
+export type {
+  ApproveReviewArgs,
+  CommentReviewArgs,
+  ListReviewsArgs,
+  ListReviewsResult,
+  StopReviewArgs,
+};
+export type ReviewActionArgs = ApproveReviewArgs;
 
 // Shell RPC surface. Provisional: hand-mirrored from the forthcoming
 // `codeless-rpc::methods::shell_*` that `codeless-runtime` routes to

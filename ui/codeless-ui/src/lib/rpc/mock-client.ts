@@ -514,7 +514,7 @@ export class MockRpcClient implements RpcClient {
             const job = this.reviewJob.get(r.id);
             if (job !== a.job_id) continue;
           }
-          if (a.pending_only && r.status !== "pending") continue;
+          if (a.status && r.status !== a.status) continue;
           out.push(r);
         }
         return { reviews: out } as RpcResultOf<M>;

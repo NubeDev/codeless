@@ -13,7 +13,7 @@ export function ReviewPanel({ jobId }: { jobId: JobId }) {
   const { data: reviews, loading, error } = useReviews({
     job_id: jobId,
     stage_id: null,
-    pending_only: false,
+    status: null,
   });
 
   if (loading) {

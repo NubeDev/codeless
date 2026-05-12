@@ -180,6 +180,7 @@ async fn list_filters_by_stage_and_status() {
 
     let by_stage = rpc
         .list_reviews(ListReviewsArgs {
+            job_id: None,
             stage_id: Some(stage_a),
             status: None,
         })
@@ -189,6 +190,7 @@ async fn list_filters_by_stage_and_status() {
 
     let only_pending = rpc
         .list_reviews(ListReviewsArgs {
+            job_id: None,
             stage_id: Some(stage_a),
             status: Some(ReviewStatus::Pending),
         })

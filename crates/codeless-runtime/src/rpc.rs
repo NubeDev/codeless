@@ -279,7 +279,7 @@ impl RpcServer for InProcessRpc {
         Ok(ListReviewsResult {
             reviews: self
                 .store
-                .list_reviews(args.stage_id, args.status)
+                .list_reviews(args.job_id, args.stage_id, args.status)
                 .await
                 .map_err(db_err)?,
         })

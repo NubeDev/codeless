@@ -162,12 +162,15 @@ export type ListReposResult = {
 };
 
 /**
- *  Filter for `list_reviews`. Both fields compose with AND; `None`
+ *  Filter for `list_reviews`. All fields compose with AND; `None`
  *  means "do not narrow on this column". Returned rows are ordered by
  *  `requested_at` ascending so a UI can render the oldest pending
- *  review first without re-sorting.
+ *  review first without re-sorting. The per-job filter joins through
+ *  `stages` so the UI's per-job review panel does not need to map
+ *  stages to jobs client-side.
  */
 export type ListReviewsArgs = {
+	job_id: JobId | null,
 	stage_id: StageId | null,
 	status: ReviewStatus | null,
 };
