@@ -13,6 +13,7 @@ use codeless_rpc::{
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 
 use crate::{auth::bearer_layer, sse::events_handler, AppState};
 
@@ -55,11 +56,19 @@ pub(crate) fn router(state: AppState) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Request-tracing layer. The defaults emit a span per request
+    // (method + uri + status + latency); operator-facing logs land
+    // on stderr through whatever `tracing-subscriber` the binary
+    // initialised. Subscribers that don't filter `tower_http` in
+    // see one event per request at info level.
+    let trace = TraceLayer::new_for_http();
+
     Router::new()
         .merge(rpc_routes)
         .merge(events)
         .merge(unauthenticated)
         .layer(cors)
+        .layer(trace)
         .with_state(state)
 }
 

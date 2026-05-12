@@ -78,6 +78,8 @@ async fn run_server(
     secrets_path: PathBuf,
     db: Option<PathBuf>,
 ) -> Result<ExitCode> {
+    init_tracing();
+
     let store = SecretStore::open(&secrets_path)
         .with_context(|| format!("open secrets at {}", secrets_path.display()))?;
     let token = load_bearer_token(&store).map_err(|TokenLoadError::Missing| {
@@ -99,6 +101,22 @@ async fn run_server(
     .map_err(|e| anyhow!("serve: {e}"))?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Set up the `tracing-subscriber` for the running server. Reads
+/// `RUST_LOG` for the env-filter directive (defaults to
+/// `info,tower_http=info`) so operators can dial into specific
+/// targets without recompiling. Idempotent — set_global_default only
+/// succeeds once per process, so a second `codeless serve` invocation
+/// inside one process (the integration test path) does not panic.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,tower_http=info"));
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer().with_writer(std::io::stderr))
+        .try_init();
 }
 
 /// 16 random bytes encoded as 32 lowercase hex chars — 128 bits of
