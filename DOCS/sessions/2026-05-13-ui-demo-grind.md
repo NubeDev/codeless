@@ -1,0 +1,82 @@
+# Build status — UI demo grind (visible-in-browser per stage)
+
+> ⛔ **AGENT REMINDER — READ BEFORE TOUCHING THIS FILE**
+>
+> 1. You are running JOB-LOOP. Spec: `DOCS/JOB-LOOP.md`. Project scope:
+>    `DOCS/SCOPE.md`. Code-style rules: `CLAUDE.md` (repo root).
+> 2. **One logical batch per tick.** Read each stage's `[S|M|L]` tag and
+>    batch per JOB-LOOP.md "Hard rules" #3: up to 4 contiguous S in one
+>    area, OR 1 M (+ optional related S), OR the next sub-stage of an L.
+>    Verify + commit + push **each stage** via mani before moving to the
+>    next stage in the batch.
+> 3. **You MUST schedule the next tick before exiting** — call
+>    `CronCreate` with `recurring: false` for a single fire ~1 min from
+>    now. If all stages are `[x]`, report `DONE` instead. If you cannot
+>    schedule, **do NOT exit silently** — tell the user which stage
+>    finished, exactly why scheduling failed, and how to re-kick. See
+>    JOB-LOOP.md "If you cannot schedule".
+> 4. Update this file in the **same commit** as the code change.
+> 5. ⛔ **COMMIT _AND_ PUSH BEFORE THE TICK ENDS.** Pushing is not
+>    optional and not "later". A tick that ends with unpushed commits
+>    means the next tick (or the next agent, after `/clear` or a fresh
+>    session) sees stale remote state and can clobber or duplicate work.
+>    `./bin/mani --config mani.yaml run commit --projects codeless` then `mani run push --projects
+>    codeless` — both, every tick, no exceptions. If push fails, mark
+>    the stage `[!]` and halt. Never `--force`, never `--no-verify`.
+> 6. ⛔ **CODE COMMENTS ARE LOAD-BEARING — WRITE THEM CAREFULLY.**
+>    Comments are how the *next* AI agent (and the next human) understands
+>    intent. Rules:
+>    - Explain **why**, not what. The code already says what.
+>    - **No emojis.** Anywhere. Ever.
+>    - **No task-status comments.** Never reference stages, ticks,
+>      milestones, "added in stage 3", "TODO from M5", "fixed for ticket
+>      X". Comments describe the code as it stands, not the task that
+>      produced it.
+>    - **Long-term framing.** Write for someone reading this in 6 months
+>      with zero context — invariants, constraints, why this approach
+>      over the obvious one.
+>    - **Normal length.** A short line where one helps. A short paragraph
+>      where the *why* is genuinely subtle. No multi-paragraph essays,
+>      no decorative banners, no ASCII art.
+> 7. ⛔ **CROSS-PLATFORM REACH IS ENFORCEABLE.** Stages that touch Rust
+>    crates respect the iOS-safe / Android-safe columns in
+>    `DOCS/SCOPE.md` "Crate layout". Stages that touch UI modules import
+>    only `RpcClient` — never `@tauri-apps/api/core` directly. Trip
+>    either rule → mark stage `[!]` and halt.
+
+> ⛔ DEMO-FIRST RULE: every stage in this loop must end with a
+> visible change in the browser at http://127.0.0.1:5173. Bundle
+> backend work into the same stage as the UI surface that uses it.
+> No backend-only stages. The user is watching the browser, not
+> the diff. If you cannot describe what changed on screen, the
+> stage isn't done.
+
+File: DOCS/sessions/2026-05-13-ui-demo-grind.md
+Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
+Started: 2026-05-13
+Last tick: 2026-05-13 05:01
+Current stage: 1 / 10
+
+Repo:        codeless
+Branch:      master
+Scheduler:   CronCreate one-shot, ~1 min between ticks
+Max ticks:   30
+
+## Stages
+
+- [ ] 1. [S] Verify existing DEMO-UI.md path still works on master  ← next
+- [ ] 2. [S] Jobs list view: seeded demo job visible with status
+- [ ] 3. [M] Job detail view: stages + live SSE event stream
+- [ ] 4. [S] "Run mock job" button: create + start a new mock job
+- [ ] 5. [M] Live stage tree: checklist updated from event stream
+- [ ] 6. [S] Cost + wall-clock badges on the job row
+- [ ] 7. [M] Handover preview pane (runs/<name>/handover.md)
+- [ ] 8. [S] Review queue badge in the top bar
+- [ ] 9. [M] Ad-hoc job form: New Job button + repo dropdown
+- [ ] 10. [S] Polish pass: theme toggle, empty states, CTA
+
+## Notes
+- Stage 0: status file created on master in inner codeless repo.
+
+## Blockers
+(none)
