@@ -30,8 +30,8 @@ use codeless_rpc::methods::{
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
-    CostCents, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId,
-    JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus,
+    CostCents, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Handover, Job,
+    JobId, JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus,
     StopReason, Task, TaskId, TaskStatus, UnixMillis,
 };
 use specta::TypeCollection;
@@ -65,6 +65,7 @@ fn collect() -> TypeCollection {
         .register_mut::<TaskStatus>()
         .register_mut::<Review>()
         .register_mut::<ReviewStatus>()
+        .register_mut::<Handover>()
         .register_mut::<Event>()
         .register_mut::<EventEnvelope>()
         .register_mut::<FsEntry>()

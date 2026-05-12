@@ -7,6 +7,7 @@
 pub mod event;
 pub mod fs;
 pub mod git_auth;
+pub mod handover;
 pub mod id;
 pub mod job;
 pub mod money;
@@ -19,6 +20,7 @@ pub mod time;
 pub use event::{Event, EventCursor, EventEnvelope};
 pub use fs::{FsEntry, FsEntryKind};
 pub use git_auth::GitAuth;
+pub use handover::{Handover, HandoverParseError};
 pub use id::{JobId, RepoId, ReviewId, StageId, TaskId};
 pub use job::{Job, JobStatus, StopReason};
 pub use money::CostCents;
