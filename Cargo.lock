@@ -406,6 +406,7 @@ dependencies = [
 name = "codeless-runtime"
 version = "0.0.0"
 dependencies = [
+ "ai-runner",
  "async-trait",
  "codeless-adapters-host",
  "codeless-rpc",
@@ -419,6 +420,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
