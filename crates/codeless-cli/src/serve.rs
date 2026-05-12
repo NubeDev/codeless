@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
@@ -25,7 +26,7 @@ use codeless_runtime::{
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, TokenLoadError, TOKEN_SECRET_KEY,
 };
-use codeless_types::{Job, TaskId};
+use codeless_types::{CostCents, Event, Job, TaskId, TaskStatus};
 
 use crate::rpc_open;
 
@@ -275,6 +276,62 @@ struct DefaultRunnerFactory {
     anthropic_api_key: Option<String>,
 }
 
+/// Build a `MockRunner` script that emits enough events to be visibly
+/// alive in the UI's JobTimeline. Real AI runners drive these same
+/// event variants through `ctx.bus`; the mock script mirrors that
+/// shape so the dashboard renders the same way for both. The
+/// `FAIL` prompt is a sentinel for tests that need the failure path
+/// without provisioning a real runner; everything else completes.
+fn demo_mock_script(prompt: &str) -> Vec<MockStep> {
+    if prompt == "FAIL" {
+        return vec![MockStep::Finish(RunnerOutcome::Failed {
+            reason: "mock runner: FAIL sentinel".into(),
+        })];
+    }
+
+    let task_id = TaskId::new();
+    let echo = if prompt.is_empty() {
+        "demo: mock runner ran end-to-end".to_owned()
+    } else {
+        format!("mock-echo: {prompt}")
+    };
+    let mut steps = Vec::new();
+    steps.push(MockStep::Emit(Event::TaskStarted { task_id }));
+    // Split into a few token chunks so the timeline's `ai-token`
+    // coalescing path has something to render incrementally, then
+    // close with the message-complete envelope the dashboard reads
+    // for cost rollups (zeros here; real runners populate them).
+    for chunk in chunk_for_stream(&echo) {
+        steps.push(MockStep::Emit(Event::AiToken {
+            task_id,
+            delta: chunk,
+        }));
+        steps.push(MockStep::Sleep(Duration::from_millis(120)));
+    }
+    steps.push(MockStep::Emit(Event::AiMessageComplete {
+        task_id,
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_cents: CostCents(0),
+    }));
+    steps.push(MockStep::Emit(Event::TaskCompleted {
+        task_id,
+        status: TaskStatus::Completed,
+    }));
+    steps.push(MockStep::Finish(RunnerOutcome::Completed));
+    steps
+}
+
+fn chunk_for_stream(s: &str) -> Vec<String> {
+    // Word-sized chunks keep the demo lively without flooding the
+    // event log. Empty strings between words would be valid but
+    // produce no visible token in the UI, so they are skipped.
+    s.split_inclusive(' ')
+        .filter(|w| !w.trim().is_empty())
+        .map(|w| w.to_owned())
+        .collect()
+}
+
 impl RunnerFactory for DefaultRunnerFactory {
     fn build(&self, job: &Job) -> Option<Arc<dyn Runner>> {
         // `prompt` is documented as Optional on `SubmitJobArgs`; a
@@ -284,20 +341,7 @@ impl RunnerFactory for DefaultRunnerFactory {
         // empty string so the AI adapters don't panic.
         let prompt = job.prompt.clone().unwrap_or_default();
         match job.runner.as_str() {
-            "mock" => {
-                // Prompt-driven outcome so integration tests can
-                // exercise both terminal states without provisioning
-                // a real runner. Production traffic ignores this
-                // because real prompts never equal the sentinel.
-                let outcome = if prompt == "FAIL" {
-                    RunnerOutcome::Failed {
-                        reason: "mock runner: FAIL sentinel".into(),
-                    }
-                } else {
-                    RunnerOutcome::Completed
-                };
-                Some(Arc::new(MockRunner::new(vec![MockStep::Finish(outcome)])))
-            }
+            "mock" => Some(Arc::new(MockRunner::new(demo_mock_script(&prompt)))),
             "claude" if self.enable_claude => {
                 Some(Arc::new(ClaudeRunnerAdapter::new(prompt, TaskId::new())))
             }
