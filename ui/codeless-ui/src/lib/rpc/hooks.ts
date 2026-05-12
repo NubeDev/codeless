@@ -172,11 +172,13 @@ export function useReviews(args: ListReviewsArgs): QueryState<Review[]> {
     const filter: EventFilter =
       args.job_id != null ? { scope: "job", job_id: args.job_id } : { scope: "all" };
     const stream = rpc.subscribe(filter);
+    const iter = stream[Symbol.asyncIterator]();
     (async () => {
       try {
-        for await (const env of stream) {
-          if (cancelled) return;
-          const t = env.event.type;
+        while (true) {
+          const r = await iter.next();
+          if (r.done || cancelled) return;
+          const t = r.value.event.type;
           if (
             t === "review-requested" ||
             t === "review-approved" ||
@@ -192,6 +194,11 @@ export function useReviews(args: ListReviewsArgs): QueryState<Review[]> {
     })();
     return () => {
       cancelled = true;
+      // Explicit close so the underlying EventSource is released
+      // synchronously on unmount. Without this, the browser's per-origin
+      // SSE connection cap (6 in Chrome) is reached after a few job
+      // navigations and new subscriptions stall.
+      iter.return?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [args.job_id, rpc]);
@@ -220,11 +227,13 @@ export function useEventStream(
     // non-zero cursor (a recent cursor, or one captured from a
     // previous batch).
     const stream = rpc.subscribe(filter, since);
+    const iter = stream[Symbol.asyncIterator]();
     (async () => {
       try {
-        for await (const env of stream) {
-          if (cancelled) return;
-          cbRef.current(env);
+        while (true) {
+          const r = await iter.next();
+          if (r.done || cancelled) return;
+          cbRef.current(r.value);
         }
       } catch {
         // Stream errors end the iteration; consumer can re-mount to retry.
@@ -232,9 +241,11 @@ export function useEventStream(
     })();
     return () => {
       cancelled = true;
-      // The iterator's return() will be called by GC, which closes the
-      // underlying EventSource. Explicit close would require holding the
-      // iterator handle; current shape keeps the API tiny.
+      // Explicit close so the underlying EventSource is released
+      // synchronously on unmount. Without this, the browser's per-origin
+      // SSE connection cap (6 in Chrome) is reached after a few job
+      // navigations and new subscriptions stall.
+      iter.return?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, rpc]);
