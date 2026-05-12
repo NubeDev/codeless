@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -66,15 +66,21 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
   const rpc = useRpc();
   const [section, setSection] = useState<Section>("stages");
 
-  // Re-derive a friendly title from the job and surface it to the
-  // tab strip. The dashboard opens a tab with a best-guess title;
-  // once the job loads we know the template name or first prompt
-  // line, both of which read better than a ULID.
+  // Surface the resolved title once, when it changes. The parent
+  // (`JobDetailStack`) typically passes an inline arrow, so we pin
+  // the callback to a ref and only fire when the derived title
+  // genuinely changes — depending on `onTitleResolved` directly
+  // would re-fire every render, the parent's state update would
+  // recreate the arrow, and the cycle would spin until React
+  // aborted the tree (white screen).
+  const titleCbRef = useRef(onTitleResolved);
   useEffect(() => {
-    if (!job || !onTitleResolved) return;
-    const t = friendlyJobTitle(job);
-    if (t) onTitleResolved(t);
-  }, [job, onTitleResolved]);
+    titleCbRef.current = onTitleResolved;
+  }, [onTitleResolved]);
+  const derivedTitle = job ? friendlyJobTitle(job) : null;
+  useEffect(() => {
+    if (derivedTitle) titleCbRef.current?.(derivedTitle);
+  }, [derivedTitle]);
 
   const repo: Repo | null = useMemo(() => {
     if (!job || !repos) return null;
