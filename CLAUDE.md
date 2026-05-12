@@ -37,8 +37,13 @@ codeless/                  ← this repo (NubeDev/codeless)
 ```
 
 There is also a sibling vendored `ai-runner/` crate **outside this repo**
-in the workspace. Treat it as read-only; updates flow from the upstream
-rubix-agent workspace.
+in the workspace. It is fork-by-this-workspace: codeless patches it
+in-place when an upstream gap blocks a product feature. Every such
+patch is logged in [`../ai-runner.PATCHES.md`](../ai-runner.PATCHES.md)
+with a `// codeless-patch-NNN` marker in the source. Read that file
+before assuming a piece of `ai-runner/` matches upstream rubix-agent —
+the list there is the diff. PRs upstream are a follow-up, not a
+precondition.
 
 ### Where the UI fits
 
