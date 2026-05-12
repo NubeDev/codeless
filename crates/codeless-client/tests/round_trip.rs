@@ -9,10 +9,11 @@
 
 use std::sync::Arc;
 
+use codeless_adapters_host::HostFs;
 use codeless_client::{HttpRpcClient, HttpRpcClientConfig};
 use codeless_rpc::{
-    AddRepoArgs, EventFilter, ListJobsArgs, ListReviewsArgs, RpcError, RpcServer, StopJobArgs,
-    SubmitJobArgs,
+    AddRepoArgs, EventFilter, FsReadDirArgs, FsReadFileArgs, FsStatArgs, FsWriteFileArgs,
+    ListJobsArgs, ListReviewsArgs, RpcError, RpcServer, StopJobArgs, SubmitJobArgs,
 };
 use codeless_runtime::InProcessRpc;
 use codeless_server::{build_router, AppState};
@@ -28,7 +29,14 @@ fn token_auth() -> GitAuth {
 }
 
 async fn spawn_server() -> (HttpRpcClient, Arc<InProcessRpc>) {
-    let rpc = Arc::new(InProcessRpc::new().await.expect("rpc init"));
+    spawn_server_with(|r| r).await
+}
+
+async fn spawn_server_with(
+    customize: impl FnOnce(InProcessRpc) -> InProcessRpc,
+) -> (HttpRpcClient, Arc<InProcessRpc>) {
+    let rpc = customize(InProcessRpc::new().await.expect("rpc init"));
+    let rpc = Arc::new(rpc);
     let state = AppState::new(rpc.clone(), TOKEN);
     let router = build_router(state);
 
@@ -275,4 +283,76 @@ async fn base_url_with_trailing_slash_rejected() {
         token: None,
     });
     assert!(r.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_round_trip_through_http_client() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_owned();
+    let (client, _server) =
+        spawn_server_with(move |r| r.with_fs(Arc::new(HostFs::new(&root).unwrap()))).await;
+
+    client
+        .fs_write_file(FsWriteFileArgs {
+            path: "doc.md".into(),
+            content: "hello".into(),
+        })
+        .await
+        .expect("write");
+
+    let read = client
+        .fs_read_file(FsReadFileArgs {
+            path: "doc.md".into(),
+        })
+        .await
+        .expect("read");
+    assert_eq!(read.content, "hello");
+
+    let dir = client
+        .fs_read_dir(FsReadDirArgs { path: ".".into() })
+        .await
+        .expect("read_dir");
+    let names: Vec<_> = dir.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, vec!["doc.md"]);
+
+    let stat = client
+        .fs_stat(FsStatArgs {
+            path: "doc.md".into(),
+        })
+        .await
+        .expect("stat");
+    assert!(stat.kind.is_some());
+    assert_eq!(stat.size, Some(5));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_traversal_surfaces_as_invalid_argument() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_owned();
+    let (client, _server) =
+        spawn_server_with(move |r| r.with_fs(Arc::new(HostFs::new(&root).unwrap()))).await;
+
+    let err = client
+        .fs_read_file(FsReadFileArgs {
+            path: "../etc/passwd".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, RpcError::InvalidArgument(_)),
+        "expected InvalidArgument, got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_without_root_surfaces_as_internal() {
+    let (client, _server) = spawn_server().await;
+    let err = client
+        .fs_read_dir(FsReadDirArgs { path: ".".into() })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, RpcError::Internal(_)),
+        "expected Internal, got {err:?}"
+    );
 }
