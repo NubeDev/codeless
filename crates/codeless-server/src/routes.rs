@@ -12,6 +12,7 @@ use codeless_rpc::{
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::{auth::bearer_layer, sse::events_handler, AppState};
 
@@ -32,9 +33,21 @@ pub(crate) fn router(state: AppState) -> Router {
 
     let events = Router::new().route("/events", get(events_handler));
 
+    // Permissive CORS is correct for the single-tenant MVP: the
+    // server binds loopback by default (R5), so "any origin" only
+    // covers other processes on the same host that already have
+    // local-file access — i.e. no real reduction in trust boundary.
+    // Phase 7's OIDC story will replace this with an explicit
+    // allowlist alongside cookie-based auth.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
         .merge(rpc_routes)
         .merge(events)
+        .layer(cors)
         .with_state(state)
 }
 
