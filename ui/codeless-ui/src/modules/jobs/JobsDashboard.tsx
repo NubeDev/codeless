@@ -110,6 +110,7 @@ export function JobsDashboard() {
           {selectedJobId && <JobDetail jobId={selectedJobId} />}
         </SheetContent>
       </Sheet>
+      {repos.data.length === 0 && <NoReposCta />}
       {grouped.map(({ repo, jobs }) => (
         <Card key={repo.id}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 py-3">
@@ -189,4 +190,31 @@ function applyEvent(job: Job, e: { type: string }): Job {
     default:
       return job;
   }
+}
+
+// Empty-state shown when `list_repos` comes back empty. Steers a new
+// user to the bootstrap path rather than leaving them staring at a
+// blank dashboard. The `codeless demo bootstrap` command is the
+// quickest way to populate a fresh database for browser-side demoing.
+function NoReposCta() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">No repos yet</CardTitle>
+      </CardHeader>
+      <CardContent className="text-muted-foreground space-y-2 text-sm">
+        <p>
+          The core has no repositories registered. Seed the demo data
+          and a queued mock job with:
+        </p>
+        <pre className="bg-muted overflow-x-auto rounded p-2 font-mono text-xs">
+codeless --db ~/.local/share/codeless/demo.db demo bootstrap
+        </pre>
+        <p>
+          Then refresh this page. Use `codeless repos add` for real
+          repos, or `codeless job submit job.yaml` for typed templates.
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
