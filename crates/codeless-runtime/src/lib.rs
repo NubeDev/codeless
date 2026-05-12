@@ -10,6 +10,7 @@ pub mod claude_runner;
 pub mod driver;
 pub mod event_bus;
 pub mod heartbeat;
+pub mod job_driver_loop;
 pub mod migrations;
 pub mod mock_runner;
 pub mod notifier;
@@ -27,6 +28,7 @@ pub use claude_runner::ClaudeRunnerAdapter;
 pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};
 pub use heartbeat::spawn_heartbeat;
+pub use job_driver_loop::{spawn_job_driver_loop, DriverLoopHandle, RunnerFactory};
 pub use migrations::MIGRATOR;
 pub use mock_runner::{MockRunner, MockStep};
 pub use notifier::{

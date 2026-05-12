@@ -149,6 +149,9 @@ async fn jobs_dual_mode_hosted_round_trip() {
 
     let job_id = seed(&db).await;
 
+    // --no-driver: this test asserts on stop_job semantics against
+    // a queued job. The background driver would complete the job
+    // before the stop call lands; that path is exercised separately.
     let mut server = Command::new(BIN)
         .args([
             "--secrets-file",
@@ -158,6 +161,7 @@ async fn jobs_dual_mode_hosted_round_trip() {
             "serve",
             "--bind",
             "127.0.0.1:0",
+            "--no-driver",
         ])
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())

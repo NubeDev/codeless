@@ -17,6 +17,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use codeless_adapters_host::SecretStore;
 use codeless_rpc::RpcServer;
+use codeless_runtime::{
+    spawn_job_driver_loop, InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome,
+};
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, TokenLoadError, TOKEN_SECRET_KEY,
 };
@@ -43,6 +46,18 @@ pub struct ServeArgs {
     /// with `--init-token`.
     #[arg(long, requires = "init_token")]
     pub force: bool,
+
+    /// Disable the background job driver. Without it, jobs submitted
+    /// over RPC stay `Queued` forever — useful when the CLI's
+    /// `codeless run` is the canonical driver and the server is just
+    /// a read-only surface.
+    #[arg(long)]
+    pub no_driver: bool,
+
+    /// Max concurrent jobs the background driver runs. Ignored when
+    /// `--no-driver` is set.
+    #[arg(long, default_value_t = 4)]
+    pub driver_concurrency: usize,
 }
 
 pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
@@ -54,7 +69,7 @@ pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Re
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run_server(args.bind, secrets_path, db))
+    rt.block_on(run_server(args, secrets_path, db))
 }
 
 fn init_token(path: &Path, force: bool) -> Result<()> {
@@ -74,7 +89,7 @@ fn init_token(path: &Path, force: bool) -> Result<()> {
 }
 
 async fn run_server(
-    bind: SocketAddr,
+    args: ServeArgs,
     secrets_path: PathBuf,
     db: Option<PathBuf>,
 ) -> Result<ExitCode> {
@@ -89,10 +104,35 @@ async fn run_server(
         )
     })?;
 
-    let rpc: Arc<dyn RpcServer> = Arc::new(rpc_open::open(db.as_deref()).await?);
-    let state = AppState::new(rpc, token);
+    let rpc: Arc<InProcessRpc> = Arc::new(rpc_open::open(db.as_deref()).await?);
+    let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
+    let state = AppState::new(rpc_dyn, token);
 
-    serve_with_shutdown(bind, state, |addr| {
+    // Background driver: pick up every `Queued` job and run it
+    // through the in-process runtime. Default factory only enables
+    // `mock`; real runners need the operator to opt in once
+    // production driver scope (worktree provisioning, secrets-backed
+    // API keys) catches up. The handle stays alive in this scope so
+    // the spawned task is not dropped before `serve_with_shutdown`
+    // returns; we don't join it because process exit on Ctrl-C is
+    // the supported teardown path.
+    let _driver = if args.no_driver {
+        eprintln!("codeless-server: background driver disabled (--no-driver)");
+        None
+    } else {
+        eprintln!(
+            "codeless-server: background driver enabled (concurrency={}, runners=mock)",
+            args.driver_concurrency
+        );
+        let factory = Arc::new(DefaultRunnerFactory::new());
+        Some(
+            spawn_job_driver_loop(rpc.clone(), factory, args.driver_concurrency)
+                .await
+                .map_err(|e| anyhow!("driver init: {e}"))?,
+        )
+    };
+
+    serve_with_shutdown(args.bind, state, |addr| {
         // Stderr is unbuffered, so integration tests reading line-by-
         // line see this before the server starts accepting requests.
         eprintln!("codeless-server listening on http://{addr}");
@@ -101,6 +141,32 @@ async fn run_server(
     .map_err(|e| anyhow!("serve: {e}"))?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Built-in runner factory. Always enables `mock` so the demo works
+/// without external dependencies; `claude` and `anthropic` need
+/// configuration the operator hasn't given us a way to provide yet
+/// (worktree path resolution, anthropic key wiring), so we refuse
+/// them rather than silently failing a queued job. A submitted job
+/// with an unsupported runner stays `Queued` and a warning lands
+/// in the server log — the operator can stop it via the CLI.
+struct DefaultRunnerFactory;
+
+impl DefaultRunnerFactory {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl RunnerFactory for DefaultRunnerFactory {
+    fn build(&self, runner_name: &str) -> Option<Arc<dyn Runner>> {
+        match runner_name {
+            "mock" => Some(Arc::new(MockRunner::new(vec![MockStep::Finish(
+                RunnerOutcome::Completed,
+            )]))),
+            _ => None,
+        }
+    }
 }
 
 /// Set up the `tracing-subscriber` for the running server. Reads
