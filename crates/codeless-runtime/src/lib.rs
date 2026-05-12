@@ -5,6 +5,7 @@
 //! mobile shell; mobile reaches the runtime over the network via
 //! `codeless-client`.
 
+pub mod anthropic_runner;
 pub mod claude_runner;
 pub mod driver;
 pub mod event_bus;
@@ -19,6 +20,7 @@ pub mod store;
 pub mod time;
 pub mod tracing_init;
 
+pub use anthropic_runner::AnthropicRunnerAdapter;
 pub use claude_runner::ClaudeRunnerAdapter;
 pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};

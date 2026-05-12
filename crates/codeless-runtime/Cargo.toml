@@ -31,3 +31,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
 futures-util = "0.3"
 tempfile = "3"
+wiremock = "0.6"
