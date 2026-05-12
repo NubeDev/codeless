@@ -8,6 +8,7 @@
 //! Hosted-mode (`--core`, `--token`) and the `tail` / `session` verbs
 //! land in later phases.
 
+mod cost;
 mod job;
 mod jobs;
 mod repos;
@@ -115,6 +116,12 @@ enum Cmd {
         #[command(subcommand)]
         verb: jobs::Verb,
     },
+    /// Cost rollups across jobs. Reads `Job.cost_cents` via
+    /// `list_jobs`; works against both local-mode and a hosted core.
+    Cost {
+        #[command(subcommand)]
+        verb: cost::Verb,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -198,6 +205,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Repos { verb } => repos::handle(verb, cli.core, cli.token, cli.db),
         Cmd::Jobs { verb } => jobs::handle(verb, cli.core, cli.token, cli.db),
+        Cmd::Cost { verb } => cost::handle(verb, cli.core, cli.token, cli.db),
     }
 }
 
