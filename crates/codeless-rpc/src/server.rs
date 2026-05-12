@@ -5,8 +5,8 @@ use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    JobDiffArgs, JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -34,6 +34,13 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job>;
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
+
+    /// Compute the diff between the job's branch and the repo's
+    /// default branch. Works whether or not the worktree is still on
+    /// disk — the branch is the durable artefact. Errors with
+    /// `NotFound` for an unknown job or a missing branch; wraps
+    /// `git diff` failures as `Internal` with stderr included.
+    async fn job_diff(&self, args: JobDiffArgs) -> RpcResult<JobDiffResult>;
 
     async fn list_reviews(&self, args: ListReviewsArgs) -> RpcResult<ListReviewsResult>;
     /// Resolve a `Pending` review to `Approved`. Rejects with

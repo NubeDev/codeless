@@ -17,8 +17,9 @@ pub use error::{RpcError, RpcResult};
 pub use methods::{
     AddRepoArgs, ApproveReviewArgs, ClaudeStatus, CommentReviewArgs, FsCwdResult, FsReadDirArgs,
     FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, RunnerInfo, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

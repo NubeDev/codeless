@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codeless_adapters_host::{FsError, HostFs};
+use codeless_adapters_host::{diff_against, FsError, GitDiffError, HostFs};
 use codeless_rpc::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsCwdResult,
     FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
-    FsWriteFileArgs, GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs,
+    FsWriteFileArgs, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs,
+    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RpcError,
+    RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -295,6 +295,44 @@ impl RpcServer for InProcessRpc {
         Ok(())
     }
 
+    async fn job_diff(&self, args: JobDiffArgs) -> RpcResult<JobDiffResult> {
+        let Some(job) = self.store.get_job(args.job_id).await.map_err(db_err)? else {
+            return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+        };
+        let Some(repo) = self.store.get_repo(job.repo_id).await.map_err(db_err)? else {
+            return Err(RpcError::NotFound(format!("repo {}", job.repo_id)));
+        };
+        // SCOPE.md "Workspace = one git worktree per job": the runtime
+        // names the branch deterministically. Don't trust the job row's
+        // `branch` column — it carries the user-submitted hint, which
+        // the WorktreeManager ignores.
+        let head = format!("codeless/job-{}", job.id);
+        let base = repo.default_branch.clone();
+        let repo_path = std::path::PathBuf::from(&repo.local_path);
+        // The diff is intentionally synchronous (git is fast at the
+        // file counts a single job touches). Wrap with `spawn_blocking`
+        // so a slow git invocation does not stall the tokio reactor.
+        let head_clone = head.clone();
+        let base_clone = base.clone();
+        let files =
+            tokio::task::spawn_blocking(move || diff_against(&repo_path, &base_clone, &head_clone))
+                .await
+                .map_err(|e| RpcError::Internal(format!("git diff join: {e}")))?
+                .map_err(diff_err)?;
+        let files = files
+            .into_iter()
+            .map(|f| JobDiffFile {
+                path: f.path,
+                status: f.status,
+                additions: f.additions,
+                deletions: f.deletions,
+                is_binary: f.is_binary,
+                patch: f.patch,
+            })
+            .collect();
+        Ok(JobDiffResult { base, head, files })
+    }
+
     async fn list_reviews(&self, args: ListReviewsArgs) -> RpcResult<ListReviewsResult> {
         Ok(ListReviewsResult {
             reviews: self
@@ -437,5 +475,21 @@ fn fs_err(e: FsError) -> RpcError {
             RpcError::NotFound(err.to_string())
         }
         FsError::Io(err) => RpcError::Internal(format!("fs io: {err}")),
+    }
+}
+
+/// Translate `GitDiffError` into wire errors. Missing-ref cases map to
+/// `NotFound` so the UI's files-changed tab can render a "no diff
+/// available" empty state rather than an error toast — the most
+/// common cause is "the job ran without a worktree provisioned" and
+/// that's expected, not exceptional.
+fn diff_err(e: GitDiffError) -> RpcError {
+    match e {
+        GitDiffError::BaseMissing(b) => RpcError::NotFound(format!("base ref {b}")),
+        GitDiffError::HeadMissing(h) => RpcError::NotFound(format!("head ref {h}")),
+        GitDiffError::Io(err) => RpcError::Internal(format!("git io: {err}")),
+        GitDiffError::GitFailed { op, status, stderr } => {
+            RpcError::Internal(format!("git {op} failed ({status}): {stderr}"))
+        }
     }
 }

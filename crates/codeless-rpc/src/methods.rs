@@ -227,3 +227,45 @@ impl Default for ServerInfo {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobDiffArgs {
+    pub job_id: JobId,
+}
+
+/// Per-file entry in `JobDiffResult.files`. Mirrors the columns the
+/// UI's files-changed tab needs: filename, what kind of change
+/// (added / modified / deleted / renamed), and line counts so the
+/// summary row can show `+N -M` without parsing the patch. `patch`
+/// is the unified-diff body for the single file; clients render it
+/// or skip rendering when the file is binary (in which case `patch`
+/// is the empty string and `is_binary` is true).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobDiffFile {
+    pub path: String,
+    /// `"A" | "M" | "D" | "R"` matching `git diff --name-status`.
+    /// Kept as a one-letter string so future status codes (`"C"` for
+    /// copied, `"T"` for type-change) don't break the wire when they
+    /// surface.
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub is_binary: bool,
+    pub patch: String,
+}
+
+/// Diff of a job's branch against its repo's default branch. Computed
+/// server-side via `git diff` so it works after the worktree has been
+/// reaped (the branch survives in the source repo). Returns
+/// `NotFound` if the job, repo, or branch is gone; `Internal` wraps
+/// `git diff` failures with the stderr the operator can act on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobDiffResult {
+    /// The base ref the diff was computed against (typically the
+    /// repo's `default_branch`). Returned so the UI can label the
+    /// comparison ("vs main").
+    pub base: String,
+    /// The job's branch. Same as `codeless/job-<job_id>`.
+    pub head: String,
+    pub files: Vec<JobDiffFile>,
+}

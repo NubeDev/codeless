@@ -13,8 +13,9 @@ use std::path::PathBuf;
 use codeless_rpc::methods::{
     AddRepoArgs, ApproveReviewArgs, ClaudeStatus, CommentReviewArgs, FsCwdResult, FsReadDirArgs,
     FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, RunnerInfo, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -47,7 +48,10 @@ fn collect() -> TypeCollection {
         .register_mut::<FsCwdResult>()
         .register_mut::<RunnerInfo>()
         .register_mut::<ClaudeStatus>()
-        .register_mut::<ServerInfo>();
+        .register_mut::<ServerInfo>()
+        .register_mut::<JobDiffArgs>()
+        .register_mut::<JobDiffFile>()
+        .register_mut::<JobDiffResult>();
     types
 }
 

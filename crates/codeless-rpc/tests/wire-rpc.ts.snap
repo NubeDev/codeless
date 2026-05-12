@@ -191,6 +191,53 @@ export type Job = {
 	created_at: UnixMillis,
 };
 
+export type JobDiffArgs = {
+	job_id: JobId,
+};
+
+/**
+ *  Per-file entry in `JobDiffResult.files`. Mirrors the columns the
+ *  UI's files-changed tab needs: filename, what kind of change
+ *  (added / modified / deleted / renamed), and line counts so the
+ *  summary row can show `+N -M` without parsing the patch. `patch`
+ *  is the unified-diff body for the single file; clients render it
+ *  or skip rendering when the file is binary (in which case `patch`
+ *  is the empty string and `is_binary` is true).
+ */
+export type JobDiffFile = {
+	path: string,
+	/**
+	 *  `"A" | "M" | "D" | "R"` matching `git diff --name-status`.
+	 *  Kept as a one-letter string so future status codes (`"C"` for
+	 *  copied, `"T"` for type-change) don't break the wire when they
+	 *  surface.
+	 */
+	status: string,
+	additions: number,
+	deletions: number,
+	is_binary: boolean,
+	patch: string,
+};
+
+/**
+ *  Diff of a job's branch against its repo's default branch. Computed
+ *  server-side via `git diff` so it works after the worktree has been
+ *  reaped (the branch survives in the source repo). Returns
+ *  `NotFound` if the job, repo, or branch is gone; `Internal` wraps
+ *  `git diff` failures with the stderr the operator can act on.
+ */
+export type JobDiffResult = {
+	/**
+	 *  The base ref the diff was computed against (typically the
+	 *  repo's `default_branch`). Returned so the UI can label the
+	 *  comparison ("vs main").
+	 */
+	base: string,
+	// The job's branch. Same as `codeless/job-<job_id>`.
+	head: string,
+	files: JobDiffFile[],
+};
+
 //Identity of one unit of work scoped to one repo.
 export type JobId = string;
 

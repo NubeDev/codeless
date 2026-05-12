@@ -1,10 +1,12 @@
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { useJob, useRepos, type Job, type JobId } from "@/lib/rpc";
 
 import { CostCell } from "./JobRow";
+import { FilesChanged } from "./FilesChanged";
 import { JobTimeline } from "./JobTimeline";
 import { ReviewPanel } from "./ReviewPanel";
 import { StatusBadge } from "./StatusBadge";
@@ -83,9 +85,22 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
         )}
       </div>
       <ReviewPanel jobId={jobId} />
-      <div className="min-h-0 flex-1">
-        <JobTimeline jobId={jobId} />
-      </div>
+      <Tabs defaultValue="timeline" className="flex min-h-0 flex-1 flex-col">
+        <TabsList className="mx-3 mt-2 self-start">
+          <TabsTrigger value="timeline" className="text-xs">
+            Timeline
+          </TabsTrigger>
+          <TabsTrigger value="files" className="text-xs">
+            Files changed
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="timeline" className="min-h-0 flex-1 mt-0">
+          <JobTimeline jobId={jobId} />
+        </TabsContent>
+        <TabsContent value="files" className="min-h-0 flex-1 mt-0">
+          <FilesChanged jobId={jobId} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

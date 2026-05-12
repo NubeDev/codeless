@@ -11,6 +11,8 @@ import type {
   FsReadResult,
   GitAuth,
   Job,
+  JobDiffArgs,
+  JobDiffResult,
   JobId,
   Repo,
   RepoId,
@@ -182,6 +184,7 @@ export interface RpcMethodMap {
   get_job: { args: GetJobArgs; result: Job };
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   stop_job: { args: StopJobArgs; result: null };
+  job_diff: { args: JobDiffArgs; result: JobDiffResult };
 
   fs_read_file: { args: FsReadFileArgs; result: FsReadResult };
   fs_write_file: { args: FsWriteFileArgs; result: null };
