@@ -9,3 +9,10 @@ description = "Codeless: pure data types (Repo, Job, Stage, Task, Event, RPC mes
 
 [lints]
 workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+ulid = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = "1"
