@@ -10,6 +10,7 @@ import { CostCell } from "./JobRow";
 import { FilesChanged } from "./FilesChanged";
 import { JobTimeline } from "./JobTimeline";
 import { ReviewPanel } from "./ReviewPanel";
+import { StageTree } from "./StageTree";
 import { StatusBadge } from "./StatusBadge";
 
 // Side-panel content for a single selected job. The header surfaces
@@ -126,6 +127,7 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
           </>
         )}
       </div>
+      <StageTree jobId={jobId} />
       <ReviewPanel jobId={jobId} />
       <Tabs defaultValue="timeline" className="flex min-h-0 flex-1 flex-col">
         <TabsList className="mx-3 mt-2 self-start">

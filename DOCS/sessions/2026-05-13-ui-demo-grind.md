@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:14
-Current stage: 5 / 10
+Last tick: 2026-05-13 05:18
+Current stage: 6 / 10
 
 Repo:        codeless
 Branch:      master
@@ -68,8 +68,8 @@ Max ticks:   30
 - [x] 2. [S] Jobs list view: seeded demo job visible with status
 - [x] 3. [M] Job detail view: stages + live SSE event stream
 - [x] 4. [S] "Run mock job" button: create + start a new mock job
-- [ ] 5. [M] Live stage tree: checklist updated from event stream  ← next
-- [ ] 6. [S] Cost + wall-clock badges on the job row
+- [x] 5. [M] Live stage tree: checklist updated from event stream
+- [ ] 6. [S] Cost + wall-clock badges on the job row  ← next
 - [ ] 7. [M] Handover preview pane (runs/<name>/handover.md)
 - [ ] 8. [S] Review queue badge in the top bar
 - [ ] 9. [M] Ad-hoc job form: New Job button + repo dropdown
@@ -99,6 +99,15 @@ Max ticks:   30
   `useEventStream` from `@/lib/rpc` and subscribes per-job, so mock
   runner events stream live as they fire. No `@tauri-apps/api/core`
   imports (R2 satisfied).
+- Stage 5 added `StageTree`, mounted in `JobDetail` above `ReviewPanel`.
+  Subscribes to the same per-job `useEventStream` filter as
+  `JobTimeline`, folds `stage-started` / `stage-completed` /
+  `verify-failed` envelopes into an ordered checklist (`…` running,
+  `✓` completed, `!` failed-with-exit-code). Self-hides when no
+  stage envelopes have arrived. No new backend; cosmetic over the
+  existing SSE data. Visible-in-browser: the job detail sheet now
+  carries a compact "Stages" strip near the top that fills in live
+  as the runner advances.
 - Stage 4 added `RunMockJobButton` (one-click affordance) and placed
   it next to `SubmitJobDialog` in each repo card header in
   `JobsDashboard`. Click → `submit_job` with runner=`mock`, canned
