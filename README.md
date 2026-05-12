@@ -38,6 +38,59 @@ tasks, and events all persist; a fresh runtime against the same DB
 file resumes where the previous one left off, including a startup
 reaper that returns expired task leases to the queue.
 
+### Driving a real runner from Rust
+
+The CLI's `run` command currently uses the mock runner. To drive a
+real Claude or Anthropic run today, build a `RunnerAdapter` directly
+against `codeless-runtime`. Real-runner CLI wiring lands in Phase 2c.
+
+```rust
+use std::sync::Arc;
+use codeless_runtime::{drive_job, ClaudeRunnerAdapter, InProcessRpc};
+use codeless_rpc::{AddRepoArgs, RpcServer, SubmitJobArgs};
+use codeless_types::{GitAuth, TaskId};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let rpc = InProcessRpc::new().await?;
+    let repo = rpc.add_repo(AddRepoArgs {
+        name: "demo".into(),
+        clone_url: "https://example.test/demo.git".into(),
+        default_branch: "main".into(),
+        local_path: "/path/to/repo".into(),
+        git_auth: GitAuth::Token { env_var: "GITHUB_TOKEN".into() },
+        concurrency_cap: None,
+        default_runner: None,
+    }).await?;
+    let job = rpc.submit_job(SubmitJobArgs {
+        repo_id: repo.id,
+        prompt: Some("rename `foo` to `bar` everywhere".into()),
+        template_yaml: None,
+        runner: "claude".into(),
+        branch: "codeless/job-demo".into(),
+        cost_cap_cents: 200,   // 0 = unlimited
+        wall_clock_cap_ms: 600_000,
+    }).await?;
+
+    let adapter: Arc<dyn codeless_runtime::Runner> = Arc::new(
+        ClaudeRunnerAdapter::new("rename `foo` to `bar` everywhere", TaskId::new()),
+    );
+    drive_job(&rpc, job.id, adapter, /* worktrees= */ None).await?;
+    Ok(())
+}
+```
+
+Swap in `AnthropicRunnerAdapter::new(...)` for the REST path; set
+`adapter.base_url` to redirect the SDK (used by tests against a
+`wiremock` stub). Pass `Some(Arc::new(WorktreeManager::new(...)))` as
+the fourth `drive_job` arg in production so every run gets its own
+isolated `git worktree`; the worktree is removed on every terminal
+exit. The cap watcher inside `drive_job` reads
+`jobs.cost_cents` (auto-rolled by `EventBus::publish` on every
+`ai-message-complete`) against `cost_cap_cents`, and races
+`wall_clock_cap_ms` in parallel; either tripping the cap stops the
+job and emits `JobStopped { reason: CostCap | WallClock }`.
+
 ## Origin
 
 The original fork rationale (Terax as a starting point) lives below
