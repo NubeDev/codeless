@@ -1,11 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{RpcError, RpcResult};
-use codeless_types::{Event, JobId, JobStatus};
+use codeless_types::{Event, JobId, JobStatus, StopReason};
+use futures_core::Stream;
+use tokio_util::sync::CancellationToken;
 
-use crate::event_bus::EventBus;
+use crate::event_bus::{EventBus, SubscribeFilter};
 use crate::rpc::InProcessRpc;
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
 use crate::state_machine::{is_terminal_job, transition_job};
@@ -94,13 +97,27 @@ pub async fn drive_job(
     .await
     .map_err(db_err)?;
 
+    let cancel = CancellationToken::new();
+    let cap_watcher = spawn_cap_watcher(
+        Arc::clone(store),
+        Arc::clone(bus),
+        job_id,
+        job.cost_cap_cents.0,
+        job.wall_clock_cap_ms,
+        cancel.clone(),
+    )
+    .await
+    .map_err(db_err)?;
+
     let outcome = runner
         .run(RunnerContext {
             job_id,
             bus: Arc::clone(bus),
             worktree_path: provisioned.as_ref().map(|p| p.worktree.clone()),
+            cancel: cancel.clone(),
         })
         .await;
+    cap_watcher.abort();
 
     let Some(current) = store.get_job(job_id).await.map_err(db_err)? else {
         return Err(RpcError::NotFound(format!("job {job_id}")));
@@ -176,4 +193,127 @@ fn release_worktree(p: &ProvisionedWorktree) {
             "failed to remove worktree on terminal status; leaked on disk",
         );
     }
+}
+
+/// Concurrent watcher that races the runner against the per-job cost
+/// cap and wall-clock cap. Wakes on every `AiMessageComplete` (cost
+/// is rolled up by `EventBus::publish` first, so the job row is
+/// already up-to-date by the time we observe the event) and on the
+/// wall-clock deadline. Firing either cap moves the job to `Stopped`
+/// with the appropriate `StopReason`, publishes `JobStopped`, and
+/// triggers `cancel.cancel()` so the runner tears down. A cap value
+/// of `0` is treated as "unlimited" — the watcher loops past it
+/// without firing, which matches the existing `submit_job` test
+/// callers that pass `cost_cap_cents: 0` to mean "don't enforce".
+async fn spawn_cap_watcher(
+    store: Arc<SqliteStore>,
+    bus: Arc<EventBus>,
+    job_id: JobId,
+    cost_cap: i64,
+    wall_clock_ms: i64,
+    cancel: CancellationToken,
+) -> sqlx::Result<tokio::task::JoinHandle<()>> {
+    let stream = bus
+        .subscribe_since(SubscribeFilter::Job(job_id), None)
+        .await
+        .map_err(|e| sqlx::Error::Protocol(format!("subscribe: {e}")))?;
+    let handle = tokio::spawn(watch_caps(
+        store,
+        bus,
+        job_id,
+        cost_cap,
+        wall_clock_ms,
+        cancel,
+        stream,
+    ));
+    Ok(handle)
+}
+
+async fn watch_caps(
+    store: Arc<SqliteStore>,
+    bus: Arc<EventBus>,
+    job_id: JobId,
+    cost_cap: i64,
+    wall_clock_ms: i64,
+    cancel: CancellationToken,
+    mut stream: std::pin::Pin<
+        Box<dyn Stream<Item = Result<codeless_types::EventEnvelope, RpcError>> + Send>,
+    >,
+) {
+    use tokio_stream::StreamExt;
+
+    let wall_clock_sleep = if wall_clock_ms > 0 {
+        Some(tokio::time::sleep(Duration::from_millis(
+            wall_clock_ms as u64,
+        )))
+    } else {
+        None
+    };
+    tokio::pin!(wall_clock_sleep);
+
+    loop {
+        let next_item: futures_core::future::BoxFuture<'_, _> = Box::pin(stream.next());
+        let stop_reason = tokio::select! {
+            biased;
+            _ = async {
+                match wall_clock_sleep.as_mut().as_pin_mut() {
+                    Some(s) => s.await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => Some(StopReason::WallClock),
+            item = next_item => {
+                match item {
+                    Some(Ok(env)) if matches!(env.event, Event::AiMessageComplete { .. }) && cost_cap > 0 => {
+                        match store.get_job(job_id).await {
+                            Ok(Some(j)) if j.cost_cents.0 >= cost_cap => Some(StopReason::CostCap),
+                            _ => None,
+                        }
+                    }
+                    Some(_) => None,
+                    None => return,
+                }
+            }
+        };
+        if let Some(reason) = stop_reason {
+            fire_stop(&store, &bus, job_id, reason, &cancel).await;
+            return;
+        }
+    }
+}
+
+async fn fire_stop(
+    store: &Arc<SqliteStore>,
+    bus: &Arc<EventBus>,
+    job_id: JobId,
+    reason: StopReason,
+    cancel: &CancellationToken,
+) {
+    let Ok(Some(mut job)) = store.get_job(job_id).await else {
+        cancel.cancel();
+        return;
+    };
+    if is_terminal_job(job.status) {
+        cancel.cancel();
+        return;
+    }
+    let ended = now_ms();
+    job.status = JobStatus::Stopped;
+    job.stop_reason = Some(reason);
+    job.ended_at = Some(ended);
+    if let Err(e) = store.update_job(&job).await {
+        tracing::warn!(error = %e, "cap watcher: update_job failed");
+    }
+    if let Err(e) = bus
+        .publish(
+            Some(job_id),
+            None,
+            None,
+            Event::JobStopped { job_id, reason },
+            ended,
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "cap watcher: publish JobStopped failed");
+    }
+    cancel.cancel();
 }

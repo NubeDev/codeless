@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeless_types::JobId;
+use tokio_util::sync::CancellationToken;
 
 use crate::event_bus::EventBus;
 
@@ -30,6 +31,14 @@ pub struct RunnerContext {
     /// path working without a real repo on disk — the production
     /// drive_job path always populates this from `WorktreeManager`.
     pub worktree_path: Option<PathBuf>,
+    /// Driver-owned cancellation token. The cap monitor in `drive_job`
+    /// fires it when `job.cost_cap_cents` or `job.wall_clock_cap_ms`
+    /// is reached; AI runners must watch it inside their streaming
+    /// loop so the upstream HTTP request or child process tears down
+    /// promptly. `MockRunner` and other test harnesses are free to
+    /// ignore the token — the driver's terminal-state check still
+    /// observes a `Stopped` row written by the watcher.
+    pub cancel: CancellationToken,
 }
 
 /// Host-side runner contract. Asynchronously drives one job to a

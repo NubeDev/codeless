@@ -23,7 +23,6 @@ use async_trait::async_trait;
 use codeless_adapters_host::ai_runner_bridge::forward_events;
 use codeless_types::TaskId;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 use crate::event_bus::EventBus;
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
@@ -62,7 +61,7 @@ impl ClaudeRunnerAdapter {
 impl Runner for ClaudeRunnerAdapter {
     async fn run(&self, ctx: RunnerContext) -> RunnerOutcome {
         let (tx, rx) = mpsc::channel(self.event_buffer);
-        let cancel = CancellationToken::new();
+        let cancel = ctx.cancel.clone();
 
         let bus: Arc<EventBus> = Arc::clone(&ctx.bus);
         let job_id = ctx.job_id;
