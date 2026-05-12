@@ -7,8 +7,10 @@ use codeless_rpc::{
     SubmitJobArgs,
 };
 use codeless_types::{CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, StopReason};
+use sqlx::SqlitePool;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
+use crate::migrations::MIGRATOR;
 use crate::store::MemoryStore;
 use crate::time::now_ms;
 
@@ -23,18 +25,38 @@ use crate::time::now_ms;
 pub struct InProcessRpc {
     store: Arc<MemoryStore>,
     bus: Arc<EventBus>,
+    pool: SqlitePool,
 }
 
+/// Default event-broadcast lag tolerance per subscriber. See
+/// `EventBus::new` for the trade-off; 1024 is the Phase 1 starting
+/// point and has not yet been tuned against real load.
+const DEFAULT_EVENT_BUFFER: usize = 1024;
+
 impl InProcessRpc {
-    pub fn new() -> Self {
-        Self::with_capacity(1024)
+    /// Shortcut for tests: a fresh `sqlite::memory:` pool with the
+    /// Appendix A migrations applied. `:memory:` databases are
+    /// per-connection in raw SQLite, but sqlx's pool keeps a single
+    /// dedicated connection alive for the lifetime of the pool when
+    /// the URL is `sqlite::memory:` — so successive queries against
+    /// the same `InProcessRpc::new()` see the same data.
+    pub async fn new() -> Result<Self, sqlx::Error> {
+        let pool = SqlitePool::connect("sqlite::memory:").await?;
+        Self::with_db(pool).await
     }
 
-    pub fn with_capacity(event_buffer: usize) -> Self {
-        Self {
+    /// Build a runtime around a caller-supplied pool. Migrations are
+    /// applied here so a fresh database file works the same as a
+    /// pre-migrated one and the caller never has to remember to run
+    /// the migrator separately. Forward-only migration semantics —
+    /// see `migrations::MIGRATOR`.
+    pub async fn with_db(pool: SqlitePool) -> Result<Self, sqlx::Error> {
+        MIGRATOR.run(&pool).await?;
+        Ok(Self {
             store: Arc::new(MemoryStore::new()),
-            bus: Arc::new(EventBus::new(event_buffer)),
-        }
+            bus: Arc::new(EventBus::new(DEFAULT_EVENT_BUFFER)),
+            pool,
+        })
     }
 
     pub fn store(&self) -> &Arc<MemoryStore> {
@@ -44,11 +66,12 @@ impl InProcessRpc {
     pub fn bus(&self) -> &Arc<EventBus> {
         &self.bus
     }
-}
 
-impl Default for InProcessRpc {
-    fn default() -> Self {
-        Self::new()
+    /// Pool handle for the persistent store. `store()` above is the
+    /// in-memory shape that exists for as long as the SQLite-backed
+    /// queries have not yet replaced it.
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 }
 

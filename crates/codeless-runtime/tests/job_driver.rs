@@ -66,7 +66,7 @@ async fn fresh_queued_job(rpc: &InProcessRpc) -> codeless_types::JobId {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drive_job_to_completion_emits_started_then_runner_events_then_completed() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let job_id = fresh_queued_job(&rpc).await;
 
     let mut stream = rpc
@@ -107,7 +107,7 @@ async fn drive_job_to_completion_emits_started_then_runner_events_then_completed
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drive_job_failure_outcome_lands_as_failed() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let job_id = fresh_queued_job(&rpc).await;
 
     let runner = Arc::new(MockRunner::new(vec![
@@ -131,7 +131,7 @@ async fn drive_job_failure_outcome_lands_as_failed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drive_job_refuses_already_terminal_job() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let job_id = fresh_queued_job(&rpc).await;
 
     let runner_a = Arc::new(MockRunner::new(vec![MockStep::Finish(
@@ -148,7 +148,7 @@ async fn drive_job_refuses_already_terminal_job() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_during_run_wins_against_completion() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let job_id = fresh_queued_job(&rpc).await;
 
     let runner = Arc::new(MockRunner::new(vec![

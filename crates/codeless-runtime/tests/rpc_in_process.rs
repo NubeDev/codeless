@@ -43,7 +43,7 @@ where
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn add_repo_emits_event_and_round_trips_through_list() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
 
     let mut stream = rpc
         .subscribe(EventFilter::All, None)
@@ -76,7 +76,7 @@ async fn add_repo_emits_event_and_round_trips_through_list() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn submit_job_rejects_unknown_repo() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let result = rpc
         .submit_job(SubmitJobArgs {
             repo_id: codeless_types::RepoId::new(),
@@ -93,7 +93,7 @@ async fn submit_job_rejects_unknown_repo() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn submit_job_succeeds_and_emits_queued_event() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let repo = rpc
         .add_repo(AddRepoArgs {
             name: "demo".into(),
@@ -145,7 +145,7 @@ async fn submit_job_succeeds_and_emits_queued_event() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_job_emits_event_and_is_idempotent_against_terminal_state() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let repo = rpc
         .add_repo(AddRepoArgs {
             name: "demo".into(),
@@ -195,7 +195,7 @@ async fn stop_job_emits_event_and_is_idempotent_against_terminal_state() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn job_filtered_subscription_drops_unrelated_events() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let repo = rpc
         .add_repo(AddRepoArgs {
             name: "demo".into(),
@@ -256,7 +256,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn since_cursor_replay_is_not_yet_implemented() {
-    let rpc = InProcessRpc::new();
+    let rpc = InProcessRpc::new().await.unwrap();
     let res = rpc
         .subscribe(EventFilter::All, Some(codeless_types::EventCursor(1)))
         .await;

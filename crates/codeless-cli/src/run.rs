@@ -43,7 +43,11 @@ pub fn handle(args: RunArgs) -> Result<ExitCode> {
 }
 
 async fn run_once(prompt: String, repo_path: std::path::PathBuf) -> Result<ExitCode> {
-    let rpc = Arc::new(InProcessRpc::new());
+    let rpc = Arc::new(
+        InProcessRpc::new()
+            .await
+            .map_err(|e| anyhow!("init runtime: {e}"))?,
+    );
 
     let repo = rpc
         .add_repo(AddRepoArgs {
