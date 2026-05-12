@@ -52,6 +52,15 @@ impl InProcessRpc {
         MIGRATOR.run(&pool).await?;
         let bus = Arc::new(EventBus::new(pool.clone(), DEFAULT_EVENT_BUFFER));
         let store = Arc::new(SqliteStore::new(pool));
+        // Startup reaper: any task whose lease expired before the
+        // previous core died is still marked `running` in the DB.
+        // Returning it to `enqueued` lets the new core re-pick it up.
+        // SCOPE.md "Worktrees: failed worktrees are reaped on core
+        // restart" — same idea, queue side.
+        let reclaimed = store.release_expired_leases(now_ms()).await?;
+        if reclaimed > 0 {
+            tracing::info!(reclaimed, "released expired task leases at startup");
+        }
         Ok(Self { store, bus })
     }
 
