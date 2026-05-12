@@ -24,17 +24,25 @@ holds the design docs, the bundled `mani` binary, and the vendored
 
 ## What this repo is, today
 
-Phase 1 of SCOPE.md has landed on `feat/bootstrap-cargo-workspace`:
+Phase 1 (crate skeleton) landed on `feat/bootstrap-cargo-workspace`.
+Phase 2a (persistence + queue) sits on `feat/phase-2a-persistence`:
 
 - `codeless-types` — Repo/Job/Stage/Task/Event/Review structs, serde +
   specta. iOS/Android-safe.
 - `codeless-rpc` — `RpcServer` trait, args, results, error variants,
   subscribe surface. iOS/Android-safe.
-- `codeless-runtime` — `InProcessRpc` over `MemoryStore` +
-  `EventBus`, job/stage/task transition guards, `Runner` trait +
-  `MockRunner` scripted harness, `drive_job` driver, tracing
-  subscriber (`try_init_json` / `try_init_pretty`), sqlx migrator for
-  the Appendix A schema. Host-only.
+- `codeless-runtime` — `InProcessRpc` over `SqliteStore` + `EventBus`,
+  with the Appendix A schema applied on construction. Events persist
+  to the `events` table and the cursor comes from the autoincrement
+  column; `subscribe(since)` replays from SQLite and chains to the
+  live broadcast tail without gaps or duplicates. Lease-based task
+  queue with three-scope concurrency caps (global, per-repo,
+  per-runner) lives in `SqliteStore`; `spawn_heartbeat` renews
+  leases in a background task and a startup-time reaper inside
+  `with_db` reclaims expired leases when the core restarts.
+  `Runner` trait + `MockRunner` scripted harness, `drive_job`
+  driver, tracing subscriber (`try_init_json` / `try_init_pretty`).
+  Host-only.
 - `codeless-adapters-host` — `SecretStore` (chmod 0600, atomic-rename
   TOML), `WorktreeManager` (`git worktree add/remove/prune`).
   Host-only; the only crate permitted to spawn processes.
@@ -42,7 +50,7 @@ Phase 1 of SCOPE.md has landed on `feat/bootstrap-cargo-workspace`:
   against the mock runner, streaming JSON-line events; `codeless
   secrets {set,get,rm,list}` against the secrets file.
 - `codeless-server`, `codeless-client`, `codeless-tauri-desktop` —
-  still stubs; Phase 3+ work.
+  still stubs; Phase 2b+ work.
 
 Verify the workspace any time with:
 
@@ -52,9 +60,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-All three are green as of the Phase 1 wrap-up commit. Real (non-mock)
-runners, worktree wiring inside `drive_job`, the SQLite-backed event
-log, and the HTTP/SSE server land in Phase 2+.
+All three are green as of the Phase 2a wrap-up commit. Real (non-mock)
+runners (Claude, Anthropic, etc. from the vendored `ai-runner`),
+worktree wiring inside `drive_job`, the HTTP/SSE server, and the
+review/notifier surfaces are Phase 2b+ work.
 
 ## Durable project facts (update as the project evolves)
 
@@ -72,6 +81,21 @@ it.
   `feat/bootstrap-cargo-workspace` (11 stages, 7 ticks, see
   `../DOCS/sessions/2026-05-12-phase-1-crate-skeleton.md`). End-to-end
   `codeless run --once` works against the mock runner; secrets CLI
-  and worktree manager both have integration coverage. Real runner
-  adoption (`ClaudeRunner` etc. from `ai-runner`), the SQLite-backed
-  event log, and the HTTP/SSE server are Phase 2 work.
+  and worktree manager both have integration coverage.
+- **2026-05-12** — Phase 2a (persistence + queue) complete on
+  `feat/phase-2a-persistence` (9 stages, 8 ticks, see
+  `../DOCS/sessions/2026-05-12-phase-2a-persistence.md`). `MemoryStore`
+  removed; repos/jobs/stages/tasks/events all live in SQLite via
+  `SqliteStore`. Events allocate cursors from the autoincrement
+  column; `subscribe(since)` does sqlx-backed replay then live
+  broadcast tail with cursor-based dedupe at the boundary.
+  Lease-based task queue with atomic three-scope concurrency caps
+  (global / per-repo / per-runner), CAS completion/failure/heartbeat,
+  `spawn_heartbeat` background helper, and startup-time lease reaper
+  inside `with_db`. A resumability integration test
+  (`tests/resumability.rs`) opens a file-backed SQLite, lands
+  non-trivial state, drops the runtime, rebuilds against the same
+  file, and proves repos/jobs/tasks/events all survive and the
+  cursor allocator keeps climbing. Real-runner adoption from
+  `ai-runner`, worktree threading inside `drive_job`, the HTTP/SSE
+  server, and review/notifier surfaces are Phase 2b/2c work.

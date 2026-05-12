@@ -22,14 +22,21 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 
-# end-to-end dogfood (Phase 1): drive a mock runner against a real
-# local repo and stream the events to stdout as JSON lines.
+# end-to-end dogfood: drive a mock runner against a real local repo
+# and stream the events to stdout as JSON lines.
 cargo run -p codeless-cli -- run --repo /path/to/repo "hello"
 
 # manage the chmod-600 secrets store
 cargo run -p codeless-cli -- secrets list
 cargo run -p codeless-cli -- secrets set ANTHROPIC_API_KEY --from-env ANTHROPIC_API_KEY
 ```
+
+State lives in SQLite. The runtime builds against a caller-supplied
+`SqlitePool` (or `InProcessRpc::new()` for an in-memory pool in tests);
+the Appendix A migrations apply on construction. Repos, jobs, stages,
+tasks, and events all persist; a fresh runtime against the same DB
+file resumes where the previous one left off, including a startup
+reaper that returns expired task leases to the queue.
 
 ## Origin
 

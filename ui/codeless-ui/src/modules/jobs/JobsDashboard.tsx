@@ -1,15 +1,24 @@
 import { useCallback, useState } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   useEventStream,
   useJobs,
   useRepos,
   type Job,
+  type JobId,
   type Repo,
 } from "@/lib/rpc";
 
+import { JobDetail } from "./JobDetail";
 import { JobRow } from "./JobRow";
 import { SubmitJobDialog } from "./SubmitJobDialog";
 
@@ -22,6 +31,7 @@ export function JobsDashboard() {
   const repos = useRepos();
   const jobs = useJobs();
   const [overlay, setOverlay] = useState<Map<string, Job>>(new Map());
+  const [selectedJobId, setSelectedJobId] = useState<JobId | null>(null);
 
   // Apply event deltas on top of the initial list_jobs snapshot. We
   // don't refetch — the event payload is enough for the columns we
@@ -72,6 +82,23 @@ export function JobsDashboard() {
           {merged.length} total
         </span>
       </header>
+      <Sheet
+        open={selectedJobId !== null}
+        onOpenChange={(open) => !open && setSelectedJobId(null)}
+      >
+        <SheetContent
+          side="right"
+          className="flex w-full flex-col p-0 sm:max-w-xl"
+        >
+          <SheetHeader className="sr-only">
+            <SheetTitle>Job detail</SheetTitle>
+            <SheetDescription>
+              Live timeline of events for the selected job.
+            </SheetDescription>
+          </SheetHeader>
+          {selectedJobId && <JobDetail jobId={selectedJobId} />}
+        </SheetContent>
+      </Sheet>
       {grouped.map(({ repo, jobs }) => (
         <Card key={repo.id}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 py-3">
@@ -84,7 +111,13 @@ export function JobsDashboard() {
                 no jobs yet
               </div>
             ) : (
-              jobs.map((j) => <JobRow key={j.id} job={j} />)
+              jobs.map((j) => (
+                <JobRow
+                  key={j.id}
+                  job={j}
+                  onSelect={(job) => setSelectedJobId(job.id)}
+                />
+              ))
             )}
           </CardContent>
         </Card>

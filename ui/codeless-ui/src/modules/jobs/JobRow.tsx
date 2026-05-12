@@ -10,18 +10,24 @@ const TERMINAL: Set<Job["status"]> = new Set([
   "stopped",
 ]);
 
-export function JobRow({ job }: { job: Job }) {
+interface Props {
+  job: Job;
+  onSelect?: (job: Job) => void;
+}
+
+export function JobRow({ job, onSelect }: Props) {
   const rpc = useRpc();
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const stop = async () => {
+  const stop = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     setStopping(true);
     setError(null);
     try {
       await rpc.call("stop_job", { job_id: job.id });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStopping(false);
     }
@@ -31,7 +37,10 @@ export function JobRow({ job }: { job: Job }) {
   const summary = job.prompt?.split("\n")[0] ?? "(template job)";
 
   return (
-    <div className="flex items-center gap-3 border-b border-border/50 px-3 py-2 text-sm last:border-b-0">
+    <div
+      className="hover:bg-muted/40 flex cursor-pointer items-center gap-3 border-b border-border/50 px-3 py-2 text-sm last:border-b-0"
+      onClick={() => onSelect?.(job)}
+    >
       <StatusBadge status={job.status} />
       <div className="min-w-0 flex-1">
         <div className="truncate">{summary}</div>
