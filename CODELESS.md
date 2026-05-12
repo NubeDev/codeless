@@ -108,8 +108,27 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-All three are green as of the Phase 2c wrap-up commit. The HTTP/SSE
-server and the desktop/mobile Tauri shells are Phase 3+ work.
+All three are green as of the Phase 3a wrap-up commit. The
+desktop/mobile Tauri shells remain Phase 5+ work; the HTTP/SSE
+server now exists and powers the browser demo.
+
+### Phase 3a — browser demo loop
+
+`codeless-server` is an axum library that exposes every `RpcServer`
+method as `POST /rpc/<method>` and the `subscribe` stream as
+`GET /events` (SSE). The wire contract is locked by the existing
+`ui/codeless-ui/src/lib/rpc/http-sse-client.ts`; bearer auth flows
+through the `Authorization` header on REST and a `?token=` query on
+SSE (browsers cannot set headers on `EventSource`). CORS is
+permissive — single-tenant loopback by default per R5.
+
+`codeless serve` (CLI verb) wires the runtime, the bearer token from
+the shared secrets file (key `core_bearer_token`), and the axum
+bind. `--init-token` generates a 32-char hex token via the OS
+CSPRNG, persists it, and prints it once. The browser-side demo path
+is documented in [`../DEMO-UI.md`](../DEMO-UI.md): paste the token
+into `localStorage`, run `pnpm -C codeless/ui/codeless-ui dev`, and
+the Terax-derived `JobsDashboard` mounts against a real core.
 
 ## Durable project facts (update as the project evolves)
 

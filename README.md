@@ -50,6 +50,28 @@ cargo run -p codeless-cli -- secrets list
 cargo run -p codeless-cli -- secrets set ANTHROPIC_API_KEY --from-env ANTHROPIC_API_KEY
 ```
 
+### Run the browser demo
+
+`codeless serve` runs the hosted HTTP surface that the React UI in
+[`ui/codeless-ui/`](./ui/codeless-ui/) talks to. One-shot setup:
+
+```sh
+# pick a DB and mint the shared bearer token; prints it once
+cargo run -p codeless-cli -- --db ~/.local/share/codeless/demo.db \
+    serve --init-token
+
+# run the server (defaults to 127.0.0.1:7777)
+cargo run -p codeless-cli -- --db ~/.local/share/codeless/demo.db serve
+
+# in another terminal, run the UI dev server
+pnpm -C ui/codeless-ui install   # first time only
+pnpm -C ui/codeless-ui dev
+```
+
+Full instructions (including the `localStorage` keys the browser
+reads) live in the workspace
+[`DEMO-UI.md`](../DEMO-UI.md) quickstart.
+
 ### YAML job template shape
 
 `codeless job submit` parses a strict typed shape — unknown keys are a
