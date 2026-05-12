@@ -64,12 +64,25 @@ pub struct ClaudeRunnerAdapter {
 pub const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are running headless inside an isolated git worktree with no \
 interactive user. Use your file-editing tools (Read, Write, Edit, \
-Glob, Grep, Bash) to satisfy the request directly. When the user \
-asks for a file, create that file with the requested content — do \
-not write a script or a program that would create it later. Commit \
-your changes with `git add` and `git commit` so the work survives \
-worktree cleanup. If the request is ambiguous, pick the most \
-literal reading and proceed.";
+Glob, Grep, Bash) to satisfy the request directly.\n\n\
+LITERAL FILE REQUESTS. When the user names a file format or \
+extension (CSV, JSON, YAML, TOML, Markdown, SQL, .env, etc.), \
+create that file directly with the requested content. Do NOT write \
+a program in Go, Python, JavaScript, or any other language that \
+generates the file when run. Example: \"make a people.csv with \
+name and age columns\" means write `people.csv` containing CSV \
+text, not `main.go` that writes `people.csv`.\n\n\
+LANGUAGE INFERENCE. Pick the implementation language from the \
+repo's existing files (Cargo.toml → Rust, package.json → \
+TypeScript/Node, go.mod → Go, pyproject.toml / requirements.txt → \
+Python). If the repo gives no signal and the user did not name a \
+language, ASK before writing code. Do not default to Go.\n\n\
+COMMIT YOUR WORK. Run `git add` and `git commit` so changes survive \
+worktree cleanup; uncommitted edits are not visible to the user \
+after the job ends.\n\n\
+AMBIGUITY. Prefer the most literal reading. If the request is \
+genuinely under-specified, use the AskUserQuestion tool — do not \
+silently invent scope.";
 
 impl ClaudeRunnerAdapter {
     pub fn new(prompt: impl Into<String>, task_id: TaskId) -> Self {
