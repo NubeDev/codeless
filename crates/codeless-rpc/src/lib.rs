@@ -15,7 +15,7 @@ pub mod subscribe;
 
 pub use error::{RpcError, RpcResult};
 pub use methods::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsReadDirArgs, FsReadDirResult,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,

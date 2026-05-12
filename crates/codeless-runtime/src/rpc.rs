@@ -3,11 +3,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use codeless_adapters_host::{FsError, HostFs};
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsCwdResult,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -406,6 +406,13 @@ impl RpcServer for InProcessRpc {
                 size: None,
                 mtime: None,
             },
+        })
+    }
+
+    async fn fs_cwd(&self) -> RpcResult<FsCwdResult> {
+        let fs = self.fs.as_ref().ok_or_else(fs_not_configured)?;
+        Ok(FsCwdResult {
+            path: fs.root().to_string_lossy().into_owned(),
         })
     }
 }

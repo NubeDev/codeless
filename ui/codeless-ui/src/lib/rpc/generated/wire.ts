@@ -105,6 +105,17 @@ export type EventFilter =
 { scope: "job"; "job-id": JobId };
 
 /**
+ *  Result of `fs_cwd`. The path is the absolute server root the
+ *  `fs_*` methods are scoped under. The UI uses this to populate the
+ *  explorer when no terminal has yet set a working directory, so the
+ *  first browser visit against a real server shows the workspace
+ *  contents instead of an empty pane.
+ */
+export type FsCwdResult = {
+	path: string,
+};
+
+/**
  *  One entry from a directory listing. `size` and `mtime` are
  *  `Option` because not every filesystem entry has them in the same
  *  way — a symlink to a non-existent target carries no `mtime` from

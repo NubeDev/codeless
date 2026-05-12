@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsCwdResult,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -231,6 +231,10 @@ impl RpcServer for HttpRpcClient {
 
     async fn fs_stat(&self, args: FsStatArgs) -> RpcResult<FsStatResult> {
         self.call("fs_stat", &args).await
+    }
+
+    async fn fs_cwd(&self) -> RpcResult<FsCwdResult> {
+        self.call("fs_cwd", &serde_json::json!({})).await
     }
 }
 

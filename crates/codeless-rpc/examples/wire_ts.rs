@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use codeless_rpc::methods::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsReadDirArgs, FsReadDirResult,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
@@ -88,7 +88,8 @@ fn collect() -> TypeCollection {
         .register_mut::<FsReadFileResult>()
         .register_mut::<FsWriteFileArgs>()
         .register_mut::<FsStatArgs>()
-        .register_mut::<FsStatResult>();
+        .register_mut::<FsStatResult>()
+        .register_mut::<FsCwdResult>();
     types
 }
 

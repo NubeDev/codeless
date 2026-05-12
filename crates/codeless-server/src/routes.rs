@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsReadDirArgs, FsReadDirResult,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     RemoveRepoArgs, RpcError, StopJobArgs, StopReviewArgs, SubmitJobArgs,
@@ -35,6 +35,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/fs_read_file", post(fs_read_file))
         .route("/rpc/fs_write_file", post(fs_write_file))
         .route("/rpc/fs_stat", post(fs_stat))
+        .route("/rpc/fs_cwd", post(fs_cwd))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -209,4 +210,11 @@ async fn fs_stat(
     Json(args): Json<FsStatArgs>,
 ) -> HandlerResult<FsStatResult> {
     st.rpc.fs_stat(args).await.map(Json).map_err(map_err)
+}
+
+async fn fs_cwd(
+    State(st): State<AppState>,
+    _body: Option<Json<Value>>,
+) -> HandlerResult<FsCwdResult> {
+    st.rpc.fs_cwd().await.map(Json).map_err(map_err)
 }

@@ -157,3 +157,13 @@ pub struct FsStatResult {
     pub size: Option<i64>,
     pub mtime: Option<UnixMillis>,
 }
+
+/// Result of `fs_cwd`. The path is the absolute server root the
+/// `fs_*` methods are scoped under. The UI uses this to populate the
+/// explorer when no terminal has yet set a working directory, so the
+/// first browser visit against a real server shows the workspace
+/// contents instead of an empty pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsCwdResult {
+    pub path: String,
+}

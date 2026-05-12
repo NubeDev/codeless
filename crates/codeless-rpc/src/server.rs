@@ -3,7 +3,7 @@ use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsReadDirArgs, FsReadDirResult,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
@@ -72,4 +72,10 @@ pub trait RpcServer: Send + Sync + 'static {
     /// than `NotFound` so callers can probe existence without catching
     /// errors.
     async fn fs_stat(&self, args: FsStatArgs) -> RpcResult<FsStatResult>;
+
+    /// Report the absolute server root the `fs_*` methods are scoped
+    /// under. Returns `Internal` when no filesystem adapter is
+    /// configured — same shape as the other `fs_*` methods when the
+    /// runtime was built without `with_fs`.
+    async fn fs_cwd(&self) -> RpcResult<FsCwdResult>;
 }
