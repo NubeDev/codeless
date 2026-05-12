@@ -103,6 +103,14 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
                     ? "preserved on disk after the job ends — cd into it to inspect"
                     : "not provisioned yet (or running without --worktree-root)"
                 }
+                altCopy={
+                  job.worktree_path
+                    ? {
+                        label: "cd",
+                        value: `cd ${shellQuote(job.worktree_path)} && git status`,
+                      }
+                    : undefined
+                }
               />
               {repo && (
                 <PathRow
@@ -139,14 +147,30 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
   );
 }
 
+// POSIX single-quote a string for safe paste into bash/zsh. Paths
+// coming back from the runtime are well-formed but may contain
+// spaces; quoting unconditionally costs nothing and stops a stray
+// shell metacharacter from surprising someone who paste-and-runs.
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 function PathRow({
   label,
   value,
   hint,
+  altCopy,
 }: {
   label: string;
   value: string | null;
   hint: string;
+  // Optional secondary copy action. The label appears on a small
+  // button next to the primary "copy"; the value is what lands on
+  // the clipboard. Used by the worktree row to offer
+  // `cd <path> && git status` for terminal users without opening a
+  // real terminal (desktop / browser parity — see SCOPE.md
+  // "Rule 3: one UI framework forever").
+  altCopy?: { label: string; value: string };
 }) {
   return (
     <div className="flex items-start gap-2 text-xs">
@@ -155,7 +179,7 @@ function PathRow({
       </span>
       <div className="min-w-0 flex-1">
         {value ? (
-          <CopyField value={value} />
+          <CopyField value={value} altCopy={altCopy} />
         ) : (
           <span className="text-muted-foreground italic">none</span>
         )}
@@ -167,13 +191,19 @@ function PathRow({
   );
 }
 
-function CopyField({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-  const onCopy = async () => {
+function CopyField({
+  value,
+  altCopy,
+}: {
+  value: string;
+  altCopy?: { label: string; value: string };
+}) {
+  const [copied, setCopied] = useState<"primary" | "alt" | null>(null);
+  const copy = async (text: string, which: "primary" | "alt") => {
     try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
+      await navigator.clipboard.writeText(text);
+      setCopied(which);
+      window.setTimeout(() => setCopied(null), 1200);
     } catch {
       // Clipboard API is blocked in non-secure contexts; the value is
       // still visible in the inline <code> so the user can copy by
@@ -195,10 +225,21 @@ function CopyField({ value }: { value: string }) {
         variant="ghost"
         size="sm"
         className="h-6 shrink-0 px-2 text-[10px]"
-        onClick={() => void onCopy()}
+        onClick={() => void copy(value, "primary")}
       >
-        {copied ? "copied" : "copy"}
+        {copied === "primary" ? "copied" : "copy"}
       </Button>
+      {altCopy && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-[10px]"
+          title={`copy '${altCopy.value}'`}
+          onClick={() => void copy(altCopy.value, "alt")}
+        >
+          {copied === "alt" ? "copied" : altCopy.label}
+        </Button>
+      )}
     </div>
   );
 }
