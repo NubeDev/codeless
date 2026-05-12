@@ -24,14 +24,37 @@ holds the design docs, the bundled `mani` binary, and the vendored
 
 ## What this repo is, today
 
-- A Cargo workspace at the repo root with 8 stub crates per the
-  SCOPE.md crate table. Every crate compiles with `cargo check
-  --workspace`; none of them does anything yet. Real work begins with
-  Phase 1 of SCOPE.md.
-- One bootstrap branch (`feat/bootstrap-cargo-workspace`) created by
-  the bootstrap loop ([`../DOCS/sessions/2026-05-12-bootstrap-workspace.md`](../DOCS/sessions/2026-05-12-bootstrap-workspace.md)).
-- No runtime, no UI, no server, no CLI yet — just the skeleton that
-  enforces the layering rules.
+Phase 1 of SCOPE.md has landed on `feat/bootstrap-cargo-workspace`:
+
+- `codeless-types` — Repo/Job/Stage/Task/Event/Review structs, serde +
+  specta. iOS/Android-safe.
+- `codeless-rpc` — `RpcServer` trait, args, results, error variants,
+  subscribe surface. iOS/Android-safe.
+- `codeless-runtime` — `InProcessRpc` over `MemoryStore` +
+  `EventBus`, job/stage/task transition guards, `Runner` trait +
+  `MockRunner` scripted harness, `drive_job` driver, tracing
+  subscriber (`try_init_json` / `try_init_pretty`), sqlx migrator for
+  the Appendix A schema. Host-only.
+- `codeless-adapters-host` — `SecretStore` (chmod 0600, atomic-rename
+  TOML), `WorktreeManager` (`git worktree add/remove/prune`).
+  Host-only; the only crate permitted to spawn processes.
+- `codeless-cli` — `codeless run --repo <p> "<prompt>"` end-to-end
+  against the mock runner, streaming JSON-line events; `codeless
+  secrets {set,get,rm,list}` against the secrets file.
+- `codeless-server`, `codeless-client`, `codeless-tauri-desktop` —
+  still stubs; Phase 3+ work.
+
+Verify the workspace any time with:
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
+```
+
+All three are green as of the Phase 1 wrap-up commit. Real (non-mock)
+runners, worktree wiring inside `drive_job`, the SQLite-backed event
+log, and the HTTP/SSE server land in Phase 2+.
 
 ## Durable project facts (update as the project evolves)
 
@@ -44,5 +67,11 @@ it.
   `codeless-workspace`; `codeless` repo moved under it; vendored
   `ai-runner` from the rubix-agent workspace; mani.yaml + tasks
   written; CLAUDE.md established. Cargo workspace with 8 crate stubs
-  landed on `feat/bootstrap-cargo-workspace`. Phase 1 proper has not
-  started yet.
+  landed on `feat/bootstrap-cargo-workspace`.
+- **2026-05-12** — Phase 1 skeleton complete on
+  `feat/bootstrap-cargo-workspace` (11 stages, 7 ticks, see
+  `../DOCS/sessions/2026-05-12-phase-1-crate-skeleton.md`). End-to-end
+  `codeless run --once` works against the mock runner; secrets CLI
+  and worktree manager both have integration coverage. Real runner
+  adoption (`ClaudeRunner` etc. from `ai-runner`), the SQLite-backed
+  event log, and the HTTP/SSE server are Phase 2 work.

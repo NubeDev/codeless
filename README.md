@@ -1,5 +1,43 @@
 # codeless
 
+Rust workspace for the Codeless project — a staged, reviewable AI coding
+job runner. This repo is the **inner** repo; design docs, the
+multi-repo `mani.yaml`, the autonomous-build loop, and active session
+files live in the parent workspace at
+[`codeless-workspace`](https://github.com/NubeDev/codeless-workspace).
+
+Start here if you are reading this for the first time:
+
+- Agent-facing rules for this repo: [`CLAUDE.md`](./CLAUDE.md)
+- Durable per-repo memory: [`CODELESS.md`](./CODELESS.md)
+- Project scope, crate layout, all open questions:
+  [`../DOCS/SCOPE.md`](../DOCS/SCOPE.md)
+- Autonomous build loop: [`../DOCS/JOB-LOOP.md`](../DOCS/JOB-LOOP.md)
+
+## Quickstart
+
+```sh
+# from the inner repo
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
+
+# end-to-end dogfood (Phase 1): drive a mock runner against a real
+# local repo and stream the events to stdout as JSON lines.
+cargo run -p codeless-cli -- run --repo /path/to/repo "hello"
+
+# manage the chmod-600 secrets store
+cargo run -p codeless-cli -- secrets list
+cargo run -p codeless-cli -- secrets set ANTHROPIC_API_KEY --from-env ANTHROPIC_API_KEY
+```
+
+## Origin
+
+The original fork rationale (Terax as a starting point) lives below
+for the history; the active design lives in
+[`../DOCS/SCOPE.md`](../DOCS/SCOPE.md).
+
+---
 
 see existing code we can use
 - /home/user/code/rubix-workspace/rubix-agent/crates/ai-runner/src/runners
