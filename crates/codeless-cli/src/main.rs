@@ -9,6 +9,7 @@
 //! land in later phases.
 
 mod cost;
+mod demo;
 mod job;
 mod jobs;
 mod repos;
@@ -122,6 +123,13 @@ enum Cmd {
         #[command(subcommand)]
         verb: cost::Verb,
     },
+    /// Demo helpers: seed a fresh database with enough content that
+    /// the browser UI has something to show on first paint.
+    /// Local-mode only; pair with `codeless serve --db <same-path>`.
+    Demo {
+        #[command(subcommand)]
+        verb: demo::Verb,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -206,6 +214,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Repos { verb } => repos::handle(verb, cli.core, cli.token, cli.db),
         Cmd::Jobs { verb } => jobs::handle(verb, cli.core, cli.token, cli.db),
         Cmd::Cost { verb } => cost::handle(verb, cli.core, cli.token, cli.db),
+        Cmd::Demo { verb } => demo::handle(verb, cli.db),
     }
 }
 
