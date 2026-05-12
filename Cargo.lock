@@ -407,6 +407,7 @@ name = "codeless-runtime"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "codeless-adapters-host",
  "codeless-rpc",
  "codeless-types",
  "futures-core",

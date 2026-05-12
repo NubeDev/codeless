@@ -85,7 +85,9 @@ async fn drive_job_to_completion_emits_started_then_runner_events_then_completed
         MockStep::Finish(RunnerOutcome::Completed),
     ]));
 
-    drive_job(&rpc, job_id, runner).await.expect("drive_job");
+    drive_job(&rpc, job_id, runner, None)
+        .await
+        .expect("drive_job");
 
     let ev = wait_for(&mut stream, |e| matches!(e, Event::JobStarted { .. })).await;
     assert!(matches!(ev, Event::JobStarted { job_id: j } if j == job_id));
@@ -120,7 +122,9 @@ async fn drive_job_failure_outcome_lands_as_failed() {
         }),
     ]));
 
-    drive_job(&rpc, job_id, runner).await.expect("drive_job");
+    drive_job(&rpc, job_id, runner, None)
+        .await
+        .expect("drive_job");
 
     let job = rpc
         .get_job(codeless_rpc::GetJobArgs { job_id })
@@ -137,12 +141,14 @@ async fn drive_job_refuses_already_terminal_job() {
     let runner_a = Arc::new(MockRunner::new(vec![MockStep::Finish(
         RunnerOutcome::Completed,
     )]));
-    drive_job(&rpc, job_id, runner_a).await.expect("first run");
+    drive_job(&rpc, job_id, runner_a, None)
+        .await
+        .expect("first run");
 
     let runner_b = Arc::new(MockRunner::new(vec![MockStep::Finish(
         RunnerOutcome::Completed,
     )]));
-    let err = drive_job(&rpc, job_id, runner_b).await.unwrap_err();
+    let err = drive_job(&rpc, job_id, runner_b, None).await.unwrap_err();
     assert!(matches!(err, RpcError::Conflict(_)), "{err:?}");
 }
 
@@ -158,7 +164,8 @@ async fn stop_during_run_wins_against_completion() {
 
     let rpc_ref: &'static InProcessRpc = Box::leak(Box::new(rpc));
     let runner_clone = Arc::clone(&runner);
-    let drive_handle = tokio::spawn(async move { drive_job(rpc_ref, job_id, runner_clone).await });
+    let drive_handle =
+        tokio::spawn(async move { drive_job(rpc_ref, job_id, runner_clone, None).await });
 
     tokio::time::sleep(Duration::from_millis(10)).await;
     rpc_ref

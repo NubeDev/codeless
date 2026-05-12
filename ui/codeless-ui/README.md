@@ -23,8 +23,12 @@ pnpm dev
   Responsive design + shell-injected interfaces (clipboard, file
   picker, biometric) cover every per-platform difference.
 
-Full rationale: workspace [`CLAUDE.md`](../../../CLAUDE.md) R2/R3 and
-[`DOCS/SCOPE.md`](../../../DOCS/SCOPE.md) "One UI, four shells".
+Full rationale: workspace [`CLAUDE.md`](../../../CLAUDE.md) R2/R3,
+[`DOCS/SCOPE.md`](../../../DOCS/SCOPE.md) "One UI, four shells", and
+the working translation in
+[`DOCS/UI-ARCHITECTURE.md`](../../../DOCS/UI-ARCHITECTURE.md).
+Per-file conversion worklist:
+[`DOCS/UI-PORT-AUDIT.md`](../../../DOCS/UI-PORT-AUDIT.md).
 
 ## Origin
 

@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 codeless-types = { path = "../codeless-types" }
 codeless-rpc = { path = "../codeless-rpc" }
+codeless-adapters-host = { path = "../codeless-adapters-host" }
 async-trait = "0.1"
 futures-core = "0.3"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -24,6 +25,11 @@ pub enum RunnerOutcome {
 pub struct RunnerContext {
     pub job_id: JobId,
     pub bus: Arc<EventBus>,
+    /// Provisioned `git worktree` checkout for this run, when the
+    /// driver has one to hand. `None` keeps the early test harness
+    /// path working without a real repo on disk — the production
+    /// drive_job path always populates this from `WorktreeManager`.
+    pub worktree_path: Option<PathBuf>,
 }
 
 /// Host-side runner contract. Asynchronously drives one job to a

@@ -92,7 +92,7 @@ async fn run_once(prompt: String, repo_path: std::path::PathBuf) -> Result<ExitC
     let drive_rpc = Arc::clone(&rpc);
     let drive_job_id = job.id;
     let drive = tokio::spawn(async move {
-        drive_job(&drive_rpc, drive_job_id, runner)
+        drive_job(&drive_rpc, drive_job_id, runner, None)
             .await
             .map_err(|e| anyhow!("drive_job: {e}"))
     });
