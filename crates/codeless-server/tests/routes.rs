@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
-use codeless_rpc::{AddRepoArgs, ListReposResult, RpcServer, SubmitJobArgs};
+use codeless_rpc::{
+    AddRepoArgs, ListReposResult, RpcServer, RunnerInfo, ServerInfo, SubmitJobArgs,
+};
 use codeless_runtime::InProcessRpc;
 use codeless_server::{build_router, AppState};
 use codeless_types::{GitAuth, Job, Repo};
@@ -53,6 +55,42 @@ async fn healthz_and_version_are_unauthenticated() {
         .await
         .unwrap();
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_info_returns_configured_snapshot_without_token() {
+    let rpc = Arc::new(InProcessRpc::new().await.expect("rpc init"));
+    let info = ServerInfo {
+        version: "test-v".into(),
+        runners: vec![
+            RunnerInfo {
+                id: "mock".into(),
+                default: false,
+            },
+            RunnerInfo {
+                id: "claude".into(),
+                default: true,
+            },
+        ],
+        fs_root: Some("/tmp/demo".into()),
+        worktree_root: Some("/tmp/demo/.codeless/worktrees".into()),
+    };
+    let state = AppState::new(rpc, TOKEN).with_server_info(info.clone());
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/server/info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let got: ServerInfo = serde_json::from_value(body_json(resp).await).unwrap();
+    assert_eq!(got, info);
 }
 
 fn token_auth() -> GitAuth {

@@ -20,7 +20,7 @@ mod sse;
 use std::sync::Arc;
 
 use axum::Router;
-use codeless_rpc::RpcServer;
+use codeless_rpc::{RpcServer, ServerInfo};
 
 pub use auth::TokenLoadError;
 
@@ -55,6 +55,12 @@ impl AuthMode {
 pub struct AppState {
     pub rpc: Arc<dyn RpcServer>,
     pub auth: AuthMode,
+    /// Snapshot served unauthenticated at `GET /server/info`. The UI
+    /// reads it once on boot to populate the runner dropdown and to
+    /// decide whether to render the demo-only path. Wrapped in `Arc`
+    /// so cloning the state across handler invocations stays cheap;
+    /// the contents are immutable for the server's lifetime.
+    pub server_info: Arc<ServerInfo>,
 }
 
 impl AppState {
@@ -65,6 +71,7 @@ impl AppState {
         Self {
             rpc,
             auth: AuthMode::required(bearer_token),
+            server_info: Arc::new(ServerInfo::default()),
         }
     }
 
@@ -75,7 +82,17 @@ impl AppState {
         Self {
             rpc,
             auth: AuthMode::Open,
+            server_info: Arc::new(ServerInfo::default()),
         }
+    }
+
+    /// Replace the `/server/info` payload. Returns `self` for builder-
+    /// style chaining at the CLI call site, which is the only producer
+    /// of a non-default `ServerInfo`. Tests that do not care about the
+    /// snapshot can stick with the constructors above.
+    pub fn with_server_info(mut self, info: ServerInfo) -> Self {
+        self.server_info = Arc::new(info);
+        self
     }
 }
 

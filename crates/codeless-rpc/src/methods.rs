@@ -167,3 +167,40 @@ pub struct FsStatResult {
 pub struct FsCwdResult {
     pub path: String,
 }
+
+/// One entry in `ServerInfo.runners`. The `id` matches the runner key
+/// the driver dispatches on (`mock`, `claude`, `anthropic`); the UI
+/// uses it as the value submitted in `SubmitJobArgs.runner`. `default`
+/// flags the runner the UI should pre-select when opening the submit
+/// dialog — the server picks at most one, with a stable preference for
+/// real runners over the mock so a freshly-`--enable-claude` server
+/// does not silently default new jobs to the demo path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct RunnerInfo {
+    pub id: String,
+    pub default: bool,
+}
+
+/// `GET /server/info` payload. Sits outside the bearer gate alongside
+/// `/healthz` and `/version` — the UI must reach it before the user
+/// can supply a token, since the runner dropdown and "demo mode"
+/// banner both depend on it. No mutable runtime state leaks here; it
+/// is a snapshot of how `codeless serve` was configured.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ServerInfo {
+    pub version: String,
+    pub runners: Vec<RunnerInfo>,
+    pub fs_root: Option<String>,
+    pub worktree_root: Option<String>,
+}
+
+impl Default for ServerInfo {
+    fn default() -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            runners: Vec::new(),
+            fs_root: None,
+            worktree_root: None,
+        }
+    }
+}

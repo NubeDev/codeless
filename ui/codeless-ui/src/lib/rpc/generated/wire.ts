@@ -305,6 +305,34 @@ export type ReviewId = string;
  */
 export type ReviewStatus = "pending" | "approved" | "rejected" | "stopped" | "rerun-requested";
 
+/**
+ *  One entry in `ServerInfo.runners`. The `id` matches the runner key
+ *  the driver dispatches on (`mock`, `claude`, `anthropic`); the UI
+ *  uses it as the value submitted in `SubmitJobArgs.runner`. `default`
+ *  flags the runner the UI should pre-select when opening the submit
+ *  dialog — the server picks at most one, with a stable preference for
+ *  real runners over the mock so a freshly-`--enable-claude` server
+ *  does not silently default new jobs to the demo path.
+ */
+export type RunnerInfo = {
+	id: string,
+	default: boolean,
+};
+
+/**
+ *  `GET /server/info` payload. Sits outside the bearer gate alongside
+ *  `/healthz` and `/version` — the UI must reach it before the user
+ *  can supply a token, since the runner dropdown and "demo mode"
+ *  banner both depend on it. No mutable runtime state leaks here; it
+ *  is a snapshot of how `codeless serve` was configured.
+ */
+export type ServerInfo = {
+	version: string,
+	runners: RunnerInfo[],
+	fs_root: string | null,
+	worktree_root: string | null,
+};
+
 // A verify-gated chunk of a job — see SCOPE.md Appendix A `stages`.
 export type Stage = {
 	id: StageId,

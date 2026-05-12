@@ -18,7 +18,7 @@ pub use methods::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    RemoveRepoArgs, RunnerInfo, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

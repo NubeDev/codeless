@@ -9,7 +9,7 @@ use codeless_rpc::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, RpcError, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    RemoveRepoArgs, RpcError, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -49,7 +49,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             "/version",
             get(|| async { env!("CARGO_PKG_VERSION").to_string() }),
-        );
+        )
+        .route("/server/info", get(server_info));
 
     // Permissive CORS is correct for the single-tenant MVP: the
     // server binds loopback by default (R5), so "any origin" only
@@ -217,4 +218,12 @@ async fn fs_cwd(
     _body: Option<Json<Value>>,
 ) -> HandlerResult<FsCwdResult> {
     st.rpc.fs_cwd().await.map(Json).map_err(map_err)
+}
+
+/// Unauthenticated snapshot of the server's configuration. The UI hits
+/// this before it has a bearer token, so it must sit outside the
+/// `/rpc/*` gate. Returning `ServerInfo` by clone keeps the response
+/// owned and decoupled from the shared `Arc` inside `AppState`.
+async fn server_info(State(st): State<AppState>) -> Json<ServerInfo> {
+    Json((*st.server_info).clone())
 }

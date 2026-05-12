@@ -14,7 +14,7 @@ use codeless_rpc::methods::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    RemoveRepoArgs, RunnerInfo, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -44,7 +44,9 @@ fn collect() -> TypeCollection {
         .register_mut::<FsWriteFileArgs>()
         .register_mut::<FsStatArgs>()
         .register_mut::<FsStatResult>()
-        .register_mut::<FsCwdResult>();
+        .register_mut::<FsCwdResult>()
+        .register_mut::<RunnerInfo>()
+        .register_mut::<ServerInfo>();
     types
 }
 

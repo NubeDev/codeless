@@ -17,7 +17,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
-use codeless_rpc::RpcServer;
+use codeless_rpc::{RpcServer, RunnerInfo, ServerInfo};
 use codeless_runtime::{
     spawn_job_driver_loop, spawn_notifier, AnthropicRunnerAdapter, ClaudeRunnerAdapter,
     InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome, WebhookConfig,
@@ -181,7 +181,12 @@ async fn run_server(
     }
     let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
-    let state = AppState { rpc: rpc_dyn, auth };
+    let server_info = Arc::new(build_server_info(&args));
+    let state = AppState {
+        rpc: rpc_dyn,
+        auth,
+        server_info,
+    };
 
     // Outbound webhook notifier: when both `notifier_webhook_url`
     // and `notifier_webhook_hmac_key_hex` are present in the secrets
@@ -270,6 +275,42 @@ async fn run_server(
     .map_err(|e| anyhow!("serve: {e}"))?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Build the `/server/info` snapshot from the parsed `serve` flags.
+/// The runner list mirrors `DefaultRunnerFactory`'s enabled set so the
+/// UI dropdown reflects exactly what the driver will accept. The
+/// default flag prefers real runners over `mock` when at least one is
+/// enabled, so a `--enable-claude` server does not silently default
+/// new jobs to the demo path; with only `mock`, the demo runner stays
+/// the default.
+fn build_server_info(args: &ServeArgs) -> ServerInfo {
+    let mut runners = Vec::new();
+    let real_runner_enabled = args.enable_claude || args.enable_anthropic;
+    runners.push(RunnerInfo {
+        id: "mock".to_owned(),
+        default: !real_runner_enabled,
+    });
+    if args.enable_claude {
+        runners.push(RunnerInfo {
+            id: "claude".to_owned(),
+            default: true,
+        });
+    }
+    if args.enable_anthropic {
+        runners.push(RunnerInfo {
+            id: "anthropic".to_owned(),
+            // `claude` wins the default when both flags are passed; the
+            // anthropic REST runner is the secondary path.
+            default: !args.enable_claude,
+        });
+    }
+    ServerInfo {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        runners,
+        fs_root: args.fs_root.as_ref().map(|p| p.display().to_string()),
+        worktree_root: args.worktree_root.as_ref().map(|p| p.display().to_string()),
+    }
 }
 
 /// Pull webhook-notifier config out of the secrets file. Two flat
