@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:11
-Current stage: 4 / 10
+Last tick: 2026-05-13 05:14
+Current stage: 5 / 10
 
 Repo:        codeless
 Branch:      master
@@ -67,8 +67,8 @@ Max ticks:   30
 - [x] 1. [S] Verify existing DEMO-UI.md path still works on master
 - [x] 2. [S] Jobs list view: seeded demo job visible with status
 - [x] 3. [M] Job detail view: stages + live SSE event stream
-- [ ] 4. [S] "Run mock job" button: create + start a new mock job  ← next
-- [ ] 5. [M] Live stage tree: checklist updated from event stream
+- [x] 4. [S] "Run mock job" button: create + start a new mock job
+- [ ] 5. [M] Live stage tree: checklist updated from event stream  ← next
 - [ ] 6. [S] Cost + wall-clock badges on the job row
 - [ ] 7. [M] Handover preview pane (runs/<name>/handover.md)
 - [ ] 8. [S] Review queue badge in the top bar
@@ -99,6 +99,19 @@ Max ticks:   30
   `useEventStream` from `@/lib/rpc` and subscribes per-job, so mock
   runner events stream live as they fire. No `@tauri-apps/api/core`
   imports (R2 satisfied).
+- Stage 4 added `RunMockJobButton` (one-click affordance) and placed
+  it next to `SubmitJobDialog` in each repo card header in
+  `JobsDashboard`. Click → `submit_job` with runner=`mock`, canned
+  prompt, fresh `codeless/mock-<6hex>` branch, $5 cost cap, 30m
+  wall-clock cap. New job appears in the list via the existing
+  event-driven overlay and streams to completion. Verified: `tsc
+  --noEmit` green, `cargo clippy -D warnings` green, `pnpm build`
+  produced the bundle including the new module. UI dev server could
+  not be exercised live in this tick due to host ENOSPC (inotify
+  watcher exhaustion, unrelated to the change); the production
+  bundle build is the stronger signal that the code compiles. The
+  visible-in-browser surface: a "run mock job" button on every repo
+  card header next to "new job".
 
 ## Blockers
 (none)

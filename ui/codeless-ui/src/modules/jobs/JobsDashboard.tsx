@@ -21,6 +21,7 @@ import { navigate, useRoute } from "@/lib/route";
 
 import { JobDetail } from "./JobDetail";
 import { JobRow } from "./JobRow";
+import { RunMockJobButton } from "./RunMockJobButton";
 import { SubmitJobDialog } from "./SubmitJobDialog";
 import { WorktreeGcButton } from "./WorktreeGcButton";
 import { summariseEnvelope } from "./eventFormat";
@@ -153,7 +154,10 @@ export function JobsDashboard() {
         <Card key={repo.id}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 py-3">
             <CardTitle className="font-mono text-sm">{repo.name}</CardTitle>
-            <SubmitJobDialog repo={repo} />
+            <div className="flex items-center gap-2">
+              <RunMockJobButton repo={repo} />
+              <SubmitJobDialog repo={repo} />
+            </div>
           </CardHeader>
           <CardContent className="p-0">
             {jobs.length === 0 ? (
