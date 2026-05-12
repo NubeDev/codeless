@@ -9,6 +9,7 @@
 //! land in later phases.
 
 mod job;
+mod repos;
 mod review;
 mod rpc_open;
 mod run;
@@ -43,6 +44,20 @@ struct Cli {
     /// across all CLI invocations.
     #[arg(long, global = true, env = "CODELESS_DB")]
     db: Option<PathBuf>,
+
+    /// Origin of a hosted `codeless-server`, e.g.
+    /// `http://127.0.0.1:7777`. When set, supported subcommands use
+    /// `codeless-client::HttpRpcClient` instead of the in-process
+    /// runtime; `--db` is ignored. Pair with `--token` (or
+    /// `CODELESS_TOKEN`) for authenticated cores.
+    #[arg(long, global = true, env = "CODELESS_CORE")]
+    core: Option<String>,
+
+    /// Bearer token for hosted-mode RPC. Required when `--core` is
+    /// set and the core has a `core_bearer_token` configured. The
+    /// env var form keeps the token out of shell history.
+    #[arg(long, global = true, env = "CODELESS_TOKEN")]
+    token: Option<String>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -84,6 +99,14 @@ enum Cmd {
     /// binary. `--init-token` generates the shared bearer token
     /// without starting the server.
     Serve(serve::ServeArgs),
+    /// Manage repos. The `list` verb works in both local-mode
+    /// (`--db <path>`) and hosted-mode (`--core URL --token T`) —
+    /// it's the first dual-mode verb and exists primarily as the
+    /// smoke test for the `HttpRpcClient` round-trip.
+    Repos {
+        #[command(subcommand)]
+        verb: repos::Verb,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -165,6 +188,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             let secrets_path = resolve_secrets_path(cli.secrets_file)?;
             serve::handle(args, secrets_path, cli.db)
         }
+        Cmd::Repos { verb } => repos::handle(verb, cli.core, cli.token, cli.db),
     }
 }
 

@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 codeless-adapters-host = { path = "../codeless-adapters-host" }
+codeless-client = { path = "../codeless-client" }
 codeless-rpc = { path = "../codeless-rpc" }
 codeless-runtime = { path = "../codeless-runtime" }
 codeless-server = { path = "../codeless-server" }

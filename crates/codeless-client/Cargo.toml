@@ -5,7 +5,25 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Codeless: SSE + REST + WebSocket client. The single thin-client library, used by browser and mobile shells. iOS- and Android-safe."
+description = "Codeless: SSE + REST client. iOS- and Android-safe. The CLI's `--core` mode and the future mobile shells both depend on this."
 
 [lints]
 workspace = true
+
+[dependencies]
+codeless-rpc = { path = "../codeless-rpc" }
+codeless-types = { path = "../codeless-types" }
+async-stream = "0.3"
+async-trait = "0.1"
+futures-core = "0.3"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+[dev-dependencies]
+axum = "0.7"
+codeless-runtime = { path = "../codeless-runtime" }
+codeless-server = { path = "../codeless-server" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
