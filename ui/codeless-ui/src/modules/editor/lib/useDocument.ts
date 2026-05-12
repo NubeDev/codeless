@@ -44,26 +44,20 @@ export function useDocument({ path, onDirtyChange }: Options) {
       .call("fs_read_file", { path, byte_limit: null })
       .then((res) => {
         if (cancelled) return;
-        if (res.kind === "text") {
-          savedRef.current = res.content;
-          bufferRef.current = res.content;
-          setDoc({
-            status: "ready",
-            content: res.content,
-            size: new TextEncoder().encode(res.content).length,
-          });
-        } else if (res.kind === "binary") {
-          setDoc({
-            status: "binary",
-            size: Math.ceil((res.bytes_base64.length * 3) / 4),
-          });
-        } else if (res.kind === "toolarge") {
-          setDoc({
-            status: "toolarge",
-            size: res.size,
-            limit: res.limit,
-          });
-        }
+        // The wire result is `{ content }` — binary and over-limit
+        // variants are not yet on the Rust side. The `binary` and
+        // `toolarge` legs of `DocumentState` stay because the editor
+        // needs them once those variants land; until then any non-
+        // utf8 file surfaces as `InvalidArgument` from the server
+        // and falls through the `catch` below.
+        const content = (res as { content: string }).content;
+        savedRef.current = content;
+        bufferRef.current = content;
+        setDoc({
+          status: "ready",
+          content,
+          size: new TextEncoder().encode(content).length,
+        });
       })
       .catch((e) => {
         if (!cancelled) setDoc({ status: "error", message: String(e) });
@@ -91,6 +85,9 @@ export function useDocument({ path, onDirtyChange }: Options) {
   const save = useCallback(async () => {
     if (!dirty) return;
     const content = bufferRef.current;
+    // `create_parents` is not on the Rust `FsWriteFileArgs`; serde
+    // ignores it. The mock client still reads it, so leaving it here
+    // keeps both transports working until the mock catches up.
     await rpc.call("fs_write_file", {
       path,
       content,
