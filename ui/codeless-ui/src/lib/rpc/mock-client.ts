@@ -130,10 +130,7 @@ export class MockRpcClient implements RpcClient {
         };
         this.jobs.push(job);
         this.emit({ type: "job-queued", job_id: job.id, repo_id: job.repo_id });
-        // Synthesise a short happy-path lifecycle so any timeline UI has
-        // something to render against the mock.
-        setTimeout(() => this.advance(job, "running"), 200);
-        setTimeout(() => this.advance(job, "completed"), 1500);
+        this.synthesiseLifecycle(job);
         return job as RpcResultOf<M>;
       }
 
@@ -178,24 +175,122 @@ export class MockRpcClient implements RpcClient {
     job.status = status;
     if (status === "running") {
       job.started_at = Date.now();
-      this.emit({ type: "job-started", job_id: job.id });
+      this.emit({ type: "job-started", job_id: job.id }, job.id);
     } else if (status === "completed") {
       job.ended_at = Date.now();
-      this.emit({ type: "job-completed", job_id: job.id });
+      this.emit({ type: "job-completed", job_id: job.id }, job.id);
     }
   }
 
-  private emit(event: Event) {
+  // Synthesise a happy-path lifecycle: queue → run → two stages each
+  // with one task → complete. Timings are short so the mock stays
+  // snappy; structure mirrors what a real `codeless-runtime` emits so
+  // timeline UI can be developed against the same shape.
+  private synthesiseLifecycle(job: Job) {
+    setTimeout(() => this.advance(job, "running"), 150);
+
+    const stages = ["plan", "implement"] as const;
+    let t = 250;
+
+    for (const name of stages) {
+      const stageId = ulid();
+      const taskId = ulid();
+      schedule(t, () =>
+        this.emit(
+          { type: "stage-started", stage_id: stageId, job_id: job.id },
+          job.id,
+          stageId,
+        ),
+      );
+      schedule(t + 50, () =>
+        this.emit(
+          {
+            type: "task-enqueued",
+            task_id: taskId,
+            stage_id: stageId,
+            depends_on: [],
+          },
+          job.id,
+          stageId,
+          taskId,
+        ),
+      );
+      schedule(t + 100, () =>
+        this.emit({ type: "task-started", task_id: taskId }, job.id, stageId, taskId),
+      );
+      // Stream a few AI tokens so the timeline shows live activity.
+      for (let i = 0; i < 4; i++) {
+        schedule(t + 200 + i * 80, () =>
+          this.emit(
+            {
+              type: "ai-token",
+              task_id: taskId,
+              delta: name === "plan" ? "plan… " : "edit… ",
+            },
+            job.id,
+            stageId,
+            taskId,
+          ),
+        );
+      }
+      schedule(t + 600, () =>
+        this.emit(
+          {
+            type: "ai-message-complete",
+            task_id: taskId,
+            input_tokens: 320,
+            output_tokens: 180,
+            cost_cents: 4,
+          },
+          job.id,
+          stageId,
+          taskId,
+        ),
+      );
+      schedule(t + 700, () =>
+        this.emit(
+          { type: "task-completed", task_id: taskId, status: "completed" },
+          job.id,
+          stageId,
+          taskId,
+        ),
+      );
+      schedule(t + 800, () =>
+        this.emit(
+          { type: "stage-completed", stage_id: stageId, status: "passed" },
+          job.id,
+          stageId,
+        ),
+      );
+      t += 1000;
+    }
+
+    setTimeout(() => this.advance(job, "completed"), t + 100);
+  }
+
+  // Override scope ids when the event variant doesn't carry them
+  // explicitly — `stage-completed` etc. omit `job_id` even though the
+  // envelope still needs to be tagged with one for filter matching.
+  private emit(
+    event: Event,
+    jobId?: string | null,
+    stageId?: string | null,
+    taskId?: string | null,
+  ) {
     const env: EventEnvelope = {
       cursor: nextCursor++,
-      job_id: jobIdOf(event),
-      stage_id: stageIdOf(event),
-      task_id: taskIdOf(event),
+      job_id: jobId ?? jobIdOf(event),
+      stage_id: stageId ?? stageIdOf(event),
+      task_id: taskId ?? taskIdOf(event),
       created_at: Date.now(),
       event,
     };
     for (const s of this.subscribers) s(env);
   }
+}
+
+function schedule(ms: number, fn: () => void) {
+  setTimeout(fn, ms);
 }
 
 function sleep(ms: number) {
