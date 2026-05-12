@@ -255,14 +255,48 @@ async fn job_filtered_subscription_drops_unrelated_events() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn since_cursor_replay_is_not_yet_implemented() {
+async fn since_cursor_replay_returns_events_above_cursor() {
     let rpc = InProcessRpc::new().await.unwrap();
-    let res = rpc
+    let repo = rpc
+        .add_repo(AddRepoArgs {
+            name: "demo".into(),
+            clone_url: "https://example.test/demo.git".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp/demo".into(),
+            git_auth: token_auth(),
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .expect("add_repo");
+    let job = rpc
+        .submit_job(SubmitJobArgs {
+            repo_id: repo.id,
+            prompt: Some("x".into()),
+            template_yaml: None,
+            runner: "mock".into(),
+            branch: "codeless/job-x".into(),
+            cost_cap_cents: 0,
+            wall_clock_cap_ms: 60_000,
+        })
+        .await
+        .expect("submit_job");
+
+    let mut stream = rpc
         .subscribe(EventFilter::All, Some(codeless_types::EventCursor(1)))
-        .await;
-    match res {
-        Err(RpcError::Conflict(_)) => {}
-        Err(other) => panic!("expected Conflict, got {other:?}"),
-        Ok(_) => panic!("expected Conflict, got Ok stream"),
+        .await
+        .expect("subscribe");
+    let env = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("timeout")
+        .expect("stream end")
+        .expect("stream error");
+    assert_eq!(env.cursor.0, 2);
+    match env.event {
+        Event::JobQueued { job_id, repo_id } => {
+            assert_eq!(job_id, job.id);
+            assert_eq!(repo_id, repo.id);
+        }
+        other => panic!("expected job-queued at cursor 2, got {other:?}"),
     }
 }

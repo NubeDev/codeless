@@ -15,11 +15,12 @@ use crate::store::SqliteStore;
 use crate::time::now_ms;
 
 /// In-process `RpcServer`. The CLI's `codeless run --once` path talks
-/// to this directly without serialising over a wire; the same struct
-/// is what the hosted server will hand to `axum` handlers in a later
-/// phase. Repo and job rows live in SQLite (`SqliteStore`); the event
-/// bus is still in-memory broadcast — `since`-cursor replay against
-/// the persisted event log lands in a follow-up stage.
+/// to this directly without serialising over a wire; the hosted
+/// server will hand the same struct to `axum` handlers. Repo, job,
+/// and event rows are persisted in SQLite via `SqliteStore` and
+/// `EventBus`; the broadcast channel inside the bus is the live
+/// fan-out for in-process subscribers and the catch-up path goes
+/// through the events table.
 pub struct InProcessRpc {
     store: Arc<SqliteStore>,
     bus: Arc<EventBus>,
@@ -217,15 +218,10 @@ impl RpcServer for InProcessRpc {
     }
 
     async fn subscribe(&self, filter: EventFilter, since: Since) -> RpcResult<EventStream> {
-        if since.is_some() {
-            return Err(RpcError::Conflict(
-                "since-cursor replay is not implemented until the SQLite event log lands".into(),
-            ));
-        }
         let local = match filter {
             EventFilter::All => SubscribeFilter::All,
             EventFilter::Job { job_id } => SubscribeFilter::Job(job_id),
         };
-        Ok(self.bus.subscribe(local))
+        self.bus.subscribe_since(local, since).await.map_err(db_err)
     }
 }
