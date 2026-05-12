@@ -33,6 +33,17 @@ pub(crate) fn router(state: AppState) -> Router {
 
     let events = Router::new().route("/events", get(events_handler));
 
+    // `/healthz` and `/version` sit outside the bearer gate so probes
+    // and human curl-the-server checks work without provisioning a
+    // token. Neither leaks state: healthz returns a constant, version
+    // returns the crate version baked in at build time.
+    let unauthenticated = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route(
+            "/version",
+            get(|| async { env!("CARGO_PKG_VERSION").to_string() }),
+        );
+
     // Permissive CORS is correct for the single-tenant MVP: the
     // server binds loopback by default (R5), so "any origin" only
     // covers other processes on the same host that already have
@@ -47,6 +58,7 @@ pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .merge(rpc_routes)
         .merge(events)
+        .merge(unauthenticated)
         .layer(cors)
         .with_state(state)
 }

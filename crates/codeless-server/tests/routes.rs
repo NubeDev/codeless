@@ -24,6 +24,37 @@ use tower::ServiceExt;
 
 const TOKEN: &str = "test-token-0123456789";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthz_and_version_are_unauthenticated() {
+    let (app, _) = fresh_app().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 64).await.unwrap();
+    assert_eq!(&body[..], b"ok");
+
+    let resp = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/version")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+}
+
 fn token_auth() -> GitAuth {
     GitAuth::Token {
         env_var: "GITHUB_TOKEN".into(),

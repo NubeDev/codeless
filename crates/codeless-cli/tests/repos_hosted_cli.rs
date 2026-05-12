@@ -135,6 +135,67 @@ fn repos_list_local_mode_works_without_core() {
         .success();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repos_add_then_list_then_remove_local_mode() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("codeless.db");
+
+    let add_out = TestCommand::new(BIN)
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "repos",
+            "add",
+            "demo",
+            "--clone-url",
+            "https://example.test/demo.git",
+            "--local-path",
+            "/tmp/demo-cli-added",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        add_out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&add_out.stderr)
+    );
+    let repo_id = String::from_utf8(add_out.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    assert!(!repo_id.is_empty());
+
+    let list_out = TestCommand::new(BIN)
+        .args(["--db", db.to_str().unwrap(), "repos", "list"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&list_out.stdout);
+    assert!(stdout.contains(&repo_id), "missing id in: {stdout}");
+    assert!(stdout.contains("demo"), "missing name in: {stdout}");
+
+    TestCommand::new(BIN)
+        .args(["--db", db.to_str().unwrap(), "repos", "remove", &repo_id])
+        .assert()
+        .success();
+
+    // After remove, the repo no longer surfaces in list.
+    let list_again = TestCommand::new(BIN)
+        .args(["--db", db.to_str().unwrap(), "repos", "list"])
+        .output()
+        .unwrap();
+    let stdout_after = String::from_utf8_lossy(&list_again.stdout);
+    assert!(!stdout_after.contains(&repo_id));
+}
+
+#[test]
+fn repos_remove_unknown_id_fails() {
+    let out = TestCommand::new(BIN)
+        .args(["repos", "remove", "01J0Y0XK4PC6V8M0H0N6MAW7TR"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
 #[test]
 fn token_without_core_rejected() {
     let out = TestCommand::new(BIN)
