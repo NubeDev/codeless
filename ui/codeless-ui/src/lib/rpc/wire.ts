@@ -169,3 +169,38 @@ export interface EventEnvelope {
   created_at: UnixMillis;
   event: Event;
 }
+
+// Filesystem wire types. Hand-mirrored from the forthcoming
+// `codeless-types::fs` additions targeted for the `fs.*` RPC surface
+// on `codeless-runtime` (driven from `codeless-adapters-host`'s
+// worktree filesystem layer). Shapes are deliberately small and
+// transport-friendly: the runtime never streams raw file contents
+// through the RPC channel — anything past the inline size budget
+// returns `kind: "toolarge"` and the client must fetch via a
+// follow-up streaming channel (Phase 5).
+
+export type FsKind = "file" | "dir" | "symlink";
+
+export interface FsEntry {
+  name: string;
+  kind: FsKind;
+  size: number | null;
+  mtime: UnixMillis | null;
+}
+
+export type FsReadResult =
+  | { kind: "text"; content: string; encoding: "utf-8" }
+  | { kind: "binary"; bytes_base64: string }
+  | { kind: "toolarge"; size: number; limit: number };
+
+export interface FsGrepHit {
+  path: string;
+  line: number;
+  column: number;
+  preview: string;
+}
+
+export interface FsGlobHit {
+  path: string;
+  kind: FsKind;
+}
