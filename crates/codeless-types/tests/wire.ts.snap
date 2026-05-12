@@ -51,6 +51,28 @@ export type EventEnvelope = {
 };
 
 /**
+ *  One entry from a directory listing. `size` and `mtime` are
+ *  `Option` because not every filesystem entry has them in the same
+ *  way — a symlink to a non-existent target carries no `mtime` from
+ *  the target, and a directory's `size` is platform-dependent and not
+ *  useful for UI display.
+ */
+export type FsEntry = {
+	name: string,
+	kind: FsEntryKind,
+	size: number | null,
+	mtime: UnixMillis | null,
+};
+
+/**
+ *  Type of one directory entry. Symlinks are surfaced as their own
+ *  kind rather than dereferenced because the explorer UI wants to
+ *  distinguish them (different icon, optional target reveal); the
+ *  reader follows the link only when the user opens it.
+ */
+export type FsEntryKind = "file" | "dir" | "symlink";
+
+/**
  *  How the core authenticates to a given repo's remote. Stored as JSON in
  *  the `repos.git_auth` column (SCOPE.md Appendix A). Variant kinds are
  *  stable wire labels; renaming any of them is a breaking change.

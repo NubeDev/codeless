@@ -5,6 +5,7 @@
 //! sqlx, ...) here would break that path.
 
 pub mod event;
+pub mod fs;
 pub mod git_auth;
 pub mod id;
 pub mod job;
@@ -16,6 +17,7 @@ pub mod task;
 pub mod time;
 
 pub use event::{Event, EventCursor, EventEnvelope};
+pub use fs::{FsEntry, FsEntryKind};
 pub use git_auth::GitAuth;
 pub use id::{JobId, RepoId, ReviewId, StageId, TaskId};
 pub use job::{Job, JobStatus, StopReason};

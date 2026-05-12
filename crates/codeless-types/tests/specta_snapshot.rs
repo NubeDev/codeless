@@ -9,9 +9,9 @@
 use std::path::PathBuf;
 
 use codeless_types::{
-    CostCents, Event, EventCursor, EventEnvelope, GitAuth, Job, JobId, JobStatus, Repo, RepoId,
-    Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId,
-    TaskStatus, UnixMillis,
+    CostCents, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId,
+    JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus,
+    StopReason, Task, TaskId, TaskStatus, UnixMillis,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -39,7 +39,9 @@ fn collect() -> TypeCollection {
         .register_mut::<Review>()
         .register_mut::<ReviewStatus>()
         .register_mut::<Event>()
-        .register_mut::<EventEnvelope>();
+        .register_mut::<EventEnvelope>()
+        .register_mut::<FsEntry>()
+        .register_mut::<FsEntryKind>();
     types
 }
 
