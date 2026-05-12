@@ -9,3 +9,16 @@ description = "Codeless: state machine, scheduler, queue, event bus, sqlx. Host-
 
 [lints]
 workspace = true
+
+[dependencies]
+codeless-types = { path = "../codeless-types" }
+codeless-rpc = { path = "../codeless-rpc" }
+async-trait = "0.1"
+futures-core = "0.3"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
+futures-util = "0.3"

@@ -9,3 +9,10 @@ description = "Codeless: transport-agnostic RPC trait and client glue. iOS- and 
 
 [lints]
 workspace = true
+
+[dependencies]
+codeless-types = { path = "../codeless-types" }
+serde = { version = "1", features = ["derive"] }
+async-trait = "0.1"
+futures-core = "0.3"
+thiserror = "2"
