@@ -159,6 +159,65 @@ pub fn default_handover(runner: &str, status: JobStatus) -> Handover {
     }
 }
 
+/// Locate the most recently written handover under
+/// `<repo_path>/.codeless/worktrees/job-*/runs/*/handover.md`. Returns
+/// the file's path and parsed content; `None` if no readable handover
+/// is present. The selection is "newest by mtime" — good enough until
+/// the path layout migrates to `<repo>/runs/<name>/handover.md`
+/// (JOB-MODEL.md's spec; today we still write per-worktree per-ulid).
+///
+/// Errors reading individual files are swallowed: a half-written
+/// handover from a crashed run should not block the next session's
+/// pickup. The caller can decide what to do with a `None` (mock
+/// runner: probably skip the prefix; real runner: same).
+pub async fn find_latest_handover(repo_path: &Path) -> Option<(std::path::PathBuf, Handover)> {
+    let worktrees = repo_path.join(".codeless").join("worktrees");
+    let mut wt_dir = match tokio::fs::read_dir(&worktrees).await {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    while let Ok(Some(wt_entry)) = wt_dir.next_entry().await {
+        let runs = wt_entry.path().join("runs");
+        let mut runs_dir = match tokio::fs::read_dir(&runs).await {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        while let Ok(Some(job_entry)) = runs_dir.next_entry().await {
+            let candidate = job_entry.path().join("handover.md");
+            let meta = match tokio::fs::metadata(&candidate).await {
+                Ok(m) if m.is_file() => m,
+                _ => continue,
+            };
+            let mtime = meta.modified().ok()?;
+            if best.as_ref().map_or(true, |(t, _)| mtime > *t) {
+                best = Some((mtime, candidate));
+            }
+        }
+    }
+    let (_, path) = best?;
+    let body = tokio::fs::read_to_string(&path).await.ok()?;
+    let handover = Handover::from_markdown(&body).ok()?;
+    Some((path, handover))
+}
+
+/// Render a handover as a prompt prefix the next runner sees. Names
+/// the source path so the model can tell where the contract came from
+/// and frames the four sections explicitly (the system prompt already
+/// teaches the model the schema; this is the *previous* session's
+/// answers, not the format).
+pub fn prompt_prefix_for(path: &Path, h: &Handover) -> String {
+    let mut out = String::new();
+    out.push_str("# Prior session handover\n\n");
+    out.push_str(&format!(
+        "Read this before doing anything else. Source: `{}`.\n\n",
+        path.display()
+    ));
+    out.push_str(&h.to_markdown());
+    out.push_str("\n---\n\n# Your task\n\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +300,70 @@ trailing prose";
         let body = &h.what_you_need_to_know[0];
         assert!(body.starts_with('…'));
         assert!(body.chars().count() <= 201);
+    }
+
+    #[tokio::test]
+    async fn find_latest_handover_picks_newest_by_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let older_job = JobId::new();
+        let newer_job = JobId::new();
+        // Layout: <repo>/.codeless/worktrees/job-<id>/runs/<id>/handover.md
+        let older_wt = repo
+            .join(".codeless/worktrees")
+            .join(format!("job-{older_job}"));
+        let newer_wt = repo
+            .join(".codeless/worktrees")
+            .join(format!("job-{newer_job}"));
+        write_handover(
+            &older_wt,
+            older_job,
+            &Handover {
+                done: vec!["older".into()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        // Sleep a hair so the mtime ordering is observable; tokio's
+        // tempdir doesn't guarantee sub-second resolution on every
+        // filesystem.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        write_handover(
+            &newer_wt,
+            newer_job,
+            &Handover {
+                done: vec!["newer".into()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (path, h) = find_latest_handover(repo).await.expect("found");
+        assert_eq!(h.done, vec!["newer".to_string()]);
+        assert!(path.to_string_lossy().contains(&newer_job.to_string()));
+    }
+
+    #[tokio::test]
+    async fn find_latest_handover_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(find_latest_handover(tmp.path()).await.is_none());
+    }
+
+    #[test]
+    fn prompt_prefix_includes_path_and_sections() {
+        let h = Handover {
+            done: vec!["one thing".into()],
+            next: vec!["another".into()],
+            ..Default::default()
+        };
+        let p = std::path::Path::new("/repo/.codeless/worktrees/job-X/runs/X/handover.md");
+        let prefix = prompt_prefix_for(p, &h);
+        assert!(prefix.contains("# Prior session handover"));
+        assert!(prefix.contains("/repo/.codeless"));
+        assert!(prefix.contains("## Done"));
+        assert!(prefix.contains("one thing"));
+        assert!(prefix.contains("# Your task"));
     }
 
     #[test]

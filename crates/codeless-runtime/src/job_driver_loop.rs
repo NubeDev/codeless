@@ -170,7 +170,7 @@ async fn dispatch<F: RunnerFactory>(
     semaphore: Arc<Semaphore>,
     job_id: codeless_types::JobId,
 ) {
-    let job = match rpc.store().get_job(job_id).await {
+    let mut job = match rpc.store().get_job(job_id).await {
         Ok(Some(job)) => job,
         Ok(None) => {
             tracing::warn!(%job_id, "driver: queued job not found");
@@ -188,6 +188,25 @@ async fn dispatch<F: RunnerFactory>(
         // semaphore isn't pointlessly held.
         return;
     }
+
+    // Prepend the prior session's handover to the prompt the runner
+    // sees, so the next session inherits the inter-session contract
+    // (JOB-MODEL.md "the handover is the only contract between
+    // sessions"). The augmented prompt only flows into the factory
+    // local-variable; the job row in SQLite still carries the
+    // original prompt the user submitted — what the UI shows in the
+    // detail header — so handover prefixing stays invisible at the
+    // wire level.
+    if let Ok(Some(repo)) = rpc.store().get_repo(job.repo_id).await {
+        let repo_path = std::path::PathBuf::from(&repo.local_path);
+        if let Some((path, prior)) = crate::handover::find_latest_handover(&repo_path).await {
+            let prefix = crate::handover::prompt_prefix_for(&path, &prior);
+            let original = job.prompt.clone().unwrap_or_default();
+            job.prompt = Some(format!("{prefix}{original}"));
+            tracing::info!(handover = %path.display(), "prepended prior handover to prompt");
+        }
+    }
+
     let runner = match factory.build(&job) {
         Some(r) => r,
         None => {
