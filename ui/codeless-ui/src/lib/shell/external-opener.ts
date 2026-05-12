@@ -5,10 +5,14 @@
 
 export interface ExternalOpenerAdapter {
   openUrl(url: string): Promise<void>;
+  // Reveal a local path in the OS file manager. No-op outside desktop
+  // shells — browser/mobile have no equivalent permission surface.
+  revealPath(path: string): Promise<void>;
 }
 
 export const browserExternalOpener: ExternalOpenerAdapter = {
   openUrl: async (url) => {
     window.open(url, "_blank", "noopener,noreferrer");
   },
+  revealPath: async () => {},
 };

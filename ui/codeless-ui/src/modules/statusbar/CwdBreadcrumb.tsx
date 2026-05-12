@@ -20,8 +20,9 @@ import {
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+
+import { useRpc } from "@/lib/rpc/provider";
 import { segmentsFromCwd } from "./lib/pathUtils";
 
 type Props = {
@@ -177,6 +178,7 @@ function CurrentSegmentDropdown({
   path: string;
   onCd: (p: string) => void;
 }) {
+  const rpc = useRpc();
   const [open, setOpen] = useState(false);
   const [children, setChildren] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -184,13 +186,15 @@ function CurrentSegmentDropdown({
   const load = useCallback(async () => {
     setError(null);
     try {
-      const dirs = await invoke<string[]>("list_subdirs", { path });
-      setChildren(dirs);
+      const { entries } = await rpc.call("fs_read_dir", { path });
+      setChildren(
+        entries.filter((e) => e.kind === "dir").map((e) => e.name).sort(),
+      );
     } catch (e) {
       setError(String(e));
       setChildren([]);
     }
-  }, [path]);
+  }, [path, rpc]);
 
   useEffect(() => {
     if (open) load();

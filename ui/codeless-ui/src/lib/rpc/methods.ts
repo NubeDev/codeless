@@ -14,6 +14,10 @@ import type {
   JobId,
   Repo,
   RepoId,
+  ShellBgEntry,
+  ShellBgLogChunk,
+  ShellCommandOutput,
+  ShellSessionRunOutput,
 } from "./wire";
 
 export interface AddRepoArgs {
@@ -193,6 +197,58 @@ export interface RpcMethodMap {
   secrets_get: { args: SecretsGetArgs; result: string | null };
   secrets_list: { args: Record<string, never>; result: SecretsListResult };
   secrets_rm: { args: SecretsRmArgs; result: null };
+
+  shell_run: { args: ShellRunArgs; result: ShellCommandOutput };
+  shell_session_open: { args: ShellSessionOpenArgs; result: number };
+  shell_session_run: { args: ShellSessionRunArgs; result: ShellSessionRunOutput };
+  shell_session_close: { args: ShellSessionCloseArgs; result: null };
+  shell_bg_spawn: { args: ShellBgSpawnArgs; result: number };
+  shell_bg_logs: { args: ShellBgLogsArgs; result: ShellBgLogChunk };
+  shell_bg_kill: { args: ShellBgKillArgs; result: null };
+  shell_bg_list: { args: Record<string, never>; result: { entries: ShellBgEntry[] } };
+}
+
+// Shell RPC surface. Provisional: hand-mirrored from the forthcoming
+// `codeless-rpc::methods::shell_*` that `codeless-runtime` routes to
+// `codeless-adapters-host`'s process-spawn + PTY layer. The
+// interactive PTY *stream* itself does not flow through here — it
+// uses the SCOPE.md-mandated PTY WebSocket. These methods cover the
+// one-shot run, the cwd-preserving session, and the long-running
+// background-process surface.
+
+export interface ShellRunArgs {
+  command: string;
+  cwd: string | null;
+  timeout_secs: number | null;
+}
+
+export interface ShellSessionOpenArgs {
+  cwd: string | null;
+}
+
+export interface ShellSessionRunArgs {
+  id: number;
+  command: string;
+  cwd: string | null;
+  timeout_secs: number | null;
+}
+
+export interface ShellSessionCloseArgs {
+  id: number;
+}
+
+export interface ShellBgSpawnArgs {
+  command: string;
+  cwd: string | null;
+}
+
+export interface ShellBgLogsArgs {
+  handle: number;
+  since_offset: number | null;
+}
+
+export interface ShellBgKillArgs {
+  handle: number;
 }
 
 export type RpcMethod = keyof RpcMethodMap;

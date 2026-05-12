@@ -22,6 +22,8 @@ import type {
   FsReadResult,
   Job,
   Repo,
+  ShellBgEntry,
+  ShellCommandOutput,
 } from "./wire";
 
 const MOCK_FS_ROOT = "/home/user/mock-workspace";
@@ -96,6 +98,10 @@ export class MockRpcClient implements RpcClient {
   private subscribers = new Set<(e: EventEnvelope) => void>();
   private fs: Map<string, Node> = seedFs();
   private secrets: Map<string, string> = new Map();
+  private shellSessions: Map<number, { cwd: string }> = new Map();
+  private nextShellSession = 1;
+  private shellBg: Map<number, ShellBgEntry> = new Map();
+  private nextShellBg = 1;
 
   async call<M extends RpcMethod>(
     method: M,
@@ -425,6 +431,75 @@ export class MockRpcClient implements RpcClient {
         return null as RpcResultOf<M>;
       }
 
+      case "shell_run": {
+        const a = args as RpcArgs<"shell_run">;
+        return mockShellOutput(a.command) as RpcResultOf<M>;
+      }
+
+      case "shell_session_open": {
+        const id = this.nextShellSession++;
+        this.shellSessions.set(id, { cwd: (args as RpcArgs<"shell_session_open">).cwd ?? MOCK_FS_ROOT });
+        return id as RpcResultOf<M>;
+      }
+
+      case "shell_session_run": {
+        const a = args as RpcArgs<"shell_session_run">;
+        const sess = this.shellSessions.get(a.id);
+        if (!sess) throw new RpcError("not_found", `session ${a.id}`);
+        if (a.cwd) sess.cwd = a.cwd;
+        const base = mockShellOutput(a.command);
+        return { ...base, cwd_after: sess.cwd } as RpcResultOf<M>;
+      }
+
+      case "shell_session_close": {
+        const a = args as RpcArgs<"shell_session_close">;
+        if (!this.shellSessions.delete(a.id)) {
+          throw new RpcError("not_found", `session ${a.id}`);
+        }
+        return null as RpcResultOf<M>;
+      }
+
+      case "shell_bg_spawn": {
+        const a = args as RpcArgs<"shell_bg_spawn">;
+        const handle = this.nextShellBg++;
+        this.shellBg.set(handle, {
+          handle,
+          command: a.command,
+          cwd: a.cwd,
+          started_at_ms: Date.now(),
+          exited: false,
+          exit_code: null,
+        });
+        return handle as RpcResultOf<M>;
+      }
+
+      case "shell_bg_logs": {
+        const a = args as RpcArgs<"shell_bg_logs">;
+        if (!this.shellBg.has(a.handle)) {
+          throw new RpcError("not_found", `bg ${a.handle}`);
+        }
+        return {
+          bytes: "",
+          next_offset: a.since_offset ?? 0,
+          dropped: 0,
+          exited: false,
+          exit_code: null,
+        } as RpcResultOf<M>;
+      }
+
+      case "shell_bg_kill": {
+        const a = args as RpcArgs<"shell_bg_kill">;
+        const entry = this.shellBg.get(a.handle);
+        if (!entry) throw new RpcError("not_found", `bg ${a.handle}`);
+        entry.exited = true;
+        entry.exit_code = 137;
+        return null as RpcResultOf<M>;
+      }
+
+      case "shell_bg_list": {
+        return { entries: [...this.shellBg.values()] } as RpcResultOf<M>;
+      }
+
       default:
         throw new RpcError("internal", `mock: unhandled method ${method}`);
     }
@@ -597,6 +672,21 @@ function stageIdOf(e: Event): string | null {
 }
 function taskIdOf(e: Event): string | null {
   return "task_id" in e ? e.task_id : null;
+}
+
+// Stub shell output. The mock does not actually run anything; the
+// real runner is gated by SCOPE.md R1 (process spawn lives in
+// codeless-adapters-host). Tests/dev UIs that need a non-trivial
+// echo can replace this. Returning exit 0 with a short stdout keeps
+// happy-path UI flows alive against /?mock=1.
+function mockShellOutput(command: string): ShellCommandOutput {
+  return {
+    stdout: `[mock] ${command}\n`,
+    stderr: "",
+    exit_code: 0,
+    timed_out: false,
+    truncated: false,
+  };
 }
 
 function parentPath(p: string): string {

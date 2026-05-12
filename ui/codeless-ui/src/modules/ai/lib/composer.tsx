@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
   createContext,
   useContext,
@@ -6,6 +5,9 @@ import {
   useRef,
   useState,
 } from "react";
+
+import { useRpc } from "@/lib/rpc/provider";
+
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
@@ -70,6 +72,7 @@ type ProviderProps = {
 };
 
 export function AiComposerProvider({ children }: ProviderProps) {
+  const rpc = useRpc();
   const sessionId = useChatStore((s) => s.activeSessionId);
   const status = useChatStore((s) => s.agentMeta.status);
   const isBusy = status === "thinking" || status === "streaming";
@@ -171,18 +174,14 @@ export function AiComposerProvider({ children }: ProviderProps) {
 
   const attachFileByPath = async (path: string) => {
     try {
-      type ReadResult =
-        | { kind: "text"; content: string; size: number }
-        | { kind: "binary"; size: number }
-        | { kind: "toolarge"; size: number; limit: number };
-      const result = await invoke<ReadResult>("fs_read_file", { path });
+      const result = await rpc.call("fs_read_file", { path, byte_limit: null });
       if (result.kind !== "text") {
-        // Binary/oversize files: skip (could surface a toast in future).
         console.warn("attachFileByPath: skipped non-text file", path, result);
         return;
       }
       const name = path.split("/").pop() || path;
       const id = `path-${path}`;
+      const size = new TextEncoder().encode(result.content).length;
       setFiles((prev) => {
         if (prev.some((f) => f.id === id)) return prev;
         const att: FileAttachment = {
@@ -191,11 +190,10 @@ export function AiComposerProvider({ children }: ProviderProps) {
           kind: "text",
           mediaType: "text/plain",
           text: result.content,
-          size: result.size,
+          size,
         };
         return [...prev, att];
       });
-      // Open the AI panel & focus the input so the user sees the chip.
       useChatStore.getState().focusInput();
     } catch (e) {
       console.error("attachFileByPath failed:", e);

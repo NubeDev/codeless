@@ -65,6 +65,8 @@ import {
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
 import { usePaths } from "@/lib/shell";
+import { useRpc } from "@/lib/rpc/provider";
+import { configureNative } from "@/modules/ai/lib/native";
 import type { SearchAddon } from "@xterm/addon-search";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -81,6 +83,8 @@ function sameOrigin(a: string, b: string): boolean {
 }
 
 export default function App() {
+  const rpc = useRpc();
+  configureNative(rpc);
   const {
     tabs,
     activeId,
@@ -180,7 +184,7 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     const reload = () => {
-      void getAllKeys().then((keys) => {
+      void getAllKeys(rpc).then((keys) => {
         if (!alive) return;
         setApiKeys(keys);
         setKeysLoaded(true);
@@ -192,7 +196,7 @@ export default function App() {
       alive = false;
       void unlistenP.then((fn) => fn());
     };
-  }, [setApiKeys]);
+  }, [setApiKeys, rpc]);
 
   // Hydrate the cross-window preference store and mirror the default model
   // into chatStore so the dropdown reflects what the user picked in Settings.

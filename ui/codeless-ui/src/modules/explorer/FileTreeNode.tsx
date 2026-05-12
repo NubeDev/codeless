@@ -9,6 +9,9 @@ import { cn } from "@/lib/utils";
 import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useCallback, useState } from "react";
+
+import { useExternalOpener } from "@/lib/shell";
+
 import { InlineInput } from "./InlineInput";
 import {
   copyToClipboard,
@@ -51,6 +54,7 @@ function FileTreeNodeImpl({
   selectedPath,
   onSelectPath,
 }: Props) {
+  const opener = useExternalOpener();
   const path = tree.joinPath(parentPath, entry.name);
   const isDir = entry.kind === "dir";
   const isExpanded = isDir && tree.expanded.has(path);
@@ -160,7 +164,7 @@ function FileTreeNodeImpl({
           )}
           <ContextMenuItem
             className={COMPACT_ITEM}
-            onSelect={() => void revealInFinder(path)}
+            onSelect={() => void revealInFinder(opener, path)}
           >
             Reveal in Finder
           </ContextMenuItem>

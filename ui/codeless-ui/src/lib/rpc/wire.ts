@@ -204,3 +204,46 @@ export interface FsGlobHit {
   path: string;
   kind: FsKind;
 }
+
+// Shell wire types. Hand-mirrored from forthcoming
+// `codeless-types::shell` additions on the `shell.*` RPC surface in
+// `codeless-runtime` (driven from `codeless-adapters-host`'s process
+// spawn + PTY layer). Note: the PTY *streaming* channel does not
+// pass through these types — it uses the dedicated WebSocket
+// reserved for PTY sessions per SCOPE.md. These shapes cover the
+// one-shot run, the foreground "session" (sequential commands with
+// preserved cwd), and the background-process surface.
+
+export interface ShellCommandOutput {
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  timed_out: boolean;
+  truncated: boolean;
+}
+
+export interface ShellSessionRunOutput {
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  timed_out: boolean;
+  truncated: boolean;
+  cwd_after: string;
+}
+
+export interface ShellBgLogChunk {
+  bytes: string;
+  next_offset: number;
+  dropped: number;
+  exited: boolean;
+  exit_code: number | null;
+}
+
+export interface ShellBgEntry {
+  handle: number;
+  command: string;
+  cwd: string | null;
+  started_at_ms: number;
+  exited: boolean;
+  exit_code: number | null;
+}

@@ -31,6 +31,7 @@ import {
   setLmstudioBaseURL,
 } from "@/modules/settings/store";
 import { useNetworkProbe } from "@/lib/shell";
+import { useRpc } from "@/lib/rpc/provider";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -41,21 +42,22 @@ import { SectionHeader } from "../components/SectionHeader";
 type KeysMap = Record<ProviderId, string | null>;
 
 export function ModelsSection() {
+  const rpc = useRpc();
   const [keys, setKeys] = useState<KeysMap | null>(null);
   const defaultModel = usePreferencesStore((s) => s.defaultModelId);
 
   useEffect(() => {
-    void getAllKeys().then(setKeys);
-  }, []);
+    void getAllKeys(rpc).then(setKeys);
+  }, [rpc]);
 
   const onSave = async (provider: ProviderId, value: string) => {
-    await setKey(provider, value);
+    await setKey(rpc, provider, value);
     setKeys((prev) => (prev ? { ...prev, [provider]: value } : prev));
     await emitKeysChanged();
   };
 
   const onClear = async (provider: ProviderId) => {
-    await clearKey(provider);
+    await clearKey(rpc, provider);
     setKeys((prev) => (prev ? { ...prev, [provider]: null } : prev));
     await emitKeysChanged();
   };

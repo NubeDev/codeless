@@ -6,8 +6,9 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { invoke } from "@tauri-apps/api/core";
 import { motion } from "motion/react";
+
+import { useRpc } from "@/lib/rpc/provider";
 import {
   forwardRef,
   useEffect,
@@ -46,6 +47,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
 }: Props,
   ref,
 ) {
+  const rpc = useRpc();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
@@ -78,15 +80,30 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
     let alive = true;
     const handle = setTimeout(async () => {
       try {
-        const hits = await invoke<SearchHit[]>("fs_search", {
+        const { hits } = await rpc.call("fs_glob", {
           root: rootPath,
-          query: q,
-          limit: 200,
+          pattern: `**${q}**`,
+          max_results: 200,
         });
-        if (alive) setResults(hits);
+        if (!alive) return;
+        const prefix = rootPath.endsWith("/") ? rootPath : `${rootPath}/`;
+        const mapped: SearchHit[] = hits.map((h) => {
+          const rel = h.path.startsWith(prefix)
+            ? h.path.slice(prefix.length)
+            : h.path;
+          const slash = rel.lastIndexOf("/");
+          const name = slash >= 0 ? rel.slice(slash + 1) : rel;
+          return {
+            path: h.path,
+            rel,
+            name,
+            is_dir: h.kind === "dir",
+          };
+        });
+        setResults(mapped);
       } catch (e) {
         if (alive) {
-          console.error("fs_search failed:", e);
+          console.error("fs_glob failed:", e);
           setResults([]);
         }
       } finally {
@@ -98,7 +115,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
       alive = false;
       clearTimeout(handle);
     };
-  }, [query, rootPath]);
+  }, [query, rootPath, rpc]);
 
   useImperativeHandle(
     ref,

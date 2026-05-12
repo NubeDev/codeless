@@ -1,4 +1,19 @@
-import { invoke } from "@tauri-apps/api/core";
+// The legacy `native` surface — kept as a free-function module
+// because its consumers are Zustand stores, registered AI tools, and
+// transport setup that live outside React's component tree. Rather
+// than plumb `RpcClient` through every one of them, the shell entry
+// registers the single client at boot via `configureNative(rpc)`.
+// Inside the trust boundary there is only one client (R5), so a
+// module-level binding is safe; outside React context it is the only
+// shape that doesn't require touching every caller.
+
+import type { RpcClient } from "@/lib/rpc/client";
+import type {
+  ShellBgEntry,
+  ShellBgLogChunk,
+  ShellCommandOutput,
+  ShellSessionRunOutput,
+} from "@/lib/rpc/wire";
 
 export type ReadResult =
   | { kind: "text"; content: string; size: number }
@@ -12,13 +27,7 @@ export type DirEntry = {
   mtime: number;
 };
 
-export type CommandOutput = {
-  stdout: string;
-  stderr: string;
-  exit_code: number | null;
-  timed_out: boolean;
-  truncated: boolean;
-};
+export type CommandOutput = ShellCommandOutput;
 
 export type GrepHit = {
   path: string;
@@ -36,87 +45,168 @@ export type GrepResponse = {
 export type GlobHit = { path: string; rel: string };
 export type GlobResponse = { hits: GlobHit[]; truncated: boolean };
 
+let bound: RpcClient | null = null;
+
+export function configureNative(rpc: RpcClient): void {
+  bound = rpc;
+}
+
+function rpc(): RpcClient {
+  if (!bound) {
+    throw new Error(
+      "native: RpcClient not configured. The shell entry must call configureNative(rpc) at boot.",
+    );
+  }
+  return bound;
+}
+
+function relTo(root: string, path: string): string {
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+}
+
 export const native = {
-  readFile: (path: string) => invoke<ReadResult>("fs_read_file", { path }),
-  writeFile: (path: string, content: string) =>
-    invoke<void>("fs_write_file", { path, content }),
-  createFile: (path: string) => invoke<void>("fs_create_file", { path }),
-  createDir: (path: string) => invoke<void>("fs_create_dir", { path }),
-  readDir: (path: string) => invoke<DirEntry[]>("fs_read_dir", { path }),
-  grep: (params: {
+  readFile: async (path: string): Promise<ReadResult> => {
+    const r = await rpc().call("fs_read_file", { path, byte_limit: null });
+    if (r.kind === "text") {
+      return {
+        kind: "text",
+        content: r.content,
+        size: new TextEncoder().encode(r.content).length,
+      };
+    }
+    if (r.kind === "binary") {
+      return {
+        kind: "binary",
+        size: Math.ceil((r.bytes_base64.length * 3) / 4),
+      };
+    }
+    return { kind: "toolarge", size: r.size, limit: r.limit };
+  },
+
+  writeFile: async (path: string, content: string): Promise<void> => {
+    await rpc().call("fs_write_file", {
+      path,
+      content,
+      create_parents: false,
+    });
+  },
+
+  createFile: async (path: string): Promise<void> => {
+    await rpc().call("fs_create_file", {
+      path,
+      content: null,
+      overwrite: false,
+    });
+  },
+
+  createDir: async (path: string): Promise<void> => {
+    await rpc().call("fs_create_dir", { path, recursive: true });
+  },
+
+  readDir: async (path: string): Promise<DirEntry[]> => {
+    const { entries } = await rpc().call("fs_read_dir", { path });
+    return entries.map((e) => ({
+      name: e.name,
+      kind: e.kind,
+      size: e.size ?? 0,
+      mtime: e.mtime ?? 0,
+    }));
+  },
+
+  grep: async (params: {
     pattern: string;
     root: string;
     glob?: string[];
     caseInsensitive?: boolean;
     maxResults?: number;
-  }) =>
-    invoke<GrepResponse>("fs_grep", {
-      pattern: params.pattern,
+  }): Promise<GrepResponse> => {
+    // Wire `fs_search` takes a single glob filter; collapse a glob
+    // array down to its first element for the mirror. The real Rust
+    // adapter accepts the array directly; this matches the existing
+    // API shape until the codegen step replaces native.ts entirely.
+    const r = await rpc().call("fs_search", {
       root: params.root,
-      glob: params.glob ?? null,
-      caseInsensitive: params.caseInsensitive ?? null,
-      maxResults: params.maxResults ?? null,
-    }),
-  glob: (params: { pattern: string; root: string; maxResults?: number }) =>
-    invoke<GlobResponse>("fs_glob", {
-      pattern: params.pattern,
+      query: params.pattern,
+      case_sensitive: !(params.caseInsensitive ?? false),
+      max_results: params.maxResults ?? null,
+      glob: params.glob && params.glob.length ? params.glob[0] : null,
+    });
+    return {
+      hits: r.hits.map((h) => ({
+        path: h.path,
+        rel: relTo(params.root, h.path),
+        line: h.line,
+        text: h.preview,
+      })),
+      truncated: r.truncated,
+      files_scanned: 0,
+    };
+  },
+
+  glob: async (params: {
+    pattern: string;
+    root: string;
+    maxResults?: number;
+  }): Promise<GlobResponse> => {
+    const r = await rpc().call("fs_glob", {
       root: params.root,
-      maxResults: params.maxResults ?? null,
-    }),
+      pattern: params.pattern,
+      max_results: params.maxResults ?? null,
+    });
+    return {
+      hits: r.hits.map((h) => ({
+        path: h.path,
+        rel: relTo(params.root, h.path),
+      })),
+      truncated: r.truncated,
+    };
+  },
+
   runCommand: (
     command: string,
     cwd?: string | null,
     timeoutSecs?: number,
-  ) =>
-    invoke<CommandOutput>("shell_run_command", {
+  ): Promise<CommandOutput> =>
+    rpc().call("shell_run", {
       command,
       cwd: cwd ?? null,
-      timeoutSecs: timeoutSecs ?? null,
+      timeout_secs: timeoutSecs ?? null,
     }),
 
-  shellSessionOpen: (cwd?: string | null) =>
-    invoke<number>("shell_session_open", { cwd: cwd ?? null }),
+  shellSessionOpen: (cwd?: string | null): Promise<number> =>
+    rpc().call("shell_session_open", { cwd: cwd ?? null }),
+
   shellSessionRun: (
     id: number,
     command: string,
     cwd?: string | null,
     timeoutSecs?: number,
-  ) =>
-    invoke<{
-      stdout: string;
-      stderr: string;
-      exit_code: number | null;
-      timed_out: boolean;
-      truncated: boolean;
-      cwd_after: string;
-    }>("shell_session_run", {
+  ): Promise<ShellSessionRunOutput> =>
+    rpc().call("shell_session_run", {
       id,
       command,
       cwd: cwd ?? null,
-      timeoutSecs: timeoutSecs ?? null,
+      timeout_secs: timeoutSecs ?? null,
     }),
-  shellSessionClose: (id: number) =>
-    invoke<void>("shell_session_close", { id }),
-  shellBgSpawn: (command: string, cwd?: string | null) =>
-    invoke<number>("shell_bg_spawn", { command, cwd: cwd ?? null }),
-  shellBgLogs: (handle: number, sinceOffset?: number) =>
-    invoke<{
-      bytes: string;
-      next_offset: number;
-      dropped: number;
-      exited: boolean;
-      exit_code: number | null;
-    }>("shell_bg_logs", { handle, sinceOffset: sinceOffset ?? null }),
-  shellBgKill: (handle: number) => invoke<void>("shell_bg_kill", { handle }),
-  shellBgList: () =>
-    invoke<
-      {
-        handle: number;
-        command: string;
-        cwd: string | null;
-        started_at_ms: number;
-        exited: boolean;
-        exit_code: number | null;
-      }[]
-    >("shell_bg_list"),
+
+  shellSessionClose: (id: number): Promise<null> =>
+    rpc().call("shell_session_close", { id }),
+
+  shellBgSpawn: (command: string, cwd?: string | null): Promise<number> =>
+    rpc().call("shell_bg_spawn", { command, cwd: cwd ?? null }),
+
+  shellBgLogs: (handle: number, sinceOffset?: number): Promise<ShellBgLogChunk> =>
+    rpc().call("shell_bg_logs", {
+      handle,
+      since_offset: sinceOffset ?? null,
+    }),
+
+  shellBgKill: (handle: number): Promise<null> =>
+    rpc().call("shell_bg_kill", { handle }),
+
+  shellBgList: async (): Promise<ShellBgEntry[]> => {
+    const { entries } = await rpc().call("shell_bg_list", {});
+    return entries;
+  },
 };

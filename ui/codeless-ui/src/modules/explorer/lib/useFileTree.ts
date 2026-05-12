@@ -1,5 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+
+import { useRpc } from "@/lib/rpc/provider";
+import type { RpcClient } from "@/lib/rpc/client";
 
 export type DirEntry = {
   name: string;
@@ -37,7 +39,18 @@ type Options = {
   onPathDeleted?: (path: string) => void;
 };
 
+async function listDir(rpc: RpcClient, path: string): Promise<DirEntry[]> {
+  const { entries } = await rpc.call("fs_read_dir", { path });
+  return entries.map((e) => ({
+    name: e.name,
+    kind: e.kind,
+    size: e.size ?? 0,
+    mtime: e.mtime ?? 0,
+  }));
+}
+
 export function useFileTree(rootPath: string | null, options?: Options) {
+  const rpc = useRpc();
   const [nodes, setNodes] = useState<TreeState>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [pendingCreate, setPendingCreate] = useState<PendingCreate | null>(
@@ -45,20 +58,22 @@ export function useFileTree(rootPath: string | null, options?: Options) {
   );
   const [renaming, setRenaming] = useState<string | null>(null);
 
-  const fetchChildren = useCallback(async (path: string) => {
-    setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
-    try {
-      const entries = await invoke<DirEntry[]>("fs_read_dir", { path });
-      setNodes((s) => ({ ...s, [path]: { status: "loaded", entries } }));
-    } catch (e) {
-      setNodes((s) => ({
-        ...s,
-        [path]: { status: "error", message: String(e) },
-      }));
-    }
-  }, []);
+  const fetchChildren = useCallback(
+    async (path: string) => {
+      setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
+      try {
+        const entries = await listDir(rpc, path);
+        setNodes((s) => ({ ...s, [path]: { status: "loaded", entries } }));
+      } catch (e) {
+        setNodes((s) => ({
+          ...s,
+          [path]: { status: "error", message: String(e) },
+        }));
+      }
+    },
+    [rpc],
+  );
 
-  // Root change → reset state.
   useEffect(() => {
     if (!rootPath) {
       setNodes({});
@@ -115,13 +130,10 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     [fetchChildren],
   );
 
-  // --- mutations ---
-
   const beginCreate = useCallback(
     (parentPath: string, kind: "file" | "dir") => {
       setRenaming(null);
       setPendingCreate({ parentPath, kind });
-      // Ensure the parent is expanded so the input row is visible.
       if (rootPath && parentPath !== rootPath) {
         setExpanded((curr) => {
           if (curr.has(parentPath)) return curr;
@@ -149,18 +161,24 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         return;
       }
       const path = joinPath(pendingCreate.parentPath, trimmed);
-      const cmd =
-        pendingCreate.kind === "dir" ? "fs_create_dir" : "fs_create_file";
       try {
-        await invoke(cmd, { path });
+        if (pendingCreate.kind === "dir") {
+          await rpc.call("fs_create_dir", { path, recursive: false });
+        } else {
+          await rpc.call("fs_create_file", {
+            path,
+            content: null,
+            overwrite: false,
+          });
+        }
         await fetchChildren(pendingCreate.parentPath);
       } catch (e) {
-        console.error(`${cmd} failed:`, e);
+        console.error("fs_create failed:", e);
       } finally {
         setPendingCreate(null);
       }
     },
-    [pendingCreate, fetchChildren],
+    [pendingCreate, fetchChildren, rpc],
   );
 
   const beginRename = useCallback((path: string) => {
@@ -182,29 +200,33 @@ export function useFileTree(rootPath: string | null, options?: Options) {
       }
       const to = joinPath(parent, trimmed);
       try {
-        await invoke("fs_rename", { from: renaming, to });
+        await rpc.call("fs_move", {
+          from: renaming,
+          to,
+          overwrite: false,
+        });
         options?.onPathRenamed?.(renaming, to);
         await fetchChildren(parent);
       } catch (e) {
-        console.error("fs_rename failed:", e);
+        console.error("fs_move (rename) failed:", e);
       } finally {
         setRenaming(null);
       }
     },
-    [renaming, fetchChildren, options],
+    [renaming, fetchChildren, options, rpc],
   );
 
   const deletePath = useCallback(
     async (path: string) => {
       try {
-        await invoke("fs_delete", { path });
+        await rpc.call("fs_delete", { path, recursive: true });
         options?.onPathDeleted?.(path);
         await fetchChildren(dirname(path));
       } catch (e) {
         console.error("fs_delete failed:", e);
       }
     },
-    [fetchChildren, options],
+    [fetchChildren, options, rpc],
   );
 
   return {

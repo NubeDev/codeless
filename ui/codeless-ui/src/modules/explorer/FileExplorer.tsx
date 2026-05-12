@@ -24,6 +24,7 @@ import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { useFileTree } from "./lib/useFileTree";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
+import { useExternalOpener } from "@/lib/shell";
 
 type Props = {
   rootPath: string | null;
@@ -47,6 +48,7 @@ export function FileExplorer({
   onRevealInTerminal,
   onAttachToAgent,
 }: Props) {
+  const opener = useExternalOpener();
   const tree = useFileTree(rootPath, { onPathRenamed, onPathDeleted });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -324,7 +326,7 @@ export function FileExplorer({
             )}
             <ContextMenuItem
               className={COMPACT_ITEM}
-              onSelect={() => void revealInFinder(rootPath)}
+              onSelect={() => void (rootPath && revealInFinder(opener, rootPath))}
             >
               Reveal in Finder
             </ContextMenuItem>

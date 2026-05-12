@@ -29,6 +29,7 @@ import { resolveLanguage } from "./lib/languageResolver";
 import { useDocument } from "./lib/useDocument";
 import { inlineCompletion } from "./lib/autocomplete/inlineExtension";
 import { getKey } from "@/modules/ai/lib/keyring";
+import { useRpc } from "@/lib/rpc/provider";
 import { onKeysChanged } from "@/modules/settings/store";
 
 export type EditorPaneHandle = {
@@ -58,6 +59,7 @@ function formatBytes(n: number): string {
 
 export const EditorPane = forwardRef<EditorPaneHandle, Props>(
   function EditorPane({ path, onDirtyChange, onSaved, onClose }, ref) {
+    const rpc = useRpc();
     const { doc, onChange, save, reload } = useDocument({ path, onDirtyChange });
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
@@ -75,7 +77,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
           apiKeyRef.current = null;
           return;
         }
-        const k = await getKey(provider);
+        const k = await getKey(rpc, provider);
         if (!cancelled) apiKeyRef.current = k;
       };
       void refresh();
