@@ -189,7 +189,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Run(args) => run::handle(args, cli.db),
-        Cmd::Review { verb } => review::handle(verb, cli.db),
+        Cmd::Review { verb } => review::handle(verb, cli.core, cli.token, cli.db),
         Cmd::Job { verb } => job::handle(verb, cli.db),
         Cmd::Tail(args) => tail::handle(args, cli.core, cli.token, cli.db),
         Cmd::Serve(args) => {

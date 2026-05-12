@@ -14,9 +14,7 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
-use codeless_rpc::{
-    ApproveReviewArgs, CommentReviewArgs, ListReviewsArgs, RpcServer, StopReviewArgs,
-};
+use codeless_rpc::{ApproveReviewArgs, CommentReviewArgs, ListReviewsArgs, StopReviewArgs};
 use codeless_types::{ReviewId, ReviewStatus, StageId};
 
 use crate::rpc_open;
@@ -64,15 +62,25 @@ pub struct CommentArgs {
     pub comment: String,
 }
 
-pub fn handle(verb: Verb, db: Option<PathBuf>) -> Result<ExitCode> {
+pub fn handle(
+    verb: Verb,
+    core: Option<String>,
+    token: Option<String>,
+    db: Option<PathBuf>,
+) -> Result<ExitCode> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(dispatch(verb, db))
+    rt.block_on(dispatch(verb, core, token, db))
 }
 
-async fn dispatch(verb: Verb, db: Option<PathBuf>) -> Result<ExitCode> {
-    let rpc = rpc_open::open(db.as_deref()).await?;
+async fn dispatch(
+    verb: Verb,
+    core: Option<String>,
+    token: Option<String>,
+    db: Option<PathBuf>,
+) -> Result<ExitCode> {
+    let rpc = rpc_open::build_dual_mode(core, token, db).await?;
     match verb {
         Verb::List(args) => {
             let stage = args.stage.as_deref().map(parse_stage_id).transpose()?;
