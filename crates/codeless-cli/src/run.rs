@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -5,12 +6,13 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use codeless_rpc::{AddRepoArgs, EventFilter, RpcServer, SubmitJobArgs};
 use codeless_runtime::{
-    drive_job, AnthropicRunnerAdapter, ClaudeRunnerAdapter, InProcessRpc, MockRunner, MockStep,
-    Runner, RunnerOutcome,
+    drive_job, AnthropicRunnerAdapter, ClaudeRunnerAdapter, MockRunner, MockStep, Runner,
+    RunnerOutcome,
 };
 use codeless_types::{Event, GitAuth, TaskId};
 use futures_util::StreamExt;
 
+use crate::rpc_open;
 use crate::{RunArgs, RunnerKind};
 
 /// End-to-end runner for `codeless run --once`. Builds an
@@ -24,7 +26,7 @@ use crate::{RunArgs, RunnerKind};
 /// `job-failed`; the loop terminates on those final framing events,
 /// not on the runner's `RunnerOutcome` directly, so the exit code
 /// reflects what an outside observer would see on the wire.
-pub fn handle(args: RunArgs) -> Result<ExitCode> {
+pub fn handle(args: RunArgs, db: Option<PathBuf>) -> Result<ExitCode> {
     let repo_path = args
         .repo
         .canonicalize()
@@ -36,15 +38,11 @@ pub fn handle(args: RunArgs) -> Result<ExitCode> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run_once(args, repo_path))
+    rt.block_on(run_once(args, repo_path, db))
 }
 
-async fn run_once(args: RunArgs, repo_path: std::path::PathBuf) -> Result<ExitCode> {
-    let rpc = Arc::new(
-        InProcessRpc::new()
-            .await
-            .map_err(|e| anyhow!("init runtime: {e}"))?,
-    );
+async fn run_once(args: RunArgs, repo_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
+    let rpc = Arc::new(rpc_open::open(db.as_deref()).await?);
 
     let wire_runner = args.runner.as_wire();
     let repo = rpc

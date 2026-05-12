@@ -8,6 +8,8 @@
 //! Hosted-mode (`--core`, `--token`) and the `tail` / `session` verbs
 //! land in later phases.
 
+mod review;
+mod rpc_open;
 mod run;
 mod secrets;
 
@@ -30,6 +32,15 @@ struct Cli {
     #[arg(long, global = true, env = "CODELESS_SECRETS_FILE")]
     secrets_file: Option<PathBuf>,
 
+    /// SQLite file the local-mode runtime opens. When unset, each
+    /// invocation runs against a fresh `:memory:` pool — useful for
+    /// `run --once` style one-shots and the test suite, but useless
+    /// for stateful subcommands like `review` since nothing persists
+    /// between processes. Single-tenant: the same path is shared
+    /// across all CLI invocations.
+    #[arg(long, global = true, env = "CODELESS_DB")]
+    db: Option<PathBuf>,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -46,6 +57,13 @@ enum Cmd {
     /// events to stdout as JSON lines. Exit code is 0 on
     /// `job-completed`, non-zero on `job-failed`.
     Run(RunArgs),
+    /// Drive a review gate. Subcommands wrap the typed review RPC
+    /// methods (list/approve/comment/stop); the global `--db` flag
+    /// is required so successive invocations see each other.
+    Review {
+        #[command(subcommand)]
+        verb: review::Verb,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -119,7 +137,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             secrets::handle(verb, &path)?;
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Run(args) => run::handle(args),
+        Cmd::Run(args) => run::handle(args, cli.db),
+        Cmd::Review { verb } => review::handle(verb, cli.db),
     }
 }
 

@@ -46,6 +46,23 @@ impl InProcessRpc {
         Self::with_db(pool).await
     }
 
+    /// Open the runtime against a file-backed SQLite database. The
+    /// file is created if missing so a first-run CLI invocation does
+    /// not have to bootstrap state by hand. Used by the local-mode
+    /// CLI's `--db` flag; the test suite continues to call `new()`
+    /// for the in-memory pool.
+    pub async fn with_file(path: &std::path::Path) -> Result<Self, sqlx::Error> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let opts = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(opts)
+            .await?;
+        Self::with_db(pool).await
+    }
+
     /// Build a runtime around a caller-supplied pool. Migrations are
     /// applied here so a fresh database file works the same as a
     /// pre-migrated one and the caller never has to remember to run
