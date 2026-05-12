@@ -8,18 +8,24 @@ import ReactDOM from "react-dom/client";
 import App from "../../app/App";
 import {
   HttpSseClient,
+  MockRpcClient,
   RpcProvider,
   readBaseUrl,
   readToken,
+  type RpcClient,
 } from "../../lib/rpc";
 
-const rpc = new HttpSseClient({
-  baseUrl: readBaseUrl(),
-  token: readToken(),
-});
+// `?mock=1` swaps the transport for an in-memory `MockRpcClient` —
+// useful for dev'ing UI surfaces without a running codeless-server.
+// Real default is `HttpSseClient` against the configured origin.
+function buildClient(): RpcClient {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("mock") === "1") return new MockRpcClient();
+  return new HttpSseClient({ baseUrl: readBaseUrl(), token: readToken() });
+}
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <RpcProvider client={rpc}>
+  <RpcProvider client={buildClient()}>
     <App />
   </RpcProvider>,
 );

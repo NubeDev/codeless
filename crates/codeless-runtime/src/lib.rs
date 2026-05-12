@@ -9,6 +9,7 @@ pub mod driver;
 pub mod event_bus;
 pub mod migrations;
 pub mod mock_runner;
+pub mod queue_config;
 pub mod rpc;
 pub mod runner;
 pub mod state_machine;
@@ -20,6 +21,7 @@ pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};
 pub use migrations::MIGRATOR;
 pub use mock_runner::{MockRunner, MockStep};
+pub use queue_config::QueueConfig;
 pub use rpc::InProcessRpc;
 pub use runner::{Runner, RunnerContext, RunnerOutcome};
 pub use state_machine::{

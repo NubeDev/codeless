@@ -7,6 +7,8 @@ use codeless_types::{
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
+use crate::queue_config::QueueConfig;
+
 /// SQLite-backed persistence for repos and jobs. Status enums are
 /// mapped to their kebab-case wire labels (matching SCOPE.md Appendix
 /// A) by explicit pattern match — the labels are wire-stable, so a
@@ -14,15 +16,24 @@ use sqlx::{Row, SqlitePool};
 #[derive(Clone)]
 pub struct SqliteStore {
     pool: SqlitePool,
+    caps: QueueConfig,
 }
 
 impl SqliteStore {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self::with_config(pool, QueueConfig::unlimited())
+    }
+
+    pub fn with_config(pool: SqlitePool, caps: QueueConfig) -> Self {
+        Self { pool, caps }
     }
 
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    pub fn config(&self) -> QueueConfig {
+        self.caps
     }
 
     pub async fn insert_repo(&self, repo: &Repo) -> sqlx::Result<()> {
@@ -202,6 +213,16 @@ impl SqliteStore {
         now: UnixMillis,
     ) -> sqlx::Result<Option<Task>> {
         let expires_at = now.0.saturating_add(ttl_ms);
+        let global_cap = self.caps.max_global.map(|n| n as i64);
+        let runner_cap = self.caps.max_per_runner.map(|n| n as i64);
+        let repo_cap = self.caps.max_per_repo.map(|n| n as i64);
+
+        // The three cap clauses each use `? IS NULL OR (count) < ?` so
+        // an unlimited cap short-circuits without doing the count.
+        // The counts run inside the same statement as the UPDATE,
+        // which means two callers racing on the cap cannot both win
+        // — SQLite serialises the writers, the second sees the first
+        // claim in the running-count and is rejected by the WHERE.
         let row = sqlx::query(
             "UPDATE tasks SET \
                 status = 'running', \
@@ -214,6 +235,20 @@ impl SqliteStore {
                 JOIN jobs j ON j.id = s.job_id \
                 WHERE j.runner = ? \
                   AND t.status = 'enqueued' \
+                  AND (? IS NULL OR \
+                       (SELECT COUNT(*) FROM tasks WHERE status='running') < ?) \
+                  AND (? IS NULL OR \
+                       (SELECT COUNT(*) FROM tasks tr \
+                          JOIN stages sr ON sr.id = tr.stage_id \
+                          JOIN jobs jr ON jr.id = sr.job_id \
+                          WHERE jr.runner = j.runner \
+                            AND tr.status = 'running') < ?) \
+                  AND (? IS NULL OR \
+                       (SELECT COUNT(*) FROM tasks tp \
+                          JOIN stages sp ON sp.id = tp.stage_id \
+                          JOIN jobs jp ON jp.id = sp.job_id \
+                          WHERE jp.repo_id = j.repo_id \
+                            AND tp.status = 'running') < ?) \
                   AND NOT EXISTS ( \
                     SELECT 1 FROM json_each(t.depends_on) je \
                     JOIN tasks dep ON dep.id = je.value \
@@ -227,6 +262,12 @@ impl SqliteStore {
         .bind(expires_at)
         .bind(now.0)
         .bind(runner)
+        .bind(global_cap)
+        .bind(global_cap)
+        .bind(runner_cap)
+        .bind(runner_cap)
+        .bind(repo_cap)
+        .bind(repo_cap)
         .fetch_optional(&self.pool)
         .await?;
         row.map(task_from_row).transpose()

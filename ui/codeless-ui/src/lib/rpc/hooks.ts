@@ -1,0 +1,163 @@
+// Typed query/subscription hooks. Thin wrappers over `useRpc()` that
+// centralise the load/error state pattern so call sites stay short.
+// Deliberately not a full query library — when the UI grows enough to
+// need cache invalidation across components, swap in TanStack Query
+// behind these signatures and call sites won't notice.
+
+import { useEffect, useRef, useState } from "react";
+
+import { useRpc } from "./provider";
+import type { EventFilter, ListJobsArgs } from "./methods";
+import type { EventEnvelope, Job, JobId, Repo } from "./wire";
+
+export interface QueryState<T> {
+  data: T | null;
+  error: Error | null;
+  loading: boolean;
+}
+
+function useAsyncOnce<T>(run: (signal: AbortSignal) => Promise<T>): QueryState<T> {
+  const [state, setState] = useState<QueryState<T>>({
+    data: null,
+    error: null,
+    loading: true,
+  });
+
+  // Re-run only when the caller passes a new function reference; callers
+  // are expected to wrap in useCallback if their args change.
+  const runRef = useRef(run);
+  runRef.current = run;
+
+  useEffect(() => {
+    const ac = new AbortController();
+    setState((s) => ({ ...s, loading: true }));
+    runRef
+      .current(ac.signal)
+      .then((data) => {
+        if (ac.signal.aborted) return;
+        setState({ data, error: null, loading: false });
+      })
+      .catch((err: unknown) => {
+        if (ac.signal.aborted) return;
+        setState({
+          data: null,
+          error: err instanceof Error ? err : new Error(String(err)),
+          loading: false,
+        });
+      });
+    return () => ac.abort();
+  }, []);
+
+  return state;
+}
+
+export function useRepos(): QueryState<Repo[]> {
+  const rpc = useRpc();
+  const q = useAsyncOnce(() => rpc.call("list_repos", {}));
+  return { ...q, data: q.data?.repos ?? null };
+}
+
+export function useJobs(args: ListJobsArgs = { repo_id: null }): QueryState<Job[]> {
+  const rpc = useRpc();
+  // Stable JSON key so the effect re-runs when the filter changes by
+  // value, not by identity. Cheap because args is shallow.
+  const key = JSON.stringify(args);
+  const [state, setState] = useState<QueryState<Job[]>>({
+    data: null,
+    error: null,
+    loading: true,
+  });
+  useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    rpc
+      .call("list_jobs", args)
+      .then((r) => {
+        if (cancelled) return;
+        setState({ data: r.jobs, error: null, loading: false });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setState({
+          data: null,
+          error: err instanceof Error ? err : new Error(String(err)),
+          loading: false,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // key encodes args; rpc identity is stable across renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, rpc]);
+  return state;
+}
+
+export function useJob(jobId: JobId | null): QueryState<Job> {
+  const rpc = useRpc();
+  const [state, setState] = useState<QueryState<Job>>({
+    data: null,
+    error: null,
+    loading: jobId != null,
+  });
+  useEffect(() => {
+    if (jobId == null) {
+      setState({ data: null, error: null, loading: false });
+      return;
+    }
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    rpc
+      .call("get_job", { job_id: jobId })
+      .then((job) => {
+        if (cancelled) return;
+        setState({ data: job, error: null, loading: false });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setState({
+          data: null,
+          error: err instanceof Error ? err : new Error(String(err)),
+          loading: false,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, rpc]);
+  return state;
+}
+
+export function useEventStream(
+  filter: EventFilter,
+  onEvent: (env: EventEnvelope) => void,
+): void {
+  const rpc = useRpc();
+  // Stable callback ref so the subscription doesn't tear down on every
+  // render of the consumer.
+  const cbRef = useRef(onEvent);
+  cbRef.current = onEvent;
+
+  const key = JSON.stringify(filter);
+  useEffect(() => {
+    let cancelled = false;
+    const stream = rpc.subscribe(filter);
+    (async () => {
+      try {
+        for await (const env of stream) {
+          if (cancelled) return;
+          cbRef.current(env);
+        }
+      } catch {
+        // Stream errors end the iteration; consumer can re-mount to retry.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      // The iterator's return() will be called by GC, which closes the
+      // underlying EventSource. Explicit close would require holding the
+      // iterator handle; current shape keeps the API tiny.
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, rpc]);
+}
