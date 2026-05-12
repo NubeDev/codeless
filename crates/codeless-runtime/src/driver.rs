@@ -69,7 +69,9 @@ pub async fn drive_job(
         None,
         Event::JobStarted { job_id: job.id },
         started,
-    );
+    )
+    .await
+    .map_err(db_err)?;
 
     let outcome = runner
         .run(RunnerContext {
@@ -100,6 +102,8 @@ pub async fn drive_job(
     updated.ended_at = Some(ended);
     store.update_job(&updated).await.map_err(db_err)?;
     tracing::info!(status = ?next_status, "job terminal");
-    bus.publish(Some(job_id), None, None, event, ended);
+    bus.publish(Some(job_id), None, None, event, ended)
+        .await
+        .map_err(db_err)?;
     Ok(())
 }

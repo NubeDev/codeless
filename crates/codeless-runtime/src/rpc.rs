@@ -49,10 +49,9 @@ impl InProcessRpc {
     /// see `migrations::MIGRATOR`.
     pub async fn with_db(pool: SqlitePool) -> Result<Self, sqlx::Error> {
         MIGRATOR.run(&pool).await?;
-        Ok(Self {
-            store: Arc::new(SqliteStore::new(pool)),
-            bus: Arc::new(EventBus::new(DEFAULT_EVENT_BUFFER)),
-        })
+        let bus = Arc::new(EventBus::new(pool.clone(), DEFAULT_EVENT_BUFFER));
+        let store = Arc::new(SqliteStore::new(pool));
+        Ok(Self { store, bus })
     }
 
     pub fn store(&self) -> &Arc<SqliteStore> {
@@ -92,7 +91,9 @@ impl RpcServer for InProcessRpc {
         };
         self.store.insert_repo(&repo).await.map_err(db_err)?;
         self.bus
-            .publish(None, None, None, Event::RepoAdded { repo_id: repo.id }, now);
+            .publish(None, None, None, Event::RepoAdded { repo_id: repo.id }, now)
+            .await
+            .map_err(db_err)?;
         Ok(repo)
     }
 
@@ -101,15 +102,18 @@ impl RpcServer for InProcessRpc {
         if !removed {
             return Err(RpcError::NotFound(format!("repo {}", args.repo_id)));
         }
-        self.bus.publish(
-            None,
-            None,
-            None,
-            Event::RepoRemoved {
-                repo_id: args.repo_id,
-            },
-            now_ms(),
-        );
+        self.bus
+            .publish(
+                None,
+                None,
+                None,
+                Event::RepoRemoved {
+                    repo_id: args.repo_id,
+                },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -148,16 +152,19 @@ impl RpcServer for InProcessRpc {
             created_at: now,
         };
         self.store.insert_job(&job).await.map_err(db_err)?;
-        self.bus.publish(
-            Some(job.id),
-            None,
-            None,
-            Event::JobQueued {
-                job_id: job.id,
-                repo_id: job.repo_id,
-            },
-            now,
-        );
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobQueued {
+                    job_id: job.id,
+                    repo_id: job.repo_id,
+                },
+                now,
+            )
+            .await
+            .map_err(db_err)?;
         Ok(job)
     }
 
@@ -193,16 +200,19 @@ impl RpcServer for InProcessRpc {
         job.stop_reason = Some(StopReason::User);
         job.ended_at = Some(now);
         self.store.update_job(&job).await.map_err(db_err)?;
-        self.bus.publish(
-            Some(job.id),
-            None,
-            None,
-            Event::JobStopped {
-                job_id: job.id,
-                reason: StopReason::User,
-            },
-            now,
-        );
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobStopped {
+                    job_id: job.id,
+                    reason: StopReason::User,
+                },
+                now,
+            )
+            .await
+            .map_err(db_err)?;
         Ok(())
     }
 

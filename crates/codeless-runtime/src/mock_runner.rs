@@ -53,8 +53,15 @@ impl Runner for MockRunner {
         for step in steps {
             match step {
                 MockStep::Emit(event) => {
-                    ctx.bus
-                        .publish(Some(ctx.job_id), None, None, event, now_ms());
+                    if let Err(e) = ctx
+                        .bus
+                        .publish(Some(ctx.job_id), None, None, event, now_ms())
+                        .await
+                    {
+                        return RunnerOutcome::Failed {
+                            reason: format!("mock runner publish failed: {e}"),
+                        };
+                    }
                 }
                 MockStep::Sleep(d) => tokio::time::sleep(d).await,
                 MockStep::Finish(outcome) => return outcome,
