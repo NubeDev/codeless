@@ -6,7 +6,7 @@ use crate::time::UnixMillis;
 
 /// Lifecycle states for a job row. String form matches the
 /// `jobs.status` column wire labels in SCOPE.md Appendix A.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum JobStatus {
     Queued,
@@ -19,7 +19,7 @@ pub enum JobStatus {
 
 /// Why a job left the running set early. `None` while running or after a
 /// clean completion; populated when status is `Stopped` or `Failed`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum StopReason {
     User,
@@ -29,7 +29,7 @@ pub enum StopReason {
 }
 
 /// One unit of work the user kicked off — see SCOPE.md Appendix A `jobs`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct Job {
     pub id: JobId,
     pub repo_id: RepoId,

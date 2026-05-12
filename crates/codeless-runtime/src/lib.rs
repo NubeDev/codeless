@@ -6,11 +6,13 @@
 //! `codeless-client`.
 
 pub mod event_bus;
+pub mod migrations;
 pub mod rpc;
 pub mod store;
 pub mod time;
 
 pub use event_bus::{EventBus, SubscribeFilter};
+pub use migrations::MIGRATOR;
 pub use rpc::InProcessRpc;
 pub use store::MemoryStore;
 pub use time::now_ms;

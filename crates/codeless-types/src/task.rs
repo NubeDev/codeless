@@ -5,7 +5,7 @@ use crate::money::CostCents;
 use crate::time::UnixMillis;
 
 /// Task lifecycle. Matches `tasks.status` wire labels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskStatus {
     Enqueued,
@@ -19,7 +19,7 @@ pub enum TaskStatus {
 /// `tasks`. `depends_on` carries DAG edges from day one so the event
 /// schema is forward-compatible with topological execution (SCOPE.md
 /// Rule 4); linear-mode runtimes leave it empty.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct Task {
     pub id: TaskId,
     pub stage_id: StageId,

@@ -5,7 +5,7 @@ use crate::id::RepoId;
 use crate::time::UnixMillis;
 
 /// A managed git repository row — see SCOPE.md Appendix A `repos`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct Repo {
     pub id: RepoId,
     pub name: String,

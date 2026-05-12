@@ -5,10 +5,21 @@ macro_rules! ulid_newtype {
     ($name:ident, $desc:literal) => {
         #[doc = $desc]
         #[derive(
-            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            PartialOrd,
+            Ord,
+            Hash,
+            Serialize,
+            Deserialize,
+            specta::Type,
         )]
         #[serde(transparent)]
-        pub struct $name(pub Ulid);
+        #[specta(transparent)]
+        pub struct $name(#[specta(type = String)] pub Ulid);
 
         impl $name {
             pub fn new() -> Self {

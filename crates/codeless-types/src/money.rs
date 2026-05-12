@@ -4,9 +4,21 @@ use serde::{Deserialize, Serialize};
 /// `INTEGER` cents-USD (no floats, no rounding surprises)." Conversions
 /// to display strings live in the UI layer, not here.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    specta::Type,
 )]
 #[serde(transparent)]
+#[specta(transparent)]
 pub struct CostCents(pub i64);
 
 impl CostCents {

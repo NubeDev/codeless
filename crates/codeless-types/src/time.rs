@@ -3,8 +3,11 @@ use serde::{Deserialize, Serialize};
 /// Unix-milliseconds, UTC. Matches the `INTEGER` timestamp columns in
 /// `DOCS/SCOPE.md` Appendix A. Stored as `i64` rather than `u64` so SQLite
 /// `INTEGER` round-trips with `sqlx` (which surfaces signed integers).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, specta::Type,
+)]
 #[serde(transparent)]
+#[specta(transparent)]
 pub struct UnixMillis(pub i64);
 
 impl UnixMillis {

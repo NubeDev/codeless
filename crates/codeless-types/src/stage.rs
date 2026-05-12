@@ -4,7 +4,7 @@ use crate::id::{JobId, StageId};
 use crate::time::UnixMillis;
 
 /// Stage lifecycle. Matches `stages.status` wire labels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum StageStatus {
     Pending,
@@ -15,7 +15,7 @@ pub enum StageStatus {
 }
 
 /// A verify-gated chunk of a job — see SCOPE.md Appendix A `stages`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct Stage {
     pub id: StageId,
     pub job_id: JobId,
