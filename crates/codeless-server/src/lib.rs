@@ -51,6 +51,30 @@ pub fn build_router(state: AppState) -> Router {
     routes::router(state)
 }
 
+/// Bind to `addr` and serve until SIGINT (Ctrl-C). The bound socket
+/// address is reported via the `on_bound` callback before `axum::serve`
+/// is awaited so callers — both the production CLI and the integration
+/// tests — can discover an ephemeral port (`127.0.0.1:0`) without
+/// racing the server.
+pub async fn serve_with_shutdown<F>(
+    addr: std::net::SocketAddr,
+    state: AppState,
+    on_bound: F,
+) -> std::io::Result<()>
+where
+    F: FnOnce(std::net::SocketAddr),
+{
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let local = listener.local_addr()?;
+    on_bound(local);
+    let app = build_router(state);
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await
+}
+
 /// Token key used in the secrets file. Defined here (and not on the
 /// CLI side) so the library can produce the same "run `codeless serve
 /// --init-token` first" hint that the binary will print.

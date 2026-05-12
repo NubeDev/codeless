@@ -13,6 +13,7 @@ mod review;
 mod rpc_open;
 mod run;
 mod secrets;
+mod serve;
 mod tail;
 
 use std::path::PathBuf;
@@ -78,6 +79,11 @@ enum Cmd {
     /// state. Exit code is 0 on `job-completed`, non-zero on
     /// `job-failed` / `job-stopped`.
     Tail(tail::TailArgs),
+    /// Run the hosted HTTP server (`codeless-server`). The browser
+    /// and mobile shells reach the in-process runtime through this
+    /// binary. `--init-token` generates the shared bearer token
+    /// without starting the server.
+    Serve(serve::ServeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -155,6 +161,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Review { verb } => review::handle(verb, cli.db),
         Cmd::Job { verb } => job::handle(verb, cli.db),
         Cmd::Tail(args) => tail::handle(args, cli.db),
+        Cmd::Serve(args) => {
+            let secrets_path = resolve_secrets_path(cli.secrets_file)?;
+            serve::handle(args, secrets_path, cli.db)
+        }
     }
 }
 

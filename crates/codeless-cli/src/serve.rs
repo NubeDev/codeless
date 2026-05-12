@@ -1,0 +1,116 @@
+//! `codeless serve` — bind the hosted axum server from the inner
+//! `codeless-server` crate, read the bearer token from the shared
+//! secrets file, and run until SIGINT. `--init-token` is a side
+//! channel that generates a token, persists it, prints it once, and
+//! exits without starting the server.
+//!
+//! The same secrets path the rest of the CLI uses (`--secrets-file`
+//! or XDG default) backs `core_bearer_token`. Single-tenant per
+//! SCOPE.md R5: one token for browser + future mobile clients.
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::Arc;
+
+use anyhow::{anyhow, bail, Context, Result};
+use clap::Args;
+use codeless_adapters_host::SecretStore;
+use codeless_rpc::RpcServer;
+use codeless_server::{
+    load_bearer_token, serve_with_shutdown, AppState, TokenLoadError, TOKEN_SECRET_KEY,
+};
+
+use crate::rpc_open;
+
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// Address to bind. Defaults to `127.0.0.1:7777` — the demo
+    /// quickstart documents that port; if a hosted deployment needs
+    /// a public bind, supply `0.0.0.0:<port>` explicitly so the
+    /// loopback default never accidentally exposes the core.
+    #[arg(long, default_value = "127.0.0.1:7777")]
+    pub bind: SocketAddr,
+
+    /// Generate a random bearer token, write it to the secrets file
+    /// under `core_bearer_token`, print it once on stdout, and exit
+    /// without starting the server. Pair with `--force` to rotate an
+    /// existing token; the previous token is invalidated.
+    #[arg(long)]
+    pub init_token: bool,
+
+    /// Rotate an existing token rather than refusing. Only meaningful
+    /// with `--init-token`.
+    #[arg(long, requires = "init_token")]
+    pub force: bool,
+}
+
+pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
+    if args.init_token {
+        init_token(&secrets_path, args.force)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(run_server(args.bind, secrets_path, db))
+}
+
+fn init_token(path: &Path, force: bool) -> Result<()> {
+    let mut store = SecretStore::open(path)
+        .with_context(|| format!("open secrets file at {}", path.display()))?;
+    if store.get(TOKEN_SECRET_KEY).is_some() && !force {
+        bail!(
+            "bearer token already configured in {}; pass --force to rotate it",
+            path.display()
+        );
+    }
+    let token = random_hex_token(16);
+    store.set(TOKEN_SECRET_KEY, token.clone())?;
+    store.save()?;
+    println!("{token}");
+    Ok(())
+}
+
+async fn run_server(
+    bind: SocketAddr,
+    secrets_path: PathBuf,
+    db: Option<PathBuf>,
+) -> Result<ExitCode> {
+    let store = SecretStore::open(&secrets_path)
+        .with_context(|| format!("open secrets at {}", secrets_path.display()))?;
+    let token = load_bearer_token(&store).map_err(|TokenLoadError::Missing| {
+        anyhow!(
+            "no `{TOKEN_SECRET_KEY}` in {}; run `codeless serve --init-token` first",
+            secrets_path.display()
+        )
+    })?;
+
+    let rpc: Arc<dyn RpcServer> = Arc::new(rpc_open::open(db.as_deref()).await?);
+    let state = AppState::new(rpc, token);
+
+    serve_with_shutdown(bind, state, |addr| {
+        // Stderr is unbuffered, so integration tests reading line-by-
+        // line see this before the server starts accepting requests.
+        eprintln!("codeless-server listening on http://{addr}");
+    })
+    .await
+    .map_err(|e| anyhow!("serve: {e}"))?;
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 16 random bytes encoded as 32 lowercase hex chars — 128 bits of
+/// entropy, short enough to copy-paste into a browser dialog. Sources
+/// from the OS CSPRNG via `getrandom`; tying this to `ulid::Ulid`
+/// would leak the generation timestamp in the high 48 bits.
+fn random_hex_token(n_bytes: usize) -> String {
+    let mut buf = vec![0u8; n_bytes];
+    getrandom::getrandom(&mut buf).expect("OS CSPRNG unavailable");
+    let mut out = String::with_capacity(n_bytes * 2);
+    for b in buf {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}

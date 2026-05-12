@@ -18,9 +18,11 @@ workspace = true
 codeless-adapters-host = { path = "../codeless-adapters-host" }
 codeless-rpc = { path = "../codeless-rpc" }
 codeless-runtime = { path = "../codeless-runtime" }
+codeless-server = { path = "../codeless-server" }
 codeless-types = { path = "../codeless-types" }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
+getrandom = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -30,4 +32,6 @@ serde_yaml = "0.9"
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
