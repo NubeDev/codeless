@@ -9,3 +9,12 @@ description = "Codeless: worktree manager, shell, PTY, CLI/REST runners, local F
 
 [lints]
 workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
