@@ -33,6 +33,11 @@ use crate::time::now_ms;
 /// became `Stopped` while the runner was working, the post-run
 /// transition guard refuses the move and the driver silently exits;
 /// the `stop_job` event has already been published.
+#[tracing::instrument(
+    name = "drive_job",
+    skip_all,
+    fields(job_id = %job_id),
+)]
 pub async fn drive_job(
     rpc: &InProcessRpc,
     job_id: JobId,
@@ -51,6 +56,7 @@ pub async fn drive_job(
     job.status = JobStatus::Running;
     job.started_at = Some(started);
     store.update_job(job.clone());
+    tracing::info!(status = "running", "job started");
     bus.publish(
         Some(job.id),
         None,
@@ -70,6 +76,7 @@ pub async fn drive_job(
         return Err(RpcError::NotFound(format!("job {job_id}")));
     };
     if is_terminal_job(current.status) {
+        tracing::info!(status = ?current.status, "runner returned after stop");
         return Ok(());
     }
 
@@ -86,6 +93,7 @@ pub async fn drive_job(
     updated.status = next_status;
     updated.ended_at = Some(ended);
     store.update_job(updated);
+    tracing::info!(status = ?next_status, "job terminal");
     bus.publish(Some(job_id), None, None, event, ended);
     Ok(())
 }

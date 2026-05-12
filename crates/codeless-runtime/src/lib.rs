@@ -14,6 +14,7 @@ pub mod runner;
 pub mod state_machine;
 pub mod store;
 pub mod time;
+pub mod tracing_init;
 
 pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};
@@ -26,3 +27,4 @@ pub use state_machine::{
 };
 pub use store::MemoryStore;
 pub use time::now_ms;
+pub use tracing_init::{try_init_json, try_init_pretty};
