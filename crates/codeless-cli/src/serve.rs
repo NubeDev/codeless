@@ -286,10 +286,12 @@ async fn run_server(
                 .unwrap_or_else(|| "disabled".into()),
         );
         let anthropic_api_key = store.get("anthropic_api_key").map(str::to_owned);
+        let claude_system_prompt = store.get("claude_system_prompt").map(str::to_owned);
         let factory = Arc::new(DefaultRunnerFactory {
             enable_claude: args.enable_claude,
             enable_anthropic: args.enable_anthropic,
             anthropic_api_key,
+            claude_system_prompt,
         });
         Some(
             spawn_job_driver_loop(rpc.clone(), factory, worktrees, args.driver_concurrency)
@@ -400,6 +402,11 @@ struct DefaultRunnerFactory {
     enable_claude: bool,
     enable_anthropic: bool,
     anthropic_api_key: Option<String>,
+    /// Optional override for the claude headless system prompt. When
+    /// the secrets file carries `claude_system_prompt`, it replaces
+    /// the built-in default in `ClaudeRunnerAdapter::DEFAULT_SYSTEM_PROMPT`.
+    /// An empty string disables the prompt entirely.
+    claude_system_prompt: Option<String>,
 }
 
 /// Build a `MockRunner` script that emits enough events to be visibly
@@ -469,7 +476,11 @@ impl RunnerFactory for DefaultRunnerFactory {
         match job.runner.as_str() {
             "mock" => Some(Arc::new(MockRunner::new(demo_mock_script(&prompt)))),
             "claude" if self.enable_claude => {
-                Some(Arc::new(ClaudeRunnerAdapter::new(prompt, TaskId::new())))
+                let mut adapter = ClaudeRunnerAdapter::new(prompt, TaskId::new());
+                if let Some(sp) = &self.claude_system_prompt {
+                    adapter = adapter.with_system_prompt(sp);
+                }
+                Some(Arc::new(adapter))
             }
             "anthropic" if self.enable_anthropic => {
                 let mut adapter = AnthropicRunnerAdapter::new(prompt, TaskId::new());

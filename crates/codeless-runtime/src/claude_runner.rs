@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use ai_runner::runners::claude::ClaudeRunner;
-use ai_runner::{CliCfg, Runner as AiRunner, RunnerInput};
+use ai_runner::{CliCfg, PermissionMode, Runner as AiRunner, RunnerInput};
 use async_trait::async_trait;
 use codeless_adapters_host::ai_runner_bridge::forward_events;
 use codeless_types::TaskId;
@@ -45,7 +45,31 @@ pub struct ClaudeRunnerAdapter {
     /// headroom for the bridge to keep up under bus contention without
     /// blowing memory on a misbehaving run.
     pub event_buffer: usize,
+    /// System prompt prepended to the user's prompt. The headless
+    /// server-side default (see `DEFAULT_SYSTEM_PROMPT`) tells claude
+    /// it's running inside a git worktree with no human to approve
+    /// tool calls — without it, claude tends to write a runtime
+    /// (`main.go`, a shell script) instead of just creating the file
+    /// the user asked for. Override from the secrets file under
+    /// `claude_system_prompt`; explicitly `Some("")` disables it.
+    pub system_prompt: Option<String>,
 }
+
+/// Headless default. Codeless's runner has no human at the TTY to
+/// approve mid-run permission prompts; claude tends to compensate by
+/// emitting a script that *would* do the work if the user ran it
+/// (writes `main.go` that writes `people.csv`, etc.). This prompt
+/// frames the run for what it actually is — a one-shot file-editor
+/// — so the assistant goes straight to the Write tool.
+pub const DEFAULT_SYSTEM_PROMPT: &str = "\
+You are running headless inside an isolated git worktree with no \
+interactive user. Use your file-editing tools (Read, Write, Edit, \
+Glob, Grep, Bash) to satisfy the request directly. When the user \
+asks for a file, create that file with the requested content — do \
+not write a script or a program that would create it later. Commit \
+your changes with `git add` and `git commit` so the work survives \
+worktree cleanup. If the request is ambiguous, pick the most \
+literal reading and proceed.";
 
 impl ClaudeRunnerAdapter {
     pub fn new(prompt: impl Into<String>, task_id: TaskId) -> Self {
@@ -53,7 +77,17 @@ impl ClaudeRunnerAdapter {
             prompt: prompt.into(),
             task_id,
             event_buffer: 64,
+            system_prompt: Some(DEFAULT_SYSTEM_PROMPT.to_owned()),
         }
+    }
+
+    /// Replace the headless default system prompt. Passing an empty
+    /// string disables the prompt entirely; pass a real string to
+    /// override the built-in framing.
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        let s = prompt.into();
+        self.system_prompt = if s.is_empty() { None } else { Some(s) };
+        self
     }
 }
 
@@ -80,10 +114,18 @@ impl Runner for ClaudeRunnerAdapter {
 
         let input = RunnerInput::Cli(CliCfg {
             prompt: self.prompt.clone(),
+            system_prompt: self.system_prompt.clone(),
             work_dir: ctx
                 .worktree_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
+            // Headless: there's no TTY user to approve mid-run tool
+            // calls. Bypass every permission gate so claude actually
+            // runs its tools instead of asking and aborting. The
+            // worktree is the blast radius (isolated branch, isolated
+            // checkout); cleanup is the user's call via the upcoming
+            // gc_worktrees RPC, not ours.
+            permission_mode: Some(PermissionMode::Bypass),
             ..Default::default()
         });
 
