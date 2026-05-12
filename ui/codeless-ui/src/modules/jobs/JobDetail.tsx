@@ -3,7 +3,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { useJob, useRepos, type JobId } from "@/lib/rpc";
+import { navigate } from "@/lib/route";
+import { useJob, useRepos, useRpc, type JobId } from "@/lib/rpc";
 
 import { CostCell } from "./JobRow";
 import { FilesChanged } from "./FilesChanged";
@@ -20,7 +21,27 @@ import { StatusBadge } from "./StatusBadge";
 export function JobDetail({ jobId }: { jobId: JobId }) {
   const { data: job, error, loading } = useJob(jobId);
   const { data: repos } = useRepos();
+  const rpc = useRpc();
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
   const repo = job ? repos?.find((r) => r.id === job.repo_id) ?? null : null;
+
+  // Cloning a job is cheap on the server (one row insert + one event)
+  // and the user expectation is "land me on the new run immediately"
+  // — navigate as soon as the new job id is back.
+  const rerun = async () => {
+    if (!job) return;
+    setRerunning(true);
+    setRerunError(null);
+    try {
+      const fresh = await rpc.call("rerun_job", { source_job_id: job.id });
+      navigate(`/jobs/${fresh.id}`);
+    } catch (e) {
+      setRerunError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRerunning(false);
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -41,10 +62,25 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
                   · {repo.name}
                 </span>
               )}
-              <span className="ml-auto">
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-auto h-6 px-2 text-[11px]"
+                onClick={rerun}
+                disabled={rerunning}
+                title="Queue a fresh run with the same prompt, runner, and caps"
+              >
+                {rerunning ? "queuing…" : "re-run"}
+              </Button>
+              <span>
                 <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
               </span>
             </div>
+            {rerunError && (
+              <div className="text-destructive mt-2 text-xs">
+                re-run failed: {rerunError}
+              </div>
+            )}
             <div className="text-muted-foreground mt-1 font-mono text-[11px]">
               {job.id}
             </div>

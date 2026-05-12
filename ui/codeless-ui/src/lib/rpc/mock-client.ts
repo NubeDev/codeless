@@ -211,6 +211,34 @@ export class MockRpcClient implements RpcClient {
         return null as RpcResultOf<M>;
       }
 
+      case "rerun_job": {
+        const a = args as RpcArgs<"rerun_job">;
+        const src = this.jobs.find((j) => j.id === a.source_job_id);
+        if (!src) throw new RpcError("not_found", `job ${a.source_job_id}`);
+        const now = Date.now();
+        const job: Job = {
+          id: ulid(),
+          repo_id: src.repo_id,
+          status: "queued",
+          stop_reason: null,
+          template_yaml: src.template_yaml,
+          prompt: src.prompt,
+          runner: src.runner,
+          branch: "",
+          worktree_path: null,
+          cost_cap_cents: src.cost_cap_cents,
+          wall_clock_cap_ms: src.wall_clock_cap_ms,
+          cost_cents: 0,
+          started_at: null,
+          ended_at: null,
+          created_at: now,
+        };
+        this.jobs.push(job);
+        this.emit({ type: "job-queued", job_id: job.id, repo_id: job.repo_id });
+        this.synthesiseLifecycle(job);
+        return job as RpcResultOf<M>;
+      }
+
       case "fs_read_file": {
         const a = args as RpcArgs<"fs_read_file">;
         const node = this.fsRequireFile(a.path);

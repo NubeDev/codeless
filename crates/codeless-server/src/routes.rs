@@ -9,8 +9,8 @@ use codeless_rpc::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     JobDiffArgs, JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, RemoveRepoArgs, RpcError, ServerInfo, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs,
+    ListReviewsResult, RemoveRepoArgs, RerunJobArgs, RpcError, ServerInfo, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -28,6 +28,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/get_job", post(get_job))
         .route("/rpc/list_jobs", post(list_jobs))
         .route("/rpc/stop_job", post(stop_job))
+        .route("/rpc/rerun_job", post(rerun_job))
         .route("/rpc/job_diff", post(job_diff))
         .route("/rpc/list_reviews", post(list_reviews))
         .route("/rpc/approve_review", post(approve_review))
@@ -153,6 +154,13 @@ async fn stop_job(
         .await
         .map(|()| Json(Value::Null))
         .map_err(map_err)
+}
+
+async fn rerun_job(
+    State(st): State<AppState>,
+    Json(args): Json<RerunJobArgs>,
+) -> HandlerResult<Job> {
+    st.rpc.rerun_job(args).await.map(Json).map_err(map_err)
 }
 
 async fn job_diff(

@@ -6,7 +6,7 @@ use crate::methods::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     JobDiffArgs, JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, RemoveRepoArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    ListReviewsResult, RemoveRepoArgs, RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -34,6 +34,11 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job>;
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
+
+    /// Mint a new job that clones the prompt/runner/caps/repo of an
+    /// existing one. Returns the newly-queued job. The original job
+    /// is untouched. Errors with `NotFound` for an unknown source id.
+    async fn rerun_job(&self, args: RerunJobArgs) -> RpcResult<Job>;
 
     /// Compute the diff between the job's branch and the repo's
     /// default branch. Works whether or not the worktree is still on

@@ -6,8 +6,9 @@ use codeless_rpc::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsCwdResult,
     FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
     FsWriteFileArgs, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs,
-    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RpcError,
-    RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs,
+    RerunJobArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -293,6 +294,53 @@ impl RpcServer for InProcessRpc {
             .await
             .map_err(db_err)?;
         Ok(())
+    }
+
+    async fn rerun_job(&self, args: RerunJobArgs) -> RpcResult<Job> {
+        let Some(source) = self
+            .store
+            .get_job(args.source_job_id)
+            .await
+            .map_err(db_err)?
+        else {
+            return Err(RpcError::NotFound(format!("job {}", args.source_job_id)));
+        };
+        let now = now_ms();
+        // Empty branch makes `WorktreeManager` fall back to the
+        // canonical `codeless/job-<new_id>` so a rerun never collides
+        // with the source job's branch.
+        let job = Job {
+            id: JobId::new(),
+            repo_id: source.repo_id,
+            status: JobStatus::Queued,
+            stop_reason: None,
+            template_yaml: source.template_yaml,
+            prompt: source.prompt,
+            runner: source.runner,
+            branch: String::new(),
+            worktree_path: None,
+            cost_cap_cents: source.cost_cap_cents,
+            wall_clock_cap_ms: source.wall_clock_cap_ms,
+            cost_cents: CostCents::ZERO,
+            started_at: None,
+            ended_at: None,
+            created_at: now,
+        };
+        self.store.insert_job(&job).await.map_err(db_err)?;
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobQueued {
+                    job_id: job.id,
+                    repo_id: job.repo_id,
+                },
+                now,
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(job)
     }
 
     async fn job_diff(&self, args: JobDiffArgs) -> RpcResult<JobDiffResult> {

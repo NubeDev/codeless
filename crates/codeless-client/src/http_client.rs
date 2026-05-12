@@ -3,8 +3,8 @@ use codeless_rpc::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsCwdResult,
     FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
     FsWriteFileArgs, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RpcError, RpcResult,
-    RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RerunJobArgs, RpcError,
+    RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -160,6 +160,10 @@ impl RpcServer for HttpRpcClient {
 
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()> {
         self.call_void("stop_job", &args).await
+    }
+
+    async fn rerun_job(&self, args: RerunJobArgs) -> RpcResult<Job> {
+        self.call("rerun_job", &args).await
     }
 
     async fn job_diff(&self, args: JobDiffArgs) -> RpcResult<JobDiffResult> {

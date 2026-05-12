@@ -67,6 +67,10 @@ export interface StopJobArgs {
   job_id: JobId;
 }
 
+export interface RerunJobArgs {
+  source_job_id: JobId;
+}
+
 export type EventFilter =
   | { scope: "all" }
   | { scope: "job"; job_id: JobId };
@@ -184,6 +188,7 @@ export interface RpcMethodMap {
   get_job: { args: GetJobArgs; result: Job };
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   stop_job: { args: StopJobArgs; result: null };
+  rerun_job: { args: RerunJobArgs; result: Job };
   job_diff: { args: JobDiffArgs; result: JobDiffResult };
 
   fs_read_file: { args: FsReadFileArgs; result: FsReadResult };

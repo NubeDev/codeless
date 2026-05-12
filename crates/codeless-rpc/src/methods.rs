@@ -70,6 +70,17 @@ pub struct StopJobArgs {
     pub job_id: JobId,
 }
 
+/// Re-queue a job using the same prompt, runner, caps, and repo as a
+/// previous run. A fresh `JobId` is minted; the branch is left empty
+/// so `WorktreeManager` falls back to `codeless/job-<new_id>` and the
+/// original run's branch stays untouched. `source_job_id` may be in
+/// any status — re-running a still-running job is allowed; the caller
+/// is asserting "give me a clean attempt, don't touch the original".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct RerunJobArgs {
+    pub source_job_id: JobId,
+}
+
 /// Filter for `list_reviews`. All fields compose with AND; `None`
 /// means "do not narrow on this column". Returned rows are ordered by
 /// `requested_at` ascending so a UI can render the oldest pending
