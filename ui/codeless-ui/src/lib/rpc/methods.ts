@@ -71,6 +71,28 @@ export interface RerunJobArgs {
   source_job_id: JobId;
 }
 
+export interface GcWorktreesArgs {
+  older_than_ms: number | null;
+  job_ids: JobId[] | null;
+  dry_run: boolean;
+}
+
+export interface GcWorktreeEntry {
+  job_id: JobId | null;
+  path: string;
+  size_bytes: number;
+  mtime_ms: number | null;
+  removed: boolean;
+  error: string | null;
+}
+
+export interface GcWorktreesResult {
+  entries: GcWorktreeEntry[];
+  total_size_bytes: number;
+  removed_count: number;
+  root: string | null;
+}
+
 export type EventFilter =
   | { scope: "all" }
   | { scope: "job"; job_id: JobId };
@@ -189,6 +211,7 @@ export interface RpcMethodMap {
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   stop_job: { args: StopJobArgs; result: null };
   rerun_job: { args: RerunJobArgs; result: Job };
+  gc_worktrees: { args: GcWorktreesArgs; result: GcWorktreesResult };
   job_diff: { args: JobDiffArgs; result: JobDiffResult };
 
   fs_read_file: { args: FsReadFileArgs; result: FsReadResult };

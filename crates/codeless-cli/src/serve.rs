@@ -182,6 +182,26 @@ async fn run_server(
         runtime = runtime.with_fs(Arc::new(host_fs));
         eprintln!("codeless-server: fs root = {}", root.display());
     }
+    // Same `WorktreeManager` Arc is given to both the runtime (so
+    // `gc_worktrees` sees the on-disk state) and the driver below
+    // (which provisions per-job trees). Creating it here, before the
+    // runtime is sealed into an Arc, lets both halves share the
+    // single source of truth.
+    let worktree_root_effective = effective_worktree_root(&args);
+    let worktrees_arc: Option<Arc<WorktreeManager>> =
+        worktree_root_effective.as_ref().map(|root| {
+            if let Err(e) = std::fs::create_dir_all(root) {
+                tracing::warn!(
+                    error = %e,
+                    root = %root.display(),
+                    "could not create worktree root; provisioning will fail per job",
+                );
+            }
+            Arc::new(WorktreeManager::new(root))
+        });
+    if let Some(worktrees) = worktrees_arc.clone() {
+        runtime = runtime.with_worktrees(worktrees);
+    }
     let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
     let claude_status = if args.enable_claude {
@@ -208,7 +228,6 @@ async fn run_server(
     } else {
         None
     };
-    let worktree_root_effective = effective_worktree_root(&args);
     let server_info = Arc::new(build_server_info(
         &args,
         worktree_root_effective.clone(),
@@ -256,19 +275,7 @@ async fn run_server(
         eprintln!("codeless-server: background driver disabled (--no-driver)");
         None
     } else {
-        let worktrees = worktree_root_effective.as_ref().map(|root| {
-            // Create the parent eagerly so the first job doesn't
-            // race the directory creation with the `git worktree
-            // add` call.
-            if let Err(e) = std::fs::create_dir_all(root) {
-                tracing::warn!(
-                    error = %e,
-                    root = %root.display(),
-                    "could not create worktree root; provisioning will fail per job",
-                );
-            }
-            Arc::new(WorktreeManager::new(root))
-        });
+        let worktrees = worktrees_arc.clone();
         let mut enabled = vec!["mock"];
         if args.enable_claude {
             enabled.push("claude");

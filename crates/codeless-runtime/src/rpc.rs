@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codeless_adapters_host::{diff_against, FsError, GitDiffError, HostFs};
+use codeless_adapters_host::{diff_against, FsError, GitDiffError, HostFs, WorktreeManager};
 use codeless_rpc::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsCwdResult,
     FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
-    FsWriteFileArgs, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs,
-    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs,
-    RerunJobArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs,
+    FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
+    JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult, RpcServer, Since,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -36,6 +36,12 @@ pub struct InProcessRpc {
     /// workspace root is configured. The hosted server constructs the
     /// runtime with `with_fs` to expose the explorer/editor surfaces.
     fs: Option<Arc<HostFs>>,
+    /// Optional worktree manager. `None` matches a serve mode booted
+    /// without `--worktree-root`; in that mode `gc_worktrees` answers
+    /// `Internal` so the UI can show a clear "no root configured"
+    /// message rather than a misleading empty sweep. The driver
+    /// receives its own clone of this Arc from the CLI layer.
+    worktrees: Option<Arc<WorktreeManager>>,
 }
 
 /// Default event-broadcast lag tolerance per subscriber. See
@@ -94,6 +100,7 @@ impl InProcessRpc {
             store,
             bus,
             fs: None,
+            worktrees: None,
         })
     }
 
@@ -102,6 +109,15 @@ impl InProcessRpc {
     /// transports get a typed failure rather than a panic.
     pub fn with_fs(mut self, fs: Arc<HostFs>) -> Self {
         self.fs = Some(fs);
+        self
+    }
+
+    /// Attach the worktree manager so the `gc_worktrees` RPC can see
+    /// the on-disk state. Same Arc the driver uses for per-job
+    /// provisioning — they read and write the same `<base>/job-<id>`
+    /// tree, just from different sides.
+    pub fn with_worktrees(mut self, worktrees: Arc<WorktreeManager>) -> Self {
+        self.worktrees = Some(worktrees);
         self
     }
 
@@ -117,6 +133,44 @@ impl InProcessRpc {
     /// against the same database the store is writing to.
     pub fn pool(&self) -> &SqlitePool {
         self.store.pool()
+    }
+
+    /// Remove one worktree referenced by a GC entry. Resolves the
+    /// source repo path via the job row when the entry's directory
+    /// name parses as a `JobId`; falls back to a plain directory
+    /// removal otherwise (stray `job-foo` left over from a renamed
+    /// repo). Returns the failure as a string so callers can attach
+    /// it to the entry without short-circuiting the whole sweep.
+    async fn remove_one_worktree(
+        &self,
+        manager: &Arc<WorktreeManager>,
+        entry: &GcWorktreeEntry,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let repo_path: Option<std::path::PathBuf> = if let Some(jid) = entry.job_id {
+            let job = self
+                .store
+                .get_job(jid)
+                .await
+                .map_err(|e| format!("db: {e}"))?;
+            let job = job.ok_or_else(|| format!("job {jid} not in store"))?;
+            let repo = self
+                .store
+                .get_repo(job.repo_id)
+                .await
+                .map_err(|e| format!("db: {e}"))?;
+            repo.map(|r| std::path::PathBuf::from(r.local_path))
+        } else {
+            None
+        };
+        let manager = Arc::clone(manager);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || match repo_path {
+            Some(rp) => manager.remove(&rp, &path).map_err(|e| e.to_string()),
+            None => std::fs::remove_dir_all(&path).map_err(|e| e.to_string()),
+        })
+        .await
+        .map_err(|e| format!("join: {e}"))?
     }
 }
 
@@ -341,6 +395,86 @@ impl RpcServer for InProcessRpc {
             .await
             .map_err(db_err)?;
         Ok(job)
+    }
+
+    async fn gc_worktrees(&self, args: GcWorktreesArgs) -> RpcResult<GcWorktreesResult> {
+        let Some(worktrees) = self.worktrees.clone() else {
+            return Err(RpcError::Internal(
+                "gc_worktrees: no worktree root configured on the server".into(),
+            ));
+        };
+        let manager = worktrees.clone();
+        let on_disk = tokio::task::spawn_blocking(move || manager.list_on_disk())
+            .await
+            .map_err(|e| RpcError::Internal(format!("gc list join: {e}")))?
+            .map_err(|e| RpcError::Internal(format!("gc list: {e}")))?;
+        let root = worktrees.base().to_string_lossy().into_owned();
+
+        let now_i64: i64 = now_ms().as_i64();
+        let cutoff = args.older_than_ms.map(|d| now_i64.saturating_sub(d.max(0)));
+        let id_filter: Option<std::collections::HashSet<String>> = args
+            .job_ids
+            .as_ref()
+            .map(|ids| ids.iter().map(|id| id.to_string()).collect());
+
+        let mut entries: Vec<GcWorktreeEntry> = Vec::with_capacity(on_disk.len());
+        let mut total: i64 = 0;
+        let mut removed: i64 = 0;
+
+        for entry in on_disk {
+            if let Some(set) = &id_filter {
+                if !set.contains(&entry.job_id) {
+                    continue;
+                }
+            }
+            if let Some(c) = cutoff {
+                let mtime = entry.mtime_ms.unwrap_or(now_i64);
+                if mtime > c {
+                    continue;
+                }
+            }
+            total = total.saturating_add(entry.size_bytes);
+
+            // Parse the directory's job_id back to a `JobId`. If
+            // parsing fails (the user left a stray `job-foo` dir
+            // around) the entry still surfaces — just without a
+            // typed id and without an automatic remove, since we
+            // cannot resolve a source repo for a non-job tree.
+            let parsed_id: Option<codeless_types::JobId> = entry.job_id.parse().ok();
+
+            let mut gc_entry = GcWorktreeEntry {
+                job_id: parsed_id,
+                path: entry.path.to_string_lossy().into_owned(),
+                size_bytes: entry.size_bytes,
+                mtime_ms: entry.mtime_ms,
+                removed: false,
+                error: None,
+            };
+
+            if !args.dry_run {
+                match self
+                    .remove_one_worktree(&worktrees, &gc_entry, &entry.path)
+                    .await
+                {
+                    Ok(()) => {
+                        gc_entry.removed = true;
+                        removed += 1;
+                    }
+                    Err(e) => {
+                        gc_entry.error = Some(e);
+                    }
+                }
+            }
+
+            entries.push(gc_entry);
+        }
+
+        Ok(GcWorktreesResult {
+            entries,
+            total_size_bytes: total,
+            removed_count: removed,
+            root: Some(root),
+        })
     }
 
     async fn job_diff(&self, args: JobDiffArgs) -> RpcResult<JobDiffResult> {

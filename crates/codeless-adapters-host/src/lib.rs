@@ -17,4 +17,4 @@ pub use claude::probe as probe_claude;
 pub use fs::{FsError, HostFs};
 pub use git_diff::{diff_against, DiffFile, GitDiffError};
 pub use secrets::{SecretError, SecretStore};
-pub use worktree::{WorktreeError, WorktreeHandle, WorktreeManager};
+pub use worktree::{OnDiskWorktree, WorktreeError, WorktreeHandle, WorktreeManager};

@@ -4,9 +4,10 @@ use codeless_types::{Job, Repo, Review};
 use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
-    JobDiffArgs, JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, RemoveRepoArgs, RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RerunJobArgs, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -39,6 +40,17 @@ pub trait RpcServer: Send + Sync + 'static {
     /// existing one. Returns the newly-queued job. The original job
     /// is untouched. Errors with `NotFound` for an unknown source id.
     async fn rerun_job(&self, args: RerunJobArgs) -> RpcResult<Job>;
+
+    /// Inspect, and optionally remove, on-disk worktrees the user is
+    /// done with. Dry-run returns the matching entries (with sizes)
+    /// without touching anything so a UI can preview before
+    /// committing. With a real run, per-entry `git worktree remove`
+    /// failures land on `GcWorktreeEntry.error` rather than failing
+    /// the whole call — partial reclamation is observable. Errors
+    /// with `Internal` if no worktree root is configured on the
+    /// runtime; `Conflict` is not used because there's no per-job
+    /// state to clash with.
+    async fn gc_worktrees(&self, args: GcWorktreesArgs) -> RpcResult<GcWorktreesResult>;
 
     /// Compute the diff between the job's branch and the repo's
     /// default branch. Works whether or not the worktree is still on

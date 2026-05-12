@@ -81,6 +81,47 @@ pub struct RerunJobArgs {
     pub source_job_id: JobId,
 }
 
+/// Reclaim disk used by job worktrees that the user is done with.
+/// `older_than_ms` selects worktrees whose directory mtime is older
+/// than `now - older_than_ms`; `None` means "no age filter, match all
+/// candidates". `job_ids` further restricts the set to specific jobs
+/// (independent of age). When both are `None` every worktree under
+/// the configured root is a candidate — explicit and dangerous,
+/// which is why the UI defaults the modal to a dry run.
+///
+/// `dry_run: true` returns the matching entries without removing
+/// anything so the UI can preview size and paths before confirming.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct GcWorktreesArgs {
+    pub older_than_ms: Option<i64>,
+    pub job_ids: Option<Vec<JobId>>,
+    pub dry_run: bool,
+}
+
+/// A single worktree the GC sweep considered. `removed` is true if
+/// `gc_worktrees` actually deleted it; false on dry-run or when the
+/// underlying `git worktree remove` failed (per-entry failures
+/// surface here instead of failing the whole RPC so partial
+/// reclamation is observable). `size_bytes` is the on-disk size as
+/// of the sweep — best-effort, not transactional.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct GcWorktreeEntry {
+    pub job_id: Option<JobId>,
+    pub path: String,
+    pub size_bytes: i64,
+    pub mtime_ms: Option<i64>,
+    pub removed: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct GcWorktreesResult {
+    pub entries: Vec<GcWorktreeEntry>,
+    pub total_size_bytes: i64,
+    pub removed_count: i64,
+    pub root: Option<String>,
+}
+
 /// Filter for `list_reviews`. All fields compose with AND; `None`
 /// means "do not narrow on this column". Returned rows are ordered by
 /// `requested_at` ascending so a UI can render the oldest pending

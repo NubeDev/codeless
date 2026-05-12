@@ -22,6 +22,7 @@ import { navigate, useRoute } from "@/lib/route";
 import { JobDetail } from "./JobDetail";
 import { JobRow } from "./JobRow";
 import { SubmitJobDialog } from "./SubmitJobDialog";
+import { WorktreeGcButton } from "./WorktreeGcButton";
 import { summariseEnvelope } from "./eventFormat";
 
 // Repo-grouped jobs list — first user-visible Phase 2 surface. Loads
@@ -119,7 +120,7 @@ export function JobsDashboard() {
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4 p-6">
-      <header className="flex items-baseline justify-between">
+      <header className="flex items-baseline justify-between gap-3">
         <h1 className="text-xl font-semibold">Jobs</h1>
         <div className="text-muted-foreground flex items-baseline gap-3 font-mono text-xs">
           <span>{activeCount} active</span>
@@ -127,6 +128,7 @@ export function JobsDashboard() {
           <span>{merged.length} total</span>
           <span>·</span>
           <span title="Cost across jobs created today">today {formatCents(dailyTotal)}</span>
+          <WorktreeGcButton />
         </div>
       </header>
       <Sheet

@@ -211,6 +211,18 @@ export class MockRpcClient implements RpcClient {
         return null as RpcResultOf<M>;
       }
 
+      case "gc_worktrees": {
+        // The browser mock has no on-disk worktrees to model; report
+        // an empty sweep so the GC UI renders its "nothing to
+        // reclaim" empty state instead of erroring.
+        return {
+          entries: [],
+          total_size_bytes: 0,
+          removed_count: 0,
+          root: null,
+        } as RpcResultOf<M>;
+      }
+
       case "rerun_job": {
         const a = args as RpcArgs<"rerun_job">;
         const src = this.jobs.find((j) => j.id === a.source_job_id);
