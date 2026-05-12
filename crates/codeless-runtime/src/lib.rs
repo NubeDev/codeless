@@ -18,6 +18,7 @@ pub mod notifier;
 pub mod queue_config;
 pub mod rpc;
 pub mod runner;
+pub mod session_log;
 pub mod state_machine;
 pub mod store;
 pub mod time;

@@ -181,6 +181,20 @@ pub async fn drive_job(
                 Err(err) => tracing::warn!(?err, "failed to write handover; ignoring"),
             }
         }
+
+        // Append the session block to runs/<job_id>/log.md. Always
+        // runs (the handover is overwritten each session; the log
+        // never is — JOB-MODEL.md "one block per session, never
+        // rewritten"). The block carries the three load-bearing
+        // fields the doc spells out: what got done, how much it cost,
+        // why the run ended. Today's per-ULID layout matches the
+        // handover; a future migration to `<repo>/runs/<name>/` moves
+        // both files together.
+        let end = crate::session_log::EndReason::from_status(next_status);
+        match crate::session_log::append_session_block(&worktree, &updated, end).await {
+            Ok(path) => tracing::info!(log = %path.display(), "session log appended"),
+            Err(err) => tracing::warn!(?err, "failed to append session log; ignoring"),
+        }
     }
     Ok(())
 }
