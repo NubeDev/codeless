@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:01
-Current stage: 1 / 10
+Last tick: 2026-05-13 05:05
+Current stage: 2 / 10
 
 Repo:        codeless
 Branch:      master
@@ -64,8 +64,8 @@ Max ticks:   30
 
 ## Stages
 
-- [ ] 1. [S] Verify existing DEMO-UI.md path still works on master  ← next
-- [ ] 2. [S] Jobs list view: seeded demo job visible with status
+- [x] 1. [S] Verify existing DEMO-UI.md path still works on master
+- [ ] 2. [S] Jobs list view: seeded demo job visible with status  ← next
 - [ ] 3. [M] Job detail view: stages + live SSE event stream
 - [ ] 4. [S] "Run mock job" button: create + start a new mock job
 - [ ] 5. [M] Live stage tree: checklist updated from event stream
@@ -77,6 +77,15 @@ Max ticks:   30
 
 ## Notes
 - Stage 0: status file created on master in inner codeless repo.
+- Stage 1 verified on 2026-05-13: `cargo fmt --check`, `cargo clippy
+  --workspace --all-targets -D warnings`, and `pnpm tsc --noEmit` all
+  green. `demo bootstrap` seeded `demo` repo + queued mock job.
+  `codeless serve --bind 127.0.0.1:7777 --fs-root $PWD` came up;
+  `/healthz` → `ok`, `/rpc/list_jobs` returned the seeded job,
+  `/rpc/list_repos` returned the `demo` repo. UI dev server already
+  running on 127.0.0.1:1420 (project vite config pins port 1420 with
+  `strictPort`, not :5173 as the kickoff says) and serves the SPA
+  HTML (HTTP 200). DEMO-UI.md path is green on master.
 
 ## Blockers
 (none)
