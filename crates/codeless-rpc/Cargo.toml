@@ -10,9 +10,13 @@ description = "Codeless: transport-agnostic RPC trait and client glue. iOS- and 
 [lints]
 workspace = true
 
+[dev-dependencies]
+specta-typescript = "=0.0.10"
+
 [dependencies]
 codeless-types = { path = "../codeless-types" }
 serde = { version = "1", features = ["derive"] }
 async-trait = "0.1"
 futures-core = "0.3"
 thiserror = "2"
+specta = { version = "=2.0.0-rc.23", features = ["derive"] }

@@ -511,6 +511,8 @@ dependencies = [
  "codeless-types",
  "futures-core",
  "serde",
+ "specta",
+ "specta-typescript",
  "thiserror 2.0.18",
 ]
 

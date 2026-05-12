@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// purpose — per-stage / per-task filtering happens client-side from
 /// the same event stream so the server doesn't need to multiplex N
 /// fine-grained channels.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "scope", rename_all = "kebab-case")]
 pub enum EventFilter {
     /// Every event the runtime emits — used by the global event log view.
