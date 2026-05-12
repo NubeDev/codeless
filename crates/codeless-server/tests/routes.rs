@@ -74,6 +74,7 @@ async fn server_info_returns_configured_snapshot_without_token() {
         ],
         fs_root: Some("/tmp/demo".into()),
         worktree_root: Some("/tmp/demo/.codeless/worktrees".into()),
+        claude: None,
     };
     let state = AppState::new(rpc, TOKEN).with_server_info(info.clone());
     let app = build_router(state);

@@ -17,7 +17,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
-use codeless_rpc::{RpcServer, RunnerInfo, ServerInfo};
+use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerInfo};
 use codeless_runtime::{
     spawn_job_driver_loop, spawn_notifier, AnthropicRunnerAdapter, ClaudeRunnerAdapter,
     InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome, WebhookConfig,
@@ -181,7 +181,31 @@ async fn run_server(
     }
     let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
-    let server_info = Arc::new(build_server_info(&args));
+    let claude_status = if args.enable_claude {
+        let status = codeless_adapters_host::probe_claude().await;
+        match &status {
+            None => eprintln!(
+                "codeless-server: claude runner enabled but the `claude` binary \
+                 was not found on PATH, in CLAUDE_BINARY, or in any known install \
+                 location. Jobs targeting it will fail; install Claude Code or \
+                 unset --enable-claude."
+            ),
+            Some(s) => eprintln!(
+                "codeless-server: claude detected at {} (version={}, auth={})",
+                s.binary_path,
+                s.version.as_deref().unwrap_or("unknown"),
+                match s.authenticated {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "unknown",
+                }
+            ),
+        }
+        status
+    } else {
+        None
+    };
+    let server_info = Arc::new(build_server_info(&args, claude_status));
     let state = AppState {
         rpc: rpc_dyn,
         auth,
@@ -284,7 +308,7 @@ async fn run_server(
 /// enabled, so a `--enable-claude` server does not silently default
 /// new jobs to the demo path; with only `mock`, the demo runner stays
 /// the default.
-fn build_server_info(args: &ServeArgs) -> ServerInfo {
+fn build_server_info(args: &ServeArgs, claude: Option<ClaudeStatus>) -> ServerInfo {
     let mut runners = Vec::new();
     let real_runner_enabled = args.enable_claude || args.enable_anthropic;
     runners.push(RunnerInfo {
@@ -310,6 +334,7 @@ fn build_server_info(args: &ServeArgs) -> ServerInfo {
         runners,
         fs_root: args.fs_root.as_ref().map(|p| p.display().to_string()),
         worktree_root: args.worktree_root.as_ref().map(|p| p.display().to_string()),
+        claude,
     }
 }
 

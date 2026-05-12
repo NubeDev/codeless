@@ -446,6 +446,7 @@ name = "codeless-adapters-host"
 version = "0.0.0"
 dependencies = [
  "ai-runner",
+ "codeless-rpc",
  "codeless-types",
  "serde",
  "serde_json",

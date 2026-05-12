@@ -181,6 +181,22 @@ pub struct RunnerInfo {
     pub default: bool,
 }
 
+/// Best-effort probe result for Claude Code on the host. The host
+/// adapter populates this at server boot when `--enable-claude` is
+/// passed; the UI consumes it on the settings → Models surface to
+/// render an actionable hint ("Install Claude Code", "Run
+/// `claude auth login`", "Ready"). `authenticated` is `Some(true)` /
+/// `Some(false)` only when the probe could parse a definite answer;
+/// `None` means the binary exists but the wrapper did not report
+/// auth state within the probe budget, so the UI should fall back to
+/// the neutral "binary detected" hint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ClaudeStatus {
+    pub binary_path: String,
+    pub version: Option<String>,
+    pub authenticated: Option<bool>,
+}
+
 /// `GET /server/info` payload. Sits outside the bearer gate alongside
 /// `/healthz` and `/version` — the UI must reach it before the user
 /// can supply a token, since the runner dropdown and "demo mode"
@@ -192,6 +208,12 @@ pub struct ServerInfo {
     pub runners: Vec<RunnerInfo>,
     pub fs_root: Option<String>,
     pub worktree_root: Option<String>,
+    /// `Some` when the `claude` runner is enabled and the host probe
+    /// ran. The probe is cheap (one `--version` invocation plus an
+    /// optional 2 s auth check) so it runs once at boot; the UI need
+    /// not poll. `None` when the runner is disabled — the settings
+    /// surface renders an "enable with --enable-claude" hint instead.
+    pub claude: Option<ClaudeStatus>,
 }
 
 impl Default for ServerInfo {
@@ -201,6 +223,7 @@ impl Default for ServerInfo {
             runners: Vec::new(),
             fs_root: None,
             worktree_root: None,
+            claude: None,
         }
     }
 }

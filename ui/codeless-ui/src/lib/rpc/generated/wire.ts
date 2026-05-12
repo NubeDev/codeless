@@ -32,6 +32,23 @@ export type ApproveReviewArgs = {
 };
 
 /**
+ *  Best-effort probe result for Claude Code on the host. The host
+ *  adapter populates this at server boot when `--enable-claude` is
+ *  passed; the UI consumes it on the settings → Models surface to
+ *  render an actionable hint ("Install Claude Code", "Run
+ *  `claude auth login`", "Ready"). `authenticated` is `Some(true)` /
+ *  `Some(false)` only when the probe could parse a definite answer;
+ *  `None` means the binary exists but the wrapper did not report
+ *  auth state within the probe budget, so the UI should fall back to
+ *  the neutral "binary detected" hint.
+ */
+export type ClaudeStatus = {
+	binary_path: string,
+	version: string | null,
+	authenticated: boolean | null,
+};
+
+/**
  *  Adds a free-form comment to a review without changing its status.
  *  `Pending` reviews stay pending so the operator can keep iterating;
  *  the final approve / stop call lands a terminal status transition.
@@ -331,6 +348,14 @@ export type ServerInfo = {
 	runners: RunnerInfo[],
 	fs_root: string | null,
 	worktree_root: string | null,
+	/**
+	 *  `Some` when the `claude` runner is enabled and the host probe
+	 *  ran. The probe is cheap (one `--version` invocation plus an
+	 *  optional 2 s auth check) so it runs once at boot; the UI need
+	 *  not poll. `None` when the runner is disabled — the settings
+	 *  surface renders an "enable with --enable-claude" hint instead.
+	 */
+	claude: ClaudeStatus | null,
 };
 
 // A verify-gated chunk of a job — see SCOPE.md Appendix A `stages`.

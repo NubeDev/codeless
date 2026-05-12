@@ -6,11 +6,13 @@
 //! physically cannot pull it in via Cargo features.
 
 pub mod ai_runner_bridge;
+pub mod claude;
 pub mod fs;
 pub mod secrets;
 pub mod worktree;
 
 pub use ai_runner_bridge::{forward_events, map_event};
+pub use claude::probe as probe_claude;
 pub use fs::{FsError, HostFs};
 pub use secrets::{SecretError, SecretStore};
 pub use worktree::{WorktreeError, WorktreeHandle, WorktreeManager};
