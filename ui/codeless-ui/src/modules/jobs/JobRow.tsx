@@ -49,6 +49,7 @@ export function JobRow({ job, onSelect }: Props) {
         </div>
         {error && <div className="text-destructive mt-1 text-xs">{error}</div>}
       </div>
+      <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
       {canStop && (
         <Button size="sm" variant="ghost" onClick={stop} disabled={stopping}>
           {stopping ? "stopping…" : "stop"}
@@ -56,4 +57,29 @@ export function JobRow({ job, onSelect }: Props) {
       )}
     </div>
   );
+}
+
+// Cost vs. cap. Renders "—" for jobs that haven't billed anything;
+// flips to a warning tint above 80% of the cap so the dashboard
+// surfaces approaching kills before they happen.
+export function CostCell({ cost, cap }: { cost: number; cap: number }) {
+  if (cost === 0 && cap === 0) {
+    return <span className="text-muted-foreground font-mono text-[11px]">—</span>;
+  }
+  const ratio = cap > 0 ? cost / cap : 0;
+  const warn = ratio >= 0.8;
+  return (
+    <span
+      className={`font-mono text-[11px] ${warn ? "text-amber-500" : "text-muted-foreground"}`}
+      title={`${formatCents(cost)} of ${formatCents(cap)} cap`}
+    >
+      {formatCents(cost)}
+      {cap > 0 && <span className="opacity-60"> / {formatCents(cap)}</span>}
+    </span>
+  );
+}
+
+function formatCents(n: number): string {
+  if (n < 100) return `${n}¢`;
+  return `$${(n / 100).toFixed(2)}`;
 }

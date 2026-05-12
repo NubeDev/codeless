@@ -1,5 +1,6 @@
 import { useJob, type JobId } from "@/lib/rpc";
 
+import { CostCell } from "./JobRow";
 import { JobTimeline } from "./JobTimeline";
 import { ReviewPanel } from "./ReviewPanel";
 import { StatusBadge } from "./StatusBadge";
@@ -27,6 +28,9 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
               <span className="font-mono text-xs">{job.runner}</span>
               <span className="text-muted-foreground font-mono text-xs">
                 · {job.branch}
+              </span>
+              <span className="ml-auto">
+                <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
               </span>
             </div>
             <div className="text-muted-foreground mt-2 font-mono text-[11px]">

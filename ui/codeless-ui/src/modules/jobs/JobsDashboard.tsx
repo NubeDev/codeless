@@ -73,14 +73,25 @@ export function JobsDashboard() {
 
   const merged = jobs.data.map((j) => overlay.get(j.id) ?? j);
   const grouped = groupByRepo(merged, repos.data);
+  const today = dayBucket(Date.now());
+  const dailyTotal = merged
+    .filter((j) => j.created_at >= today)
+    .reduce((sum, j) => sum + j.cost_cents, 0);
+  const activeCount = merged.filter(
+    (j) => j.status === "running" || j.status === "queued",
+  ).length;
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4 p-6">
       <header className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Jobs</h1>
-        <span className="text-muted-foreground font-mono text-xs">
-          {merged.length} total
-        </span>
+        <div className="text-muted-foreground flex items-baseline gap-3 font-mono text-xs">
+          <span>{activeCount} active</span>
+          <span>·</span>
+          <span>{merged.length} total</span>
+          <span>·</span>
+          <span title="Cost across jobs created today">today {formatCents(dailyTotal)}</span>
+        </div>
       </header>
       <Sheet
         open={selectedJobId !== null}
@@ -128,6 +139,21 @@ export function JobsDashboard() {
 
 function findJob(jobs: Job[] | null, id: string): Job | undefined {
   return jobs?.find((j) => j.id === id);
+}
+
+// Midnight in the operator's local timezone. Phase 3 uses the
+// dashboard's render-time clock; cost caps in `codeless-runtime`
+// already track per-day totals authoritatively — this is for at-a-
+// glance UI only.
+function dayBucket(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function formatCents(n: number): string {
+  if (n < 100) return `${n}¢`;
+  return `$${(n / 100).toFixed(2)}`;
 }
 
 function groupByRepo(
