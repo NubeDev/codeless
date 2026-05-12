@@ -8,6 +8,7 @@ import { useJob, useRepos, useRpc, type JobId } from "@/lib/rpc";
 
 import { CostCell, WallClockCell } from "./JobRow";
 import { FilesChanged } from "./FilesChanged";
+import { HandoverPanel } from "./HandoverPanel";
 import { JobTimeline } from "./JobTimeline";
 import { ReviewPanel } from "./ReviewPanel";
 import { StageTree } from "./StageTree";
@@ -145,12 +146,18 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
           <TabsTrigger value="files" className="text-xs">
             Files changed
           </TabsTrigger>
+          <TabsTrigger value="handover" className="text-xs">
+            Handover
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="timeline" className="min-h-0 flex-1 mt-0">
           <JobTimeline jobId={jobId} />
         </TabsContent>
         <TabsContent value="files" className="min-h-0 flex-1 mt-0">
           <FilesChanged jobId={jobId} />
+        </TabsContent>
+        <TabsContent value="handover" className="min-h-0 flex-1 mt-0 flex flex-col">
+          {job && <HandoverPanel job={job} />}
         </TabsContent>
       </Tabs>
     </div>

@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:22
-Current stage: 7 / 10
+Last tick: 2026-05-13 05:30
+Current stage: 8 / 10
 
 Repo:        codeless
 Branch:      master
@@ -70,8 +70,8 @@ Max ticks:   30
 - [x] 4. [S] "Run mock job" button: create + start a new mock job
 - [x] 5. [M] Live stage tree: checklist updated from event stream
 - [x] 6. [S] Cost + wall-clock badges on the job row
-- [ ] 7. [M] Handover preview pane (runs/<name>/handover.md)  ← next
-- [ ] 8. [S] Review queue badge in the top bar
+- [x] 7. [M] Handover preview pane (runs/<name>/handover.md)
+- [ ] 8. [S] Review queue badge in the top bar  ← next
 - [ ] 9. [M] Ad-hoc job form: New Job button + repo dropdown
 - [ ] 10. [S] Polish pass: theme toggle, empty states, CTA
 
@@ -99,6 +99,19 @@ Max ticks:   30
   `useEventStream` from `@/lib/rpc` and subscribes per-job, so mock
   runner events stream live as they fire. No `@tauri-apps/api/core`
   imports (R2 satisfied).
+- Stage 7 added `HandoverPanel` and mounted it as a third tab
+  ("Handover") in `JobDetail` next to Timeline + Files-changed.
+  Probes `<worktree>/runs/<job_id>/handover.md` first, then
+  `<worktree>/handover.md`, via the existing `fs_read_file` RPC
+  (`byte_limit: null`). `RpcError("not_found")` is treated as a
+  miss, not an error; binary/toolarge results surface as readable
+  diagnostics. Renders the markdown body as a monospace preformatted
+  block — light-weight enough to be useful now and not over-engineered
+  for a file that the runtime does not yet write on every job. The
+  `MissingNotice` lists which paths it tried so an operator can see
+  the worktree expectation. Visible-in-browser: a Handover tab on
+  every job detail sheet that shows the file when present and a
+  clear "No handover yet" message otherwise.
 - Stage 6 added `WallClockCell` in `JobRow.tsx` and mounted it next
   to the existing `CostCell` in both the dashboard row and the
   `JobDetail` header. Live elapsed = `(ended_at ?? now) - started_at`,
