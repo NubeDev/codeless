@@ -17,6 +17,7 @@ import {
 import { ReviewQueueBadge } from "@/modules/jobs/ReviewQueueBadge";
 import type { Tab } from "@/modules/tabs";
 import { TabBar } from "@/modules/tabs";
+import { ThemeToggle } from "@/modules/theme";
 import {
   GridViewIcon,
   KeyboardIcon,
@@ -223,6 +224,8 @@ export function Header({
       <ReviewQueueBadge onOpen={onOpenReviews} />
 
       <SearchInline ref={searchRef} target={searchTarget} compact={compact} />
+
+      <ThemeToggle />
 
       {IS_MAC && (
         <>

@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:39
-Current stage: 10 / 10
+Last tick: 2026-05-13 05:43
+Current stage: 10 / 10 (DONE)
 
 Repo:        codeless
 Branch:      master
@@ -73,7 +73,7 @@ Max ticks:   30
 - [x] 7. [M] Handover preview pane (runs/<name>/handover.md)
 - [x] 8. [S] Review queue badge in the top bar
 - [x] 9. [M] Ad-hoc job form: New Job button + repo dropdown
-- [ ] 10. [S] Polish pass: theme toggle, empty states, CTA  ← next
+- [x] 10. [S] Polish pass: theme toggle, empty states, CTA
 
 ## Notes
 - Stage 0: status file created on master in inner codeless repo.
@@ -99,6 +99,19 @@ Max ticks:   30
   `useEventStream` from `@/lib/rpc` and subscribes per-job, so mock
   runner events stream live as they fire. No `@tauri-apps/api/core`
   imports (R2 satisfied).
+- Stage 10 polish pass: new `ThemeToggle` icon-button mounted in the
+  global `Header` (between SearchInline and the platform-specific
+  shortcuts/settings cluster). Cycles light → dark → system and
+  writes through the same `setTheme` persistor the settings window
+  uses, so the toggle and the settings panel stay in lockstep.
+  Improved the empty states in `JobsDashboard`: a new top-level
+  "No jobs yet" CTA card renders when repos are registered but no
+  jobs exist, pointing explicitly at the "New job" button in the
+  header above; the per-repo "no jobs in this repo yet" row gained
+  a hint pointing at "run mock job" / "New job". Cosmetic only —
+  no new behaviour. Visible-in-browser: a sun/moon/screen icon in
+  the top bar that swaps the theme on click, plus a polished empty
+  state when no jobs have been queued.
 - Stage 9 added `NewJobDialog` (top-level "New job" entry) mounted
   in the `JobsDashboard` page header next to `WorktreeGcButton`.
   Minimal form: repo dropdown + goal textarea. Submits via the

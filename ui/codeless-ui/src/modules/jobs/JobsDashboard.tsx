@@ -152,6 +152,7 @@ export function JobsDashboard() {
         </SheetContent>
       </Sheet>
       {repos.data.length === 0 && <NoReposCta />}
+      {repos.data.length > 0 && merged.length === 0 && <NoJobsCta />}
       {grouped.map(({ repo, jobs }) => (
         <Card key={repo.id}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 py-3">
@@ -164,7 +165,7 @@ export function JobsDashboard() {
           <CardContent className="p-0">
             {jobs.length === 0 ? (
               <div className="text-muted-foreground px-3 py-6 text-center text-sm">
-                no jobs yet
+                no jobs in this repo yet — use "run mock job" or "New job"
               </div>
             ) : (
               jobs.map((j) => (
@@ -236,6 +237,27 @@ function applyEvent(job: Job, e: { type: string }): Job {
     default:
       return job;
   }
+}
+
+// Top-level empty state for when repos exist but no jobs have ever
+// been queued. The "New job" button in the dashboard header is the
+// fastest way to fix that; this CTA names it explicitly so a new
+// operator does not have to guess where the action lives.
+function NoJobsCta() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">No jobs yet</CardTitle>
+      </CardHeader>
+      <CardContent className="text-muted-foreground space-y-2 text-sm">
+        <p>
+          Repos are registered but no jobs have been queued. Use the{" "}
+          <span className="font-medium">New job</span> button in the header
+          above to queue a mock-runner job against any repo.
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 // Empty-state shown when `list_repos` comes back empty. Steers a new
