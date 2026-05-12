@@ -153,12 +153,33 @@ export default function App() {
   const [home, setHome] = useState<string | null>(null);
   const [pendingCloseTab, setPendingCloseTab] = useState<number | null>(null);
   useEffect(() => {
-    // Forward-slash form so explorerRoot stays equal across home → OSC 7.
-    paths
-      .homeDir()
-      .then((p) => setHome(p ? p.replace(/\\/g, "/") : null))
-      .catch(() => setHome(null));
-  }, [paths]);
+    // Prefer the shell's home dir; if the shell has no notion of one
+    // (browser / mobile), fall back to the runtime's workspace cwd
+    // via `fs_cwd`. The explorer root sticks to this until a terminal
+    // tab broadcasts a different cwd via OSC 7.
+    let cancelled = false;
+    void (async () => {
+      try {
+        const h = await paths.homeDir();
+        if (cancelled) return;
+        if (h) {
+          setHome(h.replace(/\\/g, "/"));
+          return;
+        }
+      } catch {
+        // fall through to RPC
+      }
+      try {
+        const { path } = await rpc.call("fs_cwd", {});
+        if (!cancelled) setHome(path);
+      } catch {
+        if (!cancelled) setHome(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [paths, rpc]);
 
   // Esc closes the inline settings overlay. Bound at the window level
   // so it works regardless of focus within the panel; gated on `open`
