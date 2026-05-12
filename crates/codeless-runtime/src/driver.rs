@@ -156,6 +156,21 @@ pub async fn drive_job(
     // the worktree stays on disk so the user can inspect or re-run
     // from where it left off. `release_worktree` is kept around for
     // an upcoming user-driven `gc_worktrees` RPC, not auto-fired.
+    //
+    // Drop a session handover at `runs/<job_id>/handover.md` inside
+    // the worktree so the next session has the JOB-MODEL.md contract
+    // to read. Today only the default ("no structured handover emitted")
+    // content lands here — runner-specific extraction is a follow-up.
+    // Failure to write the handover is logged but never fails the job:
+    // the work already succeeded by this point and a missing markdown
+    // file is recoverable from the diff + events stream.
+    if let Some(worktree) = provisioned.as_ref().map(|p| p.worktree.clone()) {
+        let synth = crate::handover::default_handover(&updated.runner, next_status);
+        match crate::handover::write_handover(&worktree, job_id, &synth).await {
+            Ok(path) => tracing::info!(handover = %path.display(), "handover written"),
+            Err(err) => tracing::warn!(?err, "failed to write handover; ignoring"),
+        }
+    }
     Ok(())
 }
 
