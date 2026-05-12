@@ -24,21 +24,57 @@ use codeless_rpc::RpcServer;
 
 pub use auth::TokenLoadError;
 
+/// How the server gates incoming requests. `Required` means every
+/// `/rpc/*` request must carry the bearer token and every `/events`
+/// connection must include it in the query string. `Open` skips the
+/// check entirely — only the CLI's `codeless serve` opts into this
+/// for loopback binds, where the trust boundary is already the
+/// same-user-same-host process (SCOPE.md R5).
+#[derive(Clone, Debug)]
+pub enum AuthMode {
+    Required { token: Arc<str> },
+    Open,
+}
+
+impl AuthMode {
+    /// Helper for callers that always operated on a token string;
+    /// keeps the older test setup paths short.
+    pub fn required(token: impl Into<Arc<str>>) -> Self {
+        AuthMode::Required {
+            token: token.into(),
+        }
+    }
+}
+
 /// Shared handler state. Cloned cheaply: both fields are `Arc`-shaped
 /// (the trait object behind `RpcServer` is wrapped in `Arc`; the
-/// bearer string is wrapped in `Arc<str>` so cloning the state does
-/// not duplicate the secret across every request).
+/// bearer-token allocation behind `AuthMode::Required` is also
+/// `Arc<str>` so cloning the state does not duplicate the secret
+/// across every request).
 #[derive(Clone)]
 pub struct AppState {
     pub rpc: Arc<dyn RpcServer>,
-    pub bearer_token: Arc<str>,
+    pub auth: AuthMode,
 }
 
 impl AppState {
+    /// Build a state with the legacy "bearer required" mode. The
+    /// `Into<Arc<str>>` bound preserves the call sites that pass a
+    /// borrowed string or `String` directly.
     pub fn new(rpc: Arc<dyn RpcServer>, bearer_token: impl Into<Arc<str>>) -> Self {
         Self {
             rpc,
-            bearer_token: bearer_token.into(),
+            auth: AuthMode::required(bearer_token),
+        }
+    }
+
+    /// Build a state with auth disabled. Used by the CLI on loopback
+    /// binds; tests can also reach this constructor when they want to
+    /// bypass the bearer header.
+    pub fn open(rpc: Arc<dyn RpcServer>) -> Self {
+        Self {
+            rpc,
+            auth: AuthMode::Open,
         }
     }
 }

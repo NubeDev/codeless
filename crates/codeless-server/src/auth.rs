@@ -7,17 +7,24 @@ use axum::{
 use codeless_adapters_host::SecretStore;
 use thiserror::Error;
 
-use crate::{AppState, TOKEN_SECRET_KEY};
+use crate::{AppState, AuthMode, TOKEN_SECRET_KEY};
 
 /// Validates the `Authorization: Bearer <token>` header against the
-/// shared bearer token. Used as middleware on every `/rpc/*` route.
-/// SSE uses query-param auth instead because `EventSource` cannot set
-/// headers — see `sse::events_handler`.
+/// configured bearer token. Used as middleware on every `/rpc/*`
+/// route. When `AuthMode::Open` is in effect — loopback binds opt in
+/// via the CLI — the check is skipped entirely. SSE uses query-param
+/// auth instead because `EventSource` cannot set headers — see
+/// `sse::events_handler`.
 pub(crate) async fn bearer_layer(
     State(state): State<AppState>,
     req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    let expected = match &state.auth {
+        AuthMode::Open => return Ok(next.run(req).await),
+        AuthMode::Required { token } => token.clone(),
+    };
+
     let supplied = req
         .headers()
         .get(AUTHORIZATION)
@@ -26,7 +33,7 @@ pub(crate) async fn bearer_layer(
         .map(str::trim);
 
     match supplied {
-        Some(t) if constant_time_eq(t, &state.bearer_token) => Ok(next.run(req).await),
+        Some(t) if constant_time_eq(t, &expected) => Ok(next.run(req).await),
         _ => Err(StatusCode::UNAUTHORIZED),
     }
 }

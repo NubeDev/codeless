@@ -136,6 +136,7 @@ fn serve_route_requires_bearer_token() {
             "serve",
             "--bind",
             "127.0.0.1:0",
+            "--require-token",
         ])
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
@@ -233,6 +234,7 @@ fn serve_refuses_without_configured_token() {
             "serve",
             "--bind",
             "127.0.0.1:0",
+            "--require-token",
         ])
         .timeout(Duration::from_secs(5))
         .output()
@@ -242,5 +244,116 @@ fn serve_refuses_without_configured_token() {
     assert!(
         stderr.contains("--init-token"),
         "expected hint about --init-token, got: {stderr}"
+    );
+}
+
+/// Non-loopback bind without `--require-token` must refuse to boot.
+/// The footgun guard exists so a careless `--bind 0.0.0.0:...` cannot
+/// accidentally expose an unauthenticated core to other hosts.
+#[test]
+fn serve_refuses_non_loopback_without_require_token() {
+    let dir = TempDir::new().unwrap();
+    let secrets = dir.path().join("secrets.toml");
+
+    let out = TestCommand::new(BIN)
+        .args([
+            "--secrets-file",
+            secrets.to_str().unwrap(),
+            "serve",
+            "--bind",
+            "0.0.0.0:0",
+        ])
+        .timeout(Duration::from_secs(5))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--require-token"),
+        "expected hint about --require-token, got: {stderr}"
+    );
+}
+
+/// Loopback bind without a configured token must succeed with auth
+/// disabled — the zero-paste first-run path the demo depends on.
+#[test]
+fn serve_loopback_no_token_boots_and_accepts_unauthed_request() {
+    let dir = TempDir::new().unwrap();
+    let secrets = dir.path().join("secrets.toml");
+    let db = dir.path().join("codeless.db");
+
+    let mut child = Command::new(BIN)
+        .args([
+            "--secrets-file",
+            secrets.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "serve",
+            "--bind",
+            "127.0.0.1:0",
+        ])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn codeless serve");
+
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = mpsc::channel::<String>();
+    let _reader = std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            if tx.send(line.clone()).is_err() {
+                break;
+            }
+            if line.contains("listening on http://") {
+                break;
+            }
+        }
+    });
+
+    let mut bound = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(line) => {
+                if let Some(idx) = line.find("http://") {
+                    bound = Some(line[idx + "http://".len()..].trim().to_string());
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => break,
+        }
+    }
+    let addr = bound.unwrap_or_else(|| {
+        let _ = child.kill();
+        panic!("server did not announce bound address");
+    });
+
+    let url = format!("http://{addr}/rpc/list_repos");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let status = rt.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body("{}")
+            .send()
+            .await
+            .expect("send unauth")
+            .status()
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        status.as_u16(),
+        200,
+        "expected 200 on loopback without token, got {status}"
     );
 }

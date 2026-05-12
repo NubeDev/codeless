@@ -56,15 +56,11 @@ cargo run -p codeless-cli -- secrets set ANTHROPIC_API_KEY --from-env ANTHROPIC_
 [`ui/codeless-ui/`](./ui/codeless-ui/) talks to. One-shot setup:
 
 ```sh
-# pick a DB and mint the shared bearer token; prints it once
-cargo run -p codeless-cli -- --db /tmp/codeless-demo.db serve --init-token
-
 # seed a demo repo + a queued mock job so the dashboard has content
 cargo run -p codeless-cli -- --db /tmp/codeless-demo.db demo bootstrap
 
-# run the server. `--fs-root` is what wires up the file explorer; without
-# it the `fs.*` RPC surface returns Internal and the explorer pane stays
-# empty. Defaults to 127.0.0.1:7777.
+# run the server. `--fs-root` wires up the file explorer; loopback
+# binds default to no-auth so no token paste is needed in the browser.
 cargo run -p codeless-cli -- --db /tmp/codeless-demo.db \
     serve --fs-root "$PWD"
 
@@ -72,6 +68,11 @@ cargo run -p codeless-cli -- --db /tmp/codeless-demo.db \
 pnpm -C ui/codeless-ui install   # first time only
 pnpm -C ui/codeless-ui dev
 ```
+
+Open `http://127.0.0.1:5173`. The UI auto-probes the server; no
+localStorage to set. Add `--require-token` (and run `codeless serve
+--init-token` first) to enforce bearer auth; non-loopback binds
+require it.
 
 Full instructions (including the `localStorage` keys the browser
 reads and the expected demo timeline) live in the workspace

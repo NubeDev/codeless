@@ -10,6 +10,7 @@ import {
   HttpSseClient,
   MockRpcClient,
   RpcProvider,
+  isViteDevPort,
   readBaseUrl,
   readToken,
   type RpcClient,
@@ -23,45 +24,59 @@ const capabilities: ShellCapabilities = {
 };
 
 // Transport selection, in priority order:
-//   - `?mock=1`  → force MockRpcClient
-//   - `?real=1`  → force HttpSseClient even on the Vite dev port
-//   - else, on the Vite dev port (1420) with no explicit baseUrl
-//     configured (localStorage or VITE_CODELESS_BASE_URL), default to
-//     mock so the dev experience works without a backend running
-//   - else, HttpSseClient against readBaseUrl()
-function buildClient(): RpcClient {
+//   - `?mock=1` → force MockRpcClient.
+//   - Otherwise pick `HttpSseClient` and probe `/healthz` once. The
+//     local server responds 200 `ok`; if the probe fails (server not
+//     running, wrong host, network blocked) fall back to mock so the
+//     dev experience stays usable. The probe is short (1s timeout) so
+//     a missing server does not visibly delay first paint.
+//
+// The previous "default to mock on Vite dev ports" rule made the
+// zero-paste demo (server up, `pnpm dev`, open browser) silently land
+// on the mock client. The probe path lets the same one-line setup
+// reach the real server when it's there.
+async function buildClient(): Promise<RpcClient> {
   const params = new URLSearchParams(window.location.search);
   if (params.get("mock") === "1") return new MockRpcClient();
-  if (params.get("real") === "1") {
-    return new HttpSseClient({ baseUrl: readBaseUrl(), token: readToken() });
-  }
-  const onViteDev = window.location.port === "1420";
-  const hasExplicitBase =
-    !!safeLocalStorage("codeless-rpc-base-url") ||
-    !!import.meta.env.VITE_CODELESS_BASE_URL;
-  if (onViteDev && !hasExplicitBase) return new MockRpcClient();
-  return new HttpSseClient({ baseUrl: readBaseUrl(), token: readToken() });
+
+  const baseUrl = readBaseUrl();
+  const http = new HttpSseClient({ baseUrl, token: readToken() });
+
+  if (await healthy(baseUrl)) return http;
+
+  // No real server reachable. Mock keeps Vite-only dev workflows
+  // working; production builds at a real origin keep `HttpSseClient`
+  // so the surfaced error is a clear "server unreachable" rather
+  // than a silent mock fallback.
+  if (isViteDevPort(window.location.port)) return new MockRpcClient();
+  return http;
 }
 
-function safeLocalStorage(key: string): string | null {
+async function healthy(baseUrl: string): Promise<boolean> {
   try {
-    return window.localStorage.getItem(key);
+    const ctl = new AbortController();
+    const timer = window.setTimeout(() => ctl.abort(), 1000);
+    const res = await fetch(`${baseUrl}/healthz`, { signal: ctl.signal });
+    window.clearTimeout(timer);
+    return res.ok;
   } catch {
-    return null;
+    return false;
   }
 }
 
-const client = buildClient();
-const isMock = client instanceof MockRpcClient;
+void (async () => {
+  const client = await buildClient();
+  const isMock = client instanceof MockRpcClient;
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <ShellProvider capabilities={capabilities}>
-    <RpcProvider client={client}>
-      <App />
-      {isMock && <MockBanner />}
-    </RpcProvider>
-  </ShellProvider>,
-);
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    <ShellProvider capabilities={capabilities}>
+      <RpcProvider client={client}>
+        <App />
+        {isMock && <MockBanner />}
+      </RpcProvider>
+    </ShellProvider>,
+  );
+})();
 
 // Tiny non-intrusive corner badge so it's obvious which transport
 // the app is talking to. Dismissable but stateless — refreshes back

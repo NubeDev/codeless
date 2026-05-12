@@ -10,7 +10,7 @@ use codeless_types::{EventCursor, JobId};
 use futures_util::stream::{Stream, StreamExt};
 use serde::Deserialize;
 
-use crate::{auth::constant_time_eq, AppState};
+use crate::{auth::constant_time_eq, AppState, AuthMode};
 
 /// Query shape for `GET /events`. The browser builds this in
 /// `HttpSseClient::buildSubscribeUrl`; the field names and the
@@ -33,9 +33,11 @@ pub(crate) async fn events_handler(
     State(state): State<AppState>,
     Query(q): Query<EventsQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, String)> {
-    let supplied = q.token.as_deref().unwrap_or("");
-    if !constant_time_eq(supplied, &state.bearer_token) {
-        return Err((StatusCode::UNAUTHORIZED, "invalid token".into()));
+    if let AuthMode::Required { token } = &state.auth {
+        let supplied = q.token.as_deref().unwrap_or("");
+        if !constant_time_eq(supplied, token) {
+            return Err((StatusCode::UNAUTHORIZED, "invalid token".into()));
+        }
     }
 
     let filter = match q.scope.as_str() {

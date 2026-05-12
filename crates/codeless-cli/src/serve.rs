@@ -24,7 +24,7 @@ use codeless_runtime::{
     WebhookNotifier,
 };
 use codeless_server::{
-    load_bearer_token, serve_with_shutdown, AppState, TokenLoadError, TOKEN_SECRET_KEY,
+    load_bearer_token, serve_with_shutdown, AppState, AuthMode, TokenLoadError, TOKEN_SECRET_KEY,
 };
 use codeless_types::{CostCents, Event, Job, TaskId, TaskStatus};
 
@@ -92,6 +92,18 @@ pub struct ServeArgs {
     /// path that escapes this root after canonicalisation.
     #[arg(long, env = "CODELESS_FS_ROOT")]
     pub fs_root: Option<PathBuf>,
+
+    /// Force bearer-token authentication even on loopback binds.
+    /// Loopback is unauthenticated by default because the trust
+    /// boundary is already the same-user same-host process; this
+    /// flag exists for operators who want to enforce the token
+    /// flow during local development or testing. Non-loopback
+    /// binds (anything other than 127.0.0.1 / ::1) require this
+    /// flag — the server refuses to boot otherwise so a careless
+    /// `--bind 0.0.0.0:...` cannot accidentally expose an
+    /// unauthenticated core.
+    #[arg(long)]
+    pub require_token: bool,
 }
 
 pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
@@ -131,12 +143,34 @@ async fn run_server(
 
     let store = SecretStore::open(&secrets_path)
         .with_context(|| format!("open secrets at {}", secrets_path.display()))?;
-    let token = load_bearer_token(&store).map_err(|TokenLoadError::Missing| {
-        anyhow!(
-            "no `{TOKEN_SECRET_KEY}` in {}; run `codeless serve --init-token` first",
-            secrets_path.display()
-        )
-    })?;
+
+    let is_loopback = args.bind.ip().is_loopback();
+    let auth_required = args.require_token || !is_loopback;
+    if !is_loopback && !args.require_token {
+        bail!(
+            "refusing to bind {} without --require-token; a non-loopback bind \
+             without auth would expose an unauthenticated core. Pass \
+             --require-token (and run `codeless serve --init-token` first to \
+             mint one) or bind to a loopback address.",
+            args.bind
+        );
+    }
+
+    let auth = if auth_required {
+        let token = load_bearer_token(&store).map_err(|TokenLoadError::Missing| {
+            anyhow!(
+                "no `{TOKEN_SECRET_KEY}` in {}; run `codeless serve --init-token` first",
+                secrets_path.display()
+            )
+        })?;
+        AuthMode::required(token)
+    } else {
+        eprintln!(
+            "codeless-server: loopback bind {}, auth disabled (pass --require-token to enforce)",
+            args.bind
+        );
+        AuthMode::Open
+    };
 
     let mut runtime = rpc_open::open(db.as_deref()).await?;
     if let Some(root) = &args.fs_root {
@@ -147,7 +181,7 @@ async fn run_server(
     }
     let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
-    let state = AppState::new(rpc_dyn, token);
+    let state = AppState { rpc: rpc_dyn, auth };
 
     // Outbound webhook notifier: when both `notifier_webhook_url`
     // and `notifier_webhook_hmac_key_hex` are present in the secrets
