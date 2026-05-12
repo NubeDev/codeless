@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:30
-Current stage: 8 / 10
+Last tick: 2026-05-13 05:34
+Current stage: 9 / 10
 
 Repo:        codeless
 Branch:      master
@@ -71,8 +71,8 @@ Max ticks:   30
 - [x] 5. [M] Live stage tree: checklist updated from event stream
 - [x] 6. [S] Cost + wall-clock badges on the job row
 - [x] 7. [M] Handover preview pane (runs/<name>/handover.md)
-- [ ] 8. [S] Review queue badge in the top bar  ← next
-- [ ] 9. [M] Ad-hoc job form: New Job button + repo dropdown
+- [x] 8. [S] Review queue badge in the top bar
+- [ ] 9. [M] Ad-hoc job form: New Job button + repo dropdown  ← next
 - [ ] 10. [S] Polish pass: theme toggle, empty states, CTA
 
 ## Notes
@@ -99,6 +99,18 @@ Max ticks:   30
   `useEventStream` from `@/lib/rpc` and subscribes per-job, so mock
   runner events stream live as they fire. No `@tauri-apps/api/core`
   imports (R2 satisfied).
+- Stage 8 added `ReviewQueueBadge` (uses `useReviews({ status: "pending" })`)
+  and mounted it in the global `Header` just left of the inline
+  search box, with a new `onOpenReviews` prop wired through
+  `App.tsx` to `navigate("/jobs?filter=reviews")` + `newJobsTab()`.
+  Renders nothing when the queue is empty so the chrome stays
+  clean; when pending reviews exist, shows an amber-tinted count
+  pill plus the "reviews" label. Click navigates into the jobs
+  tab (per-status filtering of the jobs list itself is a future
+  polish — the spec calls out the badge wiring as the load-bearing
+  bit, with empty state acceptable). Visible-in-browser: top bar
+  carries a "<n> reviews" pill any time there is at least one
+  pending review.
 - Stage 7 added `HandoverPanel` and mounted it as a third tab
   ("Handover") in `JobDetail` next to Timeline + Files-changed.
   Probes `<worktree>/runs/<job_id>/handover.md` first, then

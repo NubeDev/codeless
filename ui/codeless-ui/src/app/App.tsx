@@ -66,6 +66,7 @@ import { ThemeProvider } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
 import { usePaths } from "@/lib/shell";
 import { useRpc } from "@/lib/rpc/provider";
+import { navigate } from "@/lib/route";
 import { configureNative } from "@/modules/ai/lib/native";
 import type { SearchAddon } from "@xterm/addon-search";
 import { AnimatePresence, motion } from "motion/react";
@@ -808,6 +809,10 @@ export default function App() {
             }
             onOpenShortcuts={() => setShortcutsOpen(true)}
             onOpenSettings={() => void settingsWindow.open()}
+            onOpenReviews={() => {
+              navigate("/jobs?filter=reviews");
+              newJobsTab();
+            }}
             searchTarget={searchTarget}
             searchRef={searchInlineRef}
           />

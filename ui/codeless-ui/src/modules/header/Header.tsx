@@ -14,6 +14,7 @@ import {
   SHORTCUTS,
   type ShortcutId,
 } from "@/modules/shortcuts/shortcuts";
+import { ReviewQueueBadge } from "@/modules/jobs/ReviewQueueBadge";
 import type { Tab } from "@/modules/tabs";
 import { TabBar } from "@/modules/tabs";
 import {
@@ -49,6 +50,7 @@ type Props = {
   canSplit: boolean;
   onOpenShortcuts: () => void;
   onOpenSettings: () => void;
+  onOpenReviews: () => void;
   searchTarget: SearchTarget;
   searchRef: RefObject<SearchInlineHandle | null>;
 };
@@ -70,6 +72,7 @@ export function Header({
   canSplit,
   onOpenShortcuts,
   onOpenSettings,
+  onOpenReviews,
   searchTarget,
   searchRef,
 }: Props) {
@@ -216,6 +219,8 @@ export function Header({
         />
         <div data-tauri-drag-region className="h-full min-w-2 flex-1" />
       </div>
+
+      <ReviewQueueBadge onOpen={onOpenReviews} />
 
       <SearchInline ref={searchRef} target={searchTarget} compact={compact} />
 
