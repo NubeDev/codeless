@@ -254,8 +254,14 @@ dependencies = [
  "assert_cmd",
  "clap",
  "codeless-adapters-host",
+ "codeless-rpc",
+ "codeless-runtime",
+ "codeless-types",
+ "futures-util",
  "predicates",
+ "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
