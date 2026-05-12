@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:05
-Current stage: 2 / 10
+Last tick: 2026-05-13 05:10
+Current stage: 3 / 10
 
 Repo:        codeless
 Branch:      master
@@ -65,8 +65,8 @@ Max ticks:   30
 ## Stages
 
 - [x] 1. [S] Verify existing DEMO-UI.md path still works on master
-- [ ] 2. [S] Jobs list view: seeded demo job visible with status  ← next
-- [ ] 3. [M] Job detail view: stages + live SSE event stream
+- [x] 2. [S] Jobs list view: seeded demo job visible with status
+- [ ] 3. [M] Job detail view: stages + live SSE event stream  ← next
 - [ ] 4. [S] "Run mock job" button: create + start a new mock job
 - [ ] 5. [M] Live stage tree: checklist updated from event stream
 - [ ] 6. [S] Cost + wall-clock badges on the job row
@@ -86,6 +86,12 @@ Max ticks:   30
   running on 127.0.0.1:1420 (project vite config pins port 1420 with
   `strictPort`, not :5173 as the kickoff says) and serves the SPA
   HTML (HTTP 200). DEMO-UI.md path is green on master.
+- Stage 2 met by existing surface from the prior ux-grind work (no
+  code change; verified live against a fresh demo db).
+  `JobsDashboard` groups jobs by repo, `JobRow` renders one row per
+  job with `StatusBadge` (queued/running/completed), runner badge,
+  branch, relative age, cost, and activity chip. The seeded mock
+  job appears as `completed` (mock runner ran it on serve start).
 
 ## Blockers
 (none)
