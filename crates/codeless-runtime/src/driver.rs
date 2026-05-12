@@ -7,8 +7,12 @@ use crate::event_bus::EventBus;
 use crate::rpc::InProcessRpc;
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
 use crate::state_machine::{is_terminal_job, transition_job};
-use crate::store::MemoryStore;
+use crate::store::SqliteStore;
 use crate::time::now_ms;
+
+fn db_err(e: sqlx::Error) -> RpcError {
+    RpcError::Internal(format!("db: {e}"))
+}
 
 /// Drive a queued job to a terminal state. Owns the surrounding
 /// `Job` row transitions and the framing events; the runner is
@@ -43,11 +47,13 @@ pub async fn drive_job(
     job_id: JobId,
     runner: Arc<dyn Runner>,
 ) -> RpcResult<()> {
-    let store: &Arc<MemoryStore> = rpc.store();
+    let store: &Arc<SqliteStore> = rpc.store();
     let bus: &Arc<EventBus> = rpc.bus();
 
     let mut job = store
         .get_job(job_id)
+        .await
+        .map_err(db_err)?
         .ok_or_else(|| RpcError::NotFound(format!("job {job_id}")))?;
     transition_job(job.status, JobStatus::Running)
         .map_err(|e| RpcError::Conflict(e.to_string()))?;
@@ -55,7 +61,7 @@ pub async fn drive_job(
     let started = now_ms();
     job.status = JobStatus::Running;
     job.started_at = Some(started);
-    store.update_job(job.clone());
+    store.update_job(&job).await.map_err(db_err)?;
     tracing::info!(status = "running", "job started");
     bus.publish(
         Some(job.id),
@@ -72,7 +78,7 @@ pub async fn drive_job(
         })
         .await;
 
-    let Some(current) = store.get_job(job_id) else {
+    let Some(current) = store.get_job(job_id).await.map_err(db_err)? else {
         return Err(RpcError::NotFound(format!("job {job_id}")));
     };
     if is_terminal_job(current.status) {
@@ -92,7 +98,7 @@ pub async fn drive_job(
     let mut updated = current;
     updated.status = next_status;
     updated.ended_at = Some(ended);
-    store.update_job(updated);
+    store.update_job(&updated).await.map_err(db_err)?;
     tracing::info!(status = ?next_status, "job terminal");
     bus.publish(Some(job_id), None, None, event, ended);
     Ok(())

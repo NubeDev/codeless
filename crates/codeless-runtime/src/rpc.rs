@@ -11,26 +11,23 @@ use sqlx::SqlitePool;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
 use crate::migrations::MIGRATOR;
-use crate::store::MemoryStore;
+use crate::store::SqliteStore;
 use crate::time::now_ms;
 
-/// In-process `RpcServer`. The CLI's `codeless run --once` path
-/// (stage 10) talks to this directly without serialising over a wire;
-/// the same struct is what the hosted server (Phase 3) will hand to
-/// `axum` handlers.
-///
-/// `since` replay is not implemented yet — the event bus is in-memory
-/// only, so `Some(_)` cursors return `Conflict` until stage 4 wires the
-/// SQLite event log. Live subscriptions work today.
+/// In-process `RpcServer`. The CLI's `codeless run --once` path talks
+/// to this directly without serialising over a wire; the same struct
+/// is what the hosted server will hand to `axum` handlers in a later
+/// phase. Repo and job rows live in SQLite (`SqliteStore`); the event
+/// bus is still in-memory broadcast — `since`-cursor replay against
+/// the persisted event log lands in a follow-up stage.
 pub struct InProcessRpc {
-    store: Arc<MemoryStore>,
+    store: Arc<SqliteStore>,
     bus: Arc<EventBus>,
-    pool: SqlitePool,
 }
 
 /// Default event-broadcast lag tolerance per subscriber. See
-/// `EventBus::new` for the trade-off; 1024 is the Phase 1 starting
-/// point and has not yet been tuned against real load.
+/// `EventBus::new` for the trade-off; 1024 is the starting point and
+/// has not yet been tuned against real load.
 const DEFAULT_EVENT_BUFFER: usize = 1024;
 
 impl InProcessRpc {
@@ -53,13 +50,12 @@ impl InProcessRpc {
     pub async fn with_db(pool: SqlitePool) -> Result<Self, sqlx::Error> {
         MIGRATOR.run(&pool).await?;
         Ok(Self {
-            store: Arc::new(MemoryStore::new()),
+            store: Arc::new(SqliteStore::new(pool)),
             bus: Arc::new(EventBus::new(DEFAULT_EVENT_BUFFER)),
-            pool,
         })
     }
 
-    pub fn store(&self) -> &Arc<MemoryStore> {
+    pub fn store(&self) -> &Arc<SqliteStore> {
         &self.store
     }
 
@@ -67,12 +63,15 @@ impl InProcessRpc {
         &self.bus
     }
 
-    /// Pool handle for the persistent store. `store()` above is the
-    /// in-memory shape that exists for as long as the SQLite-backed
-    /// queries have not yet replaced it.
+    /// Pool handle for callers that need to issue ad-hoc queries
+    /// against the same database the store is writing to.
     pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+        self.store.pool()
     }
+}
+
+fn db_err(e: sqlx::Error) -> RpcError {
+    RpcError::Internal(format!("db: {e}"))
 }
 
 #[async_trait]
@@ -91,14 +90,15 @@ impl RpcServer for InProcessRpc {
             created_at: now,
             updated_at: now,
         };
-        self.store.insert_repo(repo.clone());
+        self.store.insert_repo(&repo).await.map_err(db_err)?;
         self.bus
             .publish(None, None, None, Event::RepoAdded { repo_id: repo.id }, now);
         Ok(repo)
     }
 
     async fn remove_repo(&self, args: RemoveRepoArgs) -> RpcResult<()> {
-        if !self.store.remove_repo(args.repo_id) {
+        let removed = self.store.remove_repo(args.repo_id).await.map_err(db_err)?;
+        if !removed {
             return Err(RpcError::NotFound(format!("repo {}", args.repo_id)));
         }
         self.bus.publish(
@@ -115,12 +115,18 @@ impl RpcServer for InProcessRpc {
 
     async fn list_repos(&self) -> RpcResult<ListReposResult> {
         Ok(ListReposResult {
-            repos: self.store.list_repos(),
+            repos: self.store.list_repos().await.map_err(db_err)?,
         })
     }
 
     async fn submit_job(&self, args: SubmitJobArgs) -> RpcResult<Job> {
-        if self.store.get_repo(args.repo_id).is_none() {
+        if self
+            .store
+            .get_repo(args.repo_id)
+            .await
+            .map_err(db_err)?
+            .is_none()
+        {
             return Err(RpcError::NotFound(format!("repo {}", args.repo_id)));
         }
         let now = now_ms();
@@ -141,7 +147,7 @@ impl RpcServer for InProcessRpc {
             ended_at: None,
             created_at: now,
         };
-        self.store.insert_job(job.clone());
+        self.store.insert_job(&job).await.map_err(db_err)?;
         self.bus.publish(
             Some(job.id),
             None,
@@ -158,17 +164,19 @@ impl RpcServer for InProcessRpc {
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job> {
         self.store
             .get_job(args.job_id)
+            .await
+            .map_err(db_err)?
             .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))
     }
 
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult> {
         Ok(ListJobsResult {
-            jobs: self.store.list_jobs(args.repo_id),
+            jobs: self.store.list_jobs(args.repo_id).await.map_err(db_err)?,
         })
     }
 
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()> {
-        let Some(mut job) = self.store.get_job(args.job_id) else {
+        let Some(mut job) = self.store.get_job(args.job_id).await.map_err(db_err)? else {
             return Err(RpcError::NotFound(format!("job {}", args.job_id)));
         };
         match job.status {
@@ -184,7 +192,7 @@ impl RpcServer for InProcessRpc {
         job.status = JobStatus::Stopped;
         job.stop_reason = Some(StopReason::User);
         job.ended_at = Some(now);
-        self.store.update_job(job.clone());
+        self.store.update_job(&job).await.map_err(db_err)?;
         self.bus.publish(
             Some(job.id),
             None,

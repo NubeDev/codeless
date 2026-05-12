@@ -289,6 +289,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "parking_lot",
+ "serde_json",
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
