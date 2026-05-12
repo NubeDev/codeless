@@ -15,6 +15,13 @@ Cargo.lock.bak
 # Worktree dirs created by codeless-adapters-host's worktree manager
 worktrees/
 
+# Per-repo runtime scratch space — `codeless serve` defaults
+# --worktree-root to <fs-root>/.codeless/worktrees when --fs-root is
+# set, and Phase 2 templates land at .codeless/jobs/<slug>.yaml.
+# Templates are explicitly opt-in (the user wants those committed),
+# but worktrees and any future scratch should never be tracked.
+.codeless/worktrees/
+
 # Secrets / local config
 .env
 .env.*

@@ -65,9 +65,12 @@ pub struct ServeArgs {
 
     /// Directory under which per-job `git worktree` checkouts live.
     /// Each job gets `<worktree-root>/job-<job_id>` on a fresh
-    /// `codeless/job-<job_id>` branch. When unset the driver runs
-    /// jobs without provisioning a worktree — fine for the `mock`
-    /// runner but real AI runners that need a checkout will fail.
+    /// `codeless/job-<job_id>` branch. When unset but `--fs-root` is
+    /// set, defaults to `<fs-root>/.codeless/worktrees` — so the demo
+    /// quickstart does not require the operator to invent a second
+    /// flag. When both are unset, the driver runs jobs without
+    /// provisioning a worktree (fine for `mock`; real AI runners that
+    /// need a checkout will fail at run time).
     #[arg(long, env = "CODELESS_WORKTREE_ROOT")]
     pub worktree_root: Option<PathBuf>,
 
@@ -205,7 +208,12 @@ async fn run_server(
     } else {
         None
     };
-    let server_info = Arc::new(build_server_info(&args, claude_status));
+    let worktree_root_effective = effective_worktree_root(&args);
+    let server_info = Arc::new(build_server_info(
+        &args,
+        worktree_root_effective.clone(),
+        claude_status,
+    ));
     let state = AppState {
         rpc: rpc_dyn,
         auth,
@@ -248,7 +256,7 @@ async fn run_server(
         eprintln!("codeless-server: background driver disabled (--no-driver)");
         None
     } else {
-        let worktrees = args.worktree_root.as_ref().map(|root| {
+        let worktrees = worktree_root_effective.as_ref().map(|root| {
             // Create the parent eagerly so the first job doesn't
             // race the directory creation with the `git worktree
             // add` call.
@@ -272,7 +280,7 @@ async fn run_server(
             "codeless-server: background driver enabled (concurrency={}, runners={}, worktrees={})",
             args.driver_concurrency,
             enabled.join(","),
-            args.worktree_root
+            worktree_root_effective
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "disabled".into()),
@@ -301,6 +309,20 @@ async fn run_server(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Resolve the effective `--worktree-root`. When the operator passes
+/// `--worktree-root` explicitly it wins; otherwise `--fs-root` (when
+/// set) seeds an implicit `<fs-root>/.codeless/worktrees` so the demo
+/// quickstart works without a second flag. The directory is created
+/// lazily at driver init.
+fn effective_worktree_root(args: &ServeArgs) -> Option<PathBuf> {
+    if let Some(explicit) = &args.worktree_root {
+        return Some(explicit.clone());
+    }
+    args.fs_root
+        .as_ref()
+        .map(|root| root.join(".codeless").join("worktrees"))
+}
+
 /// Build the `/server/info` snapshot from the parsed `serve` flags.
 /// The runner list mirrors `DefaultRunnerFactory`'s enabled set so the
 /// UI dropdown reflects exactly what the driver will accept. The
@@ -308,7 +330,11 @@ async fn run_server(
 /// enabled, so a `--enable-claude` server does not silently default
 /// new jobs to the demo path; with only `mock`, the demo runner stays
 /// the default.
-fn build_server_info(args: &ServeArgs, claude: Option<ClaudeStatus>) -> ServerInfo {
+fn build_server_info(
+    args: &ServeArgs,
+    worktree_root: Option<PathBuf>,
+    claude: Option<ClaudeStatus>,
+) -> ServerInfo {
     let mut runners = Vec::new();
     let real_runner_enabled = args.enable_claude || args.enable_anthropic;
     runners.push(RunnerInfo {
@@ -333,7 +359,7 @@ fn build_server_info(args: &ServeArgs, claude: Option<ClaudeStatus>) -> ServerIn
         version: env!("CARGO_PKG_VERSION").to_owned(),
         runners,
         fs_root: args.fs_root.as_ref().map(|p| p.display().to_string()),
-        worktree_root: args.worktree_root.as_ref().map(|p| p.display().to_string()),
+        worktree_root: worktree_root.as_ref().map(|p| p.display().to_string()),
         claude,
     }
 }

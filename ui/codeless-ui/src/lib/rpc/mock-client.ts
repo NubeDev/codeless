@@ -23,6 +23,7 @@ import type {
   Job,
   Repo,
   Review,
+  ServerInfo,
   ShellBgEntry,
   ShellCommandOutput,
 } from "./wire";
@@ -581,6 +582,24 @@ export class MockRpcClient implements RpcClient {
     }
     this.fsMkdirRecursive(parentPath(path));
     this.fs.set(path, { kind: "dir", mtime: Date.now() });
+  }
+
+  // Mock pretends a `--enable-claude` server discovered no binary so
+// the UI can render the "install Claude Code" hint without a real
+// host probe. `mock` stays the default because `claude` here is a
+// non-functional placeholder; flipping it would mislead users into
+// submitting jobs the mock cannot run.
+  async serverInfo(): Promise<ServerInfo> {
+    return {
+      version: "mock",
+      runners: [
+        { id: "mock", default: true },
+        { id: "claude", default: false },
+      ],
+      fs_root: MOCK_FS_ROOT,
+      worktree_root: null,
+      claude: null,
+    };
   }
 
   subscribe(filter: EventFilter, _since?: Since): AsyncIterable<EventEnvelope> {

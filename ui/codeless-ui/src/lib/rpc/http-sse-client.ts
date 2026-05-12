@@ -17,7 +17,7 @@ import type {
   RpcResultOf,
   Since,
 } from "./methods";
-import type { EventEnvelope } from "./wire";
+import type { EventEnvelope, ServerInfo } from "./wire";
 
 export interface HttpSseClientConfig {
   // Origin of the codeless-server, e.g. `"https://core.example.com"`.
@@ -53,6 +53,15 @@ export class HttpSseClient implements RpcClient {
     // both cases. The cast is safe because the server is the source of
     // truth for method results and is generated from the same Rust types.
     return (await res.json()) as RpcResultOf<M>;
+  }
+
+  async serverInfo(): Promise<ServerInfo> {
+    const res = await fetch(`${this.cfg.baseUrl}/server/info`);
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw RpcError.fromHttpStatus(res.status, text || res.statusText);
+    }
+    return (await res.json()) as ServerInfo;
   }
 
   subscribe(filter: EventFilter, since?: Since): AsyncIterable<EventEnvelope> {

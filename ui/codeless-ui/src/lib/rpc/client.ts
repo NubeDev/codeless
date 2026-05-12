@@ -5,7 +5,7 @@
 // — never on `fetch`, `EventSource`, or `@tauri-apps/api/*` directly.
 // That separation is what makes "one UI, four shells" survive.
 
-import type { EventEnvelope } from "./wire";
+import type { EventEnvelope, ServerInfo } from "./wire";
 import type {
   EventFilter,
   RpcArgs,
@@ -20,4 +20,11 @@ export interface RpcClient {
   // Async iterable so call sites use `for await`. Implementations are
   // responsible for resume-on-disconnect using the latest cursor seen.
   subscribe(filter: EventFilter, since?: Since): AsyncIterable<EventEnvelope>;
+
+  // Unauthenticated bootstrap snapshot: runner list, fs root, worktree
+  // root, claude probe. Lives outside the `/rpc/*` gate on the wire
+  // (the UI needs it before it can supply a token) but routes through
+  // the same transport interface so the Tauri and mock shells don't
+  // have to fall back to direct fetch.
+  serverInfo(): Promise<ServerInfo>;
 }

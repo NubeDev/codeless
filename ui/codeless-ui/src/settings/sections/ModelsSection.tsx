@@ -32,6 +32,7 @@ import {
 } from "@/modules/settings/store";
 import { useNetworkProbe } from "@/lib/shell";
 import { useRpc } from "@/lib/rpc/provider";
+import type { ServerInfo } from "@/lib/rpc";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -44,10 +45,19 @@ type KeysMap = Record<ProviderId, string | null>;
 export function ModelsSection() {
   const rpc = useRpc();
   const [keys, setKeys] = useState<KeysMap | null>(null);
+  const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const defaultModel = usePreferencesStore((s) => s.defaultModelId);
 
   useEffect(() => {
     void getAllKeys(rpc).then(setKeys);
+  }, [rpc]);
+
+  // Best-effort fetch; the section still renders without it. A failed
+  // probe just hides the "Coding agents" block rather than surfacing
+  // an error toast — the settings screen is not the right place to
+  // alert users to a server-info outage.
+  useEffect(() => {
+    rpc.serverInfo().then(setServerInfo).catch(() => undefined);
   }, [rpc]);
 
   const onSave = async (provider: ProviderId, value: string) => {
@@ -142,6 +152,8 @@ export function ModelsSection() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      <CodingAgentsBlock info={serverInfo} />
 
       <div className="flex flex-col gap-2">
         <div className="flex items-baseline justify-between">
@@ -319,4 +331,103 @@ function Label({ children }: { children: React.ReactNode }) {
       {children}
     </span>
   );
+}
+
+// Driven by `/server/info`. The server reports which CLI runners it is
+// configured to drive plus a best-effort host probe for each — the UI
+// surfaces a one-line action so the operator knows the next step
+// without leaving the settings panel. Codex / Copilot rows live in
+// this same block when those runners arrive.
+function CodingAgentsBlock({ info }: { info: ServerInfo | null }) {
+  if (!info) return null;
+  const claudeEnabled = info.runners.some((r) => r.id === "claude");
+  return (
+    <div className="flex flex-col gap-2">
+      <Label>Coding agents</Label>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <CodingAgentRow
+          name="Claude Code"
+          state={claudeAgentState(info, claudeEnabled)}
+        />
+      </div>
+    </div>
+  );
+}
+
+type AgentState =
+  | { kind: "ready"; detail: string }
+  | { kind: "auth-missing"; detail: string }
+  | { kind: "auth-unknown"; detail: string }
+  | { kind: "binary-missing" }
+  | { kind: "disabled" };
+
+function claudeAgentState(info: ServerInfo, enabled: boolean): AgentState {
+  if (!enabled) return { kind: "disabled" };
+  const c = info.claude;
+  if (!c) return { kind: "binary-missing" };
+  const ver = c.version ?? "unknown version";
+  if (c.authenticated === true) return { kind: "ready", detail: ver };
+  if (c.authenticated === false) return { kind: "auth-missing", detail: ver };
+  return { kind: "auth-unknown", detail: ver };
+}
+
+function CodingAgentRow({
+  name,
+  state,
+}: {
+  name: string;
+  state: AgentState;
+}) {
+  const { tone, headline, action } = renderAgentState(state);
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[12px] font-medium">{name}</span>
+        <span className={cn("text-[10.5px]", tone)}>{headline}</span>
+      </div>
+      <span className="text-[10.5px] leading-relaxed text-muted-foreground">
+        {action}
+      </span>
+    </div>
+  );
+}
+
+function renderAgentState(state: AgentState): {
+  tone: string;
+  headline: string;
+  action: string;
+} {
+  switch (state.kind) {
+    case "ready":
+      return {
+        tone: "text-emerald-500",
+        headline: "Ready",
+        action: state.detail,
+      };
+    case "auth-missing":
+      return {
+        tone: "text-amber-500",
+        headline: "Not signed in",
+        action: "Run `claude auth login` in a terminal.",
+      };
+    case "auth-unknown":
+      return {
+        tone: "text-muted-foreground",
+        headline: "Detected",
+        action: `${state.detail} — auth state unknown; run \`claude auth login\` if jobs fail.`,
+      };
+    case "binary-missing":
+      return {
+        tone: "text-destructive",
+        headline: "Not installed",
+        action:
+          "Install Claude Code (https://docs.claude.com/en/docs/claude-code) and restart `codeless serve`.",
+      };
+    case "disabled":
+      return {
+        tone: "text-muted-foreground",
+        headline: "Disabled",
+        action: "Pass `--enable-claude` to `codeless serve` to enable.",
+      };
+  }
 }

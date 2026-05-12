@@ -32,7 +32,7 @@ import type {
   RpcResultOf,
   Since,
 } from "./methods";
-import type { EventEnvelope } from "./wire";
+import type { EventEnvelope, ServerInfo } from "./wire";
 
 interface SubscribeArgs {
   filter: EventFilter;
@@ -45,6 +45,10 @@ export class TauriIpcClient implements RpcClient {
     args: RpcArgs<M>,
   ): Promise<RpcResultOf<M>> {
     return invoke<RpcResultOf<M>>(`rpc_${method}`, { args });
+  }
+
+  serverInfo(): Promise<ServerInfo> {
+    return invoke<ServerInfo>("rpc_server_info");
   }
 
   subscribe(filter: EventFilter, since?: Since): AsyncIterable<EventEnvelope> {
