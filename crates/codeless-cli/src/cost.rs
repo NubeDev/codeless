@@ -16,6 +16,7 @@ use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
 use codeless_rpc::{ListJobsArgs, RpcServer};
 use codeless_types::{Job, JobStatus, RepoId};
+use serde::Serialize;
 
 use crate::rpc_open;
 
@@ -33,6 +34,10 @@ pub struct SummaryArgs {
     /// summed.
     #[arg(long)]
     pub repo: Option<String>,
+    /// Emit the rollup as a JSON object instead of human-readable
+    /// text. Useful for piping into `jq` or further aggregation.
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub fn handle(
@@ -67,7 +72,11 @@ async fn summary(rpc: &dyn RpcServer, args: SummaryArgs) -> Result<ExitCode> {
         .jobs;
 
     let rollup = Rollup::from_jobs(&jobs);
-    rollup.print();
+    if args.json {
+        println!("{}", serde_json::to_string(&rollup)?);
+    } else {
+        rollup.print();
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -75,7 +84,7 @@ async fn summary(rpc: &dyn RpcServer, args: SummaryArgs) -> Result<ExitCode> {
 /// inline in `summary`) so the same shape can be unit-tested without
 /// going through the CLI; the `Display`-style print lives in
 /// `print`.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
 struct Rollup {
     total_cents: i64,
     job_count: usize,

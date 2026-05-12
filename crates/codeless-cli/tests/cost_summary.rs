@@ -89,6 +89,25 @@ fn summary_on_empty_core_reports_no_jobs() {
     assert!(stdout.contains("no jobs"), "stdout: {stdout}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn summary_json_emits_rollup_object() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("codeless.db");
+    seed_three_jobs(&db).await;
+
+    let out = TestCommand::new(BIN)
+        .args(["--db", db.to_str().unwrap(), "cost", "summary", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("not JSON");
+    assert_eq!(v["total_cents"], 0);
+    assert_eq!(v["job_count"], 3);
+    assert!(v["by_status"].is_object());
+    assert!(v["by_runner"].is_object());
+}
+
 #[test]
 fn summary_rejects_bad_repo_id() {
     let out = TestCommand::new(BIN)

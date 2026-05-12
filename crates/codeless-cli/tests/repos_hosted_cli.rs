@@ -187,6 +187,37 @@ async fn repos_add_then_list_then_remove_local_mode() {
     assert!(!stdout_after.contains(&repo_id));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repos_list_json_emits_array() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("codeless.db");
+
+    let rpc = InProcessRpc::with_file(&db).await.unwrap();
+    rpc.add_repo(AddRepoArgs {
+        name: "json-test".into(),
+        clone_url: "https://example.test/json.git".into(),
+        default_branch: "main".into(),
+        local_path: "/tmp/json-test".into(),
+        git_auth: token_auth(),
+        concurrency_cap: None,
+        default_runner: None,
+    })
+    .await
+    .unwrap();
+    drop(rpc);
+
+    let out = TestCommand::new(BIN)
+        .args(["--db", db.to_str().unwrap(), "repos", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("not JSON");
+    assert!(v.is_array(), "expected array, got {v}");
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["name"], "json-test");
+}
+
 #[test]
 fn repos_remove_unknown_id_fails() {
     let out = TestCommand::new(BIN)

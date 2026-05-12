@@ -17,10 +17,11 @@ use crate::rpc_open;
 
 #[derive(Debug, Subcommand)]
 pub enum Verb {
-    /// Print every repo registered in the core, one ULID + name per
-    /// line. Local-mode reads from `--db`; hosted-mode hits
-    /// `GET /rpc/list_repos` on `--core`.
-    List,
+    /// Print every repo registered in the core. Default output is
+    /// one ULID + name per line; `--json` switches to a single JSON
+    /// array for shell-pipeline consumers. Local-mode reads from
+    /// `--db`; hosted-mode hits `GET /rpc/list_repos` on `--core`.
+    List(ListArgs),
     /// Register a new repo with the core. Picks `git_auth: token`
     /// against the supplied env var by default — the only auth
     /// shape the runtime currently understands end-to-end. SSH /
@@ -30,6 +31,13 @@ pub enum Verb {
     /// Remove a repo by ULID. Errors with `NotFound` if the id is
     /// unknown.
     Remove(RemoveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ListArgs {
+    /// Emit a single JSON array instead of one row per line.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -80,18 +88,22 @@ pub fn handle(
     rt.block_on(async move {
         let rpc = rpc_open::build_dual_mode(core, token, db).await?;
         match verb {
-            Verb::List => list(rpc.as_ref()).await,
+            Verb::List(args) => list(rpc.as_ref(), args).await,
             Verb::Add(args) => add(rpc.as_ref(), args).await,
             Verb::Remove(args) => remove(rpc.as_ref(), args).await,
         }
     })
 }
 
-async fn list(rpc: &dyn RpcServer) -> Result<ExitCode> {
+async fn list(rpc: &dyn RpcServer, args: ListArgs) -> Result<ExitCode> {
     let ListReposResult { repos } = rpc
         .list_repos()
         .await
         .map_err(|e| anyhow!("list_repos: {e}"))?;
+    if args.json {
+        println!("{}", serde_json::to_string(&repos)?);
+        return Ok(ExitCode::SUCCESS);
+    }
     if repos.is_empty() {
         eprintln!("(no repos)");
         return Ok(ExitCode::SUCCESS);

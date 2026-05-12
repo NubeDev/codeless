@@ -41,6 +41,9 @@ pub struct ListArgs {
     /// the core is returned.
     #[arg(long)]
     pub repo: Option<String>,
+    /// Emit a JSON array instead of tab-separated rows.
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub fn handle(
@@ -71,6 +74,10 @@ async fn list(rpc: &dyn RpcServer, args: ListArgs) -> Result<ExitCode> {
         .list_jobs(ListJobsArgs { repo_id })
         .await
         .map_err(|e| anyhow!("list_jobs: {e}"))?;
+    if args.json {
+        println!("{}", serde_json::to_string(&jobs)?);
+        return Ok(ExitCode::SUCCESS);
+    }
     if jobs.is_empty() {
         eprintln!("(no jobs)");
         return Ok(ExitCode::SUCCESS);
