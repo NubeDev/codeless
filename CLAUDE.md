@@ -20,20 +20,46 @@ codeless/                  ← this repo (NubeDev/codeless)
 ├── CLAUDE.md              ← this file
 ├── CODELESS.md            ← durable per-repo memory
 ├── README.md
-└── crates/
-    ├── codeless-types/             # wire types — iOS-safe, Android-safe
-    ├── codeless-rpc/               # RpcServer trait + arg/result types — iOS-safe, Android-safe
-    ├── codeless-runtime/           # state machine, sqlx, event bus — host-only
-    ├── codeless-adapters-host/     # worktree, PTY, secrets file, process spawn — host-only
-    ├── codeless-server/            # axum + SSE — host-only
-    ├── codeless-client/            # HttpSseClient (RpcClient impl) — iOS-safe, Android-safe
-    ├── codeless-cli/               # the `codeless` binary — host-only
-    └── codeless-tauri-desktop/     # desktop shell — host-only
+├── crates/
+│   ├── codeless-types/             # wire types — iOS-safe, Android-safe
+│   ├── codeless-rpc/               # RpcServer trait + arg/result types — iOS-safe, Android-safe
+│   ├── codeless-runtime/           # state machine, sqlx, event bus — host-only
+│   ├── codeless-adapters-host/     # worktree, PTY, secrets file, process spawn — host-only
+│   ├── codeless-server/            # axum + SSE — host-only
+│   ├── codeless-client/            # HttpSseClient (RpcClient impl) — iOS-safe, Android-safe
+│   ├── codeless-cli/               # the `codeless` binary — host-only
+│   └── codeless-tauri-desktop/     # desktop shell — host-only
+└── ui/
+    └── codeless-ui/                # single React + TS UI for all four shells
+                                    # (browser, Tauri desktop, iOS, Android).
+                                    # Terax-derived; ~198 source files;
+                                    # imports RpcClient only (R2).
 ```
 
 There is also a sibling vendored `ai-runner/` crate **outside this repo**
 in the workspace. Treat it as read-only; updates flow from the upstream
 rubix-agent workspace.
+
+### Where the UI fits
+
+`ui/codeless-ui/` is the canonical and **only** UI package. It is
+Terax-derived (`crynta/terax-ai` @ pinned SHA in
+[`../DOCS/UI-PORT-AUDIT.md`](../DOCS/UI-PORT-AUDIT.md)) and already
+ships:
+
+- editor (CodeMirror 6), terminal (xterm.js), file explorer, AI chat
+  panel, settings, themes, shadcn/ui primitives
+- a typed `RpcClient` boundary at `src/lib/rpc/` with
+  `HttpSseClient` (browser/mobile), `TauriIpcClient` stub (desktop),
+  and `MockRpcClient` for tests
+- four shell entry points under `src/shells/{browser,desktop,android,ios}/`
+
+The active UI work is the **Terax-conversion grind** — re-routing
+the remaining `@tauri-apps/*` imports through `RpcClient` or
+shell-injected capability adapters. Design lives in
+[`../DOCS/UI-ARCHITECTURE.md`](../DOCS/UI-ARCHITECTURE.md); the per-file
+worklist lives in [`../DOCS/UI-PORT-AUDIT.md`](../DOCS/UI-PORT-AUDIT.md).
+Anything touching `codeless/ui/` should read both first.
 
 ## Hard rules — trip one and the loop halts
 
@@ -140,3 +166,6 @@ pick a fresh `feat/<phase-slug>` branch.
 - Project scope: [`../DOCS/SCOPE.md`](../DOCS/SCOPE.md)
 - Loop spec: [`../DOCS/JOB-LOOP.md`](../DOCS/JOB-LOOP.md)
 - Active session: [`../DOCS/sessions/`](../DOCS/sessions/)
+- UI tree (one codebase, four shells): [`ui/codeless-ui/`](./ui/codeless-ui/)
+- UI architecture (mental model): [`../DOCS/UI-ARCHITECTURE.md`](../DOCS/UI-ARCHITECTURE.md)
+- UI conversion grind (per-file worklist): [`../DOCS/UI-PORT-AUDIT.md`](../DOCS/UI-PORT-AUDIT.md)

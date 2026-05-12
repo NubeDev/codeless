@@ -91,6 +91,35 @@ exit. The cap watcher inside `drive_job` reads
 `wall_clock_cap_ms` in parallel; either tripping the cap stops the
 job and emits `JobStopped { reason: CostCap | WallClock }`.
 
+## UI
+
+The React UI lives at [`ui/codeless-ui/`](./ui/codeless-ui/) — a
+Terax-derived React 19 + TypeScript app that already includes editor
+(CodeMirror 6), terminal (xterm.js), file explorer, AI chat panel,
+settings, and themes. It is the **single** UI that ships to all four
+shells (browser, Tauri desktop, iOS, Android); per-shell files are
+forbidden by R3 in [`CLAUDE.md`](./CLAUDE.md).
+
+The transport boundary lives at
+[`ui/codeless-ui/src/lib/rpc/`](./ui/codeless-ui/src/lib/rpc/): a
+typed `RpcClient` interface with `HttpSseClient` (browser/mobile),
+`TauriIpcClient` (desktop, stub), and `MockRpcClient` (tests). Each
+shell entry under
+[`ui/codeless-ui/src/shells/`](./ui/codeless-ui/src/shells/)
+constructs the right client and mounts the same `<App />`.
+
+Active UI work is the Tauri-conversion grind — 31 files still import
+`@tauri-apps/*` and need rerouting through `RpcClient` or a
+shell-injected capability adapter. Architectural rationale in
+[`../DOCS/UI-ARCHITECTURE.md`](../DOCS/UI-ARCHITECTURE.md); per-file
+worklist in [`../DOCS/UI-PORT-AUDIT.md`](../DOCS/UI-PORT-AUDIT.md).
+
+```sh
+cd ui/codeless-ui
+pnpm install
+pnpm dev        # browser shell against MockRpcClient by default
+```
+
 ## Origin
 
 The original fork rationale (Terax as a starting point) lives below

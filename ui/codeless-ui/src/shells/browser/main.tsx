@@ -14,7 +14,6 @@ import {
   readToken,
   type RpcClient,
 } from "../../lib/rpc";
-import { JobsDashboard } from "../../modules/jobs";
 
 // `?mock=1` swaps the transport for an in-memory `MockRpcClient` —
 // useful for dev'ing UI surfaces without a running codeless-server.
@@ -24,15 +23,8 @@ function buildClient(): RpcClient {
   return new HttpSseClient({ baseUrl: readBaseUrl(), token: readToken() });
 }
 
-// `?view=jobs` renders the new Phase 2 jobs dashboard in place of the
-// upstream `<App />` shell — temporary route until the dashboard is
-// wired into the App's panel structure.
-function pickRoot(): React.ReactNode {
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("view") === "jobs") return <JobsDashboard />;
-  return <App />;
-}
-
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <RpcProvider client={buildClient()}>{pickRoot()}</RpcProvider>,
+  <RpcProvider client={buildClient()}>
+    <App />
+  </RpcProvider>,
 );

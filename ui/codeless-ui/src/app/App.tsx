@@ -35,6 +35,7 @@ import {
   type EditorPaneHandle,
 } from "@/modules/editor";
 import { FileExplorer } from "@/modules/explorer";
+import { JobsDashboard } from "@/modules/jobs";
 import {
   Header,
   type SearchInlineHandle,
@@ -87,6 +88,7 @@ export default function App() {
     openFileTab,
     pinTab,
     newPreviewTab,
+    newJobsTab,
     openAiDiffTab,
     setAiDiffStatus,
     closeTab,
@@ -198,6 +200,7 @@ export default function App() {
   const isEditorTab = activeTab?.kind === "editor";
   const isPreviewTab = activeTab?.kind === "preview";
   const isAiDiffTab = activeTab?.kind === "ai-diff";
+  const isJobsTab = activeTab?.kind === "jobs";
 
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
@@ -553,6 +556,7 @@ export default function App() {
       "tab.new": openNewTab,
       "tab.newPreview": () => openPreviewTab(""),
       "tab.newEditor": () => setNewEditorOpen(true),
+      "tab.newJobs": () => newJobsTab(),
       "tab.close": handleCloseTabOrPane,
       "tab.next": () => cycleTab(1),
       "tab.prev": () => cycleTab(-1),
@@ -572,6 +576,7 @@ export default function App() {
       activeId,
       cycleTab,
       handleCloseTabOrPane,
+      newJobsTab,
       openNewTab,
       openPreviewTab,
       selectByIndex,
@@ -726,6 +731,7 @@ export default function App() {
             onNew={openNewTab}
             onNewPreview={() => openPreviewTab("")}
             onNewEditor={() => setNewEditorOpen(true)}
+            onNewJobs={() => newJobsTab()}
             onClose={handleClose}
             onPin={pinTab}
             onToggleSidebar={toggleSidebar}
@@ -830,6 +836,17 @@ export default function App() {
                         onAccept={(id) => respondToApproval(id, true)}
                         onReject={(id) => respondToApproval(id, false)}
                       />
+                    </div>
+                    <div
+                      className={cn(
+                        "absolute inset-0 overflow-auto",
+                        !isJobsTab && "invisible pointer-events-none",
+                      )}
+                      aria-hidden={!isJobsTab}
+                    >
+                      {tabs.some((t) => t.kind === "jobs") ? (
+                        <JobsDashboard />
+                      ) : null}
                     </div>
                   </div>
 

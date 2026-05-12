@@ -10,6 +10,7 @@ import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
+  Briefcase01Icon,
   Cancel01Icon,
   ComputerTerminal02Icon,
   GitCompareIcon,
@@ -28,6 +29,7 @@ type Props = {
   onNew: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
+  onNewJobs: () => void;
   onClose: (id: number) => void;
   /** Pin (promote) a preview tab to persistent on double-click. */
   onPin: (id: number) => void;
@@ -41,6 +43,7 @@ export function TabBar({
   onNew,
   onNewPreview,
   onNewEditor,
+  onNewJobs,
   onClose,
   onPin,
   compact,
@@ -174,6 +177,15 @@ export function TabBar({
               <span className="flex-1">Preview</span>
               <span className="text-xs text-muted-foreground">{fmtShortcut(MOD_KEY, "P")}</span>
             </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onNewJobs()}>
+              <HugeiconsIcon
+                icon={Briefcase01Icon}
+                size={14}
+                strokeWidth={1.75}
+              />
+              <span className="flex-1">Jobs</span>
+              <span className="text-xs text-muted-foreground">{fmtShortcut(MOD_KEY, "J")}</span>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -206,6 +218,16 @@ function TabIcon({ tab }: { tab: Tab }) {
       />
     );
   }
+  if (tab.kind === "jobs") {
+    return (
+      <HugeiconsIcon
+        icon={Briefcase01Icon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0"
+      />
+    );
+  }
   return (
     <HugeiconsIcon
       icon={ComputerTerminal02Icon}
@@ -220,6 +242,7 @@ function labelFor(t: Tab): string {
   if (t.kind === "editor") return t.title;
   if (t.kind === "preview") return t.title;
   if (t.kind === "ai-diff") return t.title;
+  if (t.kind === "jobs") return t.title;
   if (!t.cwd) return t.title;
   const parts = t.cwd.split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : "/";

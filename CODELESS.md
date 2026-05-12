@@ -76,6 +76,22 @@ threading + cost) sit stacked on `feat/phase-2a-persistence`:
   through the Anthropic SDK builder so the wiremock integration
   test can redirect the SDK at a local stub; a future re-sync from
   upstream rubix-agent should preserve that wiring.
+- `ui/codeless-ui/` — the single React + TS UI for all four shells
+  (browser, Tauri desktop, iOS, Android). Terax-derived
+  (`crynta/terax-ai` @ pinned SHA in `../DOCS/UI-PORT-AUDIT.md`),
+  ~198 source files, already includes editor (CodeMirror 6),
+  terminal (xterm.js), file explorer, AI chat panel, settings, and
+  themes. The `src/lib/rpc/` boundary holds the typed `RpcClient`
+  interface plus `HttpSseClient` (browser/mobile), a `TauriIpcClient`
+  stub for desktop, and `MockRpcClient` for tests; shell entries
+  under `src/shells/{browser,desktop,android,ios}/` construct the
+  right client. Active UI work is the Tauri-conversion grind tracked
+  in `../DOCS/UI-PORT-AUDIT.md` — 31 files still import
+  `@tauri-apps/*` and need rerouting through `RpcClient` or a
+  shell-injected capability adapter. New product surfaces
+  (repo-grouped jobs dashboard, per-job stage/task timeline, review
+  approval card) mount **inside** the existing Terax shell as new
+  modules under `src/modules/`, never as a parallel app.
 
 Verify the workspace any time with:
 

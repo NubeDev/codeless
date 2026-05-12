@@ -60,7 +60,13 @@ export type AiDiffTab = {
   isNewFile: boolean;
 };
 
-export type Tab = TerminalTab | EditorTab | PreviewTab | AiDiffTab;
+export type JobsTab = {
+  id: number;
+  kind: "jobs";
+  title: string;
+};
+
+export type Tab = TerminalTab | EditorTab | PreviewTab | AiDiffTab | JobsTab;
 
 export type TabPatch = Partial<{
   title: string;
@@ -277,6 +283,25 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     return id;
   }, []);
 
+  // Singleton: <JobsDashboard /> renders the global jobs view across all
+  // repos — opening a second tab would duplicate identical content. If a
+  // jobs tab is already open, focus it instead of appending.
+  const newJobsTab = useCallback(() => {
+    let targetId = -1;
+    setTabs((curr) => {
+      const existing = curr.find((t) => t.kind === "jobs");
+      if (existing) {
+        targetId = existing.id;
+        return curr;
+      }
+      const id = nextIdRef.current++;
+      targetId = id;
+      return [...curr, { id, kind: "jobs", title: "Jobs" } satisfies JobsTab];
+    });
+    setActiveId(targetId);
+    return targetId;
+  }, []);
+
   const closeTab = useCallback((id: number) => {
     setTabs((curr) => {
       if (curr.length <= 1) return curr;
@@ -467,6 +492,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     openFileTab,
     pinTab,
     newPreviewTab,
+    newJobsTab,
     openAiDiffTab,
     setAiDiffStatus,
     closeTab,
