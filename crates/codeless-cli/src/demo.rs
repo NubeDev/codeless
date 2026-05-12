@@ -4,8 +4,8 @@
 //! `codeless demo bootstrap --db <path>` once, then point `codeless
 //! serve --db <path>` at the same file."
 
-use std::path::PathBuf;
-use std::process::ExitCode;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
 
 use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
@@ -41,9 +41,14 @@ pub struct BootstrapArgs {
     #[arg(long, default_value = "https://example.test/demo.git")]
     pub clone_url: String,
 
-    /// Default branch on the repo row.
-    #[arg(long, default_value = "main")]
-    pub default_branch: String,
+    /// Default branch on the repo row. When unset, the bootstrap
+    /// probes `local_path` with `git symbolic-ref --short HEAD` so a
+    /// repo initialised with `master` (or any non-`main` default)
+    /// doesn't silently break later RPCs that diff against this name.
+    /// Falls back to `main` only when probing fails (no `.git` dir,
+    /// detached HEAD, missing git binary).
+    #[arg(long)]
+    pub default_branch: Option<String>,
 
     /// Prompt the seeded mock job carries. The mock runner echoes
     /// the prompt as an `AiMessageComplete` event — having something
@@ -93,11 +98,15 @@ async fn bootstrap(args: BootstrapArgs, db: Option<PathBuf>) -> Result<ExitCode>
             .map_err(|e| anyhow!("read current dir for default --local-path: {e}"))?,
     };
 
+    let default_branch = args
+        .default_branch
+        .unwrap_or_else(|| detect_head_branch(&local_path).unwrap_or_else(|| "main".into()));
+
     let repo = rpc
         .add_repo(AddRepoArgs {
             name: args.name.clone(),
             clone_url: args.clone_url,
-            default_branch: args.default_branch,
+            default_branch,
             local_path: local_path.to_string_lossy().into_owned(),
             // Token-shaped auth keeps the wire shape live without
             // requiring a real secret; the mock runner never reads
@@ -130,4 +139,24 @@ async fn bootstrap(args: BootstrapArgs, db: Option<PathBuf>) -> Result<ExitCode>
         repo.name, repo.id, job.id
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// Probe the actual HEAD branch of a checkout. Returns None when the
+/// path is not a git repo, HEAD is detached, or git is unavailable —
+/// the caller falls back to a static default.
+fn detect_head_branch(local_path: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .current_dir(local_path)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }

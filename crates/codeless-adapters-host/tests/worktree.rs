@@ -42,7 +42,7 @@ fn create_adds_worktree_on_a_fresh_branch() {
     let base = TempDir::new().unwrap();
     let mgr = WorktreeManager::new(base.path());
 
-    let handle = mgr.create(&repo, "abc123").expect("create");
+    let handle = mgr.create(&repo, "abc123", None).expect("create");
     assert_eq!(handle.path, base.path().join("job-abc123"));
     assert_eq!(handle.branch, "codeless/job-abc123");
     assert!(handle.path.join("seed.txt").exists());
@@ -60,13 +60,36 @@ fn create_adds_worktree_on_a_fresh_branch() {
 }
 
 #[test]
+fn create_honours_requested_branch_when_non_empty() {
+    let (_repo_dir, repo) = fresh_repo();
+    let base = TempDir::new().unwrap();
+    let mgr = WorktreeManager::new(base.path());
+
+    let handle = mgr
+        .create(&repo, "abc123", Some("feature/wizard-typed"))
+        .expect("create");
+    assert_eq!(handle.branch, "feature/wizard-typed");
+    assert_eq!(handle.path, base.path().join("job-abc123"));
+}
+
+#[test]
+fn create_falls_back_when_requested_branch_is_blank() {
+    let (_repo_dir, repo) = fresh_repo();
+    let base = TempDir::new().unwrap();
+    let mgr = WorktreeManager::new(base.path());
+
+    let handle = mgr.create(&repo, "abc123", Some("   ")).expect("create");
+    assert_eq!(handle.branch, "codeless/job-abc123");
+}
+
+#[test]
 fn create_refuses_if_path_already_exists() {
     let (_repo_dir, repo) = fresh_repo();
     let base = TempDir::new().unwrap();
     let mgr = WorktreeManager::new(base.path());
 
-    mgr.create(&repo, "dup").expect("first");
-    match mgr.create(&repo, "dup") {
+    mgr.create(&repo, "dup", None).expect("first");
+    match mgr.create(&repo, "dup", None) {
         Err(WorktreeError::AlreadyExists(p)) => assert_eq!(p, base.path().join("job-dup")),
         other => panic!("expected AlreadyExists, got {other:?}"),
     }
@@ -78,7 +101,7 @@ fn remove_drops_worktree_and_prunes_admin_entry() {
     let base = TempDir::new().unwrap();
     let mgr = WorktreeManager::new(base.path());
 
-    let handle = mgr.create(&repo, "del").expect("create");
+    let handle = mgr.create(&repo, "del", None).expect("create");
     mgr.remove(&repo, &handle.path).expect("remove");
 
     assert!(!handle.path.exists());
@@ -100,7 +123,7 @@ fn reap_orphans_removes_stale_admin_entry() {
     let base = TempDir::new().unwrap();
     let mgr = WorktreeManager::new(base.path());
 
-    let handle = mgr.create(&repo, "orphan").expect("create");
+    let handle = mgr.create(&repo, "orphan", None).expect("create");
     // Drop the working tree behind git's back to simulate a crashed
     // job whose tree was reaped externally; reap_orphans must clean
     // the admin entry so a later `create` at the same id works.

@@ -62,11 +62,21 @@ impl WorktreeManager {
         self.base.join(format!("job-{job_id}"))
     }
 
-    /// Create a worktree from `repo_path` on a new branch
-    /// `codeless/job-<job_id>`. Errors with `AlreadyExists` rather
-    /// than overwriting — the caller should pick a new job id or
-    /// remove the stale tree first.
-    pub fn create(&self, repo_path: &Path, job_id: &str) -> Result<WorktreeHandle, WorktreeError> {
+    /// Create a worktree from `repo_path` on a fresh branch. The
+    /// caller passes the desired branch name via `requested_branch`;
+    /// when `None` or empty after trimming, the manager falls back
+    /// to `codeless/job-<job_id>`. The fallback covers callers that
+    /// don't track per-job branch preferences (e.g. test harnesses)
+    /// while letting `submit_job` honour the user-typed branch from
+    /// the wizard. Errors with `AlreadyExists` rather than
+    /// overwriting — the caller should pick a new job id or remove
+    /// the stale tree first.
+    pub fn create(
+        &self,
+        repo_path: &Path,
+        job_id: &str,
+        requested_branch: Option<&str>,
+    ) -> Result<WorktreeHandle, WorktreeError> {
         let path = self.path_for(job_id);
         if path.exists() {
             return Err(WorktreeError::AlreadyExists(path));
@@ -74,7 +84,10 @@ impl WorktreeManager {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let branch = format!("codeless/job-{job_id}");
+        let branch = match requested_branch.map(str::trim) {
+            Some(b) if !b.is_empty() => b.to_owned(),
+            _ => format!("codeless/job-{job_id}"),
+        };
         run_git(
             repo_path,
             "worktree add",

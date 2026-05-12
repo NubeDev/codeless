@@ -180,9 +180,10 @@ async fn provision_worktree(
         .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
     let repo_path = PathBuf::from(&repo.local_path);
     let handle = manager
-        .create(&repo_path, &job.id.to_string())
+        .create(&repo_path, &job.id.to_string(), Some(&job.branch))
         .map_err(|e| RpcError::Internal(format!("worktree create: {e}")))?;
     job.worktree_path = Some(handle.path.to_string_lossy().into_owned());
+    job.branch = handle.branch.clone();
     store.update_job(job).await.map_err(db_err)?;
     Ok(ProvisionedWorktree {
         manager: Arc::clone(manager),

@@ -302,11 +302,17 @@ impl RpcServer for InProcessRpc {
         let Some(repo) = self.store.get_repo(job.repo_id).await.map_err(db_err)? else {
             return Err(RpcError::NotFound(format!("repo {}", job.repo_id)));
         };
-        // SCOPE.md "Workspace = one git worktree per job": the runtime
-        // names the branch deterministically. Don't trust the job row's
-        // `branch` column — it carries the user-submitted hint, which
-        // the WorktreeManager ignores.
-        let head = format!("codeless/job-{}", job.id);
+        // `Job.branch` is the canonical branch name: `submit_job`
+        // accepts the wizard's value, the runtime writes the actually
+        // created branch back to the row on worktree provisioning, and
+        // diffs against the repo's default branch as the merge base.
+        // Falls back to `codeless/job-<id>` for legacy rows that
+        // pre-date the honour-non-empty-branch behaviour.
+        let head = if job.branch.trim().is_empty() {
+            format!("codeless/job-{}", job.id)
+        } else {
+            job.branch.clone()
+        };
         let base = repo.default_branch.clone();
         let repo_path = std::path::PathBuf::from(&repo.local_path);
         // The diff is intentionally synchronous (git is fast at the

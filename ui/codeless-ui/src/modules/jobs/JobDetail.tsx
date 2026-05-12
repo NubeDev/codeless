@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { useJob, useRepos, type Job, type JobId } from "@/lib/rpc";
+import { useJob, useRepos, type JobId } from "@/lib/rpc";
 
 import { CostCell } from "./JobRow";
 import { FilesChanged } from "./FilesChanged";
@@ -13,12 +13,10 @@ import { StatusBadge } from "./StatusBadge";
 
 // Side-panel content for a single selected job. The header surfaces
 // every piece of "where did this actually happen" state the user
-// needs in order to drop into a terminal and inspect: real branch,
-// preserved worktree path, repo's source checkout. The runtime-side
-// `WorktreeManager` always names the branch `codeless/job-<job_id>`
-// (the `Job.branch` column is currently a vestigial user-submitted
-// field — until landing 6 honours it or drops it, this component
-// shows the canonical name).
+// needs in order to drop into a terminal and inspect: real branch
+// (the value `WorktreeManager` actually created on disk and wrote
+// back to the job row), preserved worktree path, repo's source
+// checkout.
 export function JobDetail({ jobId }: { jobId: JobId }) {
   const { data: job, error, loading } = useJob(jobId);
   const { data: repos } = useRepos();
@@ -58,7 +56,7 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
             <div className="mt-3 grid gap-1.5">
               <PathRow
                 label="branch"
-                value={canonicalBranch(job)}
+                value={job.branch}
                 hint="git branch created in the source repo; survives worktree cleanup"
               />
               <PathRow
@@ -103,14 +101,6 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
       </Tabs>
     </div>
   );
-}
-
-// SCOPE.md "Workspace = one git worktree per job": the runtime names
-// the branch `codeless/job-<job_id>` regardless of what was passed in
-// `SubmitJobArgs.branch`. Derive it client-side so the UI never shows
-// a name that no `git` command would resolve.
-function canonicalBranch(job: Job): string {
-  return `codeless/job-${job.id}`;
 }
 
 function PathRow({

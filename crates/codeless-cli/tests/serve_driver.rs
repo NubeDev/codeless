@@ -447,7 +447,7 @@ async fn driver_provisions_worktree_when_root_set() {
             "prompt": "hi",
             "template_yaml": null,
             "runner": "mock",
-            "branch": "ignored",
+            "branch": "",
             "cost_cap_cents": 0,
             "wall_clock_cap_ms": 60000,
         }))
@@ -469,9 +469,11 @@ async fn driver_provisions_worktree_when_root_set() {
         observed["status"], "completed",
         "job did not complete: {observed}"
     );
-    // drive_job removes the worktree on terminal status; we assert
-    // that the branch was created (it survives `worktree remove`)
-    // rather than that the directory still exists.
+    // The worktree is preserved on terminal status (SCOPE.md
+    // "Crash recovery" — user-driven gc), but the branch is the
+    // durable artefact of a job and is what `job_diff` resolves.
+    // Empty `branch` in submit_job means the fallback name
+    // `codeless/job-<job_id>` is what `WorktreeManager` creates.
     let branches = std::process::Command::new("git")
         .current_dir(&repo_path)
         .args(["branch", "--list"])
