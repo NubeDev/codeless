@@ -118,6 +118,22 @@ export default function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
 
+  // Deep-link: when the initial URL is /jobs or /jobs/:id (e.g.
+  // bookmark, page reload, browser back), open the Jobs tab. The
+  // dashboard itself reads the URL for the selected job id. We do
+  // this once on mount; tab focus afterwards stays user-driven so
+  // a click elsewhere doesn't get fought by the route.
+  const initialPathRef = useRef<string | null>(null);
+  if (initialPathRef.current === null && typeof window !== "undefined") {
+    initialPathRef.current = window.location.pathname;
+  }
+  useEffect(() => {
+    if (initialPathRef.current?.startsWith("/jobs")) {
+      newJobsTab();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const activeTerminalTab = useMemo(() => {
     const t = tabs.find((x) => x.id === activeId);
     return t && t.kind === "terminal" ? t : null;

@@ -17,6 +17,7 @@ import {
   type JobId,
   type Repo,
 } from "@/lib/rpc";
+import { navigate, useRoute } from "@/lib/route";
 
 import { JobDetail } from "./JobDetail";
 import { JobRow } from "./JobRow";
@@ -27,11 +28,21 @@ import { SubmitJobDialog } from "./SubmitJobDialog";
 // the all-events stream and reacting to job-* envelopes. SCOPE.md Rule
 // 4 (events drive state) is the design here: nothing polls.
 
+// `/jobs/:id` opens the detail sheet on that job; `/jobs` (or any
+// other route) closes it. Keeping the selection in the URL means a
+// reload restores the same view, and bookmarking a job's detail page
+// works without an in-app share affordance.
+const JOB_ID_FROM_ROUTE = /^\/jobs\/([A-Z0-9]+)$/;
+
 export function JobsDashboard() {
   const repos = useRepos();
   const jobs = useJobs();
   const [overlay, setOverlay] = useState<Map<string, Job>>(new Map());
-  const [selectedJobId, setSelectedJobId] = useState<JobId | null>(null);
+  const route = useRoute();
+  const matched = JOB_ID_FROM_ROUTE.exec(route.pathname);
+  const selectedJobId = (matched ? matched[1] : null) as JobId | null;
+  const openJob = useCallback((id: JobId) => navigate(`/jobs/${id}`), []);
+  const closeJob = useCallback(() => navigate("/jobs"), []);
 
   // Apply event deltas on top of the initial list_jobs snapshot. We
   // don't refetch — the event payload is enough for the columns we
@@ -95,7 +106,7 @@ export function JobsDashboard() {
       </header>
       <Sheet
         open={selectedJobId !== null}
-        onOpenChange={(open) => !open && setSelectedJobId(null)}
+        onOpenChange={(open) => !open && closeJob()}
       >
         <SheetContent
           side="right"
@@ -127,7 +138,7 @@ export function JobsDashboard() {
                 <JobRow
                   key={j.id}
                   job={j}
-                  onSelect={(job) => setSelectedJobId(job.id)}
+                  onSelect={(job) => openJob(job.id)}
                 />
               ))
             )}
