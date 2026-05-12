@@ -165,10 +165,21 @@ pub async fn drive_job(
     // the work already succeeded by this point and a missing markdown
     // file is recoverable from the diff + events stream.
     if let Some(worktree) = provisioned.as_ref().map(|p| p.worktree.clone()) {
-        let synth = crate::handover::default_handover(&updated.runner, next_status);
-        match crate::handover::write_handover(&worktree, job_id, &synth).await {
-            Ok(path) => tracing::info!(handover = %path.display(), "handover written"),
-            Err(err) => tracing::warn!(?err, "failed to write handover; ignoring"),
+        // The runner adapter may have already dropped a structured
+        // handover by the time we reach here (Group B work). If so,
+        // we leave that file alone — only fill in the default when
+        // nothing has been written. The check is a cheap stat against
+        // a one-file path; no race with the runner because the runner
+        // finishes before this point in the driver.
+        let target = crate::handover::handover_path(&worktree, job_id);
+        if tokio::fs::try_exists(&target).await.unwrap_or(false) {
+            tracing::debug!(handover = %target.display(), "runner wrote handover; leaving as-is");
+        } else {
+            let synth = crate::handover::default_handover(&updated.runner, next_status);
+            match crate::handover::write_handover(&worktree, job_id, &synth).await {
+                Ok(path) => tracing::info!(handover = %path.display(), "handover written"),
+                Err(err) => tracing::warn!(?err, "failed to write handover; ignoring"),
+            }
         }
     }
     Ok(())

@@ -21,10 +21,11 @@ use ai_runner::runners::claude::ClaudeRunner;
 use ai_runner::{CliCfg, PermissionMode, Runner as AiRunner, RunnerInput};
 use async_trait::async_trait;
 use codeless_adapters_host::ai_runner_bridge::forward_events;
-use codeless_types::TaskId;
-use tokio::sync::mpsc;
+use codeless_types::{Event, JobStatus, TaskId};
+use tokio::sync::{mpsc, Mutex};
 
 use crate::event_bus::EventBus;
+use crate::handover::{extract_handover, fallback_handover_from_text, write_handover};
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
 use crate::time::now_ms;
 
@@ -82,7 +83,23 @@ worktree cleanup; uncommitted edits are not visible to the user \
 after the job ends.\n\n\
 AMBIGUITY. Prefer the most literal reading. If the request is \
 genuinely under-specified, use the AskUserQuestion tool — do not \
-silently invent scope.";
+silently invent scope.\n\n\
+HANDOVER. End your final reply with a fenced code block whose \
+info string is exactly `handover`, containing four `##` markdown \
+headings in this fixed order: `Done`, `Next`, `What you need to \
+know`, `Open questions`. Each section is a bullet list (use `- ` \
+or `* `). Use `- (none)` for an intentionally empty section. The \
+codeless runtime extracts this block verbatim as the session \
+handover (DOCS/JOB-MODEL.md); a missing or malformed block \
+forces the runtime to fall back to a truncated tail of your \
+reply, which is worse for the next session.\n\n\
+Example:\n\
+```handover\n\
+## Done\n\n- created people.csv with the requested columns\n\n\
+## Next\n\n- (none)\n\n\
+## What you need to know\n\n- file is utf-8, no BOM\n\n\
+## Open questions\n\n- (none)\n\
+```";
 
 impl ClaudeRunnerAdapter {
     pub fn new(prompt: impl Into<String>, task_id: TaskId) -> Self {
@@ -113,10 +130,23 @@ impl Runner for ClaudeRunnerAdapter {
         let bus: Arc<EventBus> = Arc::clone(&ctx.bus);
         let job_id = ctx.job_id;
         let task_id = self.task_id;
+        // Tee assistant text into a side buffer so we can extract a
+        // structured handover block after the run completes. Wrapped
+        // in `Arc<Mutex<…>>` so the forwarder task (a separate tokio
+        // task) and this task can share it; contention is non-existent
+        // in practice because the forwarder is the only writer until
+        // it returns.
+        let assistant_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let buf_for_forwarder = Arc::clone(&assistant_buf);
         let forwarder = tokio::spawn(async move {
             forward_events(rx, task_id, move |event| {
                 let bus = Arc::clone(&bus);
+                let buf = Arc::clone(&buf_for_forwarder);
                 async move {
+                    if let Event::AiToken { delta, .. } = &event {
+                        let mut guard = buf.lock().await;
+                        guard.push_str(delta);
+                    }
                     bus.publish(Some(job_id), None, Some(task_id), event, now_ms())
                         .await
                         .map(|_| ())
@@ -161,7 +191,7 @@ impl Runner for ClaudeRunnerAdapter {
             };
         }
 
-        match run_result {
+        let outcome = match run_result {
             Err(e) => RunnerOutcome::Failed {
                 reason: format!("claude runner input mismatch: {e}"),
             },
@@ -169,6 +199,32 @@ impl Runner for ClaudeRunnerAdapter {
                 Some(msg) => RunnerOutcome::Failed { reason: msg },
                 None => RunnerOutcome::Completed,
             },
+        };
+
+        // Drop a structured handover into the worktree when the run
+        // produced text we can parse. Done here (rather than in the
+        // driver) because only the adapter has the accumulated
+        // assistant message buffer; the driver writes a default
+        // handover later if this path leaves the file absent.
+        if let Some(worktree) = ctx.worktree_path.as_ref() {
+            let status = match &outcome {
+                RunnerOutcome::Completed => JobStatus::Completed,
+                RunnerOutcome::Failed { .. } => JobStatus::Failed,
+            };
+            let assistant_text = assistant_buf.lock().await.clone();
+            let handover = match extract_handover(&assistant_text) {
+                Some(h) => h,
+                None => fallback_handover_from_text("claude", status, &assistant_text, 2000),
+            };
+            match write_handover(worktree, job_id, &handover).await {
+                Ok(path) => tracing::info!(handover = %path.display(), "claude handover written"),
+                Err(err) => tracing::warn!(
+                    ?err,
+                    "failed to write claude handover; driver default will fill in"
+                ),
+            }
         }
+
+        outcome
     }
 }
