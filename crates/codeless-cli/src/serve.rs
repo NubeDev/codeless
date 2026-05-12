@@ -19,9 +19,9 @@ use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
 use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerInfo};
 use codeless_runtime::{
-    spawn_job_driver_loop, spawn_notifier, AnthropicRunnerAdapter, ClaudeRunnerAdapter,
-    InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome, WebhookConfig,
-    WebhookNotifier,
+    spawn_job_driver_loop, spawn_notifier, template::JobTemplate, template_runner::TemplateRunner,
+    AnthropicRunnerAdapter, ClaudeRunnerAdapter, InProcessRpc, MockRunner, MockStep, Runner,
+    RunnerFactory, RunnerOutcome, WebhookConfig, WebhookNotifier,
 };
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, AuthMode, TokenLoadError, TOKEN_SECRET_KEY,
@@ -476,9 +476,35 @@ impl RunnerFactory for DefaultRunnerFactory {
     fn build(&self, job: &Job) -> Option<Arc<dyn Runner>> {
         // `prompt` is documented as Optional on `SubmitJobArgs`; a
         // missing prompt is most likely a YAML-template job whose
-        // first stage holds the real prompt. Until template-driven
-        // runs land on the server-driver path, fall back to an
-        // empty string so the AI adapters don't panic.
+        // stages list carries the real work. We branch on
+        // `template_yaml` first: a parseable template means the
+        // multi-stage `TemplateRunner` (claude-backed) is the right
+        // choice regardless of the `runner` field — the user's
+        // template said "drive these stages," and the runner string
+        // is the transport, not the choice.
+        if let Some(template_src) = job.template_yaml.as_ref() {
+            match JobTemplate::parse_yaml(template_src) {
+                Ok(template) if self.enable_claude => {
+                    let mut runner = TemplateRunner::new(template);
+                    if let Some(sp) = &self.claude_system_prompt {
+                        runner = runner.with_system_prompt(sp.clone());
+                    }
+                    return Some(Arc::new(runner));
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "template_yaml present but --enable-claude is off; cannot run multi-stage template"
+                    );
+                    return None;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        "failed to parse template_yaml; falling back to prompt path"
+                    );
+                }
+            }
+        }
         let prompt = job.prompt.clone().unwrap_or_default();
         match job.runner.as_str() {
             "mock" => Some(Arc::new(MockRunner::new(demo_mock_script(&prompt)))),

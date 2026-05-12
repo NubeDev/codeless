@@ -21,6 +21,8 @@ pub mod runner;
 pub mod session_log;
 pub mod state_machine;
 pub mod store;
+pub mod template;
+pub mod template_runner;
 pub mod time;
 pub mod tracing_init;
 pub mod webhook;
