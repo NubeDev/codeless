@@ -18,8 +18,9 @@ use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
 use codeless_rpc::RpcServer;
 use codeless_runtime::{
-    spawn_job_driver_loop, AnthropicRunnerAdapter, ClaudeRunnerAdapter, InProcessRpc, MockRunner,
-    MockStep, Runner, RunnerFactory, RunnerOutcome,
+    spawn_job_driver_loop, spawn_notifier, AnthropicRunnerAdapter, ClaudeRunnerAdapter,
+    InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome, WebhookConfig,
+    WebhookNotifier,
 };
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, TokenLoadError, TOKEN_SECRET_KEY,
@@ -132,6 +133,30 @@ async fn run_server(
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
     let state = AppState::new(rpc_dyn, token);
 
+    // Outbound webhook notifier: when both `notifier_webhook_url`
+    // and `notifier_webhook_hmac_key_hex` are present in the secrets
+    // file, attach a `WebhookNotifier` to the event bus. The
+    // notifier fires HMAC-signed POSTs on `JobFailed` and
+    // `ReviewRequested` (see `codeless_runtime::notifier`). Missing
+    // keys → silently skipped; partial config (one key without the
+    // other) is a configuration error and refuses to boot.
+    let _notifier = match maybe_webhook_config(&store)? {
+        None => None,
+        Some(cfg) => {
+            let notifier = WebhookNotifier::from_config(cfg.clone())
+                .map_err(|e| anyhow!("webhook notifier: {e}"))?;
+            eprintln!(
+                "codeless-server: webhook notifier configured (url={})",
+                cfg.url
+            );
+            Some(
+                spawn_notifier(rpc.bus().clone(), Arc::new(notifier))
+                    .await
+                    .map_err(|e| anyhow!("spawn_notifier: {e}"))?,
+            )
+        }
+    };
+
     // Background driver: pick up every `Queued` job and run it
     // through the in-process runtime. Default factory only enables
     // `mock`; real runners need the operator to opt in once
@@ -197,6 +222,28 @@ async fn run_server(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Pull webhook-notifier config out of the secrets file. Two flat
+/// keys (no nested TOML table because `SecretStore` is a flat
+/// key-value map): `notifier_webhook_url` and
+/// `notifier_webhook_hmac_key_hex`. Both must be present or both
+/// absent; a partial config is rejected so the operator finds the
+/// typo at boot instead of wondering why webhooks never fire.
+fn maybe_webhook_config(store: &SecretStore) -> Result<Option<WebhookConfig>> {
+    let url = store.get("notifier_webhook_url");
+    let key = store.get("notifier_webhook_hmac_key_hex");
+    match (url, key) {
+        (None, None) => Ok(None),
+        (Some(url), Some(hmac_key_hex)) => Ok(Some(WebhookConfig {
+            url: url.to_string(),
+            hmac_key_hex: hmac_key_hex.to_string(),
+        })),
+        _ => bail!(
+            "partial webhook config: `notifier_webhook_url` and \
+             `notifier_webhook_hmac_key_hex` must both be set or both absent",
+        ),
+    }
+}
+
 /// Built-in runner factory. `mock` is always on so the demo works
 /// without external dependencies; `claude` and `anthropic` are
 /// opt-in via `--enable-claude` / `--enable-anthropic` because each
@@ -222,9 +269,20 @@ impl RunnerFactory for DefaultRunnerFactory {
         // empty string so the AI adapters don't panic.
         let prompt = job.prompt.clone().unwrap_or_default();
         match job.runner.as_str() {
-            "mock" => Some(Arc::new(MockRunner::new(vec![MockStep::Finish(
-                RunnerOutcome::Completed,
-            )]))),
+            "mock" => {
+                // Prompt-driven outcome so integration tests can
+                // exercise both terminal states without provisioning
+                // a real runner. Production traffic ignores this
+                // because real prompts never equal the sentinel.
+                let outcome = if prompt == "FAIL" {
+                    RunnerOutcome::Failed {
+                        reason: "mock runner: FAIL sentinel".into(),
+                    }
+                } else {
+                    RunnerOutcome::Completed
+                };
+                Some(Arc::new(MockRunner::new(vec![MockStep::Finish(outcome)])))
+            }
             "claude" if self.enable_claude => {
                 Some(Arc::new(ClaudeRunnerAdapter::new(prompt, TaskId::new())))
             }
