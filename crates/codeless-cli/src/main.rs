@@ -13,6 +13,7 @@ mod review;
 mod rpc_open;
 mod run;
 mod secrets;
+mod tail;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -72,6 +73,11 @@ enum Cmd {
         #[command(subcommand)]
         verb: job::Verb,
     },
+    /// Stream the event log of a single job. Replays every persisted
+    /// envelope and continues live until the job reaches a terminal
+    /// state. Exit code is 0 on `job-completed`, non-zero on
+    /// `job-failed` / `job-stopped`.
+    Tail(tail::TailArgs),
 }
 
 #[derive(Debug, Args)]
@@ -148,6 +154,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Run(args) => run::handle(args, cli.db),
         Cmd::Review { verb } => review::handle(verb, cli.db),
         Cmd::Job { verb } => job::handle(verb, cli.db),
+        Cmd::Tail(args) => tail::handle(args, cli.db),
     }
 }
 
