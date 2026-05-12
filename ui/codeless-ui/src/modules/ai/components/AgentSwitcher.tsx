@@ -7,7 +7,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { useSettingsWindow } from "@/lib/shell";
 import {
   AbsoluteIcon,
   ArrowDown01Icon,
@@ -37,6 +37,7 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
   const customAgents = useAgentsStore((s) => s.customAgents);
   const activeId = useAgentsStore((s) => s.activeId);
   const setActiveId = useAgentsStore((s) => s.setActiveId);
+  const settingsWindow = useSettingsWindow();
 
   const list = useAgentsStore.getState().all();
   void customAgents; // keeps the store subscription alive
@@ -158,7 +159,7 @@ export function AgentSwitcher({ isMiniWindow }: { isMiniWindow?: boolean }) {
         ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          onSelect={() => void openSettingsWindow("agents")}
+          onSelect={() => void settingsWindow.open("agents")}
           className="gap-2 text-[12px] text-muted-foreground"
         >
           <HugeiconsIcon icon={Settings01Icon} size={12} strokeWidth={1.75} />

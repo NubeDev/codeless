@@ -1,4 +1,4 @@
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { getStore } from "@/lib/shell";
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
@@ -9,24 +9,22 @@ export type Todo = {
   status: TodoStatus;
 };
 
-const STORE_PATH = "codeless-ai-todos.json";
+const STORE_NAME = "ai-todos";
 const todosKey = (sessionId: string) => `todos:${sessionId}`;
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
-
 export async function loadTodos(sessionId: string): Promise<Todo[]> {
-  return (await store.get<Todo[]>(todosKey(sessionId))) ?? [];
+  return (await getStore(STORE_NAME).get<Todo[]>(todosKey(sessionId))) ?? [];
 }
 
 export async function saveTodos(
   sessionId: string,
   todos: Todo[],
 ): Promise<void> {
-  await store.set(todosKey(sessionId), todos);
+  await getStore(STORE_NAME).set(todosKey(sessionId), todos);
 }
 
 export async function deleteTodos(sessionId: string): Promise<void> {
-  await store.delete(todosKey(sessionId));
+  await getStore(STORE_NAME).delete(todosKey(sessionId));
 }
 
 export function newTodoId(): string {

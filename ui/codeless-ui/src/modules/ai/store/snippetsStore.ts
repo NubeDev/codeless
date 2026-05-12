@@ -1,5 +1,7 @@
-import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+
+import { getCrossWindowEvents } from "@/lib/shell";
+
 import {
   loadSnippets,
   newSnippetId,
@@ -8,6 +10,10 @@ import {
 } from "../lib/snippets";
 
 const CHANGED_EVENT = "codeless://ai-snippets-changed";
+
+function broadcast(): void {
+  void getCrossWindowEvents().emit(CHANGED_EVENT);
+}
 
 type State = {
   hydrated: boolean;
@@ -26,7 +32,7 @@ export const useSnippetsStore = create<State>((set, get) => ({
     if (initialized) return;
     initialized = true;
     set({ snippets: await loadSnippets(), hydrated: true });
-    void listen(CHANGED_EVENT, async () => {
+    void getCrossWindowEvents().listen(CHANGED_EVENT, async () => {
       set({ snippets: await loadSnippets() });
     });
   },
@@ -36,12 +42,12 @@ export const useSnippetsStore = create<State>((set, get) => ({
     const next =
       idx === -1 ? [...list, snippet] : list.map((s) => (s.id === snippet.id ? snippet : s));
     set({ snippets: next });
-    void saveSnippets(next).then(() => emit(CHANGED_EVENT));
+    void saveSnippets(next).then(broadcast);
   },
   remove: (id) => {
     const next = get().snippets.filter((s) => s.id !== id);
     set({ snippets: next });
-    void saveSnippets(next).then(() => emit(CHANGED_EVENT));
+    void saveSnippets(next).then(broadcast);
   },
 }));
 

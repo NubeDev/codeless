@@ -6,7 +6,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WindowControls } from "@/components/WindowControls";
-import { IS_MAC, KEY_SEP, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
+import { IS_MAC, KEY_SEP } from "@/lib/platform";
+import { useShellCapabilities } from "@/lib/shell";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   getBindingTokens,
@@ -75,6 +76,7 @@ export function Header({
   const rootRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
   const userShortcuts = usePreferencesStore((s) => s.shortcuts);
+  const { customWindowControls } = useShellCapabilities();
 
   const tokensFor = (id: ShortcutId): string => {
     const s = SHORTCUTS.find((s) => s.id === id);
@@ -226,7 +228,7 @@ export function Header({
 
       {!IS_MAC && settingsButton}
 
-      {USE_CUSTOM_WINDOW_CONTROLS && (
+      {customWindowControls && (
         <>
           <span className="ml-1 h-5 w-px shrink-0 bg-border" />
           <WindowControls />

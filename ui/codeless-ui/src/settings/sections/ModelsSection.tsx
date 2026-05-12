@@ -30,7 +30,7 @@ import {
   setDefaultModel,
   setLmstudioBaseURL,
 } from "@/modules/settings/store";
-import { invoke } from "@tauri-apps/api/core";
+import { useNetworkProbe } from "@/lib/shell";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -171,6 +171,7 @@ function AutocompleteBlock({ keys }: { keys: KeysMap }) {
   const provider = usePreferencesStore((s) => s.autocompleteProvider);
   const modelId = usePreferencesStore((s) => s.autocompleteModelId);
   const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
+  const networkProbe = useNetworkProbe();
 
   const [modelDraft, setModelDraft] = useState(modelId);
   const [urlDraft, setUrlDraft] = useState(lmstudioBaseURL);
@@ -196,7 +197,7 @@ function AutocompleteBlock({ keys }: { keys: KeysMap }) {
     setTestStatus("testing");
     try {
       const url = urlDraft.replace(/\/$/, "") + "/models";
-      const status = await invoke<number>("http_ping", { url });
+      const status = await networkProbe.ping(url);
       setTestStatus(status >= 200 && status < 400 ? "ok" : "fail");
     } catch {
       setTestStatus("fail");

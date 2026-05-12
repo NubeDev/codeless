@@ -9,7 +9,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
 import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { useSettingsWindow } from "@/lib/shell";
 import {
   Add01Icon,
   ArrowDown01Icon,
@@ -199,12 +199,13 @@ function ModelDropdown() {
   const selected = useChatStore((s) => s.selectedModelId);
   const apiKeys = useChatStore((s) => s.apiKeys);
   const setSelected = useChatStore((s) => s.setSelectedModelId);
+  const settingsWindow = useSettingsWindow();
   const current = getModel(selected);
   const currentProviderHasKey = !!apiKeys[current.provider];
 
   const onPick = (id: ModelId, providerId: ProviderId) => {
     if (!apiKeys[providerId]) {
-      void openSettingsWindow("models");
+      void settingsWindow.open("models");
       return;
     }
     setSelected(id);
@@ -262,7 +263,7 @@ function ModelDropdown() {
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      void openSettingsWindow("models");
+                      void settingsWindow.open("models");
                     }}
                     className="ml-auto rounded-sm px-1 text-[9px] normal-case tracking-normal text-amber-600 underline-offset-2 hover:underline dark:text-amber-400"
                   >

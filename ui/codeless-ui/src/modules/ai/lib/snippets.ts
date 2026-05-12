@@ -1,4 +1,4 @@
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { getStore } from "@/lib/shell";
 
 export type Snippet = {
   id: string;
@@ -9,18 +9,15 @@ export type Snippet = {
   content: string;
 };
 
-const STORE_PATH = "codeless-ai-snippets.json";
+const STORE_NAME = "ai-snippets";
 const KEY_LIST = "snippets";
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
-
 export async function loadSnippets(): Promise<Snippet[]> {
-  return (await store.get<Snippet[]>(KEY_LIST)) ?? [];
+  return (await getStore(STORE_NAME).get<Snippet[]>(KEY_LIST)) ?? [];
 }
 
 export async function saveSnippets(list: Snippet[]): Promise<void> {
-  await store.set(KEY_LIST, list);
-  await store.save();
+  await getStore(STORE_NAME).set(KEY_LIST, list);
 }
 
 export function newSnippetId(): string {

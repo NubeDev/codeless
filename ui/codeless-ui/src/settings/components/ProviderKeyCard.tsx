@@ -12,7 +12,7 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { useExternalOpener } from "@/lib/shell";
 import { useEffect, useState } from "react";
 import { ProviderIcon } from "./ProviderIcon";
 
@@ -34,6 +34,7 @@ export function ProviderKeyCard({
   onSave,
   onClear,
 }: Props) {
+  const { openUrl } = useExternalOpener();
   const [editing, setEditing] = useState(!currentKey);
   const [value, setValue] = useState("");
   const [reveal, setReveal] = useState(false);

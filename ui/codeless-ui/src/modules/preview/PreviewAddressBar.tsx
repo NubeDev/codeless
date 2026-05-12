@@ -12,7 +12,7 @@ import {
   LinkSquare02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { useExternalOpener } from "@/lib/shell";
 import {
   forwardRef,
   useEffect,
@@ -59,6 +59,7 @@ type Props = {
 
 export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
   function PreviewAddressBar({ url, onSubmit, onReload }, ref) {
+    const externalOpener = useExternalOpener();
     const [draft, setDraft] = useState(url);
     const inputRef = useRef<HTMLInputElement>(null);
 
@@ -189,7 +190,7 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
           variant="ghost"
           size="icon"
           onClick={() => {
-            if (url) void openUrl(url).catch(console.error);
+            if (url) void externalOpener.openUrl(url).catch(console.error);
           }}
           title="Open in system browser"
           className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"

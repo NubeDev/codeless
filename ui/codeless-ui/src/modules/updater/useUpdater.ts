@@ -1,6 +1,9 @@
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useState } from "react";
+
+import {
+  useUpdaterAdapter,
+  type UpdateHandle,
+} from "@/lib/shell";
 
 const LAST_CHECK_KEY = "codeless:updater:last-check";
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
@@ -9,7 +12,7 @@ export type UpdaterStatus =
   | { kind: "idle" }
   | { kind: "checking" }
   | { kind: "uptodate" }
-  | { kind: "available"; update: Update }
+  | { kind: "available"; update: UpdateHandle }
   | { kind: "downloading"; downloaded: number; contentLength: number | null }
   | { kind: "ready" }
   | { kind: "error"; message: string };
@@ -25,26 +28,34 @@ interface HookOptions {
 }
 
 export function useUpdater({ autoCheck = true }: HookOptions = {}) {
+  const updater = useUpdaterAdapter();
   const [status, setStatus] = useState<UpdaterStatus>({ kind: "idle" });
 
-  const runCheck = useCallback(async ({ manual }: Options = {}) => {
-    if (!manual) {
-      const last = Number(localStorage.getItem(LAST_CHECK_KEY) ?? 0);
-      if (Date.now() - last < CHECK_INTERVAL_MS) return;
-    }
-    setStatus({ kind: "checking" });
-    try {
-      const update = await check();
-      if (update) {
-        setStatus({ kind: "available", update });
-      } else {
-        localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+  const runCheck = useCallback(
+    async ({ manual }: Options = {}) => {
+      if (!updater.supported) {
         setStatus({ kind: "uptodate" });
+        return;
       }
-    } catch (err) {
-      setStatus({ kind: "error", message: String(err) });
-    }
-  }, []);
+      if (!manual) {
+        const last = Number(localStorage.getItem(LAST_CHECK_KEY) ?? 0);
+        if (Date.now() - last < CHECK_INTERVAL_MS) return;
+      }
+      setStatus({ kind: "checking" });
+      try {
+        const update = await updater.check();
+        if (update) {
+          setStatus({ kind: "available", update });
+        } else {
+          localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+          setStatus({ kind: "uptodate" });
+        }
+      } catch (err) {
+        setStatus({ kind: "error", message: String(err) });
+      }
+    },
+    [updater],
+  );
 
   const install = useCallback(async () => {
     if (status.kind !== "available") return;
@@ -68,11 +79,11 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
           setStatus({ kind: "ready" });
         }
       });
-      await relaunch();
+      await updater.relaunch();
     } catch (err) {
       setStatus({ kind: "error", message: String(err) });
     }
-  }, [status]);
+  }, [status, updater]);
 
   const dismiss = useCallback(() => {
     setStatus({ kind: "idle" });

@@ -50,13 +50,22 @@ ships:
 - editor (CodeMirror 6), terminal (xterm.js), file explorer, AI chat
   panel, settings, themes, shadcn/ui primitives
 - a typed `RpcClient` boundary at `src/lib/rpc/` with
-  `HttpSseClient` (browser/mobile), `TauriIpcClient` stub (desktop),
+  `HttpSseClient` (browser/mobile), `TauriIpcClient` (desktop —
+  documents the `rpc_<method>` / `rpc_subscribe` / `rpc_unsubscribe`
+  contract `codeless-tauri-desktop` will implement in Phase 5),
   and `MockRpcClient` for tests
+- 10 shell-injection capability adapters under `src/lib/shell/`
+  (window chrome, external opener, updater, app info, paths,
+  autostart, settings window, network probe, KV store, cross-window
+  events), each with a Tauri-backed impl in `src/shells/desktop/`
 - four shell entry points under `src/shells/{browser,desktop,android,ios}/`
 
 The active UI work is the **Terax-conversion grind** — re-routing
 the remaining `@tauri-apps/*` imports through `RpcClient` or
-shell-injected capability adapters. Design lives in
+shell-injected capability adapters. The shell-injection portion is
+done; the 13 files still importing `@tauri-apps/*` outside the shell
+zone are all blocked on Rust-side RPC methods (`secrets.*`, `fs.*`,
+`pty.*`). Design lives in
 [`../DOCS/UI-ARCHITECTURE.md`](../DOCS/UI-ARCHITECTURE.md); the per-file
 worklist lives in [`../DOCS/UI-PORT-AUDIT.md`](../DOCS/UI-PORT-AUDIT.md).
 Anything touching `codeless/ui/` should read both first.

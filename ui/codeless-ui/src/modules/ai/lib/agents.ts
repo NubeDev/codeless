@@ -1,4 +1,6 @@
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { getStore } from "@/lib/shell";
+
+const STORE_NAME = "ai-agents";
 
 export type AgentIconId =
   | "coder"
@@ -79,11 +81,8 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
   },
 ] as const;
 
-const STORE_PATH = "codeless-ai-agents.json";
 const KEY_CUSTOM = "customAgents";
 const KEY_ACTIVE = "activeAgentId";
-
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
 export type LoadedAgents = {
   custom: Agent[];
@@ -91,8 +90,8 @@ export type LoadedAgents = {
 };
 
 export async function loadAgents(): Promise<LoadedAgents> {
-  // One IPC roundtrip via entries() instead of two sequential get()s.
-  const entries = await store.entries();
+  // One round-trip via loadAll() instead of two sequential get()s.
+  const entries = await getStore(STORE_NAME).loadAll();
   let custom: Agent[] | undefined;
   let activeId: string | undefined;
   for (const [k, v] of entries) {
@@ -103,13 +102,11 @@ export async function loadAgents(): Promise<LoadedAgents> {
 }
 
 export async function saveCustomAgents(custom: Agent[]): Promise<void> {
-  await store.set(KEY_CUSTOM, custom);
-  await store.save();
+  await getStore(STORE_NAME).set(KEY_CUSTOM, custom);
 }
 
 export async function saveActiveAgentId(id: string): Promise<void> {
-  await store.set(KEY_ACTIVE, id);
-  await store.save();
+  await getStore(STORE_NAME).set(KEY_ACTIVE, id);
 }
 
 export function newAgentId(): string {

@@ -1,29 +1,16 @@
 import { Button } from "@/components/ui/button";
+import { useAppInfo, useExternalOpener } from "@/lib/shell";
 import { useUpdater } from "@/modules/updater";
 import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { getName, getVersion } from "@tauri-apps/api/app";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { arch, platform } from "@tauri-apps/plugin-os";
-import { useEffect, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 
 const REPO_URL = "https://github.com/crynta/codeless-ai";
 const WEBSITE = "https://codeless.app";
 
-const PLATFORM_LABEL: Record<string, string> = {
-  macos: "macOS",
-  windows: "Windows",
-  linux: "Linux",
-  ios: "iOS",
-  android: "Android",
-  freebsd: "FreeBSD",
-};
-
 export function AboutSection() {
-  const [version, setVersion] = useState("");
-  const [name, setName] = useState("Codeless");
-  const [build, setBuild] = useState("");
+  const { name, version, buildLabel } = useAppInfo();
+  const { openUrl } = useExternalOpener();
   const { status, check, install } = useUpdater({ autoCheck: false });
   const checking = status.kind === "checking";
   const downloading = status.kind === "downloading";
@@ -48,18 +35,8 @@ export function AboutSection() {
     else void check({ manual: true });
   };
 
-  useEffect(() => {
-    void getVersion().then(setVersion);
-    void getName().then(setName);
-    try {
-      const p = platform();
-      const a = arch();
-      const platformLabel = PLATFORM_LABEL[p] ?? p;
-      setBuild(`${platformLabel} · ${a}`);
-    } catch {
-      setBuild("");
-    }
-  }, []);
+  const buildSuffix = version ? `v${version}` : "—";
+  const buildLine = buildLabel ? `${buildLabel} · ${buildSuffix}` : buildSuffix;
 
   return (
     <div className="flex flex-col gap-6">
@@ -82,9 +59,7 @@ export function AboutSection() {
 
       <dl className="grid grid-cols-[110px_1fr] gap-y-2.5 text-[12px]">
         <dt className="text-muted-foreground">Build</dt>
-        <dd className="font-mono text-[11.5px]">
-          {build ? `${build} · v${version}` : `v${version}`}
-        </dd>
+        <dd className="font-mono text-[11.5px]">{buildLine}</dd>
 
         <dt className="text-muted-foreground">Bundle ID</dt>
         <dd className="font-mono text-[11.5px]">app.crynta.codeless</dd>

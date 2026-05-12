@@ -42,7 +42,8 @@ import {
   type SearchTarget,
 } from "@/modules/header";
 import { PreviewStack, type PreviewPaneHandle } from "@/modules/preview";
-import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { useInlineSettingsStore, useSettingsWindow } from "@/lib/shell";
+import { SettingsApp } from "@/settings/SettingsApp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
 import {
@@ -63,7 +64,7 @@ import {
 } from "@/modules/terminal";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
-import { homeDir } from "@tauri-apps/api/path";
+import { usePaths } from "@/lib/shell";
 import type { SearchAddon } from "@xterm/addon-search";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -134,14 +135,32 @@ export default function App() {
     else p.collapse();
   }, []);
 
+  const paths = usePaths();
+  const settingsWindow = useSettingsWindow();
+  const inlineSettingsOpen = useInlineSettingsStore((s) => s.open);
+  const inlineSettingsTab = useInlineSettingsStore((s) => s.tab);
+  const closeInlineSettings = useInlineSettingsStore((s) => s.hide);
   const [home, setHome] = useState<string | null>(null);
   const [pendingCloseTab, setPendingCloseTab] = useState<number | null>(null);
   useEffect(() => {
     // Forward-slash form so explorerRoot stays equal across home → OSC 7.
-    homeDir()
-      .then((p) => setHome(p.replace(/\\/g, "/")))
+    paths
+      .homeDir()
+      .then((p) => setHome(p ? p.replace(/\\/g, "/") : null))
       .catch(() => setHome(null));
-  }, []);
+  }, [paths]);
+
+  // Esc closes the inline settings overlay. Bound at the window level
+  // so it works regardless of focus within the panel; gated on `open`
+  // so it doesn't capture Esc when settings is dismissed.
+  useEffect(() => {
+    if (!inlineSettingsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeInlineSettings();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [inlineSettingsOpen, closeInlineSettings]);
 
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [newEditorOpen, setNewEditorOpen] = useState(false);
@@ -345,7 +364,7 @@ export default function App() {
 
   const togglePanelAndFocus = useCallback(() => {
     if (!hasComposer) {
-      void openSettingsWindow("models");
+      void settingsWindow.open("models");
       return;
     }
     if (panelOpen) {
@@ -361,7 +380,7 @@ export default function App() {
   const handleAttachFileToAgent = useCallback(
     (path: string) => {
       if (!hasComposer) {
-        void openSettingsWindow("models");
+        void settingsWindow.open("models");
         return;
       }
       // Dispatch a window event the composer listens for. Same pattern as
@@ -377,7 +396,7 @@ export default function App() {
 
   const askFromSelection = useCallback(() => {
     if (!hasComposer) {
-      void openSettingsWindow("models");
+      void settingsWindow.open("models");
       return;
     }
     const selection = captureActiveSelection();
@@ -569,7 +588,7 @@ export default function App() {
       "ai.toggle": togglePanelAndFocus,
       "ai.askSelection": askFromSelection,
       "shortcuts.open": () => setShortcutsOpen((v) => !v),
-      "settings.open": () => void openSettingsWindow(),
+      "settings.open": () => void settingsWindow.open(),
       "sidebar.toggle": toggleSidebar,
     }),
     [
@@ -741,7 +760,7 @@ export default function App() {
               leafIds(activeTerminalTab.paneTree).length < MAX_PANES_PER_TAB
             }
             onOpenShortcuts={() => setShortcutsOpen(true)}
-            onOpenSettings={() => void openSettingsWindow()}
+            onOpenSettings={() => void settingsWindow.open()}
             searchTarget={searchTarget}
             searchRef={searchInlineRef}
           />
@@ -866,7 +885,7 @@ export default function App() {
                         <AiInputBar />
                       ) : (
                         <AiInputBarConnect
-                          onAdd={() => void openSettingsWindow("models")}
+                          onAdd={() => void settingsWindow.open("models")}
                         />
                       )}
                     </motion.div>
@@ -922,6 +941,17 @@ export default function App() {
           />
 
           <UpdaterDialog />
+
+          {inlineSettingsOpen ? (
+            <div className="fixed inset-0 z-50 bg-background">
+              <SettingsApp
+                inline={{
+                  tab: inlineSettingsTab,
+                  onClose: closeInlineSettings,
+                }}
+              />
+            </div>
+          ) : null}
 
           <AlertDialog
             open={pendingCloseTab !== null}

@@ -1,5 +1,6 @@
 import type { UIMessage } from "@ai-sdk/react";
-import { LazyStore } from "@tauri-apps/plugin-store";
+
+import { getStore } from "@/lib/shell";
 
 export type SessionMeta = {
   id: string;
@@ -8,12 +9,10 @@ export type SessionMeta = {
   updatedAt: number;
 };
 
-const STORE_PATH = "codeless-ai-sessions.json";
+const STORE_NAME = "ai-sessions";
 const KEY_SESSIONS = "sessions";
 const KEY_ACTIVE = "activeId";
 const messagesKey = (id: string) => `messages:${id}`;
-
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
 
 export type LoadedSessions = {
   sessions: SessionMeta[];
@@ -21,10 +20,10 @@ export type LoadedSessions = {
 };
 
 export async function loadAll(): Promise<LoadedSessions> {
-  // One IPC roundtrip via entries() rather than two parallel get()s. Per-
+  // One round-trip via loadAll() rather than two parallel get()s. Per-
   // session messages are loaded lazily via `loadMessages` only when a
   // session is opened, so cold boot stays at a single store call.
-  const entries = await store.entries();
+  const entries = await getStore(STORE_NAME).loadAll();
   let sessions: SessionMeta[] | undefined;
   let activeId: string | null | undefined;
   for (const [k, v] of entries) {
@@ -35,26 +34,26 @@ export async function loadAll(): Promise<LoadedSessions> {
 }
 
 export async function loadMessages(id: string): Promise<UIMessage[] | null> {
-  return (await store.get<UIMessage[]>(messagesKey(id))) ?? null;
+  return (await getStore(STORE_NAME).get<UIMessage[]>(messagesKey(id))) ?? null;
 }
 
 export async function saveSessionsList(sessions: SessionMeta[]): Promise<void> {
-  await store.set(KEY_SESSIONS, sessions);
+  await getStore(STORE_NAME).set(KEY_SESSIONS, sessions);
 }
 
 export async function saveActiveId(id: string | null): Promise<void> {
-  await store.set(KEY_ACTIVE, id);
+  await getStore(STORE_NAME).set(KEY_ACTIVE, id);
 }
 
 export async function saveMessages(
   id: string,
   messages: UIMessage[],
 ): Promise<void> {
-  await store.set(messagesKey(id), messages);
+  await getStore(STORE_NAME).set(messagesKey(id), messages);
 }
 
 export async function deleteSessionData(id: string): Promise<void> {
-  await store.delete(messagesKey(id));
+  await getStore(STORE_NAME).delete(messagesKey(id));
 }
 
 export function newSessionId(): string {

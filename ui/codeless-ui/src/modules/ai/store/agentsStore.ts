@@ -1,5 +1,7 @@
-import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+
+import { getCrossWindowEvents } from "@/lib/shell";
+
 import {
   BUILTIN_AGENTS,
   loadAgents,
@@ -26,7 +28,7 @@ type AgentsState = {
 let initialized = false;
 
 function broadcast(): void {
-  void emit(CHANGED_EVENT);
+  void getCrossWindowEvents().emit(CHANGED_EVENT);
 }
 
 export const useAgentsStore = create<AgentsState>((set, get) => ({
@@ -40,7 +42,7 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
     const { custom, activeId } = await loadAgents();
     set({ customAgents: custom, activeId, hydrated: true });
 
-    void listen(CHANGED_EVENT, async () => {
+    void getCrossWindowEvents().listen(CHANGED_EVENT, async () => {
       const fresh = await loadAgents();
       set({ customAgents: fresh.custom, activeId: fresh.activeId });
     });

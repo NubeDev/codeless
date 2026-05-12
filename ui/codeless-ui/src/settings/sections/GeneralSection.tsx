@@ -26,7 +26,7 @@ import {
   Sun03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { useAutostart } from "@/lib/shell";
 import { useEffect } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 import { SettingRow } from "../components/SettingRow";
@@ -43,16 +43,21 @@ const APPEARANCE: {
 
 export function GeneralSection() {
   const { theme, setTheme } = useTheme();
+  const autostartAdapter = useAutostart();
   const editorTheme = usePreferencesStore((s) => s.editorTheme);
   const autostart = usePreferencesStore((s) => s.autostart);
   const restoreWindowState = usePreferencesStore((s) => s.restoreWindowState);
   const vimMode = usePreferencesStore((s) => s.vimMode);
 
   // Reconcile autostart pref with the actual OS state on mount — the user may
-  // have toggled it from System Settings.
+  // have toggled it from System Settings. Skip on shells that don't support
+  // autostart at all (browser/mobile): the saved pref is meaningless there
+  // and reading from the no-op would clobber it to false.
   useEffect(() => {
+    if (!autostartAdapter.supported) return;
     let alive = true;
-    void isEnabled()
+    void autostartAdapter
+      .isEnabled()
       .then((on) => {
         if (!alive) return;
         if (on !== usePreferencesStore.getState().autostart) {
@@ -63,12 +68,12 @@ export function GeneralSection() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [autostartAdapter]);
 
   const onToggleAutostart = async (next: boolean) => {
     try {
-      if (next) await enable();
-      else await disable();
+      if (next) await autostartAdapter.enable();
+      else await autostartAdapter.disable();
       await setAutostart(next);
     } catch (e) {
       console.error("autostart toggle failed", e);

@@ -1,5 +1,6 @@
-import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { LazyStore } from "@tauri-apps/plugin-store";
+import { getCrossWindowEvents, getStore } from "@/lib/shell";
+
+const STORE_NAME = "prefs";
 import {
   DEFAULT_AUTOCOMPLETE_MODEL,
   DEFAULT_MODEL_ID,
@@ -52,7 +53,6 @@ export type Preferences = {
   shortcuts: Record<ShortcutId, KeyBinding[]>;
 };
 
-const STORE_PATH = "codeless-settings.json";
 const KEY_THEME = "theme";
 const KEY_DEFAULT_MODEL = "defaultModelId";
 const KEY_EDITOR_THEME = "editorTheme";
@@ -81,24 +81,23 @@ export const DEFAULT_PREFERENCES: Preferences = {
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
 };
 
-const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
-
-// LazyStore.onChange only fires within the writing process. The settings
-// page lives in a separate webview, so writes there never reach the main
-// window's subscribers. Mirror every setter through a Tauri event so any
-// window can listen.
+// The persistent store (Tauri's `LazyStore` on desktop) only fires
+// `onChange` within the writing process. The settings page lives in a
+// separate webview on desktop, so writes there never reach the main
+// window's subscribers via the store alone. Mirror every setter
+// through the cross-window event bus so any window can listen. In
+// browser/mobile the in-process bus collapses to a same-window callback.
 const PREFS_CHANGED_EVENT = "codeless://prefs-changed";
 
 async function writePref<T>(key: string, value: T): Promise<void> {
-  await store.set(key, value);
-  await store.save();
-  await emit(PREFS_CHANGED_EVENT, { key, value });
+  await getStore(STORE_NAME).set(key, value);
+  await getCrossWindowEvents().emit(PREFS_CHANGED_EVENT, { key, value });
 }
 
 export async function loadPreferences(): Promise<Preferences> {
-  // Single IPC roundtrip — fetching keys individually fans out to one
-  // `plugin:store|get` per setting and is the dominant boot cost.
-  const entries = await store.entries();
+  // Single round-trip — fetching keys individually fans out to one
+  // request per setting and is the dominant boot cost on Tauri.
+  const entries = await getStore(STORE_NAME).loadAll();
   const map = new Map<string, unknown>(entries);
   const get = <T>(k: string): T | undefined => map.get(k) as T | undefined;
   return {
@@ -178,16 +177,18 @@ export async function setVimMode(value: boolean): Promise<void> {
   await writePref(KEY_VIM_MODE, value);
 }
 
+// Shortcuts intentionally skip the cross-window mirror — they're only
+// ever edited from the Settings window and read by the main window on
+// hydrate; a missed live-update is acceptable for a rarely-changed
+// preference.
 export async function setShortcuts(
   value: Record<ShortcutId, KeyBinding[]> | {}
 ): Promise<void> {
-  await store.set(KEY_SHORTCUTS, value);
-  await store.save();
+  await getStore(STORE_NAME).set(KEY_SHORTCUTS, value);
 }
 
 export async function resetShortcuts(): Promise<void> {
-  await store.set(KEY_SHORTCUTS, DEFAULT_PREFERENCES.shortcuts);
-  await store.save();
+  await getStore(STORE_NAME).set(KEY_SHORTCUTS, DEFAULT_PREFERENCES.shortcuts);
 }
 
 export type PrefKey = keyof Preferences;
@@ -195,7 +196,7 @@ export type PrefKey = keyof Preferences;
 /** Subscribe to changes from any window (settings → main). */
 export async function onPreferencesChange(
   cb: (key: PrefKey, value: unknown) => void,
-): Promise<UnlistenFn> {
+): Promise<() => void> {
   const map: Record<string, PrefKey> = {
     [KEY_THEME]: "theme",
     [KEY_DEFAULT_MODEL]: "defaultModelId",
@@ -210,33 +211,33 @@ export async function onPreferencesChange(
     [KEY_VIM_MODE]: "vimMode",
     [KEY_SHORTCUTS]: "shortcuts",
   };
-  // Same-process writes still fire onChange immediately; cross-window writes
-  // arrive via the Tauri event emitted by writePref().
-  const unsubLocal = await store.onChange<unknown>((key, value) => {
+  // Same-process writes still fire the store's `onChange` immediately;
+  // cross-window writes arrive via the event mirror emitted by writePref.
+  const unsubLocal = await getStore(STORE_NAME).onChange((key, value) => {
     const mapped = map[key];
     if (mapped) cb(mapped, value);
   });
-  const unsubEvent = await listen<{ key: string; value: unknown }>(
-    PREFS_CHANGED_EVENT,
-    (e) => {
-      const mapped = map[e.payload.key];
-      if (mapped) cb(mapped, e.payload.value);
-    },
-  );
+  const unsubEvent = await getCrossWindowEvents().listen<{
+    key: string;
+    value: unknown;
+  }>(PREFS_CHANGED_EVENT, (payload) => {
+    const mapped = map[payload.key];
+    if (mapped) cb(mapped, payload.value);
+  });
   return () => {
     unsubLocal();
     unsubEvent();
   };
 }
 
-// API key changes are stored in OS keychain (not the prefs store),
-// so we broadcast via a Tauri event for cross-window listeners.
+// API key changes are stored in OS keychain (not the prefs store), so
+// we broadcast through the cross-window bus for any window to react.
 const KEYS_CHANGED_EVENT = "codeless://ai-keys-changed";
 
 export async function emitKeysChanged(): Promise<void> {
-  await emit(KEYS_CHANGED_EVENT);
+  await getCrossWindowEvents().emit(KEYS_CHANGED_EVENT);
 }
 
-export function onKeysChanged(cb: () => void): Promise<UnlistenFn> {
-  return listen(KEYS_CHANGED_EVENT, () => cb());
+export function onKeysChanged(cb: () => void): Promise<() => void> {
+  return getCrossWindowEvents().listen(KEYS_CHANGED_EVENT, () => cb());
 }
