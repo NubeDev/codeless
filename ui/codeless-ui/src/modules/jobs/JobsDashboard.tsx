@@ -21,6 +21,7 @@ import { navigate, useRoute } from "@/lib/route";
 
 import { JobDetail } from "./JobDetail";
 import { JobRow } from "./JobRow";
+import { NewJobDialog } from "./NewJobDialog";
 import { RunMockJobButton } from "./RunMockJobButton";
 import { SubmitJobDialog } from "./SubmitJobDialog";
 import { WorktreeGcButton } from "./WorktreeGcButton";
@@ -130,6 +131,7 @@ export function JobsDashboard() {
           <span>·</span>
           <span title="Cost across jobs created today">today {formatCents(dailyTotal)}</span>
           <WorktreeGcButton />
+          <NewJobDialog repos={repos.data} />
         </div>
       </header>
       <Sheet

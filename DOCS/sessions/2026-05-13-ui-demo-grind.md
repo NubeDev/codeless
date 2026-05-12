@@ -54,8 +54,8 @@
 File: DOCS/sessions/2026-05-13-ui-demo-grind.md
 Goal: Land visible UI demos fast; every stage produces something the user can see in the browser.
 Started: 2026-05-13
-Last tick: 2026-05-13 05:34
-Current stage: 9 / 10
+Last tick: 2026-05-13 05:39
+Current stage: 10 / 10
 
 Repo:        codeless
 Branch:      master
@@ -72,8 +72,8 @@ Max ticks:   30
 - [x] 6. [S] Cost + wall-clock badges on the job row
 - [x] 7. [M] Handover preview pane (runs/<name>/handover.md)
 - [x] 8. [S] Review queue badge in the top bar
-- [ ] 9. [M] Ad-hoc job form: New Job button + repo dropdown  ← next
-- [ ] 10. [S] Polish pass: theme toggle, empty states, CTA
+- [x] 9. [M] Ad-hoc job form: New Job button + repo dropdown
+- [ ] 10. [S] Polish pass: theme toggle, empty states, CTA  ← next
 
 ## Notes
 - Stage 0: status file created on master in inner codeless repo.
@@ -99,6 +99,16 @@ Max ticks:   30
   `useEventStream` from `@/lib/rpc` and subscribes per-job, so mock
   runner events stream live as they fire. No `@tauri-apps/api/core`
   imports (R2 satisfied).
+- Stage 9 added `NewJobDialog` (top-level "New job" entry) mounted
+  in the `JobsDashboard` page header next to `WorktreeGcButton`.
+  Minimal form: repo dropdown + goal textarea. Submits via the
+  existing `submit_job` RPC with runner=`mock`, fresh
+  `codeless/job-<6hex>` branch, $5 / 30m caps. On success, navigates
+  to `/jobs/<new_id>` so the detail sheet opens and the user
+  immediately sees the run start streaming. Disabled when there are
+  no repos. Visible-in-browser: a "New job" button at the top of the
+  jobs view that opens a two-field dialog and launches a mock job
+  in any registered repo.
 - Stage 8 added `ReviewQueueBadge` (uses `useReviews({ status: "pending" })`)
   and mounted it in the global `Header` just left of the inline
   search box, with a new `onOpenReviews` prop wired through
