@@ -9,6 +9,7 @@
 //! land in later phases.
 
 mod job;
+mod jobs;
 mod repos;
 mod review;
 mod rpc_open;
@@ -107,6 +108,13 @@ enum Cmd {
         #[command(subcommand)]
         verb: repos::Verb,
     },
+    /// Inspect and stop jobs. Dual-mode like `repos`. For job
+    /// submission see `codeless run` (one-shot) or `codeless job
+    /// submit <file.yaml>` (YAML template).
+    Jobs {
+        #[command(subcommand)]
+        verb: jobs::Verb,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -189,6 +197,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             serve::handle(args, secrets_path, cli.db)
         }
         Cmd::Repos { verb } => repos::handle(verb, cli.core, cli.token, cli.db),
+        Cmd::Jobs { verb } => jobs::handle(verb, cli.core, cli.token, cli.db),
     }
 }
 
