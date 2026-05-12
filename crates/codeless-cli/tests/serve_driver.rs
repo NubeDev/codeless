@@ -258,6 +258,141 @@ async fn poll_until_terminal(
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_provisions_worktree_when_root_set() {
+    let dir = TempDir::new().unwrap();
+    let secrets = dir.path().join("secrets.toml");
+    let db = dir.path().join("codeless.db");
+    let wt_root = dir.path().join("worktrees");
+    let repo_path = dir.path().join("source-repo");
+
+    // Bootstrap a real git repo so `git worktree add` has somewhere
+    // to branch from. MockRunner ignores the worktree path itself,
+    // but the driver's provision call still hits the real git
+    // binary, which means we need a checkout that resolves.
+    std::fs::create_dir_all(&repo_path).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&repo_path)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "demo@example.com"]);
+    git(&["config", "user.name", "Demo"]);
+    std::fs::write(repo_path.join("README.md"), b"hi\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    let mut store = SecretStore::open(&secrets).unwrap();
+    store.set("core_bearer_token", TOKEN).unwrap();
+    store.save().unwrap();
+
+    // Register the repo against the real on-disk checkout.
+    let rpc = InProcessRpc::with_file(&db).await.unwrap();
+    let repo = rpc
+        .add_repo(AddRepoArgs {
+            name: "wt-demo".into(),
+            clone_url: format!("file://{}", repo_path.display()),
+            default_branch: "master".into(),
+            local_path: repo_path.display().to_string(),
+            git_auth: GitAuth::Token {
+                env_var: "GITHUB_TOKEN".into(),
+            },
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .unwrap();
+    drop(rpc);
+
+    let mut server = Command::new(BIN)
+        .args([
+            "--secrets-file",
+            secrets.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "serve",
+            "--bind",
+            "127.0.0.1:0",
+            "--worktree-root",
+            wt_root.to_str().unwrap(),
+        ])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let stderr = server.stderr.take().unwrap();
+    let (tx, rx) = mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let addr = (|| -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Ok(line) = rx.recv_timeout(Duration::from_millis(500)) {
+                if let Some(idx) = line.find("listening on http://") {
+                    return line[idx + "listening on http://".len()..]
+                        .trim()
+                        .to_string();
+                }
+            }
+        }
+        let _ = server.kill();
+        panic!("server did not bind");
+    })();
+
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    let submit: serde_json::Value = client
+        .post(format!("{base}/rpc/submit_job"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({
+            "repo_id": repo.id.to_string(),
+            "prompt": "hi",
+            "template_yaml": null,
+            "runner": "mock",
+            "branch": "ignored",
+            "cost_cap_cents": 0,
+            "wall_clock_cap_ms": 60000,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let job_id = submit["id"].as_str().unwrap().to_string();
+
+    let observed = poll_until_terminal(&client, &base, &job_id, Duration::from_secs(5)).await;
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = reader.join();
+
+    assert_eq!(
+        observed["status"], "completed",
+        "job did not complete: {observed}"
+    );
+    // drive_job removes the worktree on terminal status; we assert
+    // that the branch was created (it survives `worktree remove`)
+    // rather than that the directory still exists.
+    let branches = std::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["branch", "--list"])
+        .output()
+        .unwrap();
+    let branches_out = String::from_utf8_lossy(&branches.stdout);
+    assert!(
+        branches_out.contains(&format!("codeless/job-{job_id}")),
+        "expected job branch in: {branches_out}"
+    );
+}
+
 // Keep `Arc<InProcessRpc>` import in scope for future expansion of
 // the test suite without churn on the import list.
 #[allow(dead_code)]

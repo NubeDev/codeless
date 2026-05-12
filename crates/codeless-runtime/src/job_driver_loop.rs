@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::RpcError;
 use codeless_types::{Event, JobStatus};
 use futures_util::StreamExt;
@@ -78,6 +79,7 @@ impl DriverLoopHandle {
 pub async fn spawn_job_driver_loop<F: RunnerFactory>(
     rpc: Arc<InProcessRpc>,
     factory: Arc<F>,
+    worktrees: Option<Arc<WorktreeManager>>,
     concurrency: usize,
 ) -> Result<DriverLoopHandle, RpcError> {
     let cancel = CancellationToken::new();
@@ -99,7 +101,7 @@ pub async fn spawn_job_driver_loop<F: RunnerFactory>(
             // startup lease reaper has already converted abandoned
             // `Running` rows back to `Queued`, so a single pass here
             // covers crashes.
-            replay_backlog(&rpc, &factory, &semaphore).await;
+            replay_backlog(&rpc, &factory, &worktrees, &semaphore).await;
 
             // Live tail. `subscribe_since(All, None)` is live-only,
             // which is what we want — backlog was just handled above.
@@ -116,7 +118,14 @@ pub async fn spawn_job_driver_loop<F: RunnerFactory>(
                             None => break,
                         };
                         if let Event::JobQueued { job_id, .. } = env.event {
-                            dispatch(rpc.clone(), factory.clone(), semaphore.clone(), job_id).await;
+                            dispatch(
+                                rpc.clone(),
+                                factory.clone(),
+                                worktrees.clone(),
+                                semaphore.clone(),
+                                job_id,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -131,6 +140,7 @@ pub async fn spawn_job_driver_loop<F: RunnerFactory>(
 async fn replay_backlog<F: RunnerFactory>(
     rpc: &Arc<InProcessRpc>,
     factory: &Arc<F>,
+    worktrees: &Option<Arc<WorktreeManager>>,
     semaphore: &Arc<Semaphore>,
 ) {
     let jobs = match rpc.store().list_jobs(None).await {
@@ -141,13 +151,21 @@ async fn replay_backlog<F: RunnerFactory>(
         }
     };
     for job in jobs.into_iter().filter(|j| j.status == JobStatus::Queued) {
-        dispatch(rpc.clone(), factory.clone(), semaphore.clone(), job.id).await;
+        dispatch(
+            rpc.clone(),
+            factory.clone(),
+            worktrees.clone(),
+            semaphore.clone(),
+            job.id,
+        )
+        .await;
     }
 }
 
 async fn dispatch<F: RunnerFactory>(
     rpc: Arc<InProcessRpc>,
     factory: Arc<F>,
+    worktrees: Option<Arc<WorktreeManager>>,
     semaphore: Arc<Semaphore>,
     job_id: codeless_types::JobId,
 ) {
@@ -192,7 +210,7 @@ async fn dispatch<F: RunnerFactory>(
     };
     tokio::spawn(async move {
         let _permit = permit;
-        if let Err(e) = drive_job(&rpc, job_id, runner, None).await {
+        if let Err(e) = drive_job(&rpc, job_id, runner, worktrees).await {
             tracing::warn!(%job_id, error = %e, "drive_job returned error");
         }
     });

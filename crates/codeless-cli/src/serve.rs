@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
-use codeless_adapters_host::SecretStore;
+use codeless_adapters_host::{SecretStore, WorktreeManager};
 use codeless_rpc::RpcServer;
 use codeless_runtime::{
     spawn_job_driver_loop, InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome,
@@ -58,6 +58,14 @@ pub struct ServeArgs {
     /// `--no-driver` is set.
     #[arg(long, default_value_t = 4)]
     pub driver_concurrency: usize,
+
+    /// Directory under which per-job `git worktree` checkouts live.
+    /// Each job gets `<worktree-root>/job-<job_id>` on a fresh
+    /// `codeless/job-<job_id>` branch. When unset the driver runs
+    /// jobs without provisioning a worktree — fine for the `mock`
+    /// runner but real AI runners that need a checkout will fail.
+    #[arg(long, env = "CODELESS_WORKTREE_ROOT")]
+    pub worktree_root: Option<PathBuf>,
 }
 
 pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
@@ -120,13 +128,30 @@ async fn run_server(
         eprintln!("codeless-server: background driver disabled (--no-driver)");
         None
     } else {
+        let worktrees = args.worktree_root.as_ref().map(|root| {
+            // Create the parent eagerly so the first job doesn't
+            // race the directory creation with the `git worktree
+            // add` call.
+            if let Err(e) = std::fs::create_dir_all(root) {
+                tracing::warn!(
+                    error = %e,
+                    root = %root.display(),
+                    "could not create worktree root; provisioning will fail per job",
+                );
+            }
+            Arc::new(WorktreeManager::new(root))
+        });
         eprintln!(
-            "codeless-server: background driver enabled (concurrency={}, runners=mock)",
-            args.driver_concurrency
+            "codeless-server: background driver enabled (concurrency={}, runners=mock, worktrees={})",
+            args.driver_concurrency,
+            args.worktree_root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "disabled".into()),
         );
         let factory = Arc::new(DefaultRunnerFactory::new());
         Some(
-            spawn_job_driver_loop(rpc.clone(), factory, args.driver_concurrency)
+            spawn_job_driver_loop(rpc.clone(), factory, worktrees, args.driver_concurrency)
                 .await
                 .map_err(|e| anyhow!("driver init: {e}"))?,
         )
