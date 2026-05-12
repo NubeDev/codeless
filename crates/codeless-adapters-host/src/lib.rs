@@ -6,5 +6,7 @@
 //! physically cannot pull it in via Cargo features.
 
 pub mod secrets;
+pub mod worktree;
 
 pub use secrets::{SecretError, SecretStore};
+pub use worktree::{WorktreeError, WorktreeHandle, WorktreeManager};
