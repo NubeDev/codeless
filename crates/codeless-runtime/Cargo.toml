@@ -1,0 +1,11 @@
+[package]
+name = "codeless-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: state machine, scheduler, queue, event bus, sqlx. Host-only — never compiled for mobile."
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "codeless-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: transport-agnostic RPC trait and client glue. iOS- and Android-safe."
+
+[lints]
+workspace = true

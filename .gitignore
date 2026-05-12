@@ -1,0 +1,42 @@
+# Codeless repo — per-repo ignores. The workspace-level .gitignore in
+# the parent codeless-workspace repo handles workspace concerns
+# (e.g. inner repos as colocated, vendored ai-runner footguns).
+
+# Cargo build output
+target/
+Cargo.lock.bak
+
+# SQLite databases produced by the runtime
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Worktree dirs created by codeless-adapters-host's worktree manager
+worktrees/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+auth.toml
+secrets.toml
+
+# Audit and runtime logs
+*.log
+audit.log*
+
+# Frontend (Phase 3 onwards)
+node_modules/
+dist/
+.next/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db

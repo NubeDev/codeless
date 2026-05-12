@@ -1,0 +1,11 @@
+[package]
+name = "codeless-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: pure data types (Repo, Job, Stage, Task, Event, RPC messages). No I/O. iOS- and Android-safe."
+
+[lints]
+workspace = true

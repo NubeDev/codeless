@@ -1,0 +1,11 @@
+[package]
+name = "codeless-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: SSE + REST + WebSocket client. The single thin-client library, used by browser and mobile shells. iOS- and Android-safe."
+
+[lints]
+workspace = true

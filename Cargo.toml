@@ -1,0 +1,32 @@
+# Codeless workspace — see DOCS/SCOPE.md (in the parent
+# codeless-workspace repo) for the crate table that defines the role
+# of every member crate, plus the iOS-safe / Android-safe matrix that
+# enforces which crates may be compiled for which targets.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/codeless-types",
+    "crates/codeless-rpc",
+    "crates/codeless-runtime",
+    "crates/codeless-adapters-host",
+    "crates/codeless-server",
+    "crates/codeless-client",
+    "crates/codeless-cli",
+    "crates/codeless-tauri-desktop",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.78"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/NubeDev/codeless"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Per CLAUDE.md / SCOPE.md, we want clippy strict from day one so
+# Phase 1 doesn't accumulate quiet debt.
+all = { level = "warn", priority = -1 }

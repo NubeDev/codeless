@@ -1,0 +1,11 @@
+[package]
+name = "codeless-adapters-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: worktree manager, shell, PTY, CLI/REST runners, local FS, secrets-file backend. Host-only; never compiled for mobile."
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "codeless-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: hosted HTTP binary. axum SSE + REST + WebSocket surface for the browser/mobile clients."
+
+[[bin]]
+name = "codeless-server"
+path = "src/main.rs"
+
+[lints]
+workspace = true
