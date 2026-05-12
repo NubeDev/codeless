@@ -50,43 +50,56 @@ impl HostFs {
         &self.root
     }
 
-    /// Resolve `rel` against `root`, refusing anything that would
-    /// escape. The check is done by `Component` walking so we never
-    /// touch disk for an obviously-bad path, then a final
-    /// `canonicalize` + prefix check catches symlinks. Missing tail
-    /// segments (a path to a file the caller is about to create) are
-    /// allowed: we resolve the parent and append the final component
-    /// untouched.
-    fn resolve(&self, rel: &str) -> Result<PathBuf, FsError> {
-        let rel_path = Path::new(rel);
-        for c in rel_path.components() {
+    /// Resolve `path` against `root`, refusing anything that would
+    /// escape. Two input shapes are accepted:
+    ///
+    /// - Relative paths (`"."`, `"src/lib.rs"`): joined onto `root`.
+    ///   `ParentDir` segments are rejected up front so an obvious
+    ///   traversal never touches disk.
+    /// - Absolute paths (`"/home/user/proj/src/lib.rs"`): used
+    ///   directly. The UI's explorer treats the result of `fs_cwd`
+    ///   as the display root and ships absolute paths back over the
+    ///   wire; accepting them is what makes the explorer round-trip.
+    ///
+    /// Both shapes finish at the same `canonicalize + starts_with
+    /// (root)` check, so symlinks pointing out and absolute paths
+    /// outside the root are caught identically. Missing tail
+    /// segments (a path to a file the caller is about to create)
+    /// resolve via the parent so writes to new files work.
+    fn resolve(&self, path: &str) -> Result<PathBuf, FsError> {
+        let raw = Path::new(path);
+        for c in raw.components() {
             match c {
-                Component::Normal(_) => {}
-                Component::CurDir => {}
-                _ => return Err(FsError::Escape(rel.to_owned())),
+                Component::Normal(_) | Component::CurDir | Component::RootDir => {}
+                Component::Prefix(_) => {}
+                Component::ParentDir => return Err(FsError::Escape(path.to_owned())),
             }
         }
-        let joined = self.root.join(rel_path);
+        let joined = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            self.root.join(raw)
+        };
         match std::fs::canonicalize(&joined) {
             Ok(canon) => {
                 if canon.starts_with(&self.root) {
                     Ok(canon)
                 } else {
-                    Err(FsError::Escape(rel.to_owned()))
+                    Err(FsError::Escape(path.to_owned()))
                 }
             }
             Err(_) => {
                 let parent = joined
                     .parent()
-                    .ok_or_else(|| FsError::Escape(rel.to_owned()))?;
+                    .ok_or_else(|| FsError::Escape(path.to_owned()))?;
                 let parent_canon =
-                    std::fs::canonicalize(parent).map_err(|_| FsError::Escape(rel.to_owned()))?;
+                    std::fs::canonicalize(parent).map_err(|_| FsError::Escape(path.to_owned()))?;
                 if !parent_canon.starts_with(&self.root) {
-                    return Err(FsError::Escape(rel.to_owned()));
+                    return Err(FsError::Escape(path.to_owned()));
                 }
                 let tail = joined
                     .file_name()
-                    .ok_or_else(|| FsError::Escape(rel.to_owned()))?;
+                    .ok_or_else(|| FsError::Escape(path.to_owned()))?;
                 Ok(parent_canon.join(tail))
             }
         }
@@ -228,10 +241,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn absolute_path_is_rejected() {
+    async fn absolute_path_outside_root_is_rejected() {
         let (_tmp, fs_adapter) = setup();
         let err = fs_adapter.read_file("/etc/passwd").await.unwrap_err();
         assert!(matches!(err, FsError::Escape(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn absolute_path_inside_root_is_allowed() {
+        let (tmp, fs_adapter) = setup();
+        fs::write(tmp.path().join("note.md"), "ok").unwrap();
+        let canonical_root = std::fs::canonicalize(tmp.path()).unwrap();
+        let abs = canonical_root.join("note.md");
+        let got = fs_adapter
+            .read_file(abs.to_str().unwrap())
+            .await
+            .expect("absolute-in-root should resolve");
+        assert_eq!(got, "ok");
+
+        let entries = fs_adapter
+            .read_dir(canonical_root.to_str().unwrap())
+            .await
+            .expect("absolute root dir should list");
+        assert!(entries.iter().any(|e| e.name == "note.md"));
     }
 
     #[cfg(unix)]
