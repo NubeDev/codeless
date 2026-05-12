@@ -478,6 +478,9 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
