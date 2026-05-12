@@ -8,6 +8,7 @@
 //! Hosted-mode (`--core`, `--token`) and the `tail` / `session` verbs
 //! land in later phases.
 
+mod job;
 mod review;
 mod rpc_open;
 mod run;
@@ -63,6 +64,13 @@ enum Cmd {
     Review {
         #[command(subcommand)]
         verb: review::Verb,
+    },
+    /// Manage jobs by typed templates. `submit <file.yaml>` parses
+    /// the YAML and calls `submit_job` against the local-mode
+    /// runtime.
+    Job {
+        #[command(subcommand)]
+        verb: job::Verb,
     },
 }
 
@@ -139,6 +147,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Run(args) => run::handle(args, cli.db),
         Cmd::Review { verb } => review::handle(verb, cli.db),
+        Cmd::Job { verb } => job::handle(verb, cli.db),
     }
 }
 
