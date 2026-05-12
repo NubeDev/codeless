@@ -33,22 +33,34 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
   const submit = async () => {
     setSubmitting(true);
     setError(null);
+    // Hard timeout so a hung transport (server down mid-submit, an
+    // unreachable mock client, an SSE proxy stalling the fetch) does
+    // not leave the button frozen on "submitting…". 10s is well above
+    // the trait method's normal latency on a healthy core.
+    const timer = window.setTimeout(() => {
+      setError("submit timed out after 10s — check the server is reachable");
+      setSubmitting(false);
+    }, 10_000);
     try {
-      await rpc.call("submit_job", {
+      const job = await rpc.call("submit_job", {
         repo_id: repo.id,
         prompt: prompt || null,
         template_yaml: null,
         runner,
         branch,
-        // Conservative defaults until we have a settings surface.
         cost_cap_cents: 500,
         wall_clock_cap_ms: 30 * 60 * 1000,
       });
+      // eslint-disable-next-line no-console
+      console.log("submit_job ok", job);
       setOpen(false);
       setPrompt("");
     } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("submit_job failed", e);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      window.clearTimeout(timer);
       setSubmitting(false);
     }
   };

@@ -202,6 +202,7 @@ export function useReviews(args: ListReviewsArgs): QueryState<Review[]> {
 export function useEventStream(
   filter: EventFilter,
   onEvent: (env: EventEnvelope) => void,
+  since: number = 0,
 ): void {
   const rpc = useRpc();
   // Stable callback ref so the subscription doesn't tear down on every
@@ -209,10 +210,16 @@ export function useEventStream(
   const cbRef = useRef(onEvent);
   cbRef.current = onEvent;
 
-  const key = JSON.stringify(filter);
+  const key = JSON.stringify({ filter, since });
   useEffect(() => {
     let cancelled = false;
-    const stream = rpc.subscribe(filter);
+    // `since: 0` replays every persisted event for the filter before
+    // going live. Completed jobs have no live events left, so without
+    // replay the JobTimeline pane sits forever on "waiting for
+    // events…". Callers that genuinely want live-only state pass a
+    // non-zero cursor (a recent cursor, or one captured from a
+    // previous batch).
+    const stream = rpc.subscribe(filter, since);
     (async () => {
       try {
         for await (const env of stream) {
