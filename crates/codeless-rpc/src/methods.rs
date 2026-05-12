@@ -1,4 +1,4 @@
-use codeless_types::{GitAuth, Job, JobId, Repo, RepoId};
+use codeless_types::{GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, StageId};
 use serde::{Deserialize, Serialize};
 
 /// Arguments and result types for the typed RPC methods. Kept in their
@@ -60,4 +60,38 @@ pub struct ListJobsResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopJobArgs {
     pub job_id: JobId,
+}
+
+/// Filter for `list_reviews`. Both fields compose with AND; `None`
+/// means "do not narrow on this column". Returned rows are ordered by
+/// `requested_at` ascending so a UI can render the oldest pending
+/// review first without re-sorting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ListReviewsArgs {
+    pub stage_id: Option<StageId>,
+    pub status: Option<ReviewStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListReviewsResult {
+    pub reviews: Vec<Review>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApproveReviewArgs {
+    pub review_id: ReviewId,
+}
+
+/// Adds a free-form comment to a review without changing its status.
+/// `Pending` reviews stay pending so the operator can keep iterating;
+/// the final approve / stop call lands a terminal status transition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentReviewArgs {
+    pub review_id: ReviewId,
+    pub comment: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopReviewArgs {
+    pub review_id: ReviewId,
 }

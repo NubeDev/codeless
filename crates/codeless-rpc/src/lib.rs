@@ -15,8 +15,9 @@ pub mod subscribe;
 
 pub use error::{RpcError, RpcResult};
 pub use methods::{
-    AddRepoArgs, GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, RemoveRepoArgs,
-    StopJobArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, GetJobArgs, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

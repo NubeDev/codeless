@@ -2,11 +2,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeless_rpc::{
-    AddRepoArgs, EventFilter, EventStream, GetJobArgs, ListJobsArgs, ListJobsResult,
-    ListReposResult, RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, GetJobArgs,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    RemoveRepoArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
     SubmitJobArgs,
 };
-use codeless_types::{CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, StopReason};
+use codeless_types::{
+    CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
+};
 use sqlx::SqlitePool;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
@@ -81,6 +84,35 @@ impl InProcessRpc {
 
 fn db_err(e: sqlx::Error) -> RpcError {
     RpcError::Internal(format!("db: {e}"))
+}
+
+/// Shared "resolve a Pending review to a terminal status" helper for
+/// `approve_review` and `stop_review`. Centralises the conflict /
+/// not-found checks so the two RPCs cannot drift on which transitions
+/// they accept. The caller publishes the corresponding event after we
+/// return so the event-name choice stays at the call site.
+async fn resolve_pending_review(
+    rpc: &InProcessRpc,
+    review_id: codeless_types::ReviewId,
+    next: ReviewStatus,
+) -> RpcResult<Review> {
+    let mut review = rpc
+        .store
+        .get_review(review_id)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("review {review_id}")))?;
+    if review.status != ReviewStatus::Pending {
+        return Err(RpcError::Conflict(format!(
+            "review {review_id} is already resolved ({:?})",
+            review.status
+        )));
+    }
+    let now = now_ms();
+    review.status = next;
+    review.resolved_at = Some(now);
+    rpc.store.update_review(&review).await.map_err(db_err)?;
+    Ok(review)
 }
 
 #[async_trait]
@@ -224,6 +256,75 @@ impl RpcServer for InProcessRpc {
             .await
             .map_err(db_err)?;
         Ok(())
+    }
+
+    async fn list_reviews(&self, args: ListReviewsArgs) -> RpcResult<ListReviewsResult> {
+        Ok(ListReviewsResult {
+            reviews: self
+                .store
+                .list_reviews(args.stage_id, args.status)
+                .await
+                .map_err(db_err)?,
+        })
+    }
+
+    async fn approve_review(&self, args: ApproveReviewArgs) -> RpcResult<Review> {
+        let review = resolve_pending_review(self, args.review_id, ReviewStatus::Approved).await?;
+        self.bus
+            .publish(
+                None,
+                Some(review.stage_id),
+                None,
+                Event::ReviewApproved {
+                    review_id: review.id,
+                },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(review)
+    }
+
+    async fn comment_review(&self, args: CommentReviewArgs) -> RpcResult<Review> {
+        let mut review = self
+            .store
+            .get_review(args.review_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("review {}", args.review_id)))?;
+        review.comment = Some(args.comment.clone());
+        self.store.update_review(&review).await.map_err(db_err)?;
+        self.bus
+            .publish(
+                None,
+                Some(review.stage_id),
+                None,
+                Event::ReviewCommented {
+                    review_id: review.id,
+                    comment: args.comment,
+                },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(review)
+    }
+
+    async fn stop_review(&self, args: StopReviewArgs) -> RpcResult<Review> {
+        let review = resolve_pending_review(self, args.review_id, ReviewStatus::Stopped).await?;
+        self.bus
+            .publish(
+                None,
+                Some(review.stage_id),
+                None,
+                Event::ReviewStopped {
+                    review_id: review.id,
+                },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(review)
     }
 
     async fn subscribe(&self, filter: EventFilter, since: Since) -> RpcResult<EventStream> {

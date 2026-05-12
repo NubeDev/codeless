@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use codeless_types::{
-    CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, Stage, StageStatus, StopReason, Task,
-    TaskId, TaskStatus, UnixMillis,
+    CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
+    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -394,6 +394,65 @@ impl SqliteStore {
         };
         rows.into_iter().map(job_from_row).collect()
     }
+
+    pub async fn insert_review(&self, review: &Review) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO reviews (id, stage_id, status, comment, requested_at, resolved_at) \
+             VALUES (?,?,?,?,?,?)",
+        )
+        .bind(review.id.to_string())
+        .bind(review.stage_id.to_string())
+        .bind(review_status_label(review.status))
+        .bind(&review.comment)
+        .bind(review.requested_at.0)
+        .bind(review.resolved_at.map(|t| t.0))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_review(&self, id: ReviewId) -> sqlx::Result<Option<Review>> {
+        let row = sqlx::query("SELECT * FROM reviews WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(review_from_row).transpose()
+    }
+
+    pub async fn update_review(&self, review: &Review) -> sqlx::Result<()> {
+        sqlx::query("UPDATE reviews SET status = ?, comment = ?, resolved_at = ? WHERE id = ?")
+            .bind(review_status_label(review.status))
+            .bind(&review.comment)
+            .bind(review.resolved_at.map(|t| t.0))
+            .bind(review.id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// List reviews, optionally narrowed to a single stage or a single
+    /// status. The two filters compose with AND. Ordered by
+    /// `requested_at` so the UI gets a stable oldest-first list.
+    pub async fn list_reviews(
+        &self,
+        stage_id: Option<StageId>,
+        status: Option<ReviewStatus>,
+    ) -> sqlx::Result<Vec<Review>> {
+        let status_label = status.map(review_status_label);
+        let rows = sqlx::query(
+            "SELECT * FROM reviews \
+             WHERE (? IS NULL OR stage_id = ?) \
+               AND (? IS NULL OR status = ?) \
+             ORDER BY requested_at",
+        )
+        .bind(stage_id.map(|s| s.to_string()))
+        .bind(stage_id.map(|s| s.to_string()))
+        .bind(status_label)
+        .bind(status_label)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(review_from_row).collect()
+    }
 }
 
 fn repo_from_row(row: SqliteRow) -> sqlx::Result<Repo> {
@@ -542,6 +601,46 @@ fn stop_reason_label(s: StopReason) -> &'static str {
         StopReason::WallClock => "wall-clock",
         StopReason::RunnerCrash => "runner-crash",
     }
+}
+
+fn review_status_label(s: ReviewStatus) -> &'static str {
+    match s {
+        ReviewStatus::Pending => "pending",
+        ReviewStatus::Approved => "approved",
+        ReviewStatus::Rejected => "rejected",
+        ReviewStatus::Stopped => "stopped",
+        ReviewStatus::RerunRequested => "rerun-requested",
+    }
+}
+
+fn parse_review_status(s: &str) -> sqlx::Result<ReviewStatus> {
+    Ok(match s {
+        "pending" => ReviewStatus::Pending,
+        "approved" => ReviewStatus::Approved,
+        "rejected" => ReviewStatus::Rejected,
+        "stopped" => ReviewStatus::Stopped,
+        "rerun-requested" => ReviewStatus::RerunRequested,
+        other => {
+            return Err(sqlx::Error::Decode(
+                format!("unknown review status: {other}").into(),
+            ))
+        }
+    })
+}
+
+fn review_from_row(row: SqliteRow) -> sqlx::Result<Review> {
+    let id: String = row.try_get("id")?;
+    let stage_id: String = row.try_get("stage_id")?;
+    let status: String = row.try_get("status")?;
+    let resolved_at: Option<i64> = row.try_get("resolved_at")?;
+    Ok(Review {
+        id: parse_id(&id)?,
+        stage_id: parse_id(&stage_id)?,
+        status: parse_review_status(&status)?,
+        comment: row.try_get("comment")?,
+        requested_at: UnixMillis(row.try_get("requested_at")?),
+        resolved_at: resolved_at.map(UnixMillis),
+    })
 }
 
 fn parse_stop_reason(s: &str) -> sqlx::Result<StopReason> {

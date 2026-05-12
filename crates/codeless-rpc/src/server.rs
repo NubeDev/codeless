@@ -1,10 +1,11 @@
 use async_trait::async_trait;
-use codeless_types::{Job, Repo};
+use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, GetJobArgs, ListJobsArgs, ListJobsResult, ListReposResult, RemoveRepoArgs,
-    StopJobArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, GetJobArgs, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -32,6 +33,20 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job>;
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
+
+    async fn list_reviews(&self, args: ListReviewsArgs) -> RpcResult<ListReviewsResult>;
+    /// Resolve a `Pending` review to `Approved`. Rejects with
+    /// `Conflict` if the review has already been resolved; rejects
+    /// with `NotFound` for an unknown id. Publishes `review-approved`
+    /// on success.
+    async fn approve_review(&self, args: ApproveReviewArgs) -> RpcResult<Review>;
+    /// Attach a comment to a review. Only the comment field changes
+    /// — the status stays put, even for already-resolved reviews, so
+    /// post-mortem notes remain possible. Publishes `review-commented`.
+    async fn comment_review(&self, args: CommentReviewArgs) -> RpcResult<Review>;
+    /// Resolve a `Pending` review to `Stopped`. Same conflict / not-
+    /// found semantics as `approve_review`. Publishes `review-stopped`.
+    async fn stop_review(&self, args: StopReviewArgs) -> RpcResult<Review>;
 
     /// Streaming subscription. The returned stream replays events
     /// strictly after `since` (if `Some`) and then continues live.
