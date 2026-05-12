@@ -95,16 +95,105 @@ export function HandoverPanel({ job }: Props) {
   );
 }
 
+// Mirror of `codeless_types::Handover::from_markdown` in TS. Kept
+// inline (rather than a shared lib) because the only consumer today
+// is this panel; if a second consumer shows up, factor it out then.
+// Unknown sections and prose between bullets are silently dropped —
+// the four canonical sections are the contract, anything else is
+// noise we tolerate from a partial run.
+type Section =
+  | "done"
+  | "next"
+  | "what_you_need_to_know"
+  | "open_questions";
+
+const SECTION_TITLE: Record<Section, string> = {
+  done: "Done",
+  next: "Next",
+  what_you_need_to_know: "What you need to know",
+  open_questions: "Open questions",
+};
+
+const SECTION_ORDER: Section[] = [
+  "done",
+  "next",
+  "what_you_need_to_know",
+  "open_questions",
+];
+
+function parseHandover(md: string): Record<Section, string[]> {
+  const out: Record<Section, string[]> = {
+    done: [],
+    next: [],
+    what_you_need_to_know: [],
+    open_questions: [],
+  };
+  let current: Section | null = null;
+  for (const raw of md.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    const heading = line.match(/^#{1,3}\s+(.+?)\s*$/);
+    if (heading) {
+      const name = heading[1].toLowerCase();
+      if (name === "done") current = "done";
+      else if (name === "next") current = "next";
+      else if (name === "what you need to know")
+        current = "what_you_need_to_know";
+      else if (name === "open questions") current = "open_questions";
+      else current = null;
+      continue;
+    }
+    if (current === null) continue;
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (!bullet) continue;
+    const item = bullet[1].trim();
+    if (!item || item === "(none)") continue;
+    out[current].push(item);
+  }
+  return out;
+}
+
 function Handover({ content, path }: { content: string; path: string }) {
+  const sections = parseHandover(content);
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="text-muted-foreground font-mono text-[10px]" title={path}>
         {path}
       </div>
-      <pre className="bg-muted/30 border-border/40 whitespace-pre-wrap rounded border px-3 py-2 font-mono text-xs leading-snug">
-        {content}
-      </pre>
+      {SECTION_ORDER.map((s) => (
+        <HandoverSection
+          key={s}
+          title={SECTION_TITLE[s]}
+          items={sections[s]}
+        />
+      ))}
     </div>
+  );
+}
+
+function HandoverSection({
+  title,
+  items,
+}: {
+  title: string;
+  items: string[];
+}) {
+  return (
+    <section>
+      <h3 className="text-foreground mb-1.5 text-xs font-semibold uppercase tracking-wide">
+        {title}
+      </h3>
+      {items.length === 0 ? (
+        <p className="text-muted-foreground/70 text-xs italic">none</p>
+      ) : (
+        <ul className="text-foreground/90 list-disc space-y-0.5 pl-5 text-sm leading-snug">
+          {items.map((item, i) => (
+            <li key={i} className="whitespace-pre-wrap">
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
