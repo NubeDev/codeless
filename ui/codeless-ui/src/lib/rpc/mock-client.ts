@@ -12,7 +12,20 @@ import type {
   RpcResultOf,
   Since,
 } from "./methods";
-import type { Event, EventEnvelope, Job, Repo } from "./wire";
+import type {
+  Event,
+  EventEnvelope,
+  FsEntry,
+  FsGlobHit,
+  FsGrepHit,
+  FsKind,
+  FsReadResult,
+  Job,
+  Repo,
+} from "./wire";
+
+const MOCK_FS_ROOT = "/home/user/mock-workspace";
+const MOCK_FS_READ_LIMIT_DEFAULT = 1 << 20;
 
 let nextCursor = 1;
 let counter = 0;
@@ -45,10 +58,44 @@ const REPO_FIXTURES: Repo[] = [
   },
 ];
 
+type FileNode = { kind: "file"; content: string; mtime: number };
+type DirNode = { kind: "dir"; mtime: number };
+type Node = FileNode | DirNode;
+
+function seedFs(): Map<string, Node> {
+  const now = Date.now();
+  const m = new Map<string, Node>();
+  const dirs = [
+    "",
+    "/src",
+    "/src/modules",
+    "/docs",
+  ];
+  for (const d of dirs) m.set(MOCK_FS_ROOT + d, { kind: "dir", mtime: now });
+  m.set(`${MOCK_FS_ROOT}/README.md`, {
+    kind: "file",
+    content: "# mock-workspace\n\nIn-memory fixture served by MockRpcClient.\n",
+    mtime: now,
+  });
+  m.set(`${MOCK_FS_ROOT}/src/index.ts`, {
+    kind: "file",
+    content: "export const greeting = \"hello, codeless\";\n",
+    mtime: now,
+  });
+  m.set(`${MOCK_FS_ROOT}/docs/notes.md`, {
+    kind: "file",
+    content: "todo: write notes\n",
+    mtime: now,
+  });
+  return m;
+}
+
 export class MockRpcClient implements RpcClient {
   private repos: Repo[] = [...REPO_FIXTURES];
   private jobs: Job[] = [];
   private subscribers = new Set<(e: EventEnvelope) => void>();
+  private fs: Map<string, Node> = seedFs();
+  private secrets: Map<string, string> = new Map();
 
   async call<M extends RpcMethod>(
     method: M,
@@ -152,9 +199,254 @@ export class MockRpcClient implements RpcClient {
         return null as RpcResultOf<M>;
       }
 
+      case "fs_read_file": {
+        const a = args as RpcArgs<"fs_read_file">;
+        const node = this.fsRequireFile(a.path);
+        const limit = a.byte_limit ?? MOCK_FS_READ_LIMIT_DEFAULT;
+        const size = byteLength(node.content);
+        if (size > limit) {
+          return { kind: "toolarge", size, limit } as RpcResultOf<M>;
+        }
+        const r: FsReadResult = {
+          kind: "text",
+          content: node.content,
+          encoding: "utf-8",
+        };
+        return r as RpcResultOf<M>;
+      }
+
+      case "fs_write_file": {
+        const a = args as RpcArgs<"fs_write_file">;
+        const parent = parentPath(a.path);
+        if (!this.fs.has(parent)) {
+          if (a.create_parents) this.fsMkdirRecursive(parent);
+          else throw new RpcError("not_found", `parent ${parent}`);
+        }
+        const existing = this.fs.get(a.path);
+        if (existing && existing.kind === "dir") {
+          throw new RpcError("conflict", `${a.path} is a directory`);
+        }
+        this.fs.set(a.path, { kind: "file", content: a.content, mtime: Date.now() });
+        return null as RpcResultOf<M>;
+      }
+
+      case "fs_create_file": {
+        const a = args as RpcArgs<"fs_create_file">;
+        const existing = this.fs.get(a.path);
+        if (existing && !a.overwrite) {
+          throw new RpcError("conflict", `${a.path} already exists`);
+        }
+        if (existing && existing.kind === "dir") {
+          throw new RpcError("conflict", `${a.path} is a directory`);
+        }
+        const parent = parentPath(a.path);
+        if (!this.fs.has(parent)) {
+          throw new RpcError("not_found", `parent ${parent}`);
+        }
+        this.fs.set(a.path, {
+          kind: "file",
+          content: a.content ?? "",
+          mtime: Date.now(),
+        });
+        return null as RpcResultOf<M>;
+      }
+
+      case "fs_create_dir": {
+        const a = args as RpcArgs<"fs_create_dir">;
+        if (this.fs.has(a.path)) {
+          const n = this.fs.get(a.path)!;
+          if (n.kind === "dir") return null as RpcResultOf<M>;
+          throw new RpcError("conflict", `${a.path} exists and is a file`);
+        }
+        const parent = parentPath(a.path);
+        if (!this.fs.has(parent)) {
+          if (a.recursive) this.fsMkdirRecursive(parent);
+          else throw new RpcError("not_found", `parent ${parent}`);
+        }
+        this.fs.set(a.path, { kind: "dir", mtime: Date.now() });
+        return null as RpcResultOf<M>;
+      }
+
+      case "fs_read_dir": {
+        const a = args as RpcArgs<"fs_read_dir">;
+        const node = this.fs.get(a.path);
+        if (!node) throw new RpcError("not_found", a.path);
+        if (node.kind !== "dir") {
+          throw new RpcError("invalid_argument", `${a.path} is not a directory`);
+        }
+        const entries: FsEntry[] = [];
+        const prefix = a.path.endsWith("/") ? a.path : `${a.path}/`;
+        for (const [p, n] of this.fs) {
+          if (p === a.path) continue;
+          if (!p.startsWith(prefix)) continue;
+          const rest = p.slice(prefix.length);
+          if (rest.includes("/")) continue;
+          entries.push({
+            name: rest,
+            kind: n.kind as FsKind,
+            size: n.kind === "file" ? byteLength(n.content) : null,
+            mtime: n.mtime,
+          });
+        }
+        entries.sort((x, y) => x.name.localeCompare(y.name));
+        return { entries } as RpcResultOf<M>;
+      }
+
+      case "fs_search": {
+        const a = args as RpcArgs<"fs_search">;
+        if (!this.fs.has(a.root)) throw new RpcError("not_found", a.root);
+        const max = a.max_results ?? 500;
+        const re = new RegExp(
+          a.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+          a.case_sensitive ? "" : "i",
+        );
+        const globRe = a.glob ? globToRegExp(a.glob) : null;
+        const prefix = a.root.endsWith("/") ? a.root : `${a.root}/`;
+        const hits: FsGrepHit[] = [];
+        let truncated = false;
+        for (const [p, n] of this.fs) {
+          if (n.kind !== "file") continue;
+          if (p !== a.root && !p.startsWith(prefix)) continue;
+          if (globRe && !globRe.test(p.slice(prefix.length))) continue;
+          const lines = n.content.split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            const m = re.exec(lines[i]);
+            if (!m) continue;
+            if (hits.length >= max) {
+              truncated = true;
+              break;
+            }
+            hits.push({
+              path: p,
+              line: i + 1,
+              column: m.index + 1,
+              preview: lines[i],
+            });
+          }
+          if (truncated) break;
+        }
+        return { hits, truncated } as RpcResultOf<M>;
+      }
+
+      case "fs_glob": {
+        const a = args as RpcArgs<"fs_glob">;
+        if (!this.fs.has(a.root)) throw new RpcError("not_found", a.root);
+        const max = a.max_results ?? 500;
+        const re = globToRegExp(a.pattern);
+        const prefix = a.root.endsWith("/") ? a.root : `${a.root}/`;
+        const hits: FsGlobHit[] = [];
+        let truncated = false;
+        for (const [p, n] of this.fs) {
+          if (p === a.root) continue;
+          if (!p.startsWith(prefix)) continue;
+          if (!re.test(p.slice(prefix.length))) continue;
+          if (hits.length >= max) {
+            truncated = true;
+            break;
+          }
+          hits.push({ path: p, kind: n.kind as FsKind });
+        }
+        return { hits, truncated } as RpcResultOf<M>;
+      }
+
+      case "fs_move": {
+        const a = args as RpcArgs<"fs_move">;
+        const src = this.fs.get(a.from);
+        if (!src) throw new RpcError("not_found", a.from);
+        if (this.fs.has(a.to) && !a.overwrite) {
+          throw new RpcError("conflict", `${a.to} already exists`);
+        }
+        const parent = parentPath(a.to);
+        if (!this.fs.has(parent)) {
+          throw new RpcError("not_found", `parent ${parent}`);
+        }
+        // Move subtree: rewrite every key prefixed by `from`.
+        const fromPrefix = a.from.endsWith("/") ? a.from : `${a.from}/`;
+        const toPrefix = a.to.endsWith("/") ? a.to : `${a.to}/`;
+        const moves: Array<[string, Node]> = [];
+        for (const [p, n] of this.fs) {
+          if (p === a.from) moves.push([a.to, n]);
+          else if (p.startsWith(fromPrefix)) moves.push([toPrefix + p.slice(fromPrefix.length), n]);
+        }
+        // Apply: delete originals, set destinations.
+        for (const [p] of this.fs) {
+          if (p === a.from || p.startsWith(fromPrefix)) this.fs.delete(p);
+        }
+        for (const [p, n] of moves) this.fs.set(p, { ...n, mtime: Date.now() });
+        return null as RpcResultOf<M>;
+      }
+
+      case "fs_delete": {
+        const a = args as RpcArgs<"fs_delete">;
+        const node = this.fs.get(a.path);
+        if (!node) throw new RpcError("not_found", a.path);
+        if (node.kind === "dir") {
+          const prefix = a.path.endsWith("/") ? a.path : `${a.path}/`;
+          const hasChildren = [...this.fs.keys()].some((p) => p.startsWith(prefix));
+          if (hasChildren && !a.recursive) {
+            throw new RpcError("conflict", `${a.path} is non-empty`);
+          }
+          for (const p of [...this.fs.keys()]) {
+            if (p === a.path || p.startsWith(prefix)) this.fs.delete(p);
+          }
+        } else {
+          this.fs.delete(a.path);
+        }
+        return null as RpcResultOf<M>;
+      }
+
+      case "fs_cwd": {
+        return { path: MOCK_FS_ROOT } as RpcResultOf<M>;
+      }
+
+      case "secrets_set": {
+        const a = args as RpcArgs<"secrets_set">;
+        this.secrets.set(a.provider, a.value);
+        return null as RpcResultOf<M>;
+      }
+
+      case "secrets_get": {
+        const a = args as RpcArgs<"secrets_get">;
+        return (this.secrets.get(a.provider) ?? null) as RpcResultOf<M>;
+      }
+
+      case "secrets_list": {
+        const entries = [...this.secrets.keys()].sort().map((provider) => ({
+          provider,
+        }));
+        return { entries } as RpcResultOf<M>;
+      }
+
+      case "secrets_rm": {
+        const a = args as RpcArgs<"secrets_rm">;
+        if (!this.secrets.delete(a.provider)) {
+          throw new RpcError("not_found", `secret ${a.provider}`);
+        }
+        return null as RpcResultOf<M>;
+      }
+
       default:
         throw new RpcError("internal", `mock: unhandled method ${method}`);
     }
+  }
+
+  private fsRequireFile(path: string): FileNode {
+    const node = this.fs.get(path);
+    if (!node) throw new RpcError("not_found", path);
+    if (node.kind !== "file") {
+      throw new RpcError("invalid_argument", `${path} is not a file`);
+    }
+    return node;
+  }
+
+  private fsMkdirRecursive(path: string) {
+    if (this.fs.has(path)) return;
+    if (path === "" || path === "/") return;
+    if (!path.startsWith(MOCK_FS_ROOT)) {
+      throw new RpcError("invalid_argument", `${path} outside mock root`);
+    }
+    this.fsMkdirRecursive(parentPath(path));
+    this.fs.set(path, { kind: "dir", mtime: Date.now() });
   }
 
   subscribe(filter: EventFilter, _since?: Since): AsyncIterable<EventEnvelope> {
@@ -305,6 +597,41 @@ function stageIdOf(e: Event): string | null {
 }
 function taskIdOf(e: Event): string | null {
   return "task_id" in e ? e.task_id : null;
+}
+
+function parentPath(p: string): string {
+  const i = p.lastIndexOf("/");
+  if (i <= 0) return "/";
+  return p.slice(0, i);
+}
+
+function byteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+// Translate a shell-style glob (`*`, `?`, `**`) into a regexp anchored
+// to the full relative path. Intentionally minimal — the real adapter
+// will use `globset`; the mock just needs enough to drive UI flows.
+function globToRegExp(glob: string): RegExp {
+  let re = "^";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        re += ".*";
+        i++;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else if ("\\^$.|+()[]{}".includes(c)) {
+      re += "\\" + c;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp(re + "$");
 }
 
 function makeIterable(
