@@ -10,8 +10,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { File02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+
+import { useRpc } from "@/lib/rpc/provider";
 
 type Props = {
   open: boolean;
@@ -31,6 +32,7 @@ export function NewEditorDialog({
   rootPath,
   onCreated,
 }: Props) {
+  const rpc = useRpc();
   const [name, setName] = useState("untitled.txt");
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -68,7 +70,11 @@ export function NewEditorDialog({
       ? trimmed
       : joinPath(rootPath, trimmed);
     try {
-      await invoke("fs_create_file", { path });
+      await rpc.call("fs_create_file", {
+        path,
+        content: null,
+        overwrite: false,
+      });
       onCreated(path);
       onOpenChange(false);
     } catch (e) {

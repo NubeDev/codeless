@@ -1,10 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type ReadResult =
-  | { kind: "text"; content: string; size: number }
-  | { kind: "binary"; size: number }
-  | { kind: "toolarge"; size: number; limit: number };
+import { useRpc } from "@/lib/rpc/provider";
 
 export type DocumentState =
   | { status: "loading" }
@@ -19,11 +15,11 @@ type Options = {
 };
 
 export function useDocument({ path, onDirtyChange }: Options) {
+  const rpc = useRpc();
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
   const [reloadCounter, setReloadCounter] = useState(0);
 
-  // Track the saved buffer so we can detect changes cheaply.
   const savedRef = useRef<string>("");
   const bufferRef = useRef<string>("");
   const dirtyRef = useRef(false);
@@ -31,7 +27,6 @@ export function useDocument({ path, onDirtyChange }: Options) {
     dirtyRef.current = dirty;
   }, [dirty]);
 
-  // Notify parent of dirty transitions.
   const onDirtyChangeRef = useRef(onDirtyChange);
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
@@ -40,13 +35,13 @@ export function useDocument({ path, onDirtyChange }: Options) {
     onDirtyChangeRef.current?.(dirty);
   }, [dirty]);
 
-  // Load on path change or explicit reload.
   useEffect(() => {
     let cancelled = false;
     setDoc({ status: "loading" });
     setDirty(false);
 
-    invoke<ReadResult>("fs_read_file", { path })
+    rpc
+      .call("fs_read_file", { path, byte_limit: null })
       .then((res) => {
         if (cancelled) return;
         if (res.kind === "text") {
@@ -55,10 +50,13 @@ export function useDocument({ path, onDirtyChange }: Options) {
           setDoc({
             status: "ready",
             content: res.content,
-            size: res.size,
+            size: new TextEncoder().encode(res.content).length,
           });
         } else if (res.kind === "binary") {
-          setDoc({ status: "binary", size: res.size });
+          setDoc({
+            status: "binary",
+            size: Math.ceil((res.bytes_base64.length * 3) / 4),
+          });
         } else if (res.kind === "toolarge") {
           setDoc({
             status: "toolarge",
@@ -74,10 +72,11 @@ export function useDocument({ path, onDirtyChange }: Options) {
     return () => {
       cancelled = true;
     };
-  }, [path, reloadCounter]);
+  }, [path, reloadCounter, rpc]);
 
-  /** Re-read the file from disk. No-op (silent) if the buffer is dirty —
-   *  callers shouldn't clobber unsaved user edits. Returns whether reload ran. */
+  // Refetches from the source of truth. Silently no-ops if the local
+  // buffer is dirty so a background event cannot clobber unsaved
+  // user edits. Returns whether the reload was actually queued.
   const reload = useCallback((): boolean => {
     if (dirtyRef.current) return false;
     setReloadCounter((n) => n + 1);
@@ -92,10 +91,14 @@ export function useDocument({ path, onDirtyChange }: Options) {
   const save = useCallback(async () => {
     if (!dirty) return;
     const content = bufferRef.current;
-    await invoke("fs_write_file", { path, content });
+    await rpc.call("fs_write_file", {
+      path,
+      content,
+      create_parents: false,
+    });
     savedRef.current = content;
     setDirty(false);
-  }, [path, dirty]);
+  }, [path, dirty, rpc]);
 
   return { doc, dirty, onChange, save, reload };
 }
