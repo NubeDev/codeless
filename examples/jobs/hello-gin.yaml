@@ -1,0 +1,24 @@
+# Demo template: a minimal Gin hello-world server in Go. The whole
+# JOB-MODEL.md three-fields shape (name + goal + stages) is exercised
+# by codeless-runtime's TemplateRunner.
+#
+# Submit via the UI's "new job" dialog with this YAML in the
+# template_yaml field, or via the rpc:
+#
+#   curl -X POST http://127.0.0.1:7777/rpc/submit_job \
+#     -H 'content-type: application/json' \
+#     -d @<(jq -n --arg t "$(cat examples/jobs/hello-gin.yaml)" \
+#         '{repo_id: "<your repo id>", prompt: null, template_yaml: $t,
+#           runner: "claude", branch: "codeless/hello-gin",
+#           cost_cap_cents: 3000, wall_clock_cap_ms: 1800000}')
+
+name: hello-gin
+goal: |
+  A minimal Gin "hello world" HTTP server in Go. One file, one handler,
+  one route. The point is to demo codeless's multi-stage runner against
+  a real coding agent; this is not production code.
+
+stages:
+  - scaffold go.mod for module example.com/hello-gin (Go 1.22), then add main.go importing github.com/gin-gonic/gin and exposing GET /hello returning JSON {"message":"hello, world"}
+  - run go mod tidy so go.sum exists and the gin dependency is pinned
+  - add a README.md with a short "how to run" section ("go run .") and a curl example hitting /hello
