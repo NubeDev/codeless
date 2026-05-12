@@ -18,11 +18,13 @@ use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
 use codeless_rpc::RpcServer;
 use codeless_runtime::{
-    spawn_job_driver_loop, InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome,
+    spawn_job_driver_loop, AnthropicRunnerAdapter, ClaudeRunnerAdapter, InProcessRpc, MockRunner,
+    MockStep, Runner, RunnerFactory, RunnerOutcome,
 };
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, TokenLoadError, TOKEN_SECRET_KEY,
 };
+use codeless_types::{Job, TaskId};
 
 use crate::rpc_open;
 
@@ -66,6 +68,20 @@ pub struct ServeArgs {
     /// runner but real AI runners that need a checkout will fail.
     #[arg(long, env = "CODELESS_WORKTREE_ROOT")]
     pub worktree_root: Option<PathBuf>,
+
+    /// Enable the `claude` runner in the background driver. Requires
+    /// the `claude` binary on `PATH` or `CLAUDE_BINARY` env. Off by
+    /// default because the binary may not be installed; the operator
+    /// opts in once they've provisioned it.
+    #[arg(long)]
+    pub enable_claude: bool,
+
+    /// Enable the `anthropic` runner in the background driver. Reads
+    /// the API key from the secrets file under `anthropic_api_key`;
+    /// missing keys are surfaced at runner-build time so the operator
+    /// sees a clear error in the server log.
+    #[arg(long)]
+    pub enable_anthropic: bool,
 }
 
 pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
@@ -141,15 +157,28 @@ async fn run_server(
             }
             Arc::new(WorktreeManager::new(root))
         });
+        let mut enabled = vec!["mock"];
+        if args.enable_claude {
+            enabled.push("claude");
+        }
+        if args.enable_anthropic {
+            enabled.push("anthropic");
+        }
         eprintln!(
-            "codeless-server: background driver enabled (concurrency={}, runners=mock, worktrees={})",
+            "codeless-server: background driver enabled (concurrency={}, runners={}, worktrees={})",
             args.driver_concurrency,
+            enabled.join(","),
             args.worktree_root
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "disabled".into()),
         );
-        let factory = Arc::new(DefaultRunnerFactory::new());
+        let anthropic_api_key = store.get("anthropic_api_key").map(str::to_owned);
+        let factory = Arc::new(DefaultRunnerFactory {
+            enable_claude: args.enable_claude,
+            enable_anthropic: args.enable_anthropic,
+            anthropic_api_key,
+        });
         Some(
             spawn_job_driver_loop(rpc.clone(), factory, worktrees, args.driver_concurrency)
                 .await
@@ -168,27 +197,42 @@ async fn run_server(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Built-in runner factory. Always enables `mock` so the demo works
-/// without external dependencies; `claude` and `anthropic` need
-/// configuration the operator hasn't given us a way to provide yet
-/// (worktree path resolution, anthropic key wiring), so we refuse
-/// them rather than silently failing a queued job. A submitted job
-/// with an unsupported runner stays `Queued` and a warning lands
-/// in the server log — the operator can stop it via the CLI.
-struct DefaultRunnerFactory;
-
-impl DefaultRunnerFactory {
-    fn new() -> Self {
-        Self
-    }
+/// Built-in runner factory. `mock` is always on so the demo works
+/// without external dependencies; `claude` and `anthropic` are
+/// opt-in via `--enable-claude` / `--enable-anthropic` because each
+/// needs configuration the operator must provide (the `claude`
+/// binary on PATH, the Anthropic API key in the secrets file). An
+/// opt-in runner with missing config (e.g. anthropic without
+/// `anthropic_api_key`) still builds — the runner adapter surfaces
+/// the auth failure at run time as `RunnerOutcome::Failed`, which
+/// the driver maps to `Event::JobFailed`. That's more useful than
+/// silently leaving the job `Queued` forever.
+struct DefaultRunnerFactory {
+    enable_claude: bool,
+    enable_anthropic: bool,
+    anthropic_api_key: Option<String>,
 }
 
 impl RunnerFactory for DefaultRunnerFactory {
-    fn build(&self, runner_name: &str) -> Option<Arc<dyn Runner>> {
-        match runner_name {
+    fn build(&self, job: &Job) -> Option<Arc<dyn Runner>> {
+        // `prompt` is documented as Optional on `SubmitJobArgs`; a
+        // missing prompt is most likely a YAML-template job whose
+        // first stage holds the real prompt. Until template-driven
+        // runs land on the server-driver path, fall back to an
+        // empty string so the AI adapters don't panic.
+        let prompt = job.prompt.clone().unwrap_or_default();
+        match job.runner.as_str() {
             "mock" => Some(Arc::new(MockRunner::new(vec![MockStep::Finish(
                 RunnerOutcome::Completed,
             )]))),
+            "claude" if self.enable_claude => {
+                Some(Arc::new(ClaudeRunnerAdapter::new(prompt, TaskId::new())))
+            }
+            "anthropic" if self.enable_anthropic => {
+                let mut adapter = AnthropicRunnerAdapter::new(prompt, TaskId::new());
+                adapter.api_key = self.anthropic_api_key.clone();
+                Some(Arc::new(adapter))
+            }
             _ => None,
         }
     }

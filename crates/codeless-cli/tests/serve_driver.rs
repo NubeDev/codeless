@@ -259,6 +259,97 @@ async fn poll_until_terminal(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anthropic_runner_disabled_by_default_leaves_job_queued() {
+    let dir = TempDir::new().unwrap();
+    let secrets = dir.path().join("secrets.toml");
+    let db = dir.path().join("codeless.db");
+
+    let mut store = SecretStore::open(&secrets).unwrap();
+    store.set("core_bearer_token", TOKEN).unwrap();
+    store.save().unwrap();
+
+    let repo_id = seed_repo(&db).await;
+
+    // Server boots with default flags (anthropic disabled).
+    let mut server = Command::new(BIN)
+        .args([
+            "--secrets-file",
+            secrets.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "serve",
+            "--bind",
+            "127.0.0.1:0",
+        ])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let stderr = server.stderr.take().unwrap();
+    let (tx, rx) = mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let addr = (|| -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Ok(line) = rx.recv_timeout(Duration::from_millis(500)) {
+                if let Some(idx) = line.find("listening on http://") {
+                    return line[idx + "listening on http://".len()..]
+                        .trim()
+                        .to_string();
+                }
+            }
+        }
+        let _ = server.kill();
+        panic!("server did not bind");
+    })();
+
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    let submit: serde_json::Value = client
+        .post(format!("{base}/rpc/submit_job"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({
+            "repo_id": repo_id.to_string(),
+            "prompt": "do a thing",
+            "template_yaml": null,
+            "runner": "anthropic",
+            "branch": "x",
+            "cost_cap_cents": 0,
+            "wall_clock_cap_ms": 0,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let job_id = submit["id"].as_str().unwrap().to_string();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let fetched: serde_json::Value = client
+        .post(format!("{base}/rpc/get_job"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({ "job_id": job_id }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = reader.join();
+
+    assert_eq!(fetched["status"], "queued", "{fetched}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_provisions_worktree_when_root_set() {
     let dir = TempDir::new().unwrap();
     let secrets = dir.path().join("secrets.toml");

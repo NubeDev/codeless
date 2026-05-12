@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::RpcError;
-use codeless_types::{Event, JobStatus};
+use codeless_types::{Event, Job, JobStatus};
 use futures_util::StreamExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -36,14 +36,15 @@ use crate::event_bus::SubscribeFilter;
 use crate::rpc::InProcessRpc;
 use crate::runner::Runner;
 
-/// Resolves the wire-runner string on a `Job` (`"mock"`, `"claude"`,
-/// `"anthropic"`) to a concrete `Runner` implementation. Returning
-/// `None` means "this runner isn't enabled on this core"; the
-/// driver loop logs and the job remains `Queued` for an operator to
-/// fix (re-submit with a different runner, or restart the server
-/// with the runner enabled).
+/// Resolves a queued `Job` to a concrete `Runner` implementation.
+/// The factory sees the whole row so it can read `job.runner`,
+/// `job.prompt`, and (eventually) other per-job knobs without an
+/// extra DB round trip. Returning `None` means "this runner isn't
+/// enabled on this core"; the driver loop logs and the job remains
+/// `Queued` for an operator to fix (re-submit with a different
+/// runner, or restart the server with the runner enabled).
 pub trait RunnerFactory: Send + Sync + 'static {
-    fn build(&self, runner_name: &str) -> Option<Arc<dyn Runner>>;
+    fn build(&self, job: &Job) -> Option<Arc<dyn Runner>>;
 }
 
 /// Handle to the running driver loop. Drop semantics: the loop runs
@@ -187,7 +188,7 @@ async fn dispatch<F: RunnerFactory>(
         // semaphore isn't pointlessly held.
         return;
     }
-    let runner = match factory.build(&job.runner) {
+    let runner = match factory.build(&job) {
         Some(r) => r,
         None => {
             tracing::warn!(
