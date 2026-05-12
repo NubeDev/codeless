@@ -12,6 +12,7 @@ pub mod event_bus;
 pub mod heartbeat;
 pub mod migrations;
 pub mod mock_runner;
+pub mod notifier;
 pub mod queue_config;
 pub mod rpc;
 pub mod runner;
@@ -19,6 +20,7 @@ pub mod state_machine;
 pub mod store;
 pub mod time;
 pub mod tracing_init;
+pub mod webhook;
 
 pub use anthropic_runner::AnthropicRunnerAdapter;
 pub use claude_runner::ClaudeRunnerAdapter;
@@ -27,6 +29,9 @@ pub use event_bus::{EventBus, SubscribeFilter};
 pub use heartbeat::spawn_heartbeat;
 pub use migrations::MIGRATOR;
 pub use mock_runner::{MockRunner, MockStep};
+pub use notifier::{
+    spawn_notifier, NotificationKind, NotificationPayload, Notifier, NotifierError,
+};
 pub use queue_config::QueueConfig;
 pub use rpc::InProcessRpc;
 pub use runner::{Runner, RunnerContext, RunnerOutcome};
@@ -36,3 +41,4 @@ pub use state_machine::{
 pub use store::SqliteStore;
 pub use time::now_ms;
 pub use tracing_init::{try_init_json, try_init_pretty};
+pub use webhook::{WebhookConfig, WebhookNotifier, WebhookSetupError};

@@ -17,6 +17,11 @@ codeless-adapters-host = { path = "../codeless-adapters-host" }
 ai-runner = { path = "../../../ai-runner" }
 async-trait = "0.1"
 futures-core = "0.3"
+hex = "0.4"
+hmac = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -30,5 +35,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
 futures-util = "0.3"
+hex = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
 tempfile = "3"
+toml = "0.8"
 wiremock = "0.6"
