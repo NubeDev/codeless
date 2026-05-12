@@ -72,6 +72,8 @@ impl EventBus {
         .await?;
         let cursor = EventCursor(row.try_get::<i64, _>("cursor")?);
 
+        roll_up_cost(&self.pool, job_id, &event).await?;
+
         let env = EventEnvelope {
             cursor,
             job_id,
@@ -185,6 +187,39 @@ impl SubscribeFilter {
 /// rather than a per-variant match keeps this one function the only
 /// place that needs to know about the `#[serde(tag = "type")]`
 /// representation of `Event`.
+/// Side-effect of every `AiMessageComplete` event: add its cost into
+/// the affected task's row and (when the envelope carries one) the
+/// owning job's row. Doing this in the bus keeps cost accounting
+/// uniform across runner implementations — any producer that publishes
+/// an `AiMessageComplete` automatically updates the running totals,
+/// so a custom runner cannot accidentally skip the rollup. Token
+/// counts are not summed here because the task row holds the
+/// last-known counts rather than a running total (an upstream-reported
+/// usage value supersedes prior reports for the same task).
+async fn roll_up_cost(pool: &SqlitePool, job_id: Option<JobId>, event: &Event) -> sqlx::Result<()> {
+    let Event::AiMessageComplete {
+        task_id,
+        cost_cents,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    sqlx::query("UPDATE tasks SET cost_cents = cost_cents + ? WHERE id = ?")
+        .bind(cost_cents.0)
+        .bind(task_id.to_string())
+        .execute(pool)
+        .await?;
+    if let Some(jid) = job_id {
+        sqlx::query("UPDATE jobs SET cost_cents = cost_cents + ? WHERE id = ?")
+            .bind(cost_cents.0)
+            .bind(jid.to_string())
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 fn split_event_json(event: &Event) -> sqlx::Result<(String, String)> {
     let mut value = serde_json::to_value(event).map_err(serde_err)?;
     let type_label = value
