@@ -57,11 +57,16 @@ cargo run -p codeless-cli -- secrets set ANTHROPIC_API_KEY --from-env ANTHROPIC_
 
 ```sh
 # pick a DB and mint the shared bearer token; prints it once
-cargo run -p codeless-cli -- --db ~/.local/share/codeless/demo.db \
-    serve --init-token
+cargo run -p codeless-cli -- --db /tmp/codeless-demo.db serve --init-token
 
-# run the server (defaults to 127.0.0.1:7777)
-cargo run -p codeless-cli -- --db ~/.local/share/codeless/demo.db serve
+# seed a demo repo + a queued mock job so the dashboard has content
+cargo run -p codeless-cli -- --db /tmp/codeless-demo.db demo bootstrap
+
+# run the server. `--fs-root` is what wires up the file explorer; without
+# it the `fs.*` RPC surface returns Internal and the explorer pane stays
+# empty. Defaults to 127.0.0.1:7777.
+cargo run -p codeless-cli -- --db /tmp/codeless-demo.db \
+    serve --fs-root "$PWD"
 
 # in another terminal, run the UI dev server
 pnpm -C ui/codeless-ui install   # first time only
@@ -69,8 +74,9 @@ pnpm -C ui/codeless-ui dev
 ```
 
 Full instructions (including the `localStorage` keys the browser
-reads) live in the workspace
-[`DEMO-UI.md`](../DEMO-UI.md) quickstart.
+reads and the expected demo timeline) live in the workspace
+[`DEMO-UI.md`](../DEMO-UI.md) quickstart. The scripted smoke test at
+`../scripts/smoke-demo.sh` exercises the same path headlessly.
 
 ### YAML job template shape
 
