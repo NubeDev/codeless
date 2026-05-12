@@ -22,14 +22,70 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 
-# end-to-end dogfood: drive a mock runner against a real local repo
-# and stream the events to stdout as JSON lines.
+# end-to-end dogfood: pick a runner and stream events to stdout as
+# JSON lines. --runner defaults to `mock`; `claude` shells out to
+# the `claude` binary (or $CLAUDE_BINARY); `anthropic` talks REST
+# and reads ANTHROPIC_API_KEY (or --api-key).
 cargo run -p codeless-cli -- run --repo /path/to/repo "hello"
+cargo run -p codeless-cli -- run --repo /path/to/repo --runner claude "rename foo to bar"
+
+# stateful subcommands need --db <path> (or CODELESS_DB env) so
+# successive invocations share state.
+export CODELESS_DB=~/.local/share/codeless/codeless.db
+
+# submit a typed YAML job template
+cargo run -p codeless-cli -- job submit job.yaml
+
+# follow a job to completion (replays persisted events first)
+cargo run -p codeless-cli -- tail <job-id>
+
+# drive a review gate (after a stage hits AwaitingReview)
+cargo run -p codeless-cli -- review list
+cargo run -p codeless-cli -- review approve <review-id>
+cargo run -p codeless-cli -- review comment <review-id> "looks good but rerun verify"
+cargo run -p codeless-cli -- review stop <review-id>
 
 # manage the chmod-600 secrets store
 cargo run -p codeless-cli -- secrets list
 cargo run -p codeless-cli -- secrets set ANTHROPIC_API_KEY --from-env ANTHROPIC_API_KEY
 ```
+
+### YAML job template shape
+
+`codeless job submit` parses a strict typed shape — unknown keys are a
+parse error with line/column, so a `runneer:` typo never silently
+defaults:
+
+```yaml
+repo: 01J...            # repo id (ULID)
+runner: claude          # mock | claude | anthropic
+prompt: refactor parser
+branch: codeless/refactor-parser
+stages:
+  - name: plan
+  - name: verify
+    verify_cmd: cargo test
+caps:
+  cost_cents: 500       # 0 = unlimited
+  wall_clock_ms: 600000 # 0 = unlimited
+```
+
+### Outbound webhook notifier
+
+`codeless-runtime::WebhookNotifier` POSTs JSON to a configurable URL
+on `JobFailed` and `ReviewRequested`. The body is HMAC-SHA256 signed
+with a shared key; the signature lands on the
+`x-codeless-signature` header as lowercase hex. Config is TOML-shaped
+so it can sit in the secrets file:
+
+```toml
+[notifier.webhook]
+url = "https://hooks.example.com/codeless"
+hmac_key_hex = "deadbeef..."
+```
+
+Wire it into a running core with `spawn_notifier(bus,
+Arc::new(WebhookNotifier::from_config(cfg)?))`.
 
 State lives in SQLite. The runtime builds against a caller-supplied
 `SqlitePool` (or `InProcessRpc::new()` for an in-memory pool in tests);
@@ -40,9 +96,9 @@ reaper that returns expired task leases to the queue.
 
 ### Driving a real runner from Rust
 
-The CLI's `run` command currently uses the mock runner. To drive a
-real Claude or Anthropic run today, build a `RunnerAdapter` directly
-against `codeless-runtime`. Real-runner CLI wiring lands in Phase 2c.
+The CLI's `run --runner {claude,anthropic}` covers the common path.
+Embed the runtime directly when you need finer control over the
+`RunnerAdapter` (custom prompt, base URL override for tests, etc.):
 
 ```rust
 use std::sync::Arc;

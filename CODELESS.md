@@ -63,11 +63,18 @@ threading + cost) sit stacked on `feat/phase-2a-persistence`:
   a caller-supplied publish closure. Host-only; the only crate
   permitted to spawn processes (ai-runner is the other host-only
   member of the workspace and inherits the same boundary).
-- `codeless-cli` — `codeless run --repo <p> "<prompt>"` end-to-end
-  against the mock runner, streaming JSON-line events; `codeless
-  secrets {set,get,rm,list}` against the secrets file. Real-runner
-  CLI wiring (selecting Claude/Anthropic adapters via flags) is
-  Phase 2c.
+- `codeless-cli` — `codeless run --repo <p> --runner {mock,claude,
+  anthropic} "<prompt>"` streams JSON-line events through the
+  selected adapter; `codeless job submit <file.yaml>` parses a
+  typed `JobTemplate` (deny-unknown-fields) and calls `submit_job`;
+  `codeless review {list,approve,comment,stop}` drives the review
+  RPC methods on `RpcServer`; `codeless tail <job-id>` replays the
+  persisted event log and continues live until terminal; `codeless
+  secrets {set,get,rm,list}` against the secrets file. A global
+  `--db <path>` (env: `CODELESS_DB`) flag opens a file-backed
+  SQLite pool — stateful subcommands (`review`, `tail`, `job
+  submit`) need it so successive invocations share state; `run`
+  works without it via the in-memory pool.
 - `codeless-server`, `codeless-client`, `codeless-tauri-desktop` —
   still stubs; Phase 2c+ work.
 - Vendored `ai-runner` (sibling crate at `../ai-runner`) is a Cargo
@@ -101,10 +108,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-All three are green as of the Phase 2b wrap-up commit. CLI wiring of
-the real runners (so `codeless run --runner claude ...` works without
-hand-rolled Rust), the HTTP/SSE server, and the review/notifier
-surfaces are Phase 2c+ work.
+All three are green as of the Phase 2c wrap-up commit. The HTTP/SSE
+server and the desktop/mobile Tauri shells are Phase 3+ work.
 
 ## Durable project facts (update as the project evolves)
 
@@ -140,6 +145,45 @@ it.
   cursor allocator keeps climbing. Real-runner adoption from
   `ai-runner`, worktree threading inside `drive_job`, the HTTP/SSE
   server, and review/notifier surfaces are Phase 2b/2c work.
+- **2026-05-12** — Phase 2c (CLI completion + notifier) complete on
+  `feat/phase-2a-persistence` stacked on Phase 2b (7 stages — stage
+  2 split into 2a/2b after the original spec proved infeasible; see
+  `../DOCS/sessions/2026-05-12-phase-2c-cli-completion.md`).
+  `codeless run --runner {mock,claude,anthropic}` selects the right
+  `Runner` adapter (`--api-key` / `--base-url` flags for the
+  Anthropic path; `ANTHROPIC_API_KEY` env fallback). A global
+  `--db <path>` / `CODELESS_DB` flag opens a file-backed SQLite
+  pool via `InProcessRpc::with_file`; a shared `rpc_open` helper
+  keeps `run` and the stateful subcommands on the same pool
+  configuration. `RpcServer` grows `list_reviews` /
+  `approve_review` / `comment_review` / `stop_review`; their
+  `InProcessRpc` impls drive the existing review state machine and
+  `reviews` table (Pending → Approved / Stopped, comments preserve
+  status). `codeless review {list,approve,comment,stop}` wires the
+  four methods to clap subcommands. `codeless job submit
+  <file.yaml>` parses a typed `JobTemplate` (repo /runner / prompt
+  / branch / stages / caps) via `serde_yaml` with
+  `deny_unknown_fields`; verbatim YAML round-trips on
+  `SubmitJobArgs.template_yaml`. `codeless tail <job-id>`
+  subscribes with `since: Some(EventCursor(0))` so persisted
+  envelopes replay before the live tail — `None` means live-only
+  and would hang on already-terminal jobs.
+  `codeless-runtime::notifier` adds a `Notifier` trait +
+  `NotificationPayload` and `spawn_notifier` that subscribes to
+  the bus and fans out only `JobFailed` and `ReviewRequested`.
+  `codeless-runtime::webhook` is the concrete backend: HMAC-SHA256
+  over the raw JSON body, signature on `x-codeless-signature`.
+  `WebhookConfig` is TOML-shaped to sit alongside the secrets
+  file. The webhook impl lives in `codeless-runtime` rather than
+  `codeless-adapters-host` because adapters-host is upstream in
+  the dep graph and a host-side trait there would have cycled
+  the workspace. Tests pin every surface end-to-end:
+  fake-claude-binary CLI run, six review-RPC unit cases,
+  three-subprocess review-CLI round-trip with conflict on
+  re-approve, two-stage YAML round-trip plus unknown-field/missing-
+  field rejection, tail replay-and-exit driven by `MockRunner`,
+  and a wiremock webhook fixture that verifies the HMAC against
+  the shared key.
 - **2026-05-12** — Phase 2b (real runners + worktree threading +
   cost) complete on `feat/phase-2a-persistence` stacked on Phase 2a
   (7 stages, see `../DOCS/sessions/2026-05-12-phase-2b-runners.md`).
