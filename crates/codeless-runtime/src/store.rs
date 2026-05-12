@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use codeless_types::{
-    CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, StopReason, UnixMillis,
+    CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, Stage, StageStatus, StopReason, Task,
+    TaskId, TaskStatus, UnixMillis,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -140,6 +141,202 @@ impl SqliteStore {
         Ok(res.rows_affected() > 0)
     }
 
+    pub async fn insert_stage(&self, stage: &Stage) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO stages \
+             (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at) \
+             VALUES (?,?,?,?,?,?,?,?)",
+        )
+        .bind(stage.id.to_string())
+        .bind(stage.job_id.to_string())
+        .bind(stage.ordinal as i64)
+        .bind(&stage.name)
+        .bind(stage_status_label(stage.status))
+        .bind(&stage.verify_cmd)
+        .bind(stage.started_at.map(|t| t.0))
+        .bind(stage.ended_at.map(|t| t.0))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Enqueue a task in `enqueued` state. `lease_holder` /
+    /// `lease_expires_at` / `started_at` / `ended_at` are forced to
+    /// NULL regardless of what the caller put in the struct — a
+    /// freshly enqueued task is by definition idle.
+    pub async fn enqueue_task(&self, task: &Task) -> sqlx::Result<()> {
+        let depends_on = serde_json::to_string(&task.depends_on).map_err(serde_err)?;
+        sqlx::query(
+            "INSERT INTO tasks \
+             (id, stage_id, ordinal, status, depends_on, lease_holder, lease_expires_at, \
+              cost_cents, input_tokens, output_tokens, started_at, ended_at) \
+             VALUES (?,?,?,?,?,NULL,NULL,?,?,?,NULL,NULL)",
+        )
+        .bind(task.id.to_string())
+        .bind(task.stage_id.to_string())
+        .bind(task.ordinal as i64)
+        .bind(task_status_label(TaskStatus::Enqueued))
+        .bind(&depends_on)
+        .bind(task.cost_cents.0)
+        .bind(task.input_tokens)
+        .bind(task.output_tokens)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Atomic "claim one enqueued task" for the given `runner` kind.
+    /// The SELECT-and-UPDATE happens in a single statement so two
+    /// callers racing on the same row cannot both win — the loser's
+    /// inner SELECT returns no rows (the row's status has flipped to
+    /// `running`), so its outer UPDATE matches nothing and returns
+    /// `None`. Dependency satisfaction is checked inline via
+    /// `json_each(tasks.depends_on)`: a task only becomes eligible
+    /// once every id in its dependency array has `status='completed'`.
+    /// Empty `depends_on` (linear mode) trivially satisfies that.
+    pub async fn lease_next(
+        &self,
+        runner: &str,
+        holder: &str,
+        ttl_ms: i64,
+        now: UnixMillis,
+    ) -> sqlx::Result<Option<Task>> {
+        let expires_at = now.0.saturating_add(ttl_ms);
+        let row = sqlx::query(
+            "UPDATE tasks SET \
+                status = 'running', \
+                lease_holder = ?, \
+                lease_expires_at = ?, \
+                started_at = COALESCE(started_at, ?) \
+             WHERE id = ( \
+                SELECT t.id FROM tasks t \
+                JOIN stages s ON s.id = t.stage_id \
+                JOIN jobs j ON j.id = s.job_id \
+                WHERE j.runner = ? \
+                  AND t.status = 'enqueued' \
+                  AND NOT EXISTS ( \
+                    SELECT 1 FROM json_each(t.depends_on) je \
+                    JOIN tasks dep ON dep.id = je.value \
+                    WHERE dep.status != 'completed' \
+                  ) \
+                ORDER BY t.ordinal LIMIT 1 \
+             ) \
+             RETURNING *",
+        )
+        .bind(holder)
+        .bind(expires_at)
+        .bind(now.0)
+        .bind(runner)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(task_from_row).transpose()
+    }
+
+    /// Mark a leased task as completed. Idempotency: a row that no
+    /// longer matches `(id, lease_holder)` is silently a no-op so a
+    /// retried completion after a heartbeat takeover does not flip
+    /// state away from whatever the legitimate holder did.
+    pub async fn complete_task(
+        &self,
+        task_id: TaskId,
+        holder: &str,
+        cost: CostCents,
+        input_tokens: i64,
+        output_tokens: i64,
+        now: UnixMillis,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query(
+            "UPDATE tasks SET \
+                status = 'completed', \
+                lease_holder = NULL, \
+                lease_expires_at = NULL, \
+                cost_cents = ?, \
+                input_tokens = ?, \
+                output_tokens = ?, \
+                ended_at = ? \
+             WHERE id = ? AND lease_holder = ?",
+        )
+        .bind(cost.0)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(now.0)
+        .bind(task_id.to_string())
+        .bind(holder)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    pub async fn fail_task(
+        &self,
+        task_id: TaskId,
+        holder: &str,
+        now: UnixMillis,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query(
+            "UPDATE tasks SET \
+                status = 'failed', \
+                lease_holder = NULL, \
+                lease_expires_at = NULL, \
+                ended_at = ? \
+             WHERE id = ? AND lease_holder = ?",
+        )
+        .bind(now.0)
+        .bind(task_id.to_string())
+        .bind(holder)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Renew the lease on a running task held by `holder`. Returns
+    /// `false` if the lease has been taken by someone else (or the
+    /// task is no longer running) — the caller should abort.
+    pub async fn heartbeat_task(
+        &self,
+        task_id: TaskId,
+        holder: &str,
+        new_expires_at: UnixMillis,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query(
+            "UPDATE tasks SET lease_expires_at = ? \
+             WHERE id = ? AND lease_holder = ? AND status = 'running'",
+        )
+        .bind(new_expires_at.0)
+        .bind(task_id.to_string())
+        .bind(holder)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Reclaim every task whose lease expired before `now`. The row
+    /// drops back to `enqueued` and the holder fields clear, making
+    /// it eligible for a fresh `lease_next` call. Called at startup
+    /// (per SCOPE.md "Worktrees: failed worktrees are reaped on core
+    /// restart") and periodically while running.
+    pub async fn release_expired_leases(&self, now: UnixMillis) -> sqlx::Result<u64> {
+        let res = sqlx::query(
+            "UPDATE tasks SET \
+                status = 'enqueued', \
+                lease_holder = NULL, \
+                lease_expires_at = NULL \
+             WHERE status = 'running' AND lease_expires_at < ?",
+        )
+        .bind(now.0)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    pub async fn get_task(&self, id: TaskId) -> sqlx::Result<Option<Task>> {
+        let row = sqlx::query("SELECT * FROM tasks WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(task_from_row).transpose()
+    }
+
     pub async fn list_jobs(&self, repo: Option<RepoId>) -> sqlx::Result<Vec<Job>> {
         let rows = match repo {
             Some(r) => {
@@ -207,6 +404,67 @@ where
     T::Err: std::fmt::Display,
 {
     T::from_str(s).map_err(|e| sqlx::Error::Decode(format!("ulid decode: {e}").into()))
+}
+
+fn task_from_row(row: SqliteRow) -> sqlx::Result<Task> {
+    let id: String = row.try_get("id")?;
+    let stage_id: String = row.try_get("stage_id")?;
+    let ordinal: i64 = row.try_get("ordinal")?;
+    let status: String = row.try_get("status")?;
+    let depends_on: String = row.try_get("depends_on")?;
+    let depends_on: Vec<TaskId> = serde_json::from_str(&depends_on).map_err(serde_err)?;
+    let lease_expires_at: Option<i64> = row.try_get("lease_expires_at")?;
+    let started_at: Option<i64> = row.try_get("started_at")?;
+    let ended_at: Option<i64> = row.try_get("ended_at")?;
+    Ok(Task {
+        id: parse_id(&id)?,
+        stage_id: parse_id(&stage_id)?,
+        ordinal: ordinal as u32,
+        status: parse_task_status(&status)?,
+        depends_on,
+        lease_holder: row.try_get("lease_holder")?,
+        lease_expires_at: lease_expires_at.map(UnixMillis),
+        cost_cents: CostCents(row.try_get("cost_cents")?),
+        input_tokens: row.try_get("input_tokens")?,
+        output_tokens: row.try_get("output_tokens")?,
+        started_at: started_at.map(UnixMillis),
+        ended_at: ended_at.map(UnixMillis),
+    })
+}
+
+fn stage_status_label(s: StageStatus) -> &'static str {
+    match s {
+        StageStatus::Pending => "pending",
+        StageStatus::Running => "running",
+        StageStatus::AwaitingReview => "awaiting-review",
+        StageStatus::Passed => "passed",
+        StageStatus::Failed => "failed",
+    }
+}
+
+fn task_status_label(s: TaskStatus) -> &'static str {
+    match s {
+        TaskStatus::Enqueued => "enqueued",
+        TaskStatus::Running => "running",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Cancelled => "cancelled",
+    }
+}
+
+fn parse_task_status(s: &str) -> sqlx::Result<TaskStatus> {
+    Ok(match s {
+        "enqueued" => TaskStatus::Enqueued,
+        "running" => TaskStatus::Running,
+        "completed" => TaskStatus::Completed,
+        "failed" => TaskStatus::Failed,
+        "cancelled" => TaskStatus::Cancelled,
+        other => {
+            return Err(sqlx::Error::Decode(
+                format!("unknown task status: {other}").into(),
+            ))
+        }
+    })
 }
 
 fn job_status_label(s: JobStatus) -> &'static str {
