@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -22,6 +22,7 @@ import { navigate, useRoute } from "@/lib/route";
 import { JobDetail } from "./JobDetail";
 import { JobRow } from "./JobRow";
 import { SubmitJobDialog } from "./SubmitJobDialog";
+import { summariseEnvelope } from "./eventFormat";
 
 // Repo-grouped jobs list — first user-visible Phase 2 surface. Loads
 // repos + jobs once, then keeps the jobs map fresh by subscribing to
@@ -38,20 +39,44 @@ export function JobsDashboard() {
   const repos = useRepos();
   const jobs = useJobs();
   const [overlay, setOverlay] = useState<Map<string, Job>>(new Map());
+  const [lastSummaries, setLastSummaries] = useState<
+    Map<string, { text: string; at: number }>
+  >(new Map());
   const route = useRoute();
   const matched = JOB_ID_FROM_ROUTE.exec(route.pathname);
   const selectedJobId = (matched ? matched[1] : null) as JobId | null;
   const openJob = useCallback((id: JobId) => navigate(`/jobs/${id}`), []);
   const closeJob = useCallback(() => navigate("/jobs"), []);
 
+  // Tick a "now" clock every 30s so relative ages re-render without
+  // each JobRow holding its own interval. 30s is the coarsest cadence
+  // that still keeps "just now" -> "1m ago" transitions visible.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+
   // Apply event deltas on top of the initial list_jobs snapshot. We
   // don't refetch — the event payload is enough for the columns we
   // render. If we add fields the events don't carry, swap to refetch.
+  // Separately, track each job's most recent eventful envelope so the
+  // dashboard row can show a one-line activity chip without opening
+  // the detail sheet. ai-token noise is filtered by summariseEnvelope
+  // returning null on those.
   useEventStream(
     { scope: "all" },
     useCallback((env) => {
       if (!env.job_id) return;
       const e = env.event;
+      const summary = summariseEnvelope(env);
+      if (summary !== null) {
+        setLastSummaries((prev) => {
+          const next = new Map(prev);
+          next.set(env.job_id!, { text: summary, at: env.created_at });
+          return next;
+        });
+      }
       if ("job_id" in e === false) return;
       setOverlay((prev) => {
         const next = new Map(prev);
@@ -138,6 +163,8 @@ export function JobsDashboard() {
                 <JobRow
                   key={j.id}
                   job={j}
+                  now={now}
+                  lastSummary={lastSummaries.get(j.id)?.text ?? null}
                   onSelect={(job) => openJob(job.id)}
                 />
               ))

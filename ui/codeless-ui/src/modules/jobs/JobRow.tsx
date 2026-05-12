@@ -1,8 +1,10 @@
 import { useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useRpc, type Job } from "@/lib/rpc";
 import { StatusBadge } from "./StatusBadge";
+import { relativeTime } from "./eventFormat";
 
 const TERMINAL: Set<Job["status"]> = new Set([
   "completed",
@@ -12,10 +14,18 @@ const TERMINAL: Set<Job["status"]> = new Set([
 
 interface Props {
   job: Job;
+  // Render-time clock used for the relative age label. Lifted to the
+  // dashboard so a single 30s interval drives every row, instead of
+  // each row holding its own timer.
+  now: number;
+  // Latest one-line activity chip ("Bash(git status)", "verify
+  // failed (exit 1)", etc.) projected from the events stream. Null
+  // when nothing eventful has arrived yet for this job.
+  lastSummary: string | null;
   onSelect?: (job: Job) => void;
 }
 
-export function JobRow({ job, onSelect }: Props) {
+export function JobRow({ job, now, lastSummary, onSelect }: Props) {
   const rpc = useRpc();
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +45,10 @@ export function JobRow({ job, onSelect }: Props) {
 
   const canStop = !TERMINAL.has(job.status);
   const summary = job.prompt?.split("\n")[0] ?? "(template job)";
+  // Pick the most informative age: when the job has terminated, the
+  // user wants to know how long ago it ended; otherwise how long ago
+  // it was created (or started, if known).
+  const ageAnchor = job.ended_at ?? job.started_at ?? job.created_at;
 
   return (
     <div
@@ -44,9 +58,27 @@ export function JobRow({ job, onSelect }: Props) {
       <StatusBadge status={job.status} />
       <div className="min-w-0 flex-1">
         <div className="truncate">{summary}</div>
-        <div className="text-muted-foreground font-mono text-[11px]">
-          {job.runner} · {job.branch} · {job.id}
+        <div className="text-muted-foreground flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+          <Badge
+            variant="outline"
+            className="h-4 px-1.5 py-0 text-[10px] font-normal"
+          >
+            {job.runner}
+          </Badge>
+          <span className="truncate">{job.branch || "(branch tbd)"}</span>
+          <span>·</span>
+          <span title={new Date(ageAnchor).toLocaleString()}>
+            {relativeTime(ageAnchor, now)}
+          </span>
         </div>
+        {lastSummary && (
+          <div
+            className="text-muted-foreground/80 mt-0.5 truncate text-[11px] italic"
+            title={lastSummary}
+          >
+            {lastSummary}
+          </div>
+        )}
         {error && <div className="text-destructive mt-1 text-xs">{error}</div>}
       </div>
       <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
