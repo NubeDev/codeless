@@ -96,6 +96,7 @@ export interface StageRollup {
     verify_cmd: string | null;
     started_at: number | null;
     ended_at: number | null;
+    session_id: string | null;
   };
   cost_cents: number;
   task_count: number;
