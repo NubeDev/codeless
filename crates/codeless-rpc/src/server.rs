@@ -9,7 +9,8 @@ use crate::methods::{
     ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
     RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, WriteJobFileArgs, WriteJobFileResult,
+    UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -143,4 +144,10 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: UpdateJobTemplateArgs,
     ) -> RpcResult<UpdateJobTemplateResult>;
+
+    /// Seed (or replace) the job's handover at
+    /// `<worktree>/runs/<job_id>/handover.md`. Returns `Conflict` if
+    /// the job has no worktree provisioned yet (runner hasn't run).
+    /// `NotFound` for an unknown job id.
+    async fn write_handover(&self, args: WriteHandoverArgs) -> RpcResult<WriteHandoverResult>;
 }

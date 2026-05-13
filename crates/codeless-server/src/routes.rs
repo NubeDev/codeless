@@ -12,7 +12,8 @@ use codeless_rpc::{
     ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
     RerunJobArgs, RpcError, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteJobFileArgs, WriteJobFileResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -47,6 +48,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/write_job_file", post(write_job_file))
         .route("/rpc/delete_job_file", post(delete_job_file))
         .route("/rpc/update_job_template", post(update_job_template))
+        .route("/rpc/write_handover", post(write_handover))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -301,4 +303,11 @@ async fn update_job_template(
         .await
         .map(Json)
         .map_err(map_err)
+}
+
+async fn write_handover(
+    State(st): State<AppState>,
+    Json(args): Json<WriteHandoverArgs>,
+) -> HandlerResult<WriteHandoverResult> {
+    st.rpc.write_handover(args).await.map(Json).map_err(map_err)
 }

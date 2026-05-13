@@ -40,6 +40,8 @@ export type {
   SubmitJobArgs,
   UpdateJobTemplateArgs,
   UpdateJobTemplateResult,
+  WriteHandoverArgs,
+  WriteHandoverResult,
   WriteJobFileArgs,
   WriteJobFileResult,
 } from "./methods";

@@ -573,6 +573,28 @@ export class MockRpcClient implements RpcClient {
         return { name: parsed.name } as RpcResultOf<M>;
       }
 
+      case "write_handover": {
+        const a = args as RpcArgs<"write_handover">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        if (!job.worktree_path) {
+          throw new RpcError(
+            "conflict",
+            `job ${a.job_id} has no worktree yet; the runner must run before a handover can be seeded`,
+          );
+        }
+        const path = `${job.worktree_path}/runs/${a.job_id}/handover.md`;
+        // Stash under the synthetic file path so a subsequent
+        // `fs_read_file` from HandoverPanel finds it. Same contract
+        // as the real runtime.
+        this.fs.set(path, {
+          kind: "file",
+          content: serialiseHandoverMd(a.handover),
+          mtime: Date.now(),
+        });
+        return { path } as RpcResultOf<M>;
+      }
+
       case "secrets_set": {
         const a = args as RpcArgs<"secrets_set">;
         this.secrets.set(a.provider, a.value);
@@ -1088,4 +1110,25 @@ function parseTemplateYaml(yaml: string): ParsedTemplate {
   }
   if (count === 0) return { ok: false, error: "stages is empty" };
   return { ok: true, name: nameMatch[1].trim() };
+}
+
+// Mirror of `codeless_types::Handover::to_markdown`. Same four
+// sections, same `(none)` placeholder for empty bullet lists, so a
+// downstream parser still finds all four headings.
+function serialiseHandoverMd(h: {
+  done: string[];
+  next: string[];
+  what_you_need_to_know: string[];
+  open_questions: string[];
+}): string {
+  const section = (title: string, items: string[]): string => {
+    const lines = items.length === 0 ? ["- (none)"] : items.map((i) => `- ${i}`);
+    return `## ${title}\n\n${lines.join("\n")}\n\n`;
+  };
+  return (
+    section("Done", h.done) +
+    section("Next", h.next) +
+    section("What you need to know", h.what_you_need_to_know) +
+    section("Open questions", h.open_questions)
+  );
 }

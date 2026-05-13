@@ -10,6 +10,7 @@ import type {
   FsGrepHit,
   FsReadResult,
   GitAuth,
+  Handover,
   Job,
   JobDiffArgs,
   JobDiffResult,
@@ -236,6 +237,20 @@ export interface UpdateJobTemplateResult {
   name: string;
 }
 
+// Handover seeding — JOB-MODEL.md says handover.md lives in the
+// worktree (per-run), not the source repo (per-job). The UI uses
+// this to create one from scratch when a runner hasn't yet written
+// one. Jobs without a `worktree_path` get `conflict` on the wire.
+
+export interface WriteHandoverArgs {
+  job_id: JobId;
+  handover: Handover;
+}
+
+export interface WriteHandoverResult {
+  path: string;
+}
+
 // Secrets RPC surface. Provisional: hand-mirrored from the forthcoming
 // `codeless-rpc::methods::secrets_*`. Provider keys live in the
 // single-tenant secrets file managed by `codeless-adapters-host`
@@ -295,6 +310,7 @@ export interface RpcMethodMap {
     args: UpdateJobTemplateArgs;
     result: UpdateJobTemplateResult;
   };
+  write_handover: { args: WriteHandoverArgs; result: WriteHandoverResult };
 
   secrets_set: { args: SecretsSetArgs; result: null };
   secrets_get: { args: SecretsGetArgs; result: string | null };

@@ -12,7 +12,8 @@ use codeless_rpc::{
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
     RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, WriteJobFileArgs, WriteJobFileResult,
+    UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -817,6 +818,31 @@ impl RpcServer for InProcessRpc {
         }
 
         Ok(UpdateJobTemplateResult { name: parsed.name })
+    }
+
+    async fn write_handover(&self, args: WriteHandoverArgs) -> RpcResult<WriteHandoverResult> {
+        let job = self
+            .store
+            .get_job(args.job_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+        let worktree = job.worktree_path.as_deref().ok_or_else(|| {
+            RpcError::Conflict(format!(
+                "job {} has no worktree yet; the runner must run before a handover can be seeded",
+                args.job_id
+            ))
+        })?;
+        let path = crate::handover::write_handover(
+            std::path::Path::new(worktree),
+            args.job_id,
+            &args.handover,
+        )
+        .await
+        .map_err(|e| RpcError::Internal(format!("write handover: {e}")))?;
+        Ok(WriteHandoverResult {
+            path: path.to_string_lossy().into_owned(),
+        })
     }
 }
 

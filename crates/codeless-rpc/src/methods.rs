@@ -439,3 +439,23 @@ pub struct UpdateJobTemplateResult {
     /// without a separate `list_job_files` round trip.
     pub name: String,
 }
+
+/// Seed (or overwrite) the per-run handover. JOB-MODEL.md says
+/// handover lives at `<worktree>/runs/<job_id>/handover.md`; this
+/// RPC writes the structured `Handover` shape through the runtime's
+/// existing `write_handover` helper. The job must have a worktree
+/// (`job.worktree_path` non-null); raw-prompt jobs whose runner has
+/// not yet provisioned one get `Conflict`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct WriteHandoverArgs {
+    pub job_id: JobId,
+    pub handover: codeless_types::Handover,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct WriteHandoverResult {
+    /// Absolute path the runtime wrote, so the UI can surface it
+    /// (e.g. for "open in editor tab"). Always inside the job's
+    /// worktree under `runs/<job_id>/handover.md`.
+    pub path: String,
+}

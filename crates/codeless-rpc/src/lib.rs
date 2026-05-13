@@ -22,7 +22,7 @@ pub use methods::{
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RunnerInfo, ServerInfo,
     StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

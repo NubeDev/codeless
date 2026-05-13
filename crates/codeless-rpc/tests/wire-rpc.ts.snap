@@ -172,6 +172,34 @@ export type GetJobArgs = {
  */
 export type GitAuth = { kind: "ssh"; key_path: string } | { kind: "token"; env_var: string } | { kind: "github_app"; app_id: string; installation_id: string };
 
+/**
+ *  Session-handover contract — see `DOCS/JOB-MODEL.md` "the handover
+ *  is the only contract between sessions". A run writes one of these
+ *  at `runs/<job_id>/handover.md` in its worktree on completion; the
+ *  next session reads it first, before anything else, to decide what
+ *  to do next.
+ * 
+ *  The four sections are deliberately load-bearing:
+ *  - `done` is what landed — committed code, decisions ratified by
+ *    review, anything the next session does *not* need to redo.
+ *  - `next` is what the next session should pick up first; the top
+ *    item is the canonical next action.
+ *  - `what_you_need_to_know` carries the constraints, invariants, and
+ *    gotchas a fresh reader would not infer from the diff alone.
+ *  - `open_questions` is for unresolved decisions — the next session
+ *    resolves these before it implements anything new.
+ * 
+ *  A blank handover is forbidden (JOB-MODEL.md): at minimum the
+ *  "Done" section must say *something*, even if it's "session aborted
+ *  at <stage>, recovery needed".
+ */
+export type Handover = {
+	done: string[],
+	next: string[],
+	what_you_need_to_know: string[],
+	open_questions: string[],
+};
+
 // One unit of work the user kicked off — see SCOPE.md Appendix A `jobs`.
 export type Job = {
 	id: JobId,
@@ -495,6 +523,28 @@ export type UpdateJobTemplateResult = {
 	 *  without a separate `list_job_files` round trip.
 	 */
 	name: string,
+};
+
+/**
+ *  Seed (or overwrite) the per-run handover. JOB-MODEL.md says
+ *  handover lives at `<worktree>/runs/<job_id>/handover.md`; this
+ *  RPC writes the structured `Handover` shape through the runtime's
+ *  existing `write_handover` helper. The job must have a worktree
+ *  (`job.worktree_path` non-null); raw-prompt jobs whose runner has
+ *  not yet provisioned one get `Conflict`.
+ */
+export type WriteHandoverArgs = {
+	job_id: JobId,
+	handover: Handover,
+};
+
+export type WriteHandoverResult = {
+	/**
+	 *  Absolute path the runtime wrote, so the UI can surface it
+	 *  (e.g. for "open in editor tab"). Always inside the job's
+	 *  worktree under `runs/<job_id>/handover.md`.
+	 */
+	path: string,
 };
 
 /**
