@@ -206,7 +206,23 @@ export function JobFilesPane({ jobId }: Props) {
       <div className="text-muted-foreground p-4 text-sm italic">loading…</div>
     );
   }
+  // Prompt-only jobs surface `InvalidArgument: ... file surface is
+  // template-only` from `list_job_files`. That's an expected shape —
+  // not an error worth alarming the user about. Render the same
+  // friendly empty state the stages editor uses, so the Spec tab on
+  // a mock/prompt-only job is informative rather than red.
   if (error && !listing) {
+    const looksTemplateOnly =
+      error.includes("template-only") || error.includes("invalid_argument");
+    if (looksTemplateOnly) {
+      return (
+        <div className="text-muted-foreground p-4 text-sm italic">
+          This job is a single-prompt run, not a multi-stage spec. The Spec
+          pane is template-only — submit a job with a <code>template.yaml</code>{" "}
+          to use it.
+        </div>
+      );
+    }
     return <div className="text-destructive p-4 text-sm">{error}</div>;
   }
   if (!listing) return null;

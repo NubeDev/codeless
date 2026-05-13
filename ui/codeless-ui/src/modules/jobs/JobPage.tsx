@@ -83,6 +83,19 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
     if (derivedTitle) titleCbRef.current?.(derivedTitle);
   }, [derivedTitle]);
 
+  // Keep the URL in sync with the active job tab so a reload or
+  // shareable link lands the user back on the same view. Only the
+  // active tab writes — inactive instances are still mounted (the
+  // dashboard keeps them warm for cheap tab switches) and would
+  // otherwise fight each other for the URL.
+  useEffect(() => {
+    if (!active) return;
+    const want = `/jobs/${jobId}`;
+    if (typeof window !== "undefined" && window.location.pathname !== want) {
+      navigate(want);
+    }
+  }, [active, jobId]);
+
   const repo: Repo | null = useMemo(() => {
     if (!job || !repos) return null;
     return repos.find((r) => r.id === job.repo_id) ?? null;
@@ -409,12 +422,15 @@ function friendlyJobTitle(job: Job): string {
       return match[1].trim().slice(0, 32);
     }
   }
-  if (job.prompt) {
-    const firstLine = job.prompt.split("\n")[0].trim();
-    if (firstLine.length > 0) {
-      return firstLine.length > 40
-        ? `${firstLine.slice(0, 37)}…`
-        : firstLine;
+  // Prefer the branch's slug tail over the prompt's first line: a
+  // mock job's prompt is often multi-paragraph runner instructions
+  // that look terrible truncated to a tab title. The branch is
+  // already a stable, short, user-meaningful identifier
+  // (`codeless/job-<slug>` or `codeless/<runner>-<rand>`).
+  if (job.branch) {
+    const tail = job.branch.split("/").pop()?.trim();
+    if (tail && tail.length > 0) {
+      return tail.length > 32 ? `${tail.slice(0, 30)}…` : tail;
     }
   }
   return `Job ${job.id.slice(0, 6)}`;
