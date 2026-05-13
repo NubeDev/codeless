@@ -67,3 +67,22 @@ Energy consumed over the 24h window (end − start of `energy_kwh`):
 **Total: 58.4832 kWh** across all 5 meters.
 
 Note: `energy_kwh` is a cumulative meter reading, so the right sum is end − start per meter. Summing the raw column would just add up the running totals and be meaningless.
+
+## user @ 2026-05-13T23:38:41Z
+
+sum the ebergy for me
+
+## assistant @ 2026-05-13T23:38:46Z
+
+Same answer as just above — total **58.4832 kWh** over the 24h window, summed as end − start per meter:
+
+| Meter  | Δ kWh   |
+|--------|---------|
+| PM-001 | 15.7071 |
+| PM-002 | 10.4554 |
+| PM-003 | 10.7769 |
+| PM-004 |  7.1863 |
+| PM-005 | 14.3575 |
+| **Total** | **58.4832** |
+
+Did you mean something different — e.g. sum `power_w` instead, or a different time window?
