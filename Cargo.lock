@@ -581,7 +581,14 @@ version = "0.0.0"
 name = "codeless-tools"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "codeless-types",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
