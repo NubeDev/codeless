@@ -247,6 +247,39 @@ impl Runner for ClaudeRunnerAdapter {
             };
         }
 
+        // Pin the upstream-supplied session id onto the stage row
+        // before mapping the outcome. The bus envelope carries
+        // `stage_id` so `StageRecorder` resolves the right row without
+        // a side channel; the recorder dedupes at the SQL level so the
+        // first non-empty capture wins even if a future code path
+        // double-publishes. Skipped when no stage frame is in scope
+        // (single-runner driver path) or when the upstream did not
+        // surface a session id.
+        let session_id = match run_result.as_ref() {
+            Ok(rr) => rr.session_id.clone(),
+            Err(_) => None,
+        };
+        if let (Some(stage_id), Some(sid)) = (ctx.stage_id, session_id) {
+            if !sid.is_empty() {
+                if let Err(err) = ctx
+                    .bus
+                    .publish(
+                        Some(ctx.job_id),
+                        Some(stage_id),
+                        Some(self.task_id),
+                        Event::StageSessionCaptured {
+                            stage_id,
+                            session_id: sid,
+                        },
+                        now_ms(),
+                    )
+                    .await
+                {
+                    tracing::warn!(?err, "stage session-id publish failed; continuing");
+                }
+            }
+        }
+
         let outcome = match run_result {
             Err(e) => RunnerOutcome::Failed {
                 reason: format!("claude runner input mismatch: {e}"),

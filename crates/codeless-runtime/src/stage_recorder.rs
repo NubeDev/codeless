@@ -76,8 +76,8 @@ async fn handle_event(
                     verify_cmd: None,
                     started_at: Some(env.created_at),
                     ended_at: None,
-                    // Filled in later by the `StageSessionCaptured`
-                    // handler — the runner does not know its session id
+                    // Filled in by the `StageSessionCaptured` handler
+                    // below — the runner does not know its session id
                     // when the stage opens.
                     session_id: None,
                 })
@@ -91,6 +91,20 @@ async fn handle_event(
             store
                 .update_stage_completed(*stage_id, *status, env.created_at)
                 .await?;
+        }
+        Event::StageSessionCaptured {
+            stage_id,
+            session_id,
+        } => {
+            // Pin the runner-supplied session id onto the stage row.
+            // The store's `WHERE session_id IS NULL` guard makes this a
+            // first-wins write — a second envelope for the same stage
+            // (replay on recorder restart, or a stray duplicate publish
+            // from the runner) silently no-ops at the SQL level rather
+            // than overwriting the original capture.
+            if !session_id.is_empty() {
+                store.update_stage_session_id(*stage_id, session_id).await?;
+            }
         }
         Event::TaskStarted { task_id } => {
             if let Some(stage_id) = env.stage_id {
@@ -286,6 +300,105 @@ mod tests {
         let rows = store.list_stages_for_job(job_id).await.unwrap();
         assert_eq!(rows[0].stage.status, StageStatus::Passed);
         assert!(rows[0].stage.ended_at.is_some());
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn captures_stage_session_id_once() {
+        let rpc = InProcessRpc::new().await.unwrap();
+        let store = rpc.store().clone();
+        let bus = rpc.bus().clone();
+
+        let repo = codeless_types::Repo {
+            id: codeless_types::RepoId::new(),
+            name: "demo".into(),
+            clone_url: "file:///dev/null".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp".into(),
+            git_auth: codeless_types::GitAuth::Token {
+                env_var: "X".into(),
+            },
+            concurrency_cap: None,
+            default_runner: Some("mock".into()),
+            created_at: now_ms(),
+            updated_at: now_ms(),
+        };
+        store.insert_repo(&repo).await.unwrap();
+        let job = codeless_types::Job {
+            id: codeless_types::JobId::new(),
+            repo_id: repo.id,
+            status: codeless_types::JobStatus::Queued,
+            stop_reason: None,
+            template_yaml: None,
+            prompt: Some("p".into()),
+            runner: "mock".into(),
+            branch: "".into(),
+            worktree_path: None,
+            cost_cap_cents: CostCents::ZERO,
+            wall_clock_cap_ms: 0,
+            model: None,
+            permission_mode: None,
+            effort: None,
+            cost_cents: CostCents::ZERO,
+            started_at: None,
+            ended_at: None,
+            created_at: now_ms(),
+        };
+        store.insert_job(&job).await.unwrap();
+
+        let handle = spawn_stage_recorder(bus.clone(), store.clone())
+            .await
+            .unwrap();
+
+        let job_id = job.id;
+        let stage_id = StageId::new();
+        bus.publish(
+            Some(job_id),
+            Some(stage_id),
+            None,
+            Event::StageStarted {
+                stage_id,
+                job_id,
+                ordinal: 0,
+                name: "s".into(),
+            },
+            now_ms(),
+        )
+        .await
+        .unwrap();
+        bus.publish(
+            Some(job_id),
+            Some(stage_id),
+            None,
+            Event::StageSessionCaptured {
+                stage_id,
+                session_id: "sess-first".into(),
+            },
+            now_ms(),
+        )
+        .await
+        .unwrap();
+        // A second envelope for the same stage must be ignored: the
+        // `WHERE session_id IS NULL` guard means the original capture
+        // is the canonical one.
+        bus.publish(
+            Some(job_id),
+            Some(stage_id),
+            None,
+            Event::StageSessionCaptured {
+                stage_id,
+                session_id: "sess-second".into(),
+            },
+            now_ms(),
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let rows = store.list_stages_for_job(job_id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].stage.session_id.as_deref(), Some("sess-first"));
 
         handle.abort();
     }

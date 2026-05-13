@@ -199,6 +199,11 @@ impl Runner for TemplateRunner {
                 let prompt = self.stage_prompt(*stage, total, ctx.worktree_path.as_deref());
                 let sub_ctx = RunnerContext {
                     job_id: ctx.job_id,
+                    // Tag the per-stage child context with the stage id
+                    // so the inner adapter can publish stage-scoped
+                    // events (e.g. `StageSessionCaptured`) against the
+                    // row TemplateRunner just opened.
+                    stage_id: Some(stage_id),
                     bus: Arc::clone(&ctx.bus),
                     worktree_path: ctx.worktree_path.clone(),
                     cancel: derive_cancel(&ctx.cancel),

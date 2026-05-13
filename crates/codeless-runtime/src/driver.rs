@@ -112,6 +112,7 @@ pub async fn drive_job(
     let outcome = runner
         .run(RunnerContext {
             job_id,
+            stage_id: None,
             bus: Arc::clone(bus),
             worktree_path: provisioned.as_ref().map(|p| p.worktree.clone()),
             cancel: cancel.clone(),

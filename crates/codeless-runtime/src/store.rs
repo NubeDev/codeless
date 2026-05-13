@@ -167,8 +167,8 @@ impl SqliteStore {
         // simpler than a conditional update + insert dance.
         sqlx::query(
             "INSERT OR REPLACE INTO stages \
-             (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at) \
-             VALUES (?,?,?,?,?,?,?,?)",
+             (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at, session_id) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
         )
         .bind(stage.id.to_string())
         .bind(stage.job_id.to_string())
@@ -178,9 +178,31 @@ impl SqliteStore {
         .bind(&stage.verify_cmd)
         .bind(stage.started_at.map(|t| t.0))
         .bind(stage.ended_at.map(|t| t.0))
+        .bind(&stage.session_id)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// First-wins write of a runner-supplied session id onto an existing
+    /// stage row. `WHERE session_id IS NULL` guards against a second
+    /// runner task on the same stage clobbering the first capture, so
+    /// the recorder can call this unconditionally and rely on the SQL
+    /// for dedupe. Returns `true` only when the column actually
+    /// transitioned NULL → `session_id`; the recorder uses that signal
+    /// to know whether to emit `Event::StageSessionCaptured`.
+    pub async fn update_stage_session_id(
+        &self,
+        id: codeless_types::StageId,
+        session_id: &str,
+    ) -> sqlx::Result<bool> {
+        let res =
+            sqlx::query("UPDATE stages SET session_id = ? WHERE id = ? AND session_id IS NULL")
+                .bind(session_id)
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// Set `status` and `ended_at` for a stage on `StageCompleted`.
@@ -282,7 +304,7 @@ impl SqliteStore {
         use sqlx::Row;
         let rows = sqlx::query(
             "SELECT s.id, s.ordinal, s.name, s.status, s.verify_cmd, \
-                    s.started_at, s.ended_at, \
+                    s.started_at, s.ended_at, s.session_id, \
                     COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
                     COUNT(t.id) AS task_count \
              FROM stages s \
@@ -315,12 +337,13 @@ impl SqliteStore {
                         ended_at: row
                             .try_get::<Option<i64>, _>("ended_at")?
                             .map(codeless_types::UnixMillis),
-                        // `stages.session_id` is not yet a column on
-                        // disk; the recorder populates it via a
-                        // dedicated `StageSessionCaptured` event handler
-                        // and a follow-up migration. Surface `None`
-                        // until that landing point.
-                        session_id: None,
+                        // Captured by the recorder on the first
+                        // `Event::StageSessionCaptured` for this stage
+                        // (see `update_stage_session_id`). NULL until a
+                        // task on the stage reports a non-empty
+                        // `RunResult.session_id`; once set, never
+                        // cleared.
+                        session_id: row.try_get("session_id")?,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,

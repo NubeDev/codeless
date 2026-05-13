@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codeless_types::JobId;
+use codeless_types::{JobId, StageId};
 use tokio_util::sync::CancellationToken;
 
 use crate::event_bus::EventBus;
@@ -25,6 +25,14 @@ pub enum RunnerOutcome {
 #[derive(Clone)]
 pub struct RunnerContext {
     pub job_id: JobId,
+    /// The current stage's id when the runner is invoked per-stage
+    /// (TemplateRunner path). `None` when no stage frame is in scope —
+    /// the legacy single-runner driver path, the in-process test
+    /// harnesses, and chat-runners that share `ai-runner` with the
+    /// driver. Runners that emit stage-scoped events (today only the
+    /// `StageSessionCaptured` capture in `ClaudeRunnerAdapter`) use it
+    /// to address the right `Stage` row.
+    pub stage_id: Option<StageId>,
     pub bus: Arc<EventBus>,
     /// Provisioned `git worktree` checkout for this run, when the
     /// driver has one to hand. `None` keeps the early test harness
