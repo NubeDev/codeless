@@ -99,7 +99,12 @@ export function StageTree({ jobId, templateYaml }: Props) {
     [order, stages],
   );
 
-  if (rows.length === 0) return null;
+  // Hide only when neither the live event stream nor the template
+  // can tell us anything — for a template-backed job we want to
+  // render the *planned* stages even before the runner has emitted
+  // a single per-stage event, so the user sees the full plan from
+  // the moment the page opens.
+  if (rows.length === 0 && stageTitles.length === 0) return null;
 
   return (
     <div className="border-border/50 border-b px-4 py-2">

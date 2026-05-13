@@ -8,7 +8,8 @@ use crate::methods::{
     FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
     ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
-    RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, WriteJobFileArgs, WriteJobFileResult,
+    RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -131,4 +132,15 @@ pub trait RpcServer: Send + Sync + 'static {
     /// can distinguish "you already deleted this" from a sanitiser
     /// rejection.
     async fn delete_job_file(&self, args: DeleteJobFileArgs) -> RpcResult<()>;
+
+    /// Replace the job's spec YAML. Validates via `JobTemplate::parse_yaml`
+    /// (returns `InvalidArgument` on failure), rejects renames with
+    /// `Conflict`, writes `<repo>/.codeless/jobs/<name>/template.yaml`
+    /// — migrating from the legacy flat layout when needed — refreshes
+    /// the `template_yaml` column on the job row, and commits
+    /// `update template: <name>`.
+    async fn update_job_template(
+        &self,
+        args: UpdateJobTemplateArgs,
+    ) -> RpcResult<UpdateJobTemplateResult>;
 }

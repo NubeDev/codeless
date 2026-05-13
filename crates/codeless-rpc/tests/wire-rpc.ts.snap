@@ -467,6 +467,37 @@ export type SubmitJobArgs = {
 export type UnixMillis = number;
 
 /**
+ *  Replace a job's spec. The new YAML is validated through the same
+ *  parser the runner uses (`name` / `goal` / `stages` non-empty);
+ *  invalid YAML returns `InvalidArgument`. Writes
+ *  `<repo>/.codeless/jobs/<name>/template.yaml`, promoting from the
+ *  legacy flat layout in two commits when needed. The job's
+ *  `template_yaml` DB row is refreshed so subsequent prompt builds
+ *  and StageTree renders see the new shape immediately.
+ * 
+ *  Renaming the job is **refused** — `template.name` must equal the
+ *  current value. Job directories are addressed by name, and a rename
+ *  would orphan `SCOPE.md`/`WORKFLOW.md`/extras under the old name;
+ *  the right way to rename is to submit a fresh job and migrate by
+ *  hand. The runtime returns `Conflict` so the UI can render an
+ *  actionable error rather than a generic 400.
+ */
+export type UpdateJobTemplateArgs = {
+	job_id: JobId,
+	template_yaml: string,
+};
+
+export type UpdateJobTemplateResult = {
+	/**
+	 *  The job's resolved template name after the update — always
+	 *  equal to the pre-update name (renames are rejected). Returned
+	 *  so the UI can re-select the now-edited spec in its file list
+	 *  without a separate `list_job_files` round trip.
+	 */
+	name: string,
+};
+
+/**
  *  `write_job_file` creates or overwrites a single file under the
  *  job directory. The runtime sanitises the filename, refuses
  *  `template.yaml` (callers use `update_job_template` for the spec),

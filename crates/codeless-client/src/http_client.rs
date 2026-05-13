@@ -6,7 +6,8 @@ use codeless_rpc::{
     JobDiffResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
     ListReposResult, ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult,
     RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, WriteJobFileArgs, WriteJobFileResult,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -265,6 +266,13 @@ impl RpcServer for HttpRpcClient {
 
     async fn delete_job_file(&self, args: DeleteJobFileArgs) -> RpcResult<()> {
         self.call_void("delete_job_file", &args).await
+    }
+
+    async fn update_job_template(
+        &self,
+        args: UpdateJobTemplateArgs,
+    ) -> RpcResult<UpdateJobTemplateResult> {
+        self.call("update_job_template", &args).await
     }
 }
 

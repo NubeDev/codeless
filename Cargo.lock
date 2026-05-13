@@ -578,6 +578,13 @@ name = "codeless-tauri-desktop"
 version = "0.0.0"
 
 [[package]]
+name = "codeless-tools"
+version = "0.0.0"
+dependencies = [
+ "codeless-types",
+]
+
+[[package]]
 name = "codeless-types"
 version = "0.0.0"
 dependencies = [

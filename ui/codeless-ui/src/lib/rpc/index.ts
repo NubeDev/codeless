@@ -38,6 +38,8 @@ export type {
   Since,
   StopJobArgs,
   SubmitJobArgs,
+  UpdateJobTemplateArgs,
+  UpdateJobTemplateResult,
   WriteJobFileArgs,
   WriteJobFileResult,
 } from "./methods";

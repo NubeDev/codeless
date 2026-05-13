@@ -410,3 +410,32 @@ pub struct DeleteJobFileArgs {
     pub job_id: JobId,
     pub filename: String,
 }
+
+/// Replace a job's spec. The new YAML is validated through the same
+/// parser the runner uses (`name` / `goal` / `stages` non-empty);
+/// invalid YAML returns `InvalidArgument`. Writes
+/// `<repo>/.codeless/jobs/<name>/template.yaml`, promoting from the
+/// legacy flat layout in two commits when needed. The job's
+/// `template_yaml` DB row is refreshed so subsequent prompt builds
+/// and StageTree renders see the new shape immediately.
+///
+/// Renaming the job is **refused** — `template.name` must equal the
+/// current value. Job directories are addressed by name, and a rename
+/// would orphan `SCOPE.md`/`WORKFLOW.md`/extras under the old name;
+/// the right way to rename is to submit a fresh job and migrate by
+/// hand. The runtime returns `Conflict` so the UI can render an
+/// actionable error rather than a generic 400.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UpdateJobTemplateArgs {
+    pub job_id: JobId,
+    pub template_yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UpdateJobTemplateResult {
+    /// The job's resolved template name after the update — always
+    /// equal to the pre-update name (renames are rejected). Returned
+    /// so the UI can re-select the now-edited spec in its file list
+    /// without a separate `list_job_files` round trip.
+    pub name: String,
+}

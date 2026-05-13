@@ -17,7 +17,7 @@ use codeless_rpc::methods::{
     JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
     ListReposResult, ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult,
     RemoveRepoArgs, RunnerInfo, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    WriteJobFileArgs, WriteJobFileResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -61,7 +61,9 @@ fn collect() -> TypeCollection {
         .register_mut::<ReadJobFileResult>()
         .register_mut::<WriteJobFileArgs>()
         .register_mut::<WriteJobFileResult>()
-        .register_mut::<DeleteJobFileArgs>();
+        .register_mut::<DeleteJobFileArgs>()
+        .register_mut::<UpdateJobTemplateArgs>()
+        .register_mut::<UpdateJobTemplateResult>();
     types
 }
 

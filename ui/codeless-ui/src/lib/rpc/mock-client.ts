@@ -544,6 +544,35 @@ export class MockRpcClient implements RpcClient {
         return null as RpcResultOf<M>;
       }
 
+      case "update_job_template": {
+        const a = args as RpcArgs<"update_job_template">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+
+        const parsed = parseTemplateYaml(a.template_yaml);
+        if (!parsed.ok) {
+          throw new RpcError("invalid_argument", `template parse: ${parsed.error}`);
+        }
+        const prevName = job.template_yaml
+          ? parseTemplateYaml(job.template_yaml).name ?? parsed.name
+          : parsed.name;
+        if (prevName !== parsed.name) {
+          throw new RpcError(
+            "conflict",
+            `rename refused: spec name is \`${prevName}\`, cannot become \`${parsed.name}\`. Submit a fresh job to rename.`,
+          );
+        }
+
+        job.template_yaml = a.template_yaml;
+        let files = this.jobFiles.get(a.job_id);
+        if (!files) {
+          files = new Map();
+          this.jobFiles.set(a.job_id, files);
+        }
+        files.set("template.yaml", a.template_yaml);
+        return { name: parsed.name } as RpcResultOf<M>;
+      }
+
       case "secrets_set": {
         const a = args as RpcArgs<"secrets_set">;
         this.secrets.set(a.provider, a.value);
@@ -1028,4 +1057,35 @@ function normaliseJobFilename(raw: string): string | { error: string } {
     return trimmed;
   }
   return `${trimmed}.md`;
+}
+
+// Minimal mirror of `codeless_runtime::template::JobTemplate::parse_yaml`.
+// Validates the three load-bearing fields (name, goal, non-empty
+// stages). We avoid pulling in a real YAML parser — the spec is
+// authored as a list-editor on the UI side, so the surface the mock
+// has to handle is small and stable.
+type ParsedTemplate =
+  | { ok: true; name: string }
+  | { ok: false; error: string; name?: undefined };
+
+function parseTemplateYaml(yaml: string): ParsedTemplate {
+  const nameMatch = /^\s*name\s*:\s*(.+?)\s*$/m.exec(yaml);
+  if (!nameMatch || !nameMatch[1].trim()) {
+    return { ok: false, error: "name is empty" };
+  }
+  const goalMatch = /^\s*goal\s*:\s*(.+?)\s*$/m.exec(yaml);
+  if (!goalMatch || !goalMatch[1].trim()) {
+    return { ok: false, error: "goal is empty" };
+  }
+  const stagesIdx = yaml.search(/^\s*stages\s*:\s*$/m);
+  if (stagesIdx < 0) return { ok: false, error: "stages is empty" };
+  const after = yaml.slice(stagesIdx).split("\n").slice(1);
+  let count = 0;
+  for (const raw of after) {
+    if (/^\s*-\s+/.test(raw)) count++;
+    else if (raw.trim() === "") continue;
+    else if (/^\S/.test(raw)) break;
+  }
+  if (count === 0) return { ok: false, error: "stages is empty" };
+  return { ok: true, name: nameMatch[1].trim() };
 }

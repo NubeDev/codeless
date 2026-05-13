@@ -11,8 +11,8 @@ use codeless_rpc::{
     JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
-    RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs, WriteJobFileArgs,
-    WriteJobFileResult,
+    RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -754,6 +754,69 @@ impl RpcServer for InProcessRpc {
         )
         .map_err(git_commit_err)?;
         Ok(())
+    }
+
+    async fn update_job_template(
+        &self,
+        args: UpdateJobTemplateArgs,
+    ) -> RpcResult<UpdateJobTemplateResult> {
+        let parsed = JobTemplate::parse_yaml(&args.template_yaml)
+            .map_err(|e| RpcError::InvalidArgument(format!("template parse: {e}")))?;
+
+        let mut job = self
+            .store
+            .get_job(args.job_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+        let prev_name = match job.template_yaml.as_deref() {
+            Some(prev) => match JobTemplate::parse_yaml(prev) {
+                Ok(tpl) => tpl.name,
+                Err(_) => parsed.name.clone(),
+            },
+            None => parsed.name.clone(),
+        };
+        if prev_name != parsed.name {
+            return Err(RpcError::Conflict(format!(
+                "rename refused: spec name is `{prev_name}`, cannot become `{}`. Submit a fresh job to rename.",
+                parsed.name,
+            )));
+        }
+
+        let repo = self
+            .store
+            .get_repo(job.repo_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
+        let repo_path = std::path::PathBuf::from(repo.local_path);
+
+        let layout = job_dir::resolve(&repo_path, &parsed.name);
+        if matches!(layout, JobLayout::Flat | JobLayout::FlatPreferred) {
+            migrate_flat_to_directory(&repo_path, &parsed.name)?;
+        }
+
+        let tpl_path = template_yaml_path(&repo_path, &parsed.name);
+        if let Some(parent) = tpl_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                RpcError::Internal(format!("create job dir {}: {e}", parent.display()))
+            })?;
+        }
+        std::fs::write(&tpl_path, &args.template_yaml)
+            .map_err(|e| RpcError::Internal(format!("write {}: {e}", tpl_path.display())))?;
+        commit_paths(
+            &repo_path,
+            &format!("update template: {}", parsed.name),
+            std::slice::from_ref(&tpl_path),
+        )
+        .map_err(git_commit_err)?;
+
+        job.template_yaml = Some(args.template_yaml);
+        if !self.store.update_job(&job).await.map_err(db_err)? {
+            return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+        }
+
+        Ok(UpdateJobTemplateResult { name: parsed.name })
     }
 }
 

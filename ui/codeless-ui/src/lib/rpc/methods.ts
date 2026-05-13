@@ -221,6 +221,21 @@ export interface DeleteJobFileArgs {
   filename: string;
 }
 
+// Spec replacement — the stages-CRUD editor saves the whole
+// template.yaml back through this RPC. Validated server-side via the
+// same JobTemplate parser the runner uses; renames are rejected with
+// `conflict` (the job dir is addressed by name and a rename would
+// orphan the existing SCOPE/WORKFLOW/extras).
+
+export interface UpdateJobTemplateArgs {
+  job_id: JobId;
+  template_yaml: string;
+}
+
+export interface UpdateJobTemplateResult {
+  name: string;
+}
+
 // Secrets RPC surface. Provisional: hand-mirrored from the forthcoming
 // `codeless-rpc::methods::secrets_*`. Provider keys live in the
 // single-tenant secrets file managed by `codeless-adapters-host`
@@ -276,6 +291,10 @@ export interface RpcMethodMap {
   read_job_file: { args: ReadJobFileArgs; result: ReadJobFileResult };
   write_job_file: { args: WriteJobFileArgs; result: WriteJobFileResult };
   delete_job_file: { args: DeleteJobFileArgs; result: null };
+  update_job_template: {
+    args: UpdateJobTemplateArgs;
+    result: UpdateJobTemplateResult;
+  };
 
   secrets_set: { args: SecretsSetArgs; result: null };
   secrets_get: { args: SecretsGetArgs; result: string | null };

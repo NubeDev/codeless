@@ -12,7 +12,7 @@ use codeless_rpc::{
     ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
     RerunJobArgs, RpcError, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    WriteJobFileArgs, WriteJobFileResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -46,6 +46,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/read_job_file", post(read_job_file))
         .route("/rpc/write_job_file", post(write_job_file))
         .route("/rpc/delete_job_file", post(delete_job_file))
+        .route("/rpc/update_job_template", post(update_job_template))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -288,5 +289,16 @@ async fn delete_job_file(
         .delete_job_file(args)
         .await
         .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn update_job_template(
+    State(st): State<AppState>,
+    Json(args): Json<UpdateJobTemplateArgs>,
+) -> HandlerResult<UpdateJobTemplateResult> {
+    st.rpc
+        .update_job_template(args)
+        .await
+        .map(Json)
         .map_err(map_err)
 }
