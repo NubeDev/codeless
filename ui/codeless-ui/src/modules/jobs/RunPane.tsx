@@ -792,6 +792,150 @@ interface ChatMessage {
   ts: string;
 }
 
+// Additional rows the chat feed renders alongside user/assistant
+// bubbles. Sourced from the job's event stream so the user sees
+// what the agent is *doing* (Read foo.rs, Edit bar.rs) and the
+// inflection points (stage started, verify passed, job stopped,
+// resumed) without having to leave the chat for the right-pane
+// Timeline tab.
+//
+// Each item carries its event cursor for dedupe (events can replay
+// on SSE reconnect) and the source `created_at` so the chronological
+// merge with `ChatMessage.ts` stays correct.
+type LiveFeedItem =
+  | {
+      kind: "tool_call";
+      cursor: number;
+      created_at: number;
+      tool: string;
+      args_json: string;
+    }
+  | {
+      kind: "lifecycle";
+      cursor: number;
+      created_at: number;
+      label: string;
+      tone: "neutral" | "good" | "bad" | "warn";
+    };
+
+// Translate one event envelope into a feed item (or `null` if the
+// event has no chat-feed representation). The streaming-token and
+// task-state events are handled separately by the chat surface;
+// only signal that's interesting to the *user* belongs here.
+function liveItemFromEvent(
+  env: import("@/lib/rpc/wire").EventEnvelope,
+): LiveFeedItem | null {
+  const e = env.event;
+  const created_at = env.created_at;
+  const cursor = env.cursor;
+  switch (e.type) {
+    case "tool-call":
+    case "tool-approval-requested":
+      return {
+        kind: "tool_call",
+        cursor,
+        created_at,
+        tool: e.tool,
+        args_json: e.args_json,
+      };
+    case "stage-started":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label:
+          typeof e.ordinal === "number"
+            ? `stage ${e.ordinal + 1} started: ${e.name}`
+            : `stage started: ${e.name}`,
+        tone: "neutral",
+      };
+    case "stage-completed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: `stage ${e.status}`,
+        tone: e.status === "passed" ? "good" : "bad",
+      };
+    case "verify-started":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "verify started",
+        tone: "neutral",
+      };
+    case "verify-passed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "verify passed",
+        tone: "good",
+      };
+    case "verify-failed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: `verify failed (exit ${e.exit_code})`,
+        tone: "bad",
+      };
+    case "job-started":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "job started",
+        tone: "good",
+      };
+    case "job-completed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "job completed",
+        tone: "good",
+      };
+    case "job-stopped":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: `stopped: ${e.reason}`,
+        tone: e.reason === "user" ? "neutral" : "warn",
+      };
+    case "job-failed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "job failed",
+        tone: "bad",
+      };
+    case "job-resumed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: e.previous_reason
+          ? `resumed (was ${e.previous_reason})`
+          : "resumed",
+        tone: "good",
+      };
+    case "review-requested":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "review requested",
+        tone: "warn",
+      };
+    default:
+      return null;
+  }
+}
+
 export function JobChat({
   job,
   uiLocation,
@@ -818,6 +962,13 @@ export function JobChat({
     text: string;
   } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Tool calls + lifecycle moments from the job's event stream,
+  // interleaved into the chat feed below the user/assistant
+  // bubbles. We keep them in a separate state so the existing
+  // streaming-token accumulator and CHAT.md persistence stay
+  // untouched — these are *additional* signal, not a rewrite of
+  // the chat surface.
+  const [liveItems, setLiveItems] = useState<LiveFeedItem[]>([]);
   const sinceCursor = useRef<number>(0);
   // Attachments staged for the next send. Each entry is the result
   // of an `upload_chat_attachment` RPC: the bytes already live in
@@ -859,12 +1010,24 @@ export function JobChat({
     { scope: "job", job_id: job.id },
     useCallback(
       (env) => {
+        // Streaming-token accumulator for the in-flight assistant
+        // bubble (unchanged behaviour). Distinguished by task_id so
+        // a stray event for an earlier turn cannot pollute the
+        // current bubble.
         const e = env.event;
-        if (!streaming) return;
-        if (env.task_id !== streaming.taskId) return;
-        if (e.type === "ai-token") {
+        if (streaming && env.task_id === streaming.taskId && e.type === "ai-token") {
           setStreaming((s) =>
             s && s.taskId === env.task_id ? { ...s, text: s.text + e.delta } : s,
+          );
+        }
+        // Tool calls and lifecycle moments fold into the feed as
+        // their own items, interleaved chronologically with the
+        // user/assistant bubbles. Cheap append; the render derives
+        // the merged list from `history` + `liveItems` + `streaming`.
+        const item = liveItemFromEvent(env);
+        if (item) {
+          setLiveItems((prev) =>
+            prev.some((p) => p.cursor === item.cursor) ? prev : [...prev, item],
           );
         }
       },
@@ -1061,9 +1224,29 @@ export function JobChat({
       )}
 
       <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-        {history.map((m, i) => (
-          <ChatBubble key={i} message={m} />
-        ))}
+        {mergeChatFeed(history, liveItems).map((row, i) => {
+          if (row.kind === "message") {
+            return <ChatBubble key={`m-${i}`} message={row.message} />;
+          }
+          if (row.kind === "tool_call") {
+            return (
+              <ToolCallCard
+                key={`t-${row.cursor}`}
+                tool={row.tool}
+                argsJson={row.args_json}
+                ts={row.created_at}
+              />
+            );
+          }
+          return (
+            <LifecycleDivider
+              key={`l-${row.cursor}`}
+              label={row.label}
+              tone={row.tone}
+              ts={row.created_at}
+            />
+          );
+        })}
         {streaming && (
           <ChatBubble
             message={{
@@ -1211,6 +1394,171 @@ function ChatBubble({
       </div>
     </li>
   );
+}
+
+// Merge chat history (user/assistant bubbles persisted to CHAT.md)
+// with live feed items (tool calls, lifecycle dividers from the
+// event stream) into one chronologically-ordered list. The chat
+// surface renders this directly; the in-flight `streaming` bubble
+// is appended separately at the tail.
+//
+// Sort is stable on equal timestamps: history first, then live
+// items. This keeps a conversation that opens with a user message
+// from accidentally rendering a `job-started` divider above it.
+type ChatFeedRow =
+  | { kind: "message"; message: ChatMessage; ts: number }
+  | (LiveFeedItem & { ts: number });
+function mergeChatFeed(
+  history: ChatMessage[],
+  live: LiveFeedItem[],
+): ChatFeedRow[] {
+  const rows: ChatFeedRow[] = [];
+  for (const m of history) {
+    rows.push({ kind: "message", message: m, ts: chatTsToMs(m.ts) });
+  }
+  for (const item of live) {
+    rows.push({ ...item, ts: item.created_at });
+  }
+  rows.sort((a, b) => a.ts - b.ts);
+  return rows;
+}
+
+// `ChatMessage.ts` is an ISO string (or empty for the in-flight
+// streaming bubble). Translate to ms-since-epoch for the merge
+// sort; an unparseable / empty value sorts as 0 which puts it at
+// the top — the right place for the very first user message of a
+// freshly-opened conversation.
+function chatTsToMs(iso: string): number {
+  if (!iso) return 0;
+  const n = Date.parse(iso);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// One tool call, collapsed by default. Shows tool name + a
+// one-line argument summary (`Edit …/stage.rs`, `Bash <cmd>`) so
+// the user can scan a long run without expanding every card.
+// Click to reveal the pretty-printed args JSON.
+function ToolCallCard({
+  tool,
+  argsJson,
+  ts,
+}: {
+  tool: string;
+  argsJson: string;
+  ts: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const summary = toolCallSummary(tool, argsJson);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="border-border/40 bg-muted/20 hover:bg-muted/40 flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left text-[11px] transition-colors"
+      >
+        <span className="min-w-0 flex-1 truncate">
+          <span className="text-muted-foreground mr-1.5">tool</span>
+          <span className="font-mono font-medium">{tool}</span>
+          {summary && (
+            <span className="text-muted-foreground ml-2 truncate">
+              {summary}
+            </span>
+          )}
+        </span>
+        <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
+          {wallClockTime(ts)}
+        </span>
+      </button>
+      {expanded && (
+        <pre className="border-border/40 bg-background/60 mt-1 max-h-72 overflow-auto rounded border px-2 py-1.5 font-mono text-[10px] whitespace-pre-wrap break-all">
+          {prettyJson(argsJson)}
+        </pre>
+      )}
+    </li>
+  );
+}
+
+// Centred divider for lifecycle moments. Tone colours the rule
+// and label so the user's eye lands on bad/warn moments without
+// having to read every divider.
+function LifecycleDivider({
+  label,
+  tone,
+  ts,
+}: {
+  label: string;
+  tone: "neutral" | "good" | "bad" | "warn";
+  ts: number;
+}) {
+  const colour =
+    tone === "good"
+      ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+      : tone === "bad"
+        ? "text-destructive border-destructive/30"
+        : tone === "warn"
+          ? "text-amber-600 dark:text-amber-400 border-amber-500/40"
+          : "text-muted-foreground border-border/50";
+  return (
+    <li
+      className={`flex items-center gap-2 py-1 font-mono text-[10px] uppercase tracking-wide ${colour}`}
+    >
+      <span className={`h-px flex-1 border-t ${colour}`} />
+      <span>{label}</span>
+      <span className="text-muted-foreground normal-case tracking-normal">
+        {wallClockTime(ts)}
+      </span>
+      <span className={`h-px flex-1 border-t ${colour}`} />
+    </li>
+  );
+}
+
+// First non-empty match from common arg keys. Enough to make a
+// collapsed tool card useful at a glance; the full args sit one
+// click away. Returns "" when the args have no recognisable
+// shape — the card still renders, just without the trailing
+// summary line.
+function toolCallSummary(tool: string, argsJson: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argsJson);
+  } catch {
+    return "";
+  }
+  if (parsed == null || typeof parsed !== "object") return "";
+  const obj = parsed as Record<string, unknown>;
+  const path =
+    (typeof obj.file_path === "string" && obj.file_path) ||
+    (typeof obj.path === "string" && obj.path) ||
+    "";
+  if (path) {
+    // Trim the worktree prefix; keep the last two segments so
+    // `mod.rs` files stay disambiguated by their parent dir.
+    const idx = path.lastIndexOf("/");
+    if (idx < 0) return path;
+    const parentIdx = path.lastIndexOf("/", idx - 1);
+    return parentIdx < 0 ? path.slice(idx + 1) : `…${path.slice(parentIdx)}`;
+  }
+  if (tool.toLowerCase() === "bash" && typeof obj.command === "string") {
+    const cmd = obj.command.trim().split("\n")[0];
+    return cmd.length > 60 ? `${cmd.slice(0, 60)}…` : cmd;
+  }
+  if (typeof obj.pattern === "string") return obj.pattern;
+  if (typeof obj.query === "string") return obj.query;
+  return "";
+}
+
+function prettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function wallClockTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function shortTime(iso: string): string {
