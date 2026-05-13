@@ -72,6 +72,15 @@ export type AgentChatArgs = {
 	 *  host paths.
 	 */
 	cwd?: string | null,
+	/**
+	 *  Optional structured context the UI knows about and the model
+	 *  should as well: attached files, where the user is in the app,
+	 *  any selection, and saved prompt snippets the user opted in.
+	 *  Additive — new optional fields land here without breaking
+	 *  existing clients. The runtime renders this into a deterministic
+	 *  preamble prepended to `prompt` before the runner is spawned.
+	 */
+	context?: ChatContext | null,
 };
 
 export type AgentChatResult = {
@@ -87,6 +96,57 @@ export type AgentChatResult = {
 
 export type ApproveReviewArgs = {
 	review_id: ReviewId,
+};
+
+export type ChatAttachmentRef = {
+	/**
+	 *  Path relative to the job worktree root, as returned by
+	 *  `upload_chat_attachment`. Used verbatim in the prompt
+	 *  preamble.
+	 */
+	relative_path: string,
+	/**
+	 *  Optional MIME type the UI sniffed at upload time (e.g.
+	 *  `image/png`). Surfaced to the model so it can pick the right
+	 *  reading strategy when the runner supports it.
+	 */
+	mime_type?: string | null,
+};
+
+/**
+ *  Forward-compatible bag of "what the user has on screen / wants
+ *  included" passed into a chat turn. Every field is optional and
+ *  the runtime tolerates an empty struct — adding a new field is a
+ *  non-breaking change for older UIs.
+ */
+export type ChatContext = {
+	/**
+	 *  Files previously written via `upload_chat_attachment`. The
+	 *  runtime renders these as a `Files attached:` list in the
+	 *  preamble; the runner reads them from the worktree cwd.
+	 */
+	attachments?: ChatAttachmentRef[],
+	/**
+	 *  Where the user invoked chat from in the UI, e.g.
+	 *  `jobs/01H…`, `repos/myrepo`, `settings/models`. Free-form so
+	 *  the UI can evolve its routes without a wire change. Renders
+	 *  into the preamble as a "User is viewing:" line so the model
+	 *  can ground answers to the active surface.
+	 */
+	ui_location?: string | null,
+	/**
+	 *  Currently-selected text in the UI (editor selection, log
+	 *  snippet, diff hunk). Optional and bounded by the UI to a
+	 *  sensible size before sending — the runtime does not truncate.
+	 */
+	selection?: string | null,
+	/**
+	 *  Named or ad-hoc prompt snippets the user opted in for this
+	 *  turn (saved from a prompt library, project conventions, etc.).
+	 *  Each entry is rendered as its own block in the preamble; the
+	 *  UI is responsible for ordering.
+	 */
+	user_prompts?: UserPromptSnippet[],
 };
 
 /**
@@ -644,3 +704,56 @@ export type TaskStatus = "enqueued" | "running" | "completed" | "failed" | "canc
  *  `INTEGER` round-trips with `sqlx` (which surfaces signed integers).
  */
 export type UnixMillis = number;
+
+/**
+ *  Drop a binary blob (image, PDF, csv, …) into the job worktree
+ *  under `.codeless/chat-attachments/` so the next `agent_chat` turn
+ *  can reference it by path. Files are written with a unique prefix
+ *  (millis + counter) to avoid collisions and are NOT git-committed —
+ *  they are out-of-band scratch input for the CLI runner running in
+ *  the worktree cwd.
+ * 
+ *  Returns `Conflict` if the job has no worktree yet (runner has not
+ *  run); the UI surfaces this as "submit the job first".
+ */
+export type UploadChatAttachmentArgs = {
+	job_id: JobId,
+	/**
+	 *  Basename only — directory components are stripped. Sanitised
+	 *  server-side; the original is kept as the suffix after the
+	 *  unique prefix so the filename is recognisable to the model.
+	 */
+	filename: string,
+	/**
+	 *  Standard base64 (with or without padding). Decoded server-side;
+	 *  invalid input returns `InvalidArgument`.
+	 */
+	content_b64: string,
+};
+
+export type UploadChatAttachmentResult = {
+	/**
+	 *  Path relative to the job worktree root, e.g.
+	 *  `.codeless/chat-attachments/1700000000000-0-screenshot.png`.
+	 *  The UI references this in the chat prompt so the CLI runner,
+	 *  invoked with the worktree as cwd, can read it directly.
+	 */
+	relative_path: string,
+	/**
+	 *  Absolute path on the server host. Surfaced for parity with
+	 *  `write_handover`; UI does not need it for the chat flow but
+	 *  may show it in a tooltip.
+	 */
+	absolute_path: string,
+};
+
+export type UserPromptSnippet = {
+	/**
+	 *  Short label the UI showed the user when they opted in (e.g.
+	 *  `repo conventions`). Rendered as the block heading in the
+	 *  preamble.
+	 */
+	label: string,
+	// Snippet body. Markdown is allowed; the runtime emits it as-is.
+	body: string,
+};

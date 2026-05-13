@@ -13,8 +13,9 @@ use codeless_rpc::{
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
     RemoveRepoArgs, RerunJobArgs, RpcError, ServerInfo, StartJobArgs, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -53,6 +54,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/update_job_template", post(update_job_template))
         .route("/rpc/write_handover", post(write_handover))
         .route("/rpc/agent_chat", post(agent_chat))
+        .route(
+            "/rpc/upload_chat_attachment",
+            post(upload_chat_attachment),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -335,4 +340,15 @@ async fn agent_chat(
     Json(args): Json<AgentChatArgs>,
 ) -> HandlerResult<AgentChatResult> {
     st.rpc.agent_chat(args).await.map(Json).map_err(map_err)
+}
+
+async fn upload_chat_attachment(
+    State(st): State<AppState>,
+    Json(args): Json<UploadChatAttachmentArgs>,
+) -> HandlerResult<UploadChatAttachmentResult> {
+    st.rpc
+        .upload_chat_attachment(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
 }

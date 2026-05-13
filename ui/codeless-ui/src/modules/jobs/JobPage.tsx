@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -9,6 +8,7 @@ import {
   useEventStream,
   useJob,
   useRepos,
+  useRpc,
   type Job,
   type JobId,
   type Repo,
@@ -64,22 +64,21 @@ interface RailGroup {
   items: RailSection[];
 }
 
+// Sub-rail groups. Hints were removed in the layout pass: the group
+// labels are descriptive enough on their own, and the small grey
+// subtitles cluttered the rail without adding information density.
 const RAIL: RailGroup[] = [
   {
     label: "Spec",
-    hint: "what you author",
-    items: [{ id: "spec", label: "Files (template / docs)" }],
-  },
-  {
-    label: "Stages",
-    hint: "the spine",
-    items: [{ id: "stages", label: "All stages" }],
+    hint: "",
+    items: [{ id: "spec", label: "Files" }],
   },
   {
     label: "Run",
-    hint: "what the runtime produced",
+    hint: "",
     items: [
-      { id: "status", label: "Status" },
+      { id: "status", label: "Overview" },
+      { id: "stages", label: "Stages" },
       { id: "timeline", label: "Timeline" },
       { id: "files", label: "Files changed" },
       { id: "handover", label: "Handover" },
@@ -221,7 +220,12 @@ export function JobPage({
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", !active && "hidden")}>
-      <JobHeader job={job} repo={repo} />
+      <JobHeader
+        job={job}
+        repo={repo}
+        onOpenJobTab={onOpenJobTab}
+        refetchJob={refetchJob}
+      />
       <div className="flex min-h-0 flex-1">
         <SubRail current={section} onSelect={onSelectSection} />
         <div className="min-w-0 flex-1 overflow-hidden">
@@ -284,33 +288,119 @@ function CenteredMessage({
   );
 }
 
-// Thin orientation strip: identity and cost only. Lifecycle actions
-// (run / stop / re-run / edit spec) live in the RunPane and SpecPane
-// respectively — keeping them out of the header stops the header from
-// conflating "what is this job" with "what can I do to it" and frees
-// the action surface to render with real layout breathing room.
-function JobHeader({ job, repo }: { job: Job; repo: Repo | null }) {
+const TERMINAL_STATUSES: Set<Job["status"]> = new Set([
+  "completed",
+  "failed",
+  "stopped",
+]);
+
+// Page header: identity, status, primary actions. The lifecycle
+// timeline and per-phase actions stay in `RunPane`, but Stop and
+// Re-run live up here because they're the actions a user reaches for
+// on *any* section of the page (you don't want to navigate to
+// "Overview" just to stop a runaway job).
+function JobHeader({
+  job,
+  repo,
+  onOpenJobTab,
+  refetchJob,
+}: {
+  job: Job;
+  repo: Repo | null;
+  onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
+  refetchJob: () => void;
+}) {
+  const rpc = useRpc();
+  const [busy, setBusy] = useState<"stop" | "rerun" | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const isTerminal = TERMINAL_STATUSES.has(job.status);
+  const isRunning = job.status === "running" || job.status === "awaiting-review";
+  const title = friendlyJobTitle(job);
+
+  const stop = async () => {
+    setBusy("stop");
+    setErr(null);
+    try {
+      await rpc.call("stop_job", { job_id: job.id });
+      refetchJob();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rerun = async () => {
+    setBusy("rerun");
+    setErr(null);
+    try {
+      const fresh = await rpc.call("rerun_job", { source_job_id: job.id });
+      if (onOpenJobTab) {
+        onOpenJobTab(fresh.id, title);
+      } else {
+        navigate(`/jobs/${fresh.id}`);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
-    <div className="border-border/50 flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
-      <StatusBadge status={job.status} />
-      <Badge variant="outline" className="font-mono text-[10px]">
-        {job.runner}
-      </Badge>
-      {repo && (
-        <span className="text-muted-foreground text-xs">{repo.name}</span>
-      )}
-      <span className="text-muted-foreground truncate font-mono text-[11px]">
-        {job.branch}
-      </span>
-      <div className="ml-auto flex items-center gap-2">
-        <WallClockCell
-          startedAt={job.started_at}
-          endedAt={job.ended_at}
-          capMs={job.wall_clock_cap_ms}
-          now={Date.now()}
-        />
-        <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
+    <div className="border-border/50 shrink-0 border-b">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
+        <StatusBadge status={job.status} />
+        <h2 className="min-w-0 truncate text-sm font-semibold">{title}</h2>
+        {repo && (
+          <span className="text-muted-foreground text-xs">
+            {repo.name}
+          </span>
+        )}
+        <span
+          className="text-muted-foreground hidden truncate font-mono text-[11px] md:inline"
+          title={job.branch}
+        >
+          {job.branch}
+        </span>
+        <div className="ml-auto flex items-center gap-3">
+          <WallClockCell
+            startedAt={job.started_at}
+            endedAt={job.ended_at}
+            capMs={job.wall_clock_cap_ms}
+            now={Date.now()}
+          />
+          <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
+          {isRunning && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2.5 text-xs"
+              onClick={stop}
+              disabled={busy !== null}
+            >
+              {busy === "stop" ? "stopping…" : "stop"}
+            </Button>
+          )}
+          {isTerminal && (
+            <Button
+              size="sm"
+              variant="default"
+              className="h-7 px-2.5 text-xs"
+              onClick={rerun}
+              disabled={busy !== null}
+              title="Queue a fresh run with the same prompt, runner, and caps"
+            >
+              {busy === "rerun" ? "queuing…" : "re-run"}
+            </Button>
+          )}
+        </div>
       </div>
+      {err && (
+        <div className="text-destructive border-border/50 border-t px-4 py-1 text-xs">
+          {err}
+        </div>
+      )}
     </div>
   );
 }
@@ -323,27 +413,22 @@ function SubRail({
   onSelect: (s: Section) => void;
 }) {
   return (
-    <nav className="border-border/50 flex w-44 shrink-0 flex-col gap-3 overflow-y-auto border-r p-2">
+    <nav className="border-border/50 flex w-36 shrink-0 flex-col gap-4 overflow-y-auto border-r p-2 pt-3">
       {RAIL.map((group) => (
-        <div key={group.label} className="space-y-1">
-          <div className="px-2 pt-1">
-            <div className="text-foreground text-[11px] font-semibold">
-              {group.label}
-            </div>
-            <div className="text-muted-foreground text-[10px]">
-              {group.hint}
-            </div>
+        <div key={group.label} className="space-y-0.5">
+          <div className="text-muted-foreground px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider">
+            {group.label}
           </div>
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-px">
             {group.items.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => onSelect(item.id)}
                 className={cn(
-                  "rounded px-2 py-1 text-left text-xs",
+                  "rounded px-2 py-1 text-left text-[13px] transition-colors",
                   current === item.id
-                    ? "bg-accent text-foreground"
+                    ? "bg-accent text-foreground font-medium"
                     : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
                 )}
               >

@@ -16,6 +16,7 @@ codeless-rpc = { path = "../codeless-rpc" }
 codeless-adapters-host = { path = "../codeless-adapters-host" }
 ai-runner = { path = "../../../ai-runner" }
 async-trait = "0.1"
+base64 = "0.22"
 futures-core = "0.3"
 futures-util = "0.3"
 hex = "0.4"

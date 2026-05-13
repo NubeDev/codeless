@@ -13,8 +13,9 @@ use codeless_rpc::{
     ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
     ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
     RpcServer, Since, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -1012,7 +1013,7 @@ impl RpcServer for InProcessRpc {
         let task_id = codeless_types::TaskId::new();
         let bus = Arc::clone(&self.bus);
         let registry = Arc::clone(registry);
-        let prompt = args.prompt;
+        let prompt = build_chat_prompt(args.context.as_ref(), &args.prompt);
 
         // Detached: the call returns once the runner has been spawned;
         // its tokens / tool-calls / completion event flow back through
@@ -1043,6 +1044,128 @@ impl RpcServer for InProcessRpc {
             task_id,
         })
     }
+
+    async fn upload_chat_attachment(
+        &self,
+        args: UploadChatAttachmentArgs,
+    ) -> RpcResult<UploadChatAttachmentResult> {
+        use base64::Engine as _;
+
+        // Worktree-scoped: the runner runs with the worktree as cwd
+        // (see `agent_chat`'s per-call cwd resolution wired by the UI),
+        // so attachments dropped under `.codeless/chat-attachments/`
+        // are reachable by relative path. Conflict if the runner has
+        // not provisioned a worktree yet — there is no sensible
+        // fallback location that survives a re-run.
+        let job = self
+            .store
+            .get_job(args.job_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+        let worktree = job.worktree_path.as_deref().ok_or_else(|| {
+            RpcError::Conflict(format!(
+                "job {} has no worktree yet; submit/run the job before attaching files",
+                args.job_id
+            ))
+        })?;
+
+        // Reuse the job-file sanitiser for path traversal / dotfile
+        // rejection. `template.yaml` is harmless here (we are not in
+        // the job dir) but the sanitiser still catches it; rename if
+        // someone really needs to attach one.
+        let safe = sanitise_filename(&args.filename).map_err(filename_err)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(args.content_b64.as_bytes())
+            .or_else(|_| {
+                base64::engine::general_purpose::STANDARD_NO_PAD
+                    .decode(args.content_b64.as_bytes())
+            })
+            .map_err(|e| RpcError::InvalidArgument(format!("content_b64: {e}")))?;
+
+        let dir = std::path::Path::new(worktree)
+            .join(".codeless")
+            .join("chat-attachments");
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            RpcError::Internal(format!(
+                "create chat-attachments dir {}: {e}",
+                dir.display()
+            ))
+        })?;
+
+        // Unique prefix: millis + a per-process atomic counter. Two
+        // uploads from the same UI in the same millisecond still get
+        // distinct names; the original basename is preserved as the
+        // suffix so model-side mentions stay recognisable.
+        let stamp = now_ms().0;
+        let seq = ATTACHMENT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let stored = format!("{stamp}-{seq}-{safe}");
+        let abs = dir.join(&stored);
+        std::fs::write(&abs, &bytes)
+            .map_err(|e| RpcError::Internal(format!("write {}: {e}", abs.display())))?;
+
+        let relative_path = format!(".codeless/chat-attachments/{stored}");
+        Ok(UploadChatAttachmentResult {
+            relative_path,
+            absolute_path: abs.to_string_lossy().into_owned(),
+        })
+    }
+}
+
+/// Per-process counter to disambiguate attachment uploads that land in
+/// the same millisecond. Wraps cheaply; the millis prefix ensures
+/// uniqueness in practice.
+static ATTACHMENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Render the optional `ChatContext` into a deterministic preamble
+/// prepended to the user prompt before the runner is spawned. Kept
+/// out of the trait method body so the prompt-shaping rules are
+/// covered by unit tests independently of the bus / registry plumbing.
+///
+/// The preamble is only emitted when at least one context field is
+/// populated; otherwise the prompt passes through unchanged so
+/// short-prompt fidelity (e.g. "what time is it") is preserved.
+fn build_chat_prompt(ctx: Option<&codeless_rpc::ChatContext>, prompt: &str) -> String {
+    let Some(ctx) = ctx else {
+        return prompt.to_owned();
+    };
+    let has_any = ctx.ui_location.is_some()
+        || ctx.selection.is_some()
+        || !ctx.attachments.is_empty()
+        || !ctx.user_prompts.is_empty();
+    if !has_any {
+        return prompt.to_owned();
+    }
+
+    let mut out = String::new();
+    out.push_str("# Context\n\n");
+    if let Some(loc) = ctx.ui_location.as_deref() {
+        out.push_str(&format!("User is viewing: {loc}\n\n"));
+    }
+    if !ctx.attachments.is_empty() {
+        out.push_str("Files attached (paths are relative to the working directory):\n");
+        for a in &ctx.attachments {
+            match a.mime_type.as_deref() {
+                Some(mt) => out.push_str(&format!("- {} ({mt})\n", a.relative_path)),
+                None => out.push_str(&format!("- {}\n", a.relative_path)),
+            }
+        }
+        out.push('\n');
+    }
+    if let Some(sel) = ctx.selection.as_deref() {
+        out.push_str("Current selection:\n```\n");
+        out.push_str(sel);
+        if !sel.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("```\n\n");
+    }
+    for snippet in &ctx.user_prompts {
+        out.push_str(&format!("## {}\n\n{}\n\n", snippet.label, snippet.body));
+    }
+    out.push_str("# Request\n\n");
+    out.push_str(prompt);
+    out
 }
 
 impl InProcessRpc {

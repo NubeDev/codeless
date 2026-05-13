@@ -23,6 +23,8 @@ import type {
   ShellBgEntry,
   ShellBgLogChunk,
   ShellCommandOutput,
+  UploadChatAttachmentArgs,
+  UploadChatAttachmentResult,
   ShellSessionRunOutput,
 } from "./wire";
 
@@ -381,9 +383,18 @@ export interface RpcMethodMap {
   stop_review: { args: ReviewActionArgs; result: Review };
 
   agent_chat: { args: AgentChatArgs; result: AgentChatResult };
+  upload_chat_attachment: {
+    args: UploadChatAttachmentArgs;
+    result: UploadChatAttachmentResult;
+  };
 }
 
-export type { AgentChatArgs, AgentChatResult };
+export type {
+  AgentChatArgs,
+  AgentChatResult,
+  UploadChatAttachmentArgs,
+  UploadChatAttachmentResult,
+};
 
 // Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,
 // `ApproveReviewArgs`, `CommentReviewArgs`, and `StopReviewArgs` are

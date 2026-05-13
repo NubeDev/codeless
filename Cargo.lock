@@ -620,6 +620,7 @@ version = "0.0.0"
 dependencies = [
  "ai-runner",
  "async-trait",
+ "base64",
  "codeless-adapters-host",
  "codeless-rpc",
  "codeless-types",

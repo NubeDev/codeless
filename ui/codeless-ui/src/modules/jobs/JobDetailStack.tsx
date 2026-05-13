@@ -1,47 +1,27 @@
-import { useCallback } from "react";
-
 import type { JobDetailTab, TabPatch } from "@/modules/tabs";
 import type { JobId } from "@/lib/rpc";
 
-import { JobPage } from "./JobPage";
+import { JobChatPage } from "./JobChatPage";
 
 interface Props {
   tabs: Array<{ id: number; kind: string; jobId?: string }>;
   activeId: number;
-  // Open `absPath` in an editor tab. Provided by `App.tsx` which owns
-  // the editor-tab opening machinery; passed down here so each
-  // `JobPage` can wire its "Files changed" click handler without
-  // knowing about tab plumbing.
-  onOpenFile: (absPath: string) => void;
-  // Update a tab's title in the strip when `JobPage` resolves a
-  // friendlier label than the initial best-guess one the dashboard
-  // opened the tab with.
-  onUpdateTab: (id: number, patch: TabPatch) => void;
+  // Open `absPath` in an editor tab. Reserved for when "Files changed"
+  // wires back into the editor stack from the chat-first sidebar.
+  onOpenFile?: (absPath: string) => void;
+  // Update a tab's title. Reserved for the future when JobChatPage
+  // surfaces a derived friendly title back to the tab strip.
+  onUpdateTab?: (id: number, patch: TabPatch) => void;
   // Open a new job-detail tab for a freshly created job (Re-run from
-  // scratch). Without this the re-run RPC succeeds server-side but
-  // the user sees no UI change — the current tab keeps showing the
-  // source job because its jobId is a tab-anchored prop.
+  // scratch). Reserved for when re-run is wired through the parent
+  // tab system rather than navigating the URL.
   onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
 }
 
 // Mirror of `AiDiffStack` / `PreviewStack`: render every job-detail
-// tab simultaneously, but only the active one is visible. Keeping
-// inactive tabs mounted means switching back is instant and the
-// per-job event subscriptions don't tear down on tab change.
-export function JobDetailStack({
-  tabs,
-  activeId,
-  onOpenFile,
-  onUpdateTab,
-  onOpenJobTab,
-}: Props) {
-  const handleTitle = useCallback(
-    (tabId: number, title: string) => {
-      onUpdateTab(tabId, { title });
-    },
-    [onUpdateTab],
-  );
-
+// tab simultaneously and toggle visibility, so switching back is
+// instant and per-job event subscriptions don't tear down.
+export function JobDetailStack({ tabs, activeId }: Props) {
   const jobTabs = tabs.filter(
     (t): t is JobDetailTab => t.kind === "job-detail" && t.jobId !== undefined,
   );
@@ -49,15 +29,15 @@ export function JobDetailStack({
   return (
     <>
       {jobTabs.map((t) => (
-        <JobPage
+        <div
           key={t.id}
-          jobId={t.jobId as JobId}
-          active={t.id === activeId}
-          onOpenFile={onOpenFile}
-          onTitleResolved={(title) => handleTitle(t.id, title)}
-          onOpenJobTab={onOpenJobTab}
-        />
+          className="h-full w-full"
+          style={{ display: t.id === activeId ? "block" : "none" }}
+        >
+          <JobChatPage jobId={t.jobId as JobId} />
+        </div>
       ))}
     </>
   );
 }
+

@@ -33,11 +33,13 @@ UI_LOG      := $(DEV_DIR)/ui.log
 BACKEND_BIND ?= 127.0.0.1:7777
 UI_PORT      ?= 5173
 FS_ROOT      ?= $(CURDIR)
+# Derived so fuser can reference just the port number.
+BACKEND_PORT  = $(word 2,$(subst :, ,$(BACKEND_BIND)))
 
 CARGO_CMD := cargo run -p codeless-cli --
 PNPM_CMD  := pnpm -C ui/codeless-ui
 
-.PHONY: start stop restart backend ui backend-fg ui-fg demo-seed logs status clean help
+.PHONY: start stop kill restart backend ui backend-fg ui-fg demo-seed logs status clean help
 
 help:
 	@echo "codeless dev:"
@@ -51,6 +53,7 @@ help:
 	@echo "  make backend-fg  backend in foreground"
 	@echo "  make ui-fg       UI in foreground"
 	@echo "  make demo-seed   seed demo repo + mock job"
+	@echo "  make kill        force-kill backend + UI by process name"
 	@echo "  make clean       stop + wipe $(DEV_DIR)/"
 
 $(DEV_DIR):
@@ -149,6 +152,17 @@ stop:
 	    fi; \
 	done; \
 	if [ $$stopped -eq 0 ]; then echo "nothing to stop"; fi
+
+# Force-kill by port. Using fuser avoids the pkill self-match bug where
+# the pattern string appears verbatim in the spawning shell's cmdline.
+kill:
+	@fuser -k $(BACKEND_PORT)/tcp 2>/dev/null \
+	    && echo "killed backend (port $(BACKEND_PORT))" \
+	    || echo "backend not running (port $(BACKEND_PORT) clear)"
+	@fuser -k $(UI_PORT)/tcp 2>/dev/null \
+	    && echo "killed ui (port $(UI_PORT))" \
+	    || echo "ui not running (port $(UI_PORT) clear)"
+	@rm -f $(BACKEND_PID) $(UI_PID)
 
 restart: stop start
 

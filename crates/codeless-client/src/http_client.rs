@@ -8,7 +8,8 @@ use codeless_rpc::{
     ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
     RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopJobArgs,
     StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -290,6 +291,13 @@ impl RpcServer for HttpRpcClient {
 
     async fn agent_chat(&self, args: AgentChatArgs) -> RpcResult<AgentChatResult> {
         self.call("agent_chat", &args).await
+    }
+
+    async fn upload_chat_attachment(
+        &self,
+        args: UploadChatAttachmentArgs,
+    ) -> RpcResult<UploadChatAttachmentResult> {
+        self.call("upload_chat_attachment", &args).await
     }
 }
 

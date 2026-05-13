@@ -10,8 +10,9 @@ use crate::methods::{
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
     RemoveRepoArgs, RerunJobArgs, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -179,4 +180,16 @@ pub trait RpcServer: Send + Sync + 'static {
     /// detached task — its success/failure surfaces as events, not as
     /// the RPC result, because the wire shape commits to streaming.
     async fn agent_chat(&self, args: AgentChatArgs) -> RpcResult<AgentChatResult>;
+
+    /// Drop a binary blob into the job worktree's chat-attachments
+    /// scratch dir so the next `agent_chat` turn can reference it by
+    /// path. The runner runs with the worktree as cwd, so a file
+    /// written here is readable by the model without any extra
+    /// plumbing. `Conflict` if the job has no worktree yet;
+    /// `InvalidArgument` for an undecodable base64 body or a filename
+    /// that fails the basename sanitiser.
+    async fn upload_chat_attachment(
+        &self,
+        args: UploadChatAttachmentArgs,
+    ) -> RpcResult<UploadChatAttachmentResult>;
 }

@@ -4,13 +4,6 @@ import { Streamdown } from "streamdown";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
@@ -28,7 +21,7 @@ import { setGlobalDocs } from "./spec/mutateTemplate";
 
 type JobDiffFile = JobDiffResult["files"][number];
 
-import { relativise, summariseToolArgs } from "./eventFormat";
+import { summariseToolArgs } from "./eventFormat";
 
 // The RunPane is the canonical "is it running, can I make it run"
 // surface. Identity + cost stay in the page header; here is where the
@@ -131,34 +124,265 @@ export function RunPane({ job, refetchJob, onOpenJobTab, onEditSpec }: Props) {
   const current = phaseOf(job.status);
   const currentIdx = phaseIndex(current);
   const tone = terminalTone(job.status);
+  // Chat needs a session that can run against a worktree. Hide it
+  // for pre-run phases (draft/queued) where there's nothing to ask
+  // about and `agent_chat` would have no cwd. Surface it as soon as
+  // the runner takes over.
+  const showChat = current === "running" || current === "terminal";
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto max-w-3xl space-y-4 p-6">
+      <div className="space-y-4 p-4 lg:p-6">
         <RunHeader job={job} onEditSpec={onEditSpec} />
 
-        <ol className="relative">
-          {PHASES.map((p, i) => {
-            const isPast = i < currentIdx;
-            const isActive = i === currentIdx;
-            const isLast = i === PHASES.length - 1;
-            return (
-              <PhaseNode
-                key={p.id}
-                phase={p}
-                job={job}
-                isPast={isPast}
-                isActive={isActive}
-                isLast={isLast}
-                tone={tone}
-                refetchJob={refetchJob}
-                onOpenJobTab={onOpenJobTab}
-              />
-            );
-          })}
-        </ol>
+        <PhaseStepper currentIdx={currentIdx} job={job} tone={tone} />
+
+        <div
+          className={cn(
+            "grid gap-4",
+            showChat && "lg:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]",
+          )}
+        >
+          <div className="min-w-0 space-y-3">
+            <PhaseBody
+              phase={PHASES[currentIdx]}
+              job={job}
+              isActive
+              isPast={false}
+              refetchJob={refetchJob}
+              onOpenJobTab={onOpenJobTab}
+            />
+          </div>
+          {showChat && (
+            <aside className="min-w-0 lg:sticky lg:top-4 lg:self-start">
+              <JobChat job={job} onOpenJobTab={onOpenJobTab} />
+            </aside>
+          )}
+        </div>
       </div>
     </ScrollArea>
+  );
+}
+
+// Compact orientation strip used by the chat-first job page: the same
+// goal/runner/cost/wallclock card and 4-node lifecycle stepper
+// `RunPane` shows, but standalone so it can sit above the chat
+// without dragging the rest of the run surface in.
+export function RunOverview({
+  job,
+  onEditSpec,
+}: {
+  job: Job;
+  onEditSpec?: () => void;
+}) {
+  const current = phaseOf(job.status);
+  const currentIdx = phaseIndex(current);
+  const tone = terminalTone(job.status);
+  return (
+    <div className="space-y-4">
+      <RunHeader job={job} onEditSpec={onEditSpec} />
+      <PhaseStepper currentIdx={currentIdx} job={job} tone={tone} />
+    </div>
+  );
+}
+
+// One-line strip for the chat-page header. Phase dots + runner +
+// model + cost + time, sized to sit next to the title without
+// forcing a second row. Click any segment to jump to the matching
+// sidebar tab / spec view.
+export function RunStrip({
+  job,
+  onEditSpec,
+}: {
+  job: Job;
+  onEditSpec?: () => void;
+}) {
+  const currentIdx = phaseIndex(phaseOf(job.status));
+  const tone = terminalTone(job.status);
+  const costPct =
+    job.cost_cap_cents > 0
+      ? Math.min(100, (job.cost_cents / job.cost_cap_cents) * 100)
+      : 0;
+  const wallMs =
+    job.started_at && job.ended_at
+      ? new Date(job.ended_at).getTime() - new Date(job.started_at).getTime()
+      : job.started_at
+        ? Date.now() - new Date(job.started_at).getTime()
+        : 0;
+  const wallPct =
+    job.wall_clock_cap_ms > 0
+      ? Math.min(100, (wallMs / job.wall_clock_cap_ms) * 100)
+      : 0;
+  return (
+    <div className="text-muted-foreground flex items-center gap-3 text-[11px]">
+      <ol className="flex items-center gap-1" aria-label="lifecycle">
+        {PHASES.map((p, i) => {
+          const isPast = i < currentIdx;
+          const isActive = i === currentIdx;
+          const isTerm = p.id === "terminal";
+          const reached = isPast || isActive;
+          const dotClass = isTerm && reached
+            ? tone.dot
+            : reached
+              ? "bg-blue-500"
+              : "bg-muted-foreground/30";
+          return (
+            <li key={p.id} className="flex items-center gap-1" title={p.label}>
+              <span className={cn("h-1.5 w-1.5 rounded-full", dotClass)} />
+              {i < PHASES.length - 1 && (
+                <span
+                  className={cn(
+                    "h-px w-3",
+                    isPast ? (isTerm ? tone.dot : "bg-blue-500") : "bg-border",
+                  )}
+                />
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      <span className="truncate">
+        <span className="text-foreground font-medium">{job.runner}</span>
+        {job.model && <span className="ml-1">· {job.model}</span>}
+      </span>
+      {job.cost_cap_cents > 0 && (
+        <span className="flex items-center gap-1" title={`cost $${(job.cost_cents / 100).toFixed(2)} of $${(job.cost_cap_cents / 100).toFixed(2)}`}>
+          <span className="bg-border relative h-1 w-10 overflow-hidden rounded-full">
+            <span
+              className={cn(
+                "absolute inset-y-0 left-0",
+                costPct >= 90 ? "bg-red-500" : "bg-blue-500",
+              )}
+              style={{ width: `${costPct}%` }}
+            />
+          </span>
+          <span className="font-mono">${(job.cost_cents / 100).toFixed(2)}</span>
+        </span>
+      )}
+      {job.wall_clock_cap_ms > 0 && (
+        <span className="flex items-center gap-1" title={`time ${formatMs(wallMs)} of ${formatMs(job.wall_clock_cap_ms)}`}>
+          <span className="bg-border relative h-1 w-10 overflow-hidden rounded-full">
+            <span
+              className={cn(
+                "absolute inset-y-0 left-0",
+                wallPct >= 90 ? "bg-red-500" : "bg-blue-500",
+              )}
+              style={{ width: `${wallPct}%` }}
+            />
+          </span>
+          <span className="font-mono">{formatMs(wallMs)}</span>
+        </span>
+      )}
+      {onEditSpec && (
+        <button
+          type="button"
+          onClick={onEditSpec}
+          className="hover:text-foreground underline"
+          title="Edit template.yaml in Spec"
+        >
+          spec
+        </button>
+      )}
+    </div>
+  );
+}
+
+function formatMs(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1000);
+  return s === 0 ? `${m}m` : `${m}m${s}s`;
+}
+
+
+// Compact horizontal stepper. Replaces the old vertical lifecycle
+// timeline (4 nodes \u00d7 ~80px of vertical space). Past phases collapse
+// to a small filled dot; the active phase pulses; future phases are
+// muted. Labels sit underneath. The active phase's body renders
+// below this strip in the main RunPane layout, so this surface is
+// orientation-only \u2014 you don't have to scroll to know where the job
+// is in its lifecycle.
+function PhaseStepper({
+  currentIdx,
+  job,
+  tone,
+}: {
+  currentIdx: number;
+  job: Job;
+  tone: ReturnType<typeof terminalTone>;
+}) {
+  return (
+    <ol className="flex items-center gap-0">
+      {PHASES.map((p, i) => {
+        const isPast = i < currentIdx;
+        const isActive = i === currentIdx;
+        const isTerminalNode = p.id === "terminal";
+        const reached = isPast || isActive;
+        const isLast = i === PHASES.length - 1;
+        return (
+          <li key={p.id} className="flex flex-1 items-center last:flex-none">
+            <div className="flex flex-col items-center gap-1">
+              <div className="relative">
+                <motion.div
+                  initial={false}
+                  animate={{ scale: isActive ? 1.05 : 1 }}
+                  transition={{ duration: 0.3 }}
+                  className={cn(
+                    "h-3 w-3 rounded-full border-2 transition-colors",
+                    isTerminalNode && reached
+                      ? cn(tone.ring, tone.dot)
+                      : reached
+                        ? "border-blue-500 bg-blue-500"
+                        : "border-muted-foreground/30 bg-background",
+                  )}
+                />
+                {isActive && !isTerminalNode && (
+                  <motion.div
+                    aria-hidden
+                    initial={{ opacity: 0.5, scale: 1 }}
+                    animate={{ opacity: 0, scale: 2.4 }}
+                    transition={{ duration: 1.6, repeat: Infinity, ease: "easeOut" }}
+                    className="bg-blue-500 absolute left-0 top-0 h-3 w-3 rounded-full"
+                  />
+                )}
+              </div>
+              <span
+                className={cn(
+                  "text-[11px] font-medium tracking-tight",
+                  isActive
+                    ? isTerminalNode
+                      ? tone.text
+                      : "text-foreground"
+                    : reached
+                      ? "text-foreground/70"
+                      : "text-muted-foreground",
+                )}
+              >
+                {isTerminalNode && reached && job.status !== "completed"
+                  ? job.status
+                  : p.label}
+              </span>
+            </div>
+            {!isLast && (
+              <div className="bg-border mx-2 h-px flex-1 overflow-hidden">
+                <motion.div
+                  initial={{ scaleX: 0 }}
+                  animate={{ scaleX: isPast ? 1 : 0 }}
+                  transition={{ duration: 0.5, ease: "easeOut" }}
+                  style={{ transformOrigin: "left" }}
+                  className={cn(
+                    "h-full",
+                    PHASES[currentIdx].id === "terminal"
+                      ? tone.dot
+                      : "bg-blue-500",
+                  )}
+                />
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -206,9 +430,21 @@ function RunHeader({
           {job.permission_mode && (
             <RunnerChip label="perm" value={job.permission_mode} />
           )}
+          {tplStages.length > 0 && onEditSpec && (
+            <button
+              type="button"
+              onClick={onEditSpec}
+              className="text-muted-foreground hover:text-foreground ml-auto text-[11px] underline"
+              title="Edit template.yaml in the Spec pane"
+            >
+              {tplStages.length} stages · edit
+            </button>
+          )}
         </div>
 
-        <PlannedStages stages={tplStages} onEditSpec={onEditSpec} />
+        {tplStages.length === 0 && (
+          <NoStagesHint onEditSpec={onEditSpec} />
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <CapBar
@@ -224,56 +460,24 @@ function RunHeader({
   );
 }
 
-function PlannedStages({
-  stages,
-  onEditSpec,
-}: {
-  stages: string[];
-  onEditSpec?: () => void;
-}) {
+function NoStagesHint({ onEditSpec }: { onEditSpec?: () => void }) {
   return (
-    <div>
-      <div className="mb-1 flex items-baseline justify-between gap-2">
-        <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
-          planned stages
-          {stages.length > 0 && (
-            <span className="ml-1 font-mono normal-case tracking-normal">
-              ({stages.length})
-            </span>
-          )}
-        </div>
-        {onEditSpec && (
+    <p className="text-muted-foreground text-[11px] italic">
+      no stages in template.yaml — re-runs of this job will do nothing.
+      {onEditSpec && (
+        <>
+          {" "}
           <button
             type="button"
             onClick={onEditSpec}
-            className="text-muted-foreground hover:text-foreground text-[10px] underline"
-            title="Edit template.yaml in the Spec pane"
+            className="hover:text-foreground underline"
           >
-            {stages.length === 0 ? "add stages…" : "edit stages…"}
+            open Spec → Files
           </button>
-        )}
-      </div>
-      {stages.length === 0 ? (
-        <p className="text-muted-foreground text-[11px] italic">
-          no stages in template.yaml — re-runs of this job will do nothing.
-          {onEditSpec && " open Spec → Files (template / docs) and add `stages:` entries."}
-        </p>
-      ) : (
-        <ol className="space-y-0.5">
-          {stages.map((s, i) => (
-            <li
-              key={`${i}-${s}`}
-              className="bg-muted/30 flex items-baseline gap-2 rounded px-2 py-1 text-[11px]"
-            >
-              <span className="text-muted-foreground font-mono tabular-nums text-[10px]">
-                {String(i + 1).padStart(2, "0")}
-              </span>
-              <span className="truncate">{s}</span>
-            </li>
-          ))}
-        </ol>
+          {" "}and add `stages:` entries.
+        </>
       )}
-    </div>
+    </p>
   );
 }
 
@@ -405,173 +609,6 @@ function WallClockBar({ job }: { job: Job }) {
   );
 }
 
-function PhaseNode({
-  phase,
-  job,
-  isPast,
-  isActive,
-  isLast,
-  tone,
-  refetchJob,
-  onOpenJobTab,
-}: {
-  phase: PhaseSpec;
-  job: Job;
-  isPast: boolean;
-  isActive: boolean;
-  isLast: boolean;
-  tone: ReturnType<typeof terminalTone>;
-  refetchJob: () => void;
-  onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
-}) {
-  const reached = isPast || isActive;
-  const isTerminalNode = phase.id === "terminal";
-  return (
-    <li className="relative grid grid-cols-[28px_1fr] gap-x-3 pb-7 last:pb-0">
-      <div className="relative flex justify-center">
-        <NodeDot
-          reached={reached}
-          active={isActive}
-          terminalReached={isTerminalNode && reached}
-          tone={tone}
-        />
-        {!isLast && (
-          <Connector
-            filled={isPast}
-            active={isActive}
-            tone={isPast || (isActive && isTerminalNode) ? tone : null}
-          />
-        )}
-      </div>
-      <div className="min-w-0 pt-0.5">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <h3
-            className={cn(
-              "text-sm font-semibold tracking-tight",
-              reached ? "text-foreground" : "text-muted-foreground",
-              isTerminalNode && reached && tone.text,
-            )}
-          >
-            {phase.label}
-          </h3>
-          <PhaseSubLabel phase={phase} job={job} active={isActive} tone={tone} />
-        </div>
-        <div className="mt-2">
-          <PhaseBody
-            phase={phase}
-            job={job}
-            isActive={isActive}
-            isPast={isPast}
-            refetchJob={refetchJob}
-            onOpenJobTab={onOpenJobTab}
-          />
-        </div>
-      </div>
-    </li>
-  );
-}
-
-function NodeDot({
-  reached,
-  active,
-  terminalReached,
-  tone,
-}: {
-  reached: boolean;
-  active: boolean;
-  terminalReached: boolean;
-  tone: ReturnType<typeof terminalTone>;
-}) {
-  return (
-    <div className="relative z-10 mt-1">
-      <motion.div
-        initial={false}
-        animate={{ scale: active ? 1.1 : 1 }}
-        transition={{ duration: 0.3 }}
-        className={cn(
-          "h-4 w-4 rounded-full border-2 transition-colors",
-          terminalReached
-            ? cn(tone.ring, tone.dot)
-            : reached
-              ? "border-blue-500 bg-blue-500"
-              : "border-muted-foreground/40 bg-background",
-        )}
-      />
-      {active && (
-        <motion.div
-          aria-hidden
-          initial={{ opacity: 0.5, scale: 1 }}
-          animate={{ opacity: 0, scale: 2.4 }}
-          transition={{ duration: 1.6, repeat: Infinity, ease: "easeOut" }}
-          className={cn(
-            "absolute left-0 top-0 h-4 w-4 rounded-full",
-            terminalReached ? tone.dot : "bg-blue-500",
-          )}
-        />
-      )}
-    </div>
-  );
-}
-
-function Connector({
-  filled,
-  active,
-  tone,
-}: {
-  filled: boolean;
-  active: boolean;
-  tone: ReturnType<typeof terminalTone> | null;
-}) {
-  return (
-    <div className="absolute left-1/2 top-6 h-[calc(100%-1rem)] w-0.5 -translate-x-1/2 overflow-hidden rounded-full">
-      <div className="bg-border absolute inset-0" />
-      <motion.div
-        initial={{ scaleY: 0 }}
-        animate={{ scaleY: filled ? 1 : active ? 0.5 : 0 }}
-        transition={{ duration: 0.6, ease: "easeOut" }}
-        style={{ transformOrigin: "top" }}
-        className={cn(
-          "absolute inset-0 rounded-full",
-          tone ? tone.dot : "bg-blue-500",
-        )}
-      />
-    </div>
-  );
-}
-
-function PhaseSubLabel({
-  phase,
-  job,
-  active,
-  tone,
-}: {
-  phase: PhaseSpec;
-  job: Job;
-  active: boolean;
-  tone: ReturnType<typeof terminalTone>;
-}) {
-  if (!active) return null;
-  if (phase.id === "terminal") {
-    return (
-      <Badge variant="outline" className={cn("font-mono text-[10px]", tone.text)}>
-        {job.status}
-        {job.stop_reason && ` · ${job.stop_reason}`}
-      </Badge>
-    );
-  }
-  if (phase.id === "running" && job.worktree_path) {
-    return (
-      <span
-        className="text-muted-foreground truncate font-mono text-[10px]"
-        title={job.worktree_path}
-      >
-        {relativise(job.worktree_path)}
-      </span>
-    );
-  }
-  return null;
-}
-
 function PhaseBody({
   phase,
   job,
@@ -686,51 +723,26 @@ function RunningBody({
   job,
   isActive,
   isPast,
-  refetchJob,
 }: {
   job: Job;
   isActive: boolean;
   isPast: boolean;
+  // Kept for prop-shape symmetry with the other phase bodies; not
+  // used here — the stop button now lives in `JobHeader`.
   refetchJob: () => void;
 }) {
-  const rpc = useRpc();
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const stop = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      await rpc.call("stop_job", { job_id: job.id });
-      refetchJob();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (!isActive && !isPast) return null;
-
   return (
     <div className="space-y-3">
       <LiveStageCards jobId={job.id} />
-      {isActive && (
-        <div className="flex items-center gap-2 pt-1">
-          <Button size="sm" variant="outline" onClick={stop} disabled={busy}>
-            {busy ? "stopping…" : "stop"}
-          </Button>
-          {job.status === "awaiting-review" && (
-            <Badge
-              variant="outline"
-              className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-            >
-              awaiting review
-            </Badge>
-          )}
-        </div>
+      {isActive && job.status === "awaiting-review" && (
+        <Badge
+          variant="outline"
+          className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+        >
+          awaiting review
+        </Badge>
       )}
-      {err && <div className="text-destructive text-xs">{err}</div>}
     </div>
   );
 }
@@ -738,68 +750,17 @@ function RunningBody({
 function TerminalBody({
   job,
   isActive,
-  onOpenJobTab,
 }: {
   job: Job;
   isActive: boolean;
+  // Kept on the Props signature so callers (PhaseBody) can pass it
+  // uniformly with other phase bodies; the actual re-run button now
+  // lives in `JobHeader` so any section of the page can trigger it.
   onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
 }) {
-  const rpc = useRpc();
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
   const tone = terminalTone(job.status);
-
-  const rerun = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const fresh = await rpc.call("rerun_job", { source_job_id: job.id });
-      const title = freshTabTitle(job);
-      if (onOpenJobTab) onOpenJobTab(fresh.id, title);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      {isActive && <FinalRollup job={job} tone={tone} />}
-
-      <JobChat job={job} onOpenJobTab={onOpenJobTab} />
-
-      <div className="flex items-center gap-2">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button size="sm" variant="outline" disabled={busy}>
-              {busy ? "queuing…" : "re-run ▾"}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="text-xs">
-            <DropdownMenuItem onClick={rerun}>
-              <div className="flex flex-col">
-                <span>Re-run from scratch</span>
-                <span className="text-muted-foreground text-[10px]">
-                  fresh job, same prompt + caps + runner — ignores prior runs
-                </span>
-              </div>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem disabled>
-              <div className="flex flex-col">
-                <span>Re-run from a specific stage</span>
-                <span className="text-muted-foreground text-[10px]">
-                  not wired yet — needs Job/Run schema split
-                </span>
-              </div>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-      {err && <div className="text-destructive text-xs">{err}</div>}
-    </div>
-  );
+  if (!isActive) return null;
+  return <FinalRollup job={job} tone={tone} />;
 }
 
 // Per-job chat. One persistent thread per job: every turn (user
@@ -831,11 +792,19 @@ interface ChatMessage {
   ts: string;
 }
 
-function JobChat({
+export function JobChat({
   job,
+  uiLocation,
   onOpenJobTab: _onOpenJobTab,
 }: {
   job: Job;
+  /**
+   * Where the user is in the app when they hit send (e.g.
+   * `jobs/<id>`). Forwarded to the runtime via `ChatContext.ui_location`
+   * so the model can ground answers to the active surface. Optional —
+   * omit on call sites where the location is already implicit.
+   */
+  uiLocation?: string;
   onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
 }) {
   const rpc = useRpc();
@@ -850,6 +819,17 @@ function JobChat({
   } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const sinceCursor = useRef<number>(0);
+  // Attachments staged for the next send. Each entry is the result
+  // of an `upload_chat_attachment` RPC: the bytes already live in
+  // the worktree and we hand the runtime references on send. Cleared
+  // once the turn is dispatched so a follow-up question is not
+  // accidentally re-attached.
+  const [attachments, setAttachments] = useState<
+    Array<{ filename: string; relativePath: string; mimeType?: string }>
+  >([]);
+  const [uploading, setUploading] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   // Load prior chat on mount / job change.
   useEffect(() => {
@@ -895,14 +875,20 @@ function JobChat({
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy) return;
+    if ((!text && attachments.length === 0) || busy) return;
     setBusy(true);
     setErr(null);
     const ts = isoNow();
-    const userMsg: ChatMessage = { role: "user", text, ts };
+    const userMsg: ChatMessage = {
+      role: "user",
+      text: renderUserMessageText(text, attachments),
+      ts,
+    };
     const optimistic = [...history, userMsg];
+    const sentAttachments = attachments;
     setHistory(optimistic);
     setInput("");
+    setAttachments([]);
     setStreaming({ sessionId: job.id, taskId: "pending", text: "" });
 
     try {
@@ -913,9 +899,18 @@ function JobChat({
       const cwd = job.worktree_path ?? null;
       const result = await rpc.call("agent_chat", {
         runner: cliRunnerFor(job.runner),
-        prompt: buildChatPrompt(optimistic, text),
+        prompt: buildChatPrompt(optimistic, text || "(see attached files)"),
         session_id: job.id,
         cwd,
+        context: {
+          attachments: sentAttachments.map((a) => ({
+            relative_path: a.relativePath,
+            mime_type: a.mimeType ?? null,
+          })),
+          ui_location: uiLocation ?? `jobs/${job.id}`,
+          selection: null,
+          user_prompts: [],
+        },
       });
 
       setStreaming({ sessionId: result.session_id, taskId: result.task_id, text: "" });
@@ -972,14 +967,82 @@ function JobChat({
       setErr(e instanceof Error ? e.message : String(e));
       setStreaming(null);
       setHistory(history);
+      // Restore the staged attachments so the user can retry without
+      // re-picking files. The bytes still live in the worktree from
+      // the original upload; we only re-stage the references.
+      setAttachments(sentAttachments);
     } finally {
       setBusy(false);
     }
   };
 
+  // Push files through `upload_chat_attachment` and stage their
+  // returned worktree-relative paths. Errors land in `err` and the
+  // file is dropped from the staged list — the user retries.
+  const uploadFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const list = Array.from(files);
+      if (list.length === 0) return;
+      if (!job.worktree_path) {
+        setErr(
+          "this job has no worktree yet — submit/run it before attaching files",
+        );
+        return;
+      }
+      setUploading((n) => n + list.length);
+      for (const file of list) {
+        try {
+          const buf = await file.arrayBuffer();
+          const b64 = arrayBufferToBase64(buf);
+          const result = await rpc.call("upload_chat_attachment", {
+            job_id: job.id,
+            filename: file.name || "untitled",
+            content_b64: b64,
+          });
+          setAttachments((prev) => [
+            ...prev,
+            {
+              filename: file.name || "untitled",
+              relativePath: result.relative_path,
+              mimeType: file.type || undefined,
+            },
+          ]);
+        } catch (e) {
+          setErr(e instanceof Error ? e.message : String(e));
+        } finally {
+          setUploading((n) => n - 1);
+        }
+      }
+    },
+    [rpc, job.id, job.worktree_path],
+  );
+
   return (
-    <div className="border-border/60 bg-card/40 flex flex-col gap-2 rounded-md border p-3">
-      <div className="flex items-baseline justify-between gap-2">
+    <div
+      className={cn(
+        "border-border/60 bg-card/40 flex h-full min-h-0 min-w-0 flex-col gap-2 overflow-hidden rounded-md border p-3",
+        dragOver && "border-blue-500/70 ring-1 ring-blue-500/40",
+      )}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        // The drag leaves the root only when the cursor exits the
+        // container, not on every child boundary. relatedTarget is
+        // null when the pointer leaves the window.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setDragOver(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+        e.preventDefault();
+        setDragOver(false);
+        void uploadFiles(e.dataTransfer.files);
+      }}
+    >
+      <div className="flex shrink-0 items-baseline justify-between gap-2">
         <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
           chat with this job
         </div>
@@ -989,30 +1052,69 @@ function JobChat({
       </div>
 
       {history.length === 0 && !streaming && loaded && (
-        <p className="text-muted-foreground text-[11px] italic">
+        <p className="text-muted-foreground shrink-0 text-[11px] italic">
           ask anything — "how many rows in the csv?", "where did you put the
-          files?", "now add a column for reactive power". The chat runs in
-          this job's worktree so claude can read what it made.
+          files?", "now add a column for reactive power". the chat runs in
+          this job's worktree so claude can read what it made. drop files,
+          paste images, or use the attach button to share context.
         </p>
       )}
 
-      {(history.length > 0 || streaming) && (
-        <ul className="max-h-96 space-y-2 overflow-y-auto pr-1">
-          {history.map((m, i) => (
-            <ChatBubble key={i} message={m} />
+      <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+        {history.map((m, i) => (
+          <ChatBubble key={i} message={m} />
+        ))}
+        {streaming && (
+          <ChatBubble
+            message={{
+              role: "assistant",
+              text: streaming.text || "…",
+              ts: "",
+            }}
+            streaming
+          />
+        )}
+      </ul>
+
+      {(attachments.length > 0 || uploading > 0) && (
+        <div className="flex shrink-0 flex-wrap gap-1">
+          {attachments.map((a, i) => (
+            <span
+              key={`${a.relativePath}-${i}`}
+              className="border-border/60 bg-muted/40 flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]"
+              title={a.relativePath}
+            >
+              <span className="truncate">{a.filename}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setAttachments((prev) => prev.filter((_, j) => j !== i))
+                }
+                className="text-muted-foreground hover:text-foreground shrink-0"
+                aria-label={`remove ${a.filename}`}
+              >
+                ×
+              </button>
+            </span>
           ))}
-          {streaming && (
-            <ChatBubble
-              message={{
-                role: "assistant",
-                text: streaming.text || "…",
-                ts: "",
-              }}
-              streaming
-            />
+          {uploading > 0 && (
+            <span className="text-muted-foreground text-[10px] italic">
+              uploading {uploading}…
+            </span>
           )}
-        </ul>
+        </div>
       )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) void uploadFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
 
       <textarea
         value={input}
@@ -1021,6 +1123,22 @@ function JobChat({
         placeholder="message claude about this job…"
         className="border-border/60 bg-background w-full resize-none rounded border px-2 py-1.5 text-xs"
         disabled={busy}
+        onPaste={(e) => {
+          // Pull files (typically clipboard images) out of the paste.
+          // Text pastes still flow into the textarea normally because
+          // we don't preventDefault unless files are present.
+          const files: File[] = [];
+          for (const item of e.clipboardData.items) {
+            if (item.kind === "file") {
+              const f = item.getAsFile();
+              if (f) files.push(f);
+            }
+          }
+          if (files.length > 0) {
+            e.preventDefault();
+            void uploadFiles(files);
+          }
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -1031,8 +1149,21 @@ function JobChat({
       <div className="flex items-center gap-2">
         <Button
           size="sm"
+          variant="outline"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={busy || !job.worktree_path}
+          title={
+            job.worktree_path
+              ? "attach files (also: drop or paste)"
+              : "no worktree yet — submit/run the job first"
+          }
+        >
+          attach
+        </Button>
+        <Button
+          size="sm"
           onClick={send}
-          disabled={busy || !input.trim()}
+          disabled={busy || (!input.trim() && attachments.length === 0)}
           className="bg-blue-600 text-white hover:bg-blue-700"
         >
           {busy ? "thinking…" : "send ▶"}
@@ -1075,7 +1206,7 @@ function ChatBubble({
           </span>
         )}
       </div>
-      <div className="prose prose-sm dark:prose-invert max-w-none text-[12px] [&_pre]:my-1.5 [&_pre]:bg-background/60 [&_pre]:p-2 [&_pre]:text-[11px] [&_code]:bg-background/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[11px] [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-[13px] [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
+      <div className="prose prose-sm dark:prose-invert max-w-none text-[12px] break-words [&_pre]:my-1.5 [&_pre]:bg-background/60 [&_pre]:p-2 [&_pre]:text-[11px] [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-auto [&_code]:bg-background/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[11px] [&_code]:break-all [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-[13px] [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
         <Streamdown>{message.text}</Streamdown>
       </div>
     </li>
@@ -1088,6 +1219,38 @@ function shortTime(iso: string): string {
 
 function isoNow(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// Encode a binary blob as standard base64. Done in chunks because
+// `String.fromCharCode(...big array)` blows the call-stack limit on
+// large pasted images; 32k is well under the practical limit and
+// keeps the loop cheap for typical attachments.
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(i, Math.min(i + chunk, bytes.length)),
+    );
+  }
+  return btoa(binary);
+}
+
+// What we persist to CHAT.md for a turn that included attachments.
+// Keeps the worktree-relative paths visible so reopening the chat
+// later still shows what the user shared. The runtime's preamble is
+// not duplicated here — the model receives it via `ChatContext` on
+// the wire, and CHAT.md is the user-facing transcript.
+function renderUserMessageText(
+  text: string,
+  attachments: Array<{ filename: string; relativePath: string }>,
+): string {
+  if (attachments.length === 0) return text;
+  const list = attachments
+    .map((a) => `- ${a.filename} (\`${a.relativePath}\`)`)
+    .join("\n");
+  return text ? `${text}\n\n_attached:_\n${list}` : `_attached:_\n${list}`;
 }
 
 // Anthropic / OpenAI / Copilot / etc map to CLI runner ids the
@@ -1456,16 +1619,6 @@ function stageDuration(s: StageRollup): string {
   return formatDurationMs((end ?? Date.now()) - start);
 }
 
-function freshTabTitle(source: Job): string {
-  if (source.template_yaml) {
-    const m = /^name:\s*(.+)$/m.exec(source.template_yaml);
-    if (m) return m[1].trim().slice(0, 32);
-  }
-  const tail = source.branch?.split("/").pop();
-  if (tail) return tail.length > 32 ? `${tail.slice(0, 30)}…` : tail;
-  return `Job ${source.id.slice(0, 6)}`;
-}
-
 // Live stage cards: subscribe to the per-job SSE stream and bucket
 // events by stage_id. Each card shows the stage name + ordinal, an
 // animated status pill, duration ticking up while running, the
@@ -1804,7 +1957,7 @@ function AssistantBubble({
           {text.length} chars
         </span>
       </div>
-      <div className="prose prose-sm dark:prose-invert max-w-none text-[12px] [&_pre]:my-1.5 [&_pre]:bg-background/60 [&_pre]:p-2 [&_pre]:text-[11px] [&_code]:bg-background/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[11px] [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-[13px] [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_h1]:mt-2 [&_h2]:mt-2 [&_h3]:mt-2 [&_h1]:mb-1 [&_h2]:mb-1 [&_h3]:mb-1 [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
+      <div className="prose prose-sm dark:prose-invert max-w-none text-[12px] break-words [&_pre]:my-1.5 [&_pre]:bg-background/60 [&_pre]:p-2 [&_pre]:text-[11px] [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-auto [&_code]:bg-background/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[11px] [&_code]:break-all [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-[13px] [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_h1]:mt-2 [&_h2]:mt-2 [&_h3]:mt-2 [&_h1]:mb-1 [&_h2]:mb-1 [&_h3]:mb-1 [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
         <Streamdown>{shown}</Streamdown>
         {streaming && (
           <motion.span
