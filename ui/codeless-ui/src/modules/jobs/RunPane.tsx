@@ -59,6 +59,10 @@ function phaseOf(status: JobStatus): Phase {
       return "queued";
     case "running":
     case "awaiting-review":
+    case "paused":
+      // Paused tracks alongside running in the phase strip: a
+      // paused job is still mid-lifecycle (recoverable, not
+      // terminal), just temporarily idle.
       return "running";
     case "completed":
     case "failed":
@@ -907,6 +911,15 @@ function liveItemFromEvent(
         label: `stopped: ${e.reason}`,
         tone: e.reason === "user" ? "neutral" : "warn",
       };
+    case "job-paused":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label:
+          e.reason === "user" ? "paused" : `paused: ${e.reason}`,
+        tone: "warn",
+      };
     case "job-failed":
       return {
         kind: "lifecycle",
@@ -1557,7 +1570,7 @@ function JobActionRow({
 }) {
   const rpc = useRpc();
   const [busy, setBusy] = useState<
-    "start" | "stop" | "resume" | "rerun" | null
+    "start" | "stop" | "pause" | "resume" | "rerun" | null
   >(null);
   const [err, setErr] = useState<string | null>(null);
   const [showResumeForm, setShowResumeForm] = useState(false);
@@ -1565,10 +1578,15 @@ function JobActionRow({
   const stopReason = job.stop_reason;
   const isCostCapped = stopReason === "cost-cap";
   const isWallClockCapped = stopReason === "wall-clock";
-  const isResumable = status === "stopped" || status === "failed";
+  // `paused` is resumable by design (the whole point of pause vs
+  // stop). `stopped` / `failed` are also resumable when a session
+  // id was captured — resume_job decides at runtime, the UI just
+  // offers the button.
+  const isResumable =
+    status === "stopped" || status === "failed" || status === "paused";
 
   const run = async (
-    kind: "start" | "stop" | "resume" | "rerun",
+    kind: "start" | "stop" | "pause" | "resume" | "rerun",
     fn: () => Promise<unknown>,
   ) => {
     setBusy(kind);
@@ -1591,6 +1609,12 @@ function JobActionRow({
   const onStop = () =>
     run("stop", async () => {
       await rpc.call("stop_job", { job_id: job.id });
+      refetchJob();
+    });
+
+  const onPause = () =>
+    run("pause", async () => {
+      await rpc.call("pause_job", { job_id: job.id });
       refetchJob();
     });
 
@@ -1642,14 +1666,26 @@ function JobActionRow({
     }
     if (status === "running" || status === "awaiting-review") {
       return (
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onStop}
-          disabled={disabled}
-        >
-          {busy === "stop" ? "stopping…" : "stop ■"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onPause}
+            disabled={disabled}
+            title="Pause the agent; resume later from the captured session id. Keeps the worktree and branch."
+          >
+            {busy === "pause" ? "pausing…" : "pause ⏸"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onStop}
+            disabled={disabled}
+            title="Terminate the job. Resumable later only if a session id was captured; otherwise re-run starts fresh."
+          >
+            {busy === "stop" ? "stopping…" : "stop ■"}
+          </Button>
+        </div>
       );
     }
     // Terminal — stopped / failed / completed.
@@ -1759,6 +1795,10 @@ function actionRowLabel(job: Job): string {
       return "awaiting review";
     case "stopped":
       return job.stop_reason ? `stopped: ${job.stop_reason}` : "stopped";
+    case "paused":
+      return job.stop_reason && job.stop_reason !== "user"
+        ? `paused: ${job.stop_reason}`
+        : "paused";
     case "failed":
       return "failed";
     case "completed":

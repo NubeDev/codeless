@@ -256,6 +256,23 @@ export class MockRpcClient implements RpcClient {
         return job as RpcResultOf<M>;
       }
 
+      case "pause_job": {
+        const a = args as RpcArgs<"pause_job">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        if (job.status !== "running" && job.status !== "awaiting-review") {
+          throw new RpcError(
+            "conflict",
+            `job ${a.job_id} is ${job.status}; only running or awaiting-review jobs can be paused`,
+          );
+        }
+        job.status = "paused";
+        job.stop_reason = "user";
+        job.ended_at = Date.now();
+        this.emit({ type: "job-paused", job_id: job.id, reason: "user" });
+        return null as RpcResultOf<M>;
+      }
+
       case "stop_job": {
         const a = args as RpcArgs<"stop_job">;
         const job = this.jobs.find((j) => j.id === a.job_id);

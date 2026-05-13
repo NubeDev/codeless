@@ -12,6 +12,11 @@ const TONE: Record<JobStatus, string> = {
   completed: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
   failed: "bg-red-500/15 text-red-700 dark:text-red-300",
   stopped: "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300",
+  // Distinct tone from `stopped` so the dashboard tells the user
+  // at a glance that this row is *expected* to be resumed (vs.
+  // terminal). Amber-tinted because the run is interrupted but
+  // recoverable, same family as awaiting-review.
+  paused: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
 };
 
 export function StatusBadge({ status }: { status: JobStatus }) {

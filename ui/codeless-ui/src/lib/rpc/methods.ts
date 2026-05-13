@@ -116,6 +116,14 @@ export interface StopJobArgs {
   job_id: JobId;
 }
 
+// Move a Running / AwaitingReview job to Paused. The runner is
+// cancelled at the next await boundary; the captured per-stage
+// Stage.session_id is the resume handle for the next resume_job
+// call. Distinct from stop_job: pause is "I'll come back."
+export interface PauseJobArgs {
+  job_id: JobId;
+}
+
 export interface StartJobArgs {
   job_id: JobId;
 }
@@ -351,6 +359,7 @@ export interface RpcMethodMap {
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   list_stages: { args: ListStagesArgs; result: ListStagesResult };
   stop_job: { args: StopJobArgs; result: null };
+  pause_job: { args: PauseJobArgs; result: null };
   start_job: { args: StartJobArgs; result: Job };
   resume_job: { args: ResumeJobArgs; result: Job };
   rerun_job: { args: RerunJobArgs; result: Job };
