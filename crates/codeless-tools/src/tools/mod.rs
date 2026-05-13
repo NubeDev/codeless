@@ -8,6 +8,7 @@
 
 pub mod browse_fetch;
 pub mod browser_eval;
+pub mod browser_interact;
 pub mod browser_misc;
 pub mod browser_navigate;
 pub mod browser_read;
@@ -17,6 +18,9 @@ pub mod http_request;
 
 pub use browse_fetch::BrowseFetchTool;
 pub use browser_eval::BrowserEvalTool;
+pub use browser_interact::{
+    BrowserClickTool, BrowserFillTool, BrowserHoverTool, BrowserScrollTool, BrowserTypeTool,
+};
 pub use browser_misc::{BrowserCookiesTool, BrowserExtractTool, BrowserWaitTool};
 pub use browser_navigate::BrowserNavigateTool;
 pub use browser_read::BrowserReadTool;
