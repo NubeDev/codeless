@@ -26,4 +26,12 @@ pub struct Stage {
     pub verify_cmd: Option<String>,
     pub started_at: Option<UnixMillis>,
     pub ended_at: Option<UnixMillis>,
+    /// Runner-supplied session identifier, captured the first time a
+    /// task on this stage reports a non-empty `RunResult.session_id`.
+    /// Free-form on the wire — Claude emits `sess-<ulid>`, other
+    /// runners may use a different shape. `None` until a task
+    /// reports one; never cleared once set. Persisted for
+    /// observability only — see SCOPE.md hard rule #1: codeless
+    /// never reuses this to resume a runner.
+    pub session_id: Option<String>,
 }

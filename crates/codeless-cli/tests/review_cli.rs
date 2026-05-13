@@ -54,6 +54,7 @@ async fn seed(db_path: &std::path::Path) -> ReviewId {
         verify_cmd: None,
         started_at: None,
         ended_at: None,
+        session_id: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
     let review = Review {

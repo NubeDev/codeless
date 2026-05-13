@@ -38,7 +38,17 @@ ordinal?: number;
  *  `REVIEW ` prefix preserved). Same source of truth the UI
  *  already uses; persisted on the `Stage` row.
  */
-name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId };
+name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | 
+/**
+ *  First-and-only-time capture of the runner-supplied session id
+ *  for this stage. Emitted by `StageRecorder` the first time a
+ *  task on the stage reports a non-empty `RunResult.session_id`;
+ *  subsequent tasks with a session id on the same stage do not
+ *  re-emit. The recorder pins the same value onto
+ *  `stages.session_id` in SQLite so the observation survives
+ *  session boundaries.
+ */
+{ type: "stage-session-captured"; stage_id: StageId; session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -203,6 +213,16 @@ export type Stage = {
 	verify_cmd: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
+	/**
+	 *  Runner-supplied session identifier, captured the first time a
+	 *  task on this stage reports a non-empty `RunResult.session_id`.
+	 *  Free-form on the wire — Claude emits `sess-<ulid>`, other
+	 *  runners may use a different shape. `None` until a task
+	 *  reports one; never cleared once set. Persisted for
+	 *  observability only — see SCOPE.md hard rule #1: codeless
+	 *  never reuses this to resume a runner.
+	 */
+	session_id: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.

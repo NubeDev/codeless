@@ -85,6 +85,18 @@ pub enum Event {
         stage_id: StageId,
         status: StageStatus,
     },
+    /// First-and-only-time capture of the runner-supplied session id
+    /// for this stage. Emitted by `StageRecorder` the first time a
+    /// task on the stage reports a non-empty `RunResult.session_id`;
+    /// subsequent tasks with a session id on the same stage do not
+    /// re-emit. The recorder pins the same value onto
+    /// `stages.session_id` in SQLite so the observation survives
+    /// session boundaries.
+    #[serde(rename = "stage-session-captured")]
+    StageSessionCaptured {
+        stage_id: StageId,
+        session_id: String,
+    },
 
     #[serde(rename = "task-enqueued")]
     TaskEnqueued {

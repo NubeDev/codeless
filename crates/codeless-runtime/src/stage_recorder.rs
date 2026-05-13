@@ -76,6 +76,10 @@ async fn handle_event(
                     verify_cmd: None,
                     started_at: Some(env.created_at),
                     ended_at: None,
+                    // Filled in later by the `StageSessionCaptured`
+                    // handler — the runner does not know its session id
+                    // when the stage opens.
+                    session_id: None,
                 })
                 .await?;
         }

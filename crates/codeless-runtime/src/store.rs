@@ -315,6 +315,12 @@ impl SqliteStore {
                         ended_at: row
                             .try_get::<Option<i64>, _>("ended_at")?
                             .map(codeless_types::UnixMillis),
+                        // `stages.session_id` is not yet a column on
+                        // disk; the recorder populates it via a
+                        // dedicated `StageSessionCaptured` event handler
+                        // and a follow-up migration. Surface `None`
+                        // until that landing point.
+                        session_id: None,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,

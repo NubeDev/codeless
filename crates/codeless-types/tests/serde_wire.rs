@@ -115,6 +115,22 @@ fn review_event_label_is_kebab_case() {
 }
 
 #[test]
+fn stage_session_captured_round_trips() {
+    let stage = StageId::new();
+    let ev = Event::StageSessionCaptured {
+        stage_id: stage,
+        session_id: "sess-01HXYZ".into(),
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["type"], "stage-session-captured");
+    assert_eq!(v["stage_id"], stage.to_string());
+    assert_eq!(v["session_id"], "sess-01HXYZ");
+
+    let round: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(round, ev);
+}
+
+#[test]
 fn repo_added_event_label() {
     let ev = Event::RepoAdded {
         repo_id: RepoId::new(),

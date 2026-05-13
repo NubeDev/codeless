@@ -68,6 +68,15 @@ export type AgentChatArgs = {
 	 *  host paths.
 	 */
 	cwd?: string | null,
+	/**
+	 *  Optional structured context the UI knows about and the model
+	 *  should as well: attached files, where the user is in the app,
+	 *  any selection, and saved prompt snippets the user opted in.
+	 *  Additive — new optional fields land here without breaking
+	 *  existing clients. The runtime renders this into a deterministic
+	 *  preamble prepended to `prompt` before the runner is spawned.
+	 */
+	context?: ChatContext | null,
 };
 
 export type AgentChatResult = {
@@ -83,6 +92,57 @@ export type AgentChatResult = {
 
 export type ApproveReviewArgs = {
 	review_id: ReviewId,
+};
+
+export type ChatAttachmentRef = {
+	/**
+	 *  Path relative to the job worktree root, as returned by
+	 *  `upload_chat_attachment`. Used verbatim in the prompt
+	 *  preamble.
+	 */
+	relative_path: string,
+	/**
+	 *  Optional MIME type the UI sniffed at upload time (e.g.
+	 *  `image/png`). Surfaced to the model so it can pick the right
+	 *  reading strategy when the runner supports it.
+	 */
+	mime_type?: string | null,
+};
+
+/**
+ *  Forward-compatible bag of "what the user has on screen / wants
+ *  included" passed into a chat turn. Every field is optional and
+ *  the runtime tolerates an empty struct — adding a new field is a
+ *  non-breaking change for older UIs.
+ */
+export type ChatContext = {
+	/**
+	 *  Files previously written via `upload_chat_attachment`. The
+	 *  runtime renders these as a `Files attached:` list in the
+	 *  preamble; the runner reads them from the worktree cwd.
+	 */
+	attachments?: ChatAttachmentRef[],
+	/**
+	 *  Where the user invoked chat from in the UI, e.g.
+	 *  `jobs/01H…`, `repos/myrepo`, `settings/models`. Free-form so
+	 *  the UI can evolve its routes without a wire change. Renders
+	 *  into the preamble as a "User is viewing:" line so the model
+	 *  can ground answers to the active surface.
+	 */
+	ui_location?: string | null,
+	/**
+	 *  Currently-selected text in the UI (editor selection, log
+	 *  snippet, diff hunk). Optional and bounded by the UI to a
+	 *  sensible size before sending — the runtime does not truncate.
+	 */
+	selection?: string | null,
+	/**
+	 *  Named or ad-hoc prompt snippets the user opted in for this
+	 *  turn (saved from a prompt library, project conventions, etc.).
+	 *  Each entry is rendered as its own block in the preamble; the
+	 *  UI is responsible for ordering.
+	 */
+	user_prompts?: UserPromptSnippet[],
 };
 
 /**
@@ -575,6 +635,16 @@ export type Stage = {
 	verify_cmd: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
+	/**
+	 *  Runner-supplied session identifier, captured the first time a
+	 *  task on this stage reports a non-empty `RunResult.session_id`.
+	 *  Free-form on the wire — Claude emits `sess-<ulid>`, other
+	 *  runners may use a different shape. `None` until a task
+	 *  reports one; never cleared once set. Persisted for
+	 *  observability only — see SCOPE.md hard rule #1: codeless
+	 *  never reuses this to resume a runner.
+	 */
+	session_id: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.
@@ -679,6 +749,17 @@ export type UpdateJobTemplateResult = {
 	 *  without a separate `list_job_files` round trip.
 	 */
 	name: string,
+};
+
+export type UserPromptSnippet = {
+	/**
+	 *  Short label the UI showed the user when they opted in (e.g.
+	 *  `repo conventions`). Rendered as the block heading in the
+	 *  preamble.
+	 */
+	label: string,
+	// Snippet body. Markdown is allowed; the runtime emits it as-is.
+	body: string,
 };
 
 /**
