@@ -1,0 +1,14 @@
+[package]
+name = "codeless-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: LLM-callable tool surface (filesystem, shell, HTTP, headless browser). Host-only; never compiled for mobile. Tools reach runners through codeless-mcp."
+
+[lints]
+workspace = true
+
+[dependencies]
+codeless-types = { path = "../codeless-types" }

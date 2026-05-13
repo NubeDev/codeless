@@ -1,0 +1,14 @@
+//! Codeless tools — the LLM-callable surface.
+//!
+//! Every tool a runner subprocess can invoke lives here. Tools are
+//! exposed through `codeless-mcp` as MCP tools; runners (Claude Code,
+//! Codex, future) see them as ordinary MCP tools.
+//!
+//! Host-only by dependency edges, matching the pattern used by
+//! `codeless-adapters-host`: this crate is never declared as a
+//! dependency from any iOS- or Android-safe crate
+//! (`codeless-types`, `codeless-rpc`, `codeless-client`,
+//! `codeless-tauri-mobile`). The R1 grep in CI enforces this.
+//!
+//! Design intent lives in `DOCS/TOOLS-PORTING.md` in the outer
+//! workspace.
