@@ -11,6 +11,7 @@ pub mod driver;
 pub mod event_bus;
 pub mod handover;
 pub mod heartbeat;
+pub mod job_dir;
 pub mod job_driver_loop;
 pub mod migrations;
 pub mod mock_runner;
