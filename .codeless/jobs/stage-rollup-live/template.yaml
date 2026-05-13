@@ -8,3 +8,5 @@ stages:
   - title: third stage of three
     docs:
       - SCOPE.md
+      - WORKFLOW.md
+      - SCOPE.md
