@@ -4,7 +4,7 @@ goal: "a richer power-meter CSV example with an analysis script and docs, in thr
 docs:
   - WORKFLOW.md
   - SCOPE.md
-
+  - FEEDBACK.md
 stages:
   - title: "expand examples/power-meter.csv to 5 meters x 24 hours at 5-minute intervals"
     docs:
