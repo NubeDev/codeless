@@ -402,13 +402,23 @@ interface StageRow {
   uid: number;
   title: string;
   isReview: boolean;
+  // Per-stage docs (null when the stage hasn't opted into the
+  // structured form yet; we keep null vs [] distinct so toggling
+  // "+ add doc" doesn't silently rewrite a bare stage as structured
+  // until the user actually attaches something).
+  docs: string[] | null;
 }
 
 let stageUid = 0;
-const mkRow = (title: string, isReview: boolean): StageRow => ({
+const mkRow = (
+  title: string,
+  isReview: boolean,
+  docs: string[] | null = null,
+): StageRow => ({
   uid: ++stageUid,
   title,
   isReview,
+  docs,
 });
 
 // Structured spec editor. `name`, `goal`, and an ordered list of
@@ -450,7 +460,7 @@ function StagesEditor({
     setName(parsed.name);
     setGoal(parsed.goal);
     setDocs(parsed.docs);
-    setStages(parsed.stages.map((s) => mkRow(s.title, s.isReview)));
+    setStages(parsed.stages.map((s) => mkRow(s.title, s.isReview, s.docs)));
     setSeedKey(templateYaml);
   }, [templateYaml, seedKey]);
 
@@ -483,7 +493,7 @@ function StagesEditor({
     setName(parsed.name);
     setGoal(parsed.goal);
     setDocs(parsed.docs);
-    setStages(parsed.stages.map((s) => mkRow(s.title, s.isReview)));
+    setStages(parsed.stages.map((s) => mkRow(s.title, s.isReview, s.docs)));
   }, [templateYaml]);
 
   if (templateYaml === null) {
@@ -579,8 +589,9 @@ function StagesEditor({
               {stages.map((row, i) => (
                 <li
                   key={row.uid}
-                  className="border-border/40 flex items-center gap-1 rounded border px-2 py-1"
+                  className="border-border/40 flex flex-col gap-1 rounded border px-2 py-1"
                 >
+                  <div className="flex items-center gap-1">
                   <span className="text-muted-foreground w-5 text-right font-mono text-[10px]">
                     {i + 1}.
                   </span>
@@ -670,6 +681,17 @@ function StagesEditor({
                   >
                     ×
                   </button>
+                  </div>
+                  <StageDocsRow
+                    row={row}
+                    availableDocs={availableDocs}
+                    busy={busy}
+                    onChange={(next) =>
+                      setStages((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, docs: next } : r)),
+                      )
+                    }
+                  />
                 </li>
               ))}
               {stages.length === 0 && (
@@ -681,6 +703,131 @@ function StagesEditor({
           </div>
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+interface StageDocsRowProps {
+  row: StageRow;
+  availableDocs: string[];
+  busy: boolean;
+  onChange: (next: string[] | null) => void;
+}
+
+// Per-stage docs row sits underneath each stage's title. Three
+// states:
+//   - `row.docs === null`: stage hasn't opted in. We show a tiny
+//     muted "+ docs for this stage" button. Clicking starts the
+//     structured form with an empty list.
+//   - `row.docs === []`: opted in, no docs yet. Show the picker
+//     dropdown so the user can pick the first one.
+//   - `row.docs === [...]`: render attached doc chips + the picker.
+function StageDocsRow({ row, availableDocs, busy, onChange }: StageDocsRowProps) {
+  if (row.docs === null) {
+    return (
+      <div className="text-muted-foreground ml-7 flex items-center gap-2 text-[10px]">
+        <button
+          type="button"
+          className="hover:text-foreground underline-offset-2 hover:underline"
+          onClick={() => onChange([])}
+          disabled={busy}
+        >
+          + docs for this stage
+        </button>
+      </div>
+    );
+  }
+
+  const attached = new Set(row.docs);
+  const addable = availableDocs.filter((n) => !attached.has(n));
+
+  return (
+    <div className="ml-7 flex flex-col gap-1">
+      <div className="text-muted-foreground flex items-center gap-2 text-[10px] uppercase">
+        <span>stage docs</span>
+        <button
+          type="button"
+          className="hover:text-foreground underline-offset-2 hover:underline"
+          onClick={() => onChange(null)}
+          disabled={busy}
+        >
+          (remove)
+        </button>
+      </div>
+      {row.docs.length > 0 && (
+        <ul className="flex flex-wrap gap-1">
+          {row.docs.map((d, di) => (
+            <li
+              key={`${d}-${di}`}
+              className="border-border/40 bg-muted/30 flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px]"
+            >
+              <span>{d}</span>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() =>
+                  onChange(
+                    di === 0 ? row.docs! : row.docs!.map((x, j) =>
+                      j === di - 1 ? row.docs![di] : j === di ? row.docs![di - 1] : x,
+                    ),
+                  )
+                }
+                disabled={busy || di === 0}
+                aria-label="Move up"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() =>
+                  onChange(
+                    di === row.docs!.length - 1
+                      ? row.docs!
+                      : row.docs!.map((x, j) =>
+                          j === di + 1 ? row.docs![di] : j === di ? row.docs![di + 1] : x,
+                        ),
+                  )
+                }
+                disabled={busy || di === row.docs!.length - 1}
+                aria-label="Move down"
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => onChange(row.docs!.filter((_, j) => j !== di))}
+                disabled={busy}
+                aria-label="Remove"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {addable.length > 0 ? (
+        <select
+          className="border-border/60 h-6 w-fit rounded border bg-transparent px-1 text-[10px]"
+          value=""
+          onChange={(e) => {
+            if (e.target.value) onChange([...row.docs!, e.target.value]);
+          }}
+          disabled={busy}
+        >
+          <option value="">+ add doc</option>
+          {addable.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <span className="text-muted-foreground text-[10px] italic">
+          no more files to attach
+        </span>
+      )}
     </div>
   );
 }
@@ -856,6 +1003,11 @@ function autoDiscoverDefault(available: string[]): string[] {
 interface ParsedStage {
   title: string;
   isReview: boolean;
+  // Per-stage docs (basenames inside the job dir). `null` ⇒ the
+  // stage opted out of the structured form (it was authored as a
+  // bare title string). `[]` ⇒ explicit empty stage-docs list. The
+  // editor mirrors the Rust `StageSpec.docs: Option<Vec<String>>`.
+  docs: string[] | null;
 }
 
 interface ParsedSpec {
@@ -871,7 +1023,9 @@ interface ParsedSpec {
 // Mirror of `codeless_runtime::template::JobTemplate::parse_yaml`. We
 // stay regex-based for parity with the mock client and to avoid a
 // YAML parser dep — the spec surface is one level deep and the
-// invariant is enforced server-side on save.
+// invariant is enforced server-side on save. Two stage shapes are
+// recognised: bare title strings (`- "do thing"`) and structured
+// maps (`- title: "do thing"` with optional `review` / `docs`).
 function parseTemplate(yaml: string): ParsedSpec {
   const name = /^\s*name\s*:\s*(.+?)\s*$/m.exec(yaml)?.[1] ?? "";
   const goal = /^\s*goal\s*:\s*(.+?)\s*$/m.exec(yaml)?.[1] ?? "";
@@ -879,22 +1033,104 @@ function parseTemplate(yaml: string): ParsedSpec {
   const stages: ParsedStage[] = [];
   const stagesIdx = yaml.search(/^\s*stages\s*:\s*$/m);
   if (stagesIdx >= 0) {
-    const after = yaml.slice(stagesIdx).split("\n").slice(1);
-    for (const raw of after) {
-      const m = raw.match(/^\s*-\s+(.*)$/);
-      if (m) {
-        const body = m[1].trim();
-        if (body.startsWith("REVIEW ")) {
-          stages.push({ title: body.slice("REVIEW ".length).trim(), isReview: true });
-        } else if (body === "REVIEW") {
-          stages.push({ title: "", isReview: true });
-        } else {
-          stages.push({ title: body, isReview: false });
+    const lines = yaml.slice(stagesIdx).split("\n").slice(1);
+    let i = 0;
+    while (i < lines.length) {
+      const raw = lines[i];
+      const bullet = raw.match(/^(\s*)-\s+(.*)$/);
+      if (!bullet) {
+        // Blank lines inside the block are tolerated; a non-bullet
+        // non-blank line at any indent means the stages block ended.
+        if (raw.trim() === "") {
+          i++;
+          continue;
         }
+        if (/^\S/.test(raw)) break;
+        i++;
         continue;
       }
-      if (raw.trim() === "") continue;
-      if (/^\S/.test(raw)) break;
+      const indent = bullet[1].length;
+      const body = bullet[2];
+      const titleInline = /^title\s*:\s*(.+)$/.exec(body);
+      if (titleInline) {
+        // Structured stage: read indented child keys until the next
+        // bullet at the same indent or the next top-level key.
+        let stage: ParsedStage = {
+          title: titleInline[1].trim(),
+          isReview: false,
+          docs: null,
+        };
+        i++;
+        while (i < lines.length) {
+          const r = lines[i];
+          if (r.trim() === "") {
+            i++;
+            continue;
+          }
+          // End of structured block: another bullet, OR a non-indented line.
+          const nextBullet = r.match(/^(\s*)-\s+/);
+          if (nextBullet && nextBullet[1].length <= indent) break;
+          if (/^\S/.test(r)) break;
+          const childIndent = (r.match(/^(\s*)/)?.[1].length ?? 0);
+          if (childIndent <= indent) break;
+
+          const reviewMatch = /^\s*review\s*:\s*(true|false)\s*$/.exec(r);
+          if (reviewMatch) {
+            stage.isReview = reviewMatch[1] === "true";
+            i++;
+            continue;
+          }
+          const docsHead = /^\s*docs\s*:\s*(.*)$/.exec(r);
+          if (docsHead) {
+            const inline = docsHead[1].trim();
+            if (inline.startsWith("[") && inline.endsWith("]")) {
+              const inner = inline.slice(1, -1).trim();
+              stage.docs =
+                inner === ""
+                  ? []
+                  : inner
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter((s) => s.length > 0);
+              i++;
+              continue;
+            }
+            // Block form for stage docs.
+            stage.docs = [];
+            i++;
+            while (i < lines.length) {
+              const dr = lines[i];
+              if (dr.trim() === "") {
+                i++;
+                continue;
+              }
+              const docB = dr.match(/^(\s*)-\s+(.+?)\s*$/);
+              if (!docB || docB[1].length <= indent + 2) {
+                if (docB && docB[1].length <= indent) break;
+                if (!docB) break;
+                break;
+              }
+              stage.docs.push(docB[2]);
+              i++;
+            }
+            continue;
+          }
+          // Unknown child key: skip.
+          i++;
+        }
+        stages.push(stage);
+        continue;
+      }
+      // Bare-title bullet (with optional REVIEW prefix).
+      const t = body.trim();
+      if (t.startsWith("REVIEW ")) {
+        stages.push({ title: t.slice("REVIEW ".length).trim(), isReview: true, docs: null });
+      } else if (t === "REVIEW") {
+        stages.push({ title: "", isReview: true, docs: null });
+      } else {
+        stages.push({ title: t, isReview: false, docs: null });
+      }
+      i++;
     }
   }
   return { name, goal, docs, stages };
@@ -937,7 +1173,10 @@ function parseListBlock(yaml: string, key: string): string[] | null {
 // Inverse of `parseTemplate`. Keeps the YAML stable across save
 // round-trips so the dirty check (`current === templateYaml`) is
 // meaningful — same field order, same quoting (none, lines are
-// authored as raw scalars).
+// authored as raw scalars). Stages emit either a bare title bullet
+// or the structured mapping form depending on whether the stage has
+// opted into per-stage docs (or carries an explicit `review` flag in
+// the structured shape).
 function serialise(
   name: string,
   goal: string,
@@ -956,8 +1195,23 @@ function serialise(
   lines.push("stages:");
   for (const s of stages) {
     const t = s.title.trim();
-    const prefix = s.isReview ? (t.length > 0 ? "REVIEW " : "REVIEW") : "";
-    lines.push(`  - ${prefix}${t}`);
+    // A stage emits the structured form only when it actually has
+    // per-stage docs attached. REVIEW stays as the bare-string `REVIEW `
+    // prefix to keep flat-template ergonomics — switching review on
+    // shouldn't force the YAML to bloat.
+    if (s.docs !== null) {
+      lines.push(`  - title: ${t}`);
+      if (s.isReview) lines.push(`    review: true`);
+      if (s.docs.length === 0) {
+        lines.push(`    docs: []`);
+      } else {
+        lines.push(`    docs:`);
+        for (const d of s.docs) lines.push(`      - ${d.trim()}`);
+      }
+    } else {
+      const prefix = s.isReview ? (t.length > 0 ? "REVIEW " : "REVIEW") : "";
+      lines.push(`  - ${prefix}${t}`);
+    }
   }
   return lines.join("\n") + "\n";
 }

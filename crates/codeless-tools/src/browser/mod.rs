@@ -10,11 +10,13 @@
 //! ported from moxxy's equivalent. Callers point
 //! `BrowserManagerConfig::sidecar_script` at that file on disk.
 
+pub mod bootstrap;
 mod config;
 mod manager;
 mod protocol;
 mod sidecar;
 
+pub use bootstrap::{ensure_installed, BootstrapPaths, InstalledSidecar};
 pub use config::BrowserManagerConfig;
 pub use manager::BrowserManager;
 pub use protocol::{RpcError, RpcRequest, RpcResponse};
