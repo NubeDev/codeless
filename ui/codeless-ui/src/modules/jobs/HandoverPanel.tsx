@@ -52,11 +52,23 @@ export function HandoverPanel({ job }: Props) {
       let lastError: string | null = null;
       for (const path of candidates) {
         try {
-          const result = await rpc.call("fs_read_file", {
+          const result = (await rpc.call("fs_read_file", {
             path,
             byte_limit: null,
-          });
+          })) as unknown as
+            | { kind: "text"; content: string }
+            | { kind: "binary" }
+            | { kind: "toolarge"; limit: number }
+            | { content: string };
           if (cancelled) return;
+          // The current server returns `{content: string}` (flat,
+          // always text). The kind-tagged variants are for a future
+          // build that classifies binary / over-limit separately;
+          // until that ships we treat flat `content` as text.
+          if (!("kind" in result)) {
+            setState({ kind: "ready", path, content: result.content });
+            return;
+          }
           if (result.kind === "text") {
             setState({ kind: "ready", path, content: result.content });
             return;

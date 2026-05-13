@@ -67,7 +67,17 @@ impl TemplateRunner {
     /// job-wide goal AND the stage title so the model never loses the
     /// big picture between stages. Numbered position is included so a
     /// stage prompt mentioning "the next one" can be interpreted.
-    fn stage_prompt(&self, planned: PlannedStage<'_>, total: usize) -> String {
+    ///
+    /// `worktree` is the provisioned `git worktree` checkout (when
+    /// available) — `.codeless/jobs/<name>/` lives inside it, so we
+    /// resolve per-stage docs there rather than from the source repo.
+    /// `None` (test harness path) skips doc resolution entirely.
+    fn stage_prompt(
+        &self,
+        planned: PlannedStage<'_>,
+        total: usize,
+        worktree: Option<&std::path::Path>,
+    ) -> String {
         let stage_num = planned.index + 1;
         let review_note = if planned.is_review {
             "\n\nThis is a REVIEW stage. The user will approve the work \
@@ -77,8 +87,29 @@ impl TemplateRunner {
         } else {
             ""
         };
+
+        // Per-stage docs: appended *after* global docs (which the
+        // job_driver_loop already prepended to `job.prompt` once at
+        // dispatch time). The structure mirrors that block so the
+        // model sees `# Job docs` with stage-specific sections under
+        // the same heading the first time it appeared.
+        let stage_docs = match worktree {
+            Some(wt) if !planned.docs.is_empty() => {
+                crate::job_dir::read_docs_ordered(wt, &self.template.name, planned.docs)
+            }
+            _ => String::new(),
+        };
+        let stage_docs_block = if stage_docs.is_empty() {
+            String::new()
+        } else {
+            // Rename the heading so a downstream reader can tell global
+            // and per-stage blocks apart in the same prompt.
+            stage_docs.replacen("# Job docs", &format!("# Stage {stage_num} docs"), 1) + "\n"
+        };
+
         format!(
-            "# Job goal\n\n{}\n\n\
+            "{stage_docs_block}\
+             # Job goal\n\n{}\n\n\
              # Stage {stage_num} of {total}\n\n{}\n\
              \n\
              # What to do now\n\n\
@@ -139,7 +170,7 @@ impl Runner for TemplateRunner {
                 )
                 .await;
             } else {
-                let prompt = self.stage_prompt(*stage, total);
+                let prompt = self.stage_prompt(*stage, total, ctx.worktree_path.as_deref());
                 let mut adapter = ClaudeRunnerAdapter::new(prompt, task_id);
                 if let Some(sp) = &self.system_prompt {
                     adapter = adapter.with_system_prompt(sp.clone());
@@ -221,19 +252,23 @@ mod tests {
     use super::*;
 
     fn template_with_stages(stages: &[&str]) -> JobTemplate {
-        JobTemplate {
-            name: "t".into(),
-            goal: "test goal".into(),
-            docs: None,
-            stages: stages.iter().map(|s| (*s).to_string()).collect(),
-        }
+        // Parse each raw stage through the YAML round-trip so the
+        // `REVIEW ` prefix on flat strings is honored consistently
+        // with end-user templates.
+        let stage_yaml = stages
+            .iter()
+            .map(|s| format!("  - {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let yaml = format!("name: t\ngoal: test goal\nstages:\n{stage_yaml}\n");
+        JobTemplate::parse_yaml(&yaml).expect("template fixture parses")
     }
 
     #[test]
     fn stage_prompt_includes_goal_and_position() {
         let r = TemplateRunner::new(template_with_stages(&["one", "two"]));
         let planned = r.template.planned_stages();
-        let prompt = r.stage_prompt(planned[1], 2);
+        let prompt = r.stage_prompt(planned[1], 2, None);
         assert!(prompt.contains("Stage 2 of 2"));
         assert!(prompt.contains("two"));
         assert!(prompt.contains("test goal"));
@@ -244,7 +279,58 @@ mod tests {
     fn review_prompt_carries_gate_note() {
         let r = TemplateRunner::new(template_with_stages(&["REVIEW gate", "after"]));
         let planned = r.template.planned_stages();
-        let prompt = r.stage_prompt(planned[0], 2);
+        let prompt = r.stage_prompt(planned[0], 2, None);
         assert!(prompt.contains("REVIEW stage"));
+    }
+
+    #[test]
+    fn stage_prompt_appends_per_stage_docs_when_worktree_resolves() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".codeless/jobs/webserver");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("routing.md"), "ROUTING DOC BODY").unwrap();
+        fs::write(dir.join("handlers.md"), "HANDLERS DOC BODY").unwrap();
+
+        let src = r#"
+name: webserver
+goal: Build server
+stages:
+  - title: scaffold
+    docs:
+      - routing.md
+  - title: add handlers
+    docs:
+      - handlers.md
+"#;
+        let template = JobTemplate::parse_yaml(src).unwrap();
+        let r = TemplateRunner::new(template);
+        let planned = r.template.planned_stages();
+
+        // Stage 1 sees routing.md, not handlers.md.
+        let p1 = r.stage_prompt(planned[0], 2, Some(tmp.path()));
+        assert!(
+            p1.contains("# Stage 1 docs"),
+            "missing stage-docs heading: {p1}"
+        );
+        assert!(p1.contains("ROUTING DOC BODY"));
+        assert!(!p1.contains("HANDLERS DOC BODY"));
+
+        // Stage 2 sees handlers.md, not routing.md.
+        let p2 = r.stage_prompt(planned[1], 2, Some(tmp.path()));
+        assert!(p2.contains("# Stage 2 docs"));
+        assert!(p2.contains("HANDLERS DOC BODY"));
+        assert!(!p2.contains("ROUTING DOC BODY"));
+    }
+
+    #[test]
+    fn stage_prompt_omits_docs_block_when_stage_has_none() {
+        let r = TemplateRunner::new(template_with_stages(&["one", "two"]));
+        let planned = r.template.planned_stages();
+        let prompt = r.stage_prompt(planned[0], 2, None);
+        assert!(!prompt.contains("# Stage 1 docs"));
+        assert!(!prompt.contains("# Job docs"));
     }
 }
