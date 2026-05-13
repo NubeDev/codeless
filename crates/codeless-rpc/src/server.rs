@@ -9,8 +9,8 @@ use crate::methods::{
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs,
+    PauseJobArgs, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
     UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
@@ -41,6 +41,15 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job>;
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
+
+    /// Pause a `Running` (or `AwaitingReview`) job so the user can
+    /// resume it later from the captured `Stage.session_id`. The
+    /// runner is cancelled at the next `await` boundary; the row
+    /// transitions to `Paused`, not `Stopped`. Distinct from
+    /// `stop_job` because the *intent* differs — pause is
+    /// "I'll come back," stop is "I'm done." See SCOPE.md hard
+    /// rule #1.
+    async fn pause_job(&self, args: PauseJobArgs) -> RpcResult<()>;
 
     /// Promote a `Draft` job to `Queued` so the background driver
     /// picks it up. The user calls this once they have edited the

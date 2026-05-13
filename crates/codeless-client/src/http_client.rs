@@ -6,8 +6,8 @@ use codeless_rpc::{
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since,
-    StartJobArgs, StopJobArgs,
+    PauseJobArgs, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
+    Since, StartJobArgs, StopJobArgs,
     StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
     UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
     WriteJobFileArgs, WriteJobFileResult,
@@ -170,6 +170,10 @@ impl RpcServer for HttpRpcClient {
 
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()> {
         self.call_void("stop_job", &args).await
+    }
+
+    async fn pause_job(&self, args: PauseJobArgs) -> RpcResult<()> {
+        self.call_void("pause_job", &args).await
     }
 
     async fn start_job(&self, args: StartJobArgs) -> RpcResult<Job> {

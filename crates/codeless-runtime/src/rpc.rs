@@ -11,8 +11,9 @@ use codeless_rpc::{
     GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
     JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
     ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
-    RpcResult, RpcServer, Since, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
+    RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs,
     UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
@@ -540,6 +541,52 @@ impl RpcServer for InProcessRpc {
                 None,
                 None,
                 Event::JobStopped {
+                    job_id: job.id,
+                    reason: StopReason::User,
+                },
+                now,
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn pause_job(&self, args: PauseJobArgs) -> RpcResult<()> {
+        let Some(mut job) = self.store.get_job(args.job_id).await.map_err(db_err)? else {
+            return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+        };
+        if !matches!(
+            job.status,
+            JobStatus::Running | JobStatus::AwaitingReview
+        ) {
+            return Err(RpcError::Conflict(format!(
+                "job {} is {:?}; only Running or AwaitingReview jobs can be paused. \
+                 Use start_job to promote a Draft, or resume_job to restart a paused/stopped row.",
+                job.id, job.status
+            )));
+        }
+        crate::state_machine::transition_job(job.status, JobStatus::Paused).map_err(|e| {
+            RpcError::Conflict(format!(
+                "illegal job transition from {:?} to Paused: {e}",
+                job.status
+            ))
+        })?;
+        let now = now_ms();
+        job.status = JobStatus::Paused;
+        job.stop_reason = Some(StopReason::User);
+        job.ended_at = Some(now);
+        self.store.update_job(&job).await.map_err(db_err)?;
+        // The cap-watcher subscribes to the bus and fires the
+        // runner's cancellation token when it sees a `JobPaused`
+        // (or `JobStopped` / `JobFailed`) it didn't author. That's
+        // how the in-flight runner finds out the row has moved
+        // out from under it.
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobPaused {
                     job_id: job.id,
                     reason: StopReason::User,
                 },

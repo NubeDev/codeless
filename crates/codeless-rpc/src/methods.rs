@@ -144,6 +144,22 @@ pub struct StopJobArgs {
     pub job_id: JobId,
 }
 
+/// Move a `Running` (or `AwaitingReview`) job to `Paused`. The
+/// captured per-stage `Stage.session_id` becomes the resume handle
+/// for the next `resume_job` call; the in-flight runner is cancelled
+/// (cleanly, at the next `await` boundary — any tool call currently
+/// running on disk will finish before the runner exits). Distinct
+/// from `stop_job` because the *intent* differs: pause is "I'll come
+/// back," stop is "I'm done."
+///
+/// Errors `Conflict` when the job is not in a pausable state
+/// (anything but Running / AwaitingReview), `NotFound` for an
+/// unknown id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct PauseJobArgs {
+    pub job_id: JobId,
+}
+
 /// Re-queue a job using the same prompt, runner, caps, and repo as a
 /// previous run. A fresh `JobId` is minted; the branch is left empty
 /// so `WorktreeManager` falls back to `codeless/job-<new_id>` and the

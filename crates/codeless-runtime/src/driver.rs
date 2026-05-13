@@ -309,32 +309,67 @@ async fn watch_caps(
     };
     tokio::pin!(wall_clock_sleep);
 
+    // The select! body distinguishes two outcomes per loop turn:
+    //
+    //   - WatcherAction::FireCap(reason): a cap WE detected. The
+    //     watcher owns writing the row + publishing the event +
+    //     firing cancel via `fire_pause_or_stop`. This is the cost
+    //     / wall-clock path.
+    //
+    //   - WatcherAction::ExternalTerminal: an external path (the
+    //     `stop_job` / `pause_job` RPC) already wrote a terminal /
+    //     paused row and published its event. The watcher just
+    //     fires cancel so the in-flight runner exits, then returns.
+    //     This is the load-bearing fix that makes mid-stage stop /
+    //     pause actually interrupt the runner; without it `stop_job`
+    //     was advisory until the next cap or natural completion.
+    enum WatcherAction {
+        FireCap(StopReason),
+        ExternalTerminal,
+    }
     loop {
         let next_item: futures_core::future::BoxFuture<'_, _> = Box::pin(stream.next());
-        let stop_reason = tokio::select! {
+        let action = tokio::select! {
             biased;
             _ = async {
                 match wall_clock_sleep.as_mut().as_pin_mut() {
                     Some(s) => s.await,
                     None => std::future::pending::<()>().await,
                 }
-            } => Some(StopReason::WallClock),
+            } => Some(WatcherAction::FireCap(StopReason::WallClock)),
             item = next_item => {
                 match item {
-                    Some(Ok(env)) if matches!(env.event, Event::AiMessageComplete { .. }) && cost_cap > 0 => {
-                        match store.get_job(job_id).await {
-                            Ok(Some(j)) if j.cost_cents.0 >= cost_cap => Some(StopReason::CostCap),
-                            _ => None,
+                    Some(Ok(env)) => match &env.event {
+                        Event::AiMessageComplete { .. } if cost_cap > 0 => {
+                            match store.get_job(job_id).await {
+                                Ok(Some(j)) if j.cost_cents.0 >= cost_cap => {
+                                    Some(WatcherAction::FireCap(StopReason::CostCap))
+                                }
+                                _ => None,
+                            }
                         }
-                    }
-                    Some(_) => None,
+                        Event::JobStopped { .. }
+                        | Event::JobPaused { .. }
+                        | Event::JobFailed { .. } => {
+                            Some(WatcherAction::ExternalTerminal)
+                        }
+                        _ => None,
+                    },
+                    Some(Err(_)) => None,
                     None => return,
                 }
             }
         };
-        if let Some(reason) = stop_reason {
-            fire_pause_or_stop(&store, &bus, job_id, reason, &cancel).await;
-            return;
+        match action {
+            Some(WatcherAction::FireCap(reason)) => {
+                fire_pause_or_stop(&store, &bus, job_id, reason, &cancel).await;
+                return;
+            }
+            Some(WatcherAction::ExternalTerminal) => {
+                cancel.cancel();
+                return;
+            }
+            None => {}
         }
     }
 }
