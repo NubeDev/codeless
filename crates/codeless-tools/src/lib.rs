@@ -16,6 +16,7 @@
 pub mod browser;
 mod ctx;
 mod error;
+mod html_links;
 pub mod policy;
 mod registry;
 pub mod testing;

@@ -14,8 +14,10 @@ workspace = true
 codeless-types = { path = "../codeless-types" }
 async-trait = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "gzip", "brotli", "deflate"] }
+scraper = "0.22"
 serde = { workspace = true }
 serde_json = { workspace = true }
+url = "2"
 tempfile = "3"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "process", "io-util", "time", "rt"] }

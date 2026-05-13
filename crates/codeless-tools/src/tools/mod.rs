@@ -7,6 +7,7 @@
 //! than abstraction.
 
 pub mod browse_fetch;
+pub mod browser_crawl;
 pub mod browser_eval;
 pub mod browser_interact;
 pub mod browser_misc;
@@ -17,6 +18,7 @@ pub mod browser_session;
 pub mod http_request;
 
 pub use browse_fetch::BrowseFetchTool;
+pub use browser_crawl::BrowserCrawlTool;
 pub use browser_eval::BrowserEvalTool;
 pub use browser_interact::{
     BrowserClickTool, BrowserFillTool, BrowserHoverTool, BrowserScrollTool, BrowserTypeTool,
