@@ -1,9 +1,17 @@
 name: bacnet
-goal: "write me a csv example"
+goal: "a richer power-meter CSV example with an analysis script and docs, in three reviewable stages"
+
 docs:
   - WORKFLOW.md
   - SCOPE.md
+
 stages:
-  - title: "\"make a simple power meter csv example\""
+  - title: "expand examples/power-meter.csv to 5 meters x 24 hours at 5-minute intervals"
+    docs:
+      - SCOPE.md
+  - title: "add examples/analyse_power.py - reads the csv and prints per-meter daily kWh totals + peak power"
+    docs:
+      - SCOPE.md
+  - title: "add examples/README.md - schema, units, sample queries, how to run the analyser"
     docs:
       - SCOPE.md
