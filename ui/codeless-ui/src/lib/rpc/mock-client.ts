@@ -108,6 +108,13 @@ export class MockRpcClient implements RpcClient {
   // Index of review_id -> job_id so list_reviews can filter by job
   // without bloating the Review wire type.
   private reviewJob: Map<string, string> = new Map();
+  // Per-job in-memory file surface, mirrors the runtime's
+  // `<repo>/.codeless/jobs/<template.name>/`. Map<jobId, Map<filename,content>>.
+  // The mock skips the directory/template-name resolution dance —
+  // jobs without a `template_yaml` still get an empty entry on first
+  // touch because the UI's flow always opens the Spec pane against a
+  // known `JobId`.
+  private jobFiles: Map<string, Map<string, string>> = new Map();
 
   async call<M extends RpcMethod>(
     method: M,
@@ -449,6 +456,92 @@ export class MockRpcClient implements RpcClient {
 
       case "fs_cwd": {
         return { path: MOCK_FS_ROOT } as RpcResultOf<M>;
+      }
+
+      case "list_job_files": {
+        const a = args as RpcArgs<"list_job_files">;
+        const files = this.jobFiles.get(a.job_id);
+        if (!files || files.size === 0) {
+          return {
+            entries: [],
+            layout: "none",
+            directory_path: null,
+          } as RpcResultOf<M>;
+        }
+        const names = [...files.keys()].sort();
+        const entries = names.map((name) => {
+          const lower = name.toLowerCase();
+          return {
+            name,
+            is_template: lower === "template.yaml",
+            is_scope: lower === "scope.md",
+            is_workflow: lower === "workflow.md",
+          };
+        });
+        const tplIdx = entries.findIndex((e) => e.is_template);
+        if (tplIdx > 0) {
+          const [tpl] = entries.splice(tplIdx, 1);
+          entries.unshift(tpl);
+        }
+        return {
+          entries,
+          layout: "directory",
+          directory_path: `${MOCK_FS_ROOT}/.codeless/jobs/${a.job_id}`,
+        } as RpcResultOf<M>;
+      }
+
+      case "read_job_file": {
+        const a = args as RpcArgs<"read_job_file">;
+        const filename = normaliseJobFilename(a.filename);
+        if (typeof filename !== "string") {
+          throw new RpcError("invalid_argument", filename.error);
+        }
+        const files = this.jobFiles.get(a.job_id);
+        const content = files?.get(filename);
+        if (content === undefined) {
+          throw new RpcError("not_found", `job file ${a.job_id}/${filename}`);
+        }
+        return { content } as RpcResultOf<M>;
+      }
+
+      case "write_job_file": {
+        const a = args as RpcArgs<"write_job_file">;
+        const filename = normaliseJobFilename(a.filename);
+        if (typeof filename !== "string") {
+          throw new RpcError("invalid_argument", filename.error);
+        }
+        if (filename.toLowerCase() === "template.yaml") {
+          throw new RpcError(
+            "invalid_argument",
+            "template.yaml is reserved; use the spec editor",
+          );
+        }
+        let files = this.jobFiles.get(a.job_id);
+        if (!files) {
+          files = new Map();
+          this.jobFiles.set(a.job_id, files);
+        }
+        files.set(filename, a.content);
+        return { name: filename } as RpcResultOf<M>;
+      }
+
+      case "delete_job_file": {
+        const a = args as RpcArgs<"delete_job_file">;
+        const filename = normaliseJobFilename(a.filename);
+        if (typeof filename !== "string") {
+          throw new RpcError("invalid_argument", filename.error);
+        }
+        if (filename.toLowerCase() === "template.yaml") {
+          throw new RpcError(
+            "invalid_argument",
+            "template.yaml is reserved; use the spec editor",
+          );
+        }
+        const files = this.jobFiles.get(a.job_id);
+        if (!files || !files.delete(filename)) {
+          throw new RpcError("not_found", `job file ${a.job_id}/${filename}`);
+        }
+        return null as RpcResultOf<M>;
       }
 
       case "secrets_set": {
@@ -908,4 +1001,31 @@ function makeIterable(
       };
     },
   };
+}
+
+// Mirror of `codeless_runtime::job_dir::sanitise_filename`. Returns
+// the normalised filename on success, or `{ error }` for the wire-side
+// `InvalidArgument` reason. The mock keeps parity so the UI sees the
+// same rejection messages whether it talks to the in-memory mock or
+// the real Rust runtime.
+function normaliseJobFilename(raw: string): string | { error: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { error: "filename is empty" };
+  if (trimmed.includes("/") || trimmed.includes("\\")) {
+    return { error: "filename contains path traversal" };
+  }
+  if (trimmed.split(".").some((s) => s === "..") || trimmed === "..") {
+    return { error: "filename contains path traversal" };
+  }
+  if (trimmed.startsWith(".")) return { error: "dotfiles are not allowed" };
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.endsWith(".md") ||
+    lower.endsWith(".yaml") ||
+    lower.endsWith(".yml") ||
+    trimmed.includes(".")
+  ) {
+    return trimmed;
+  }
+  return `${trimmed}.md`;
 }

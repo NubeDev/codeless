@@ -16,6 +16,7 @@ import {
 
 import { FilesChanged } from "./FilesChanged";
 import { HandoverPanel } from "./HandoverPanel";
+import { JobFilesPane } from "./JobFilesPane";
 import { JobTimeline } from "./JobTimeline";
 import { CostCell, WallClockCell } from "./JobRow";
 import { ReviewPanel } from "./ReviewPanel";
@@ -33,7 +34,7 @@ type Section =
   | "timeline"
   | "files"
   | "handover"
-  | "yaml"
+  | "spec"
   | "worktree";
 
 const SECTIONS: { id: Section; label: string }[] = [
@@ -41,7 +42,7 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "timeline", label: "Timeline" },
   { id: "files", label: "Files changed" },
   { id: "handover", label: "Handover" },
-  { id: "yaml", label: "Template" },
+  { id: "spec", label: "Spec" },
   { id: "worktree", label: "Worktree" },
 ];
 
@@ -120,7 +121,7 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
             <FilesChanged jobId={jobId} onOpenFile={handleOpenFile} />
           )}
           {section === "handover" && <HandoverPanel job={job} />}
-          {section === "yaml" && <YamlSection job={job} />}
+          {section === "spec" && <JobFilesPane jobId={job.id} />}
           {section === "worktree" && <WorktreeSection job={job} repo={repo} />}
         </div>
       </div>
@@ -269,33 +270,6 @@ function StagesSection({ job }: { job: Job }) {
       <div className="space-y-3 p-3">
         <StageTree jobId={job.id} templateYaml={job.template_yaml ?? null} />
         <ReviewPanel jobId={job.id} />
-      </div>
-    </ScrollArea>
-  );
-}
-
-function YamlSection({ job }: { job: Job }) {
-  if (!job.template_yaml) {
-    return (
-      <div className="text-muted-foreground p-4 text-sm italic">
-        This job was a single-prompt run — no template YAML.
-        {job.prompt && (
-          <pre className="bg-muted/30 border-border/40 mt-3 whitespace-pre-wrap rounded border p-3 not-italic text-foreground text-xs leading-snug">
-            {job.prompt}
-          </pre>
-        )}
-      </div>
-    );
-  }
-  return (
-    <ScrollArea className="h-full">
-      <div className="space-y-2 p-3">
-        <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
-          template_yaml
-        </div>
-        <pre className="bg-muted/30 border-border/40 whitespace-pre-wrap rounded border p-3 font-mono text-xs leading-snug">
-          {job.template_yaml}
-        </pre>
       </div>
     </ScrollArea>
   );
