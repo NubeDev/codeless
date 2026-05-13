@@ -17,6 +17,8 @@ import {
   type StageRollup,
 } from "@/lib/rpc";
 
+import { navigate } from "@/lib/route";
+
 import { setGlobalDocs } from "./spec/mutateTemplate";
 
 type JobDiffFile = JobDiffResult["files"][number];
@@ -939,6 +941,7 @@ function liveItemFromEvent(
 export function JobChat({
   job,
   uiLocation,
+  refetchJob,
   onOpenJobTab: _onOpenJobTab,
 }: {
   job: Job;
@@ -949,6 +952,15 @@ export function JobChat({
    * omit on call sites where the location is already implicit.
    */
   uiLocation?: string;
+  /**
+   * Re-fetch the job row after an action (run / stop / resume /
+   * re-run). The parent owns the `useJob()` query; this is a pure
+   * passthrough so the action row inside the chat can refresh the
+   * row without duplicating the query. Optional — the action row
+   * hides itself when missing so test harnesses don't have to
+   * wire a stub.
+   */
+  refetchJob?: () => void;
   onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
 }) {
   const rpc = useRpc();
@@ -1259,6 +1271,10 @@ export function JobChat({
         )}
       </ul>
 
+      {refetchJob && (
+        <JobActionRow job={job} refetchJob={refetchJob} />
+      )}
+
       {(attachments.length > 0 || uploading > 0) && (
         <div className="flex shrink-0 flex-wrap gap-1">
           {attachments.map((a, i) => (
@@ -1432,6 +1448,240 @@ function chatTsToMs(iso: string): number {
   if (!iso) return 0;
   const n = Date.parse(iso);
   return Number.isFinite(n) ? n : 0;
+}
+
+// State-driven action row above the textarea. The primary button
+// changes with job status — run / stop / resume / re-run — so the
+// user reaches for a single fixed-position button rather than
+// hunting in the header. Send + attach stay where they are below
+// the textarea; this row sits above it.
+//
+// Resume is the A0 path: a cost-cap or wall-clock-cap stop is
+// recoverable via the captured `Stage.session_id` and a cap bump.
+// The presets cover the dominant "give it $5/$10/$25/$50 more"
+// case; an arbitrary custom amount is a follow-up if real usage
+// shows people reaching for it.
+const COST_BUMP_PRESETS_CENTS = [500, 1000, 2500, 5000];
+function JobActionRow({
+  job,
+  refetchJob,
+}: {
+  job: Job;
+  refetchJob: () => void;
+}) {
+  const rpc = useRpc();
+  const [busy, setBusy] = useState<
+    "start" | "stop" | "resume" | "rerun" | null
+  >(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [showResumeForm, setShowResumeForm] = useState(false);
+  const status = job.status;
+  const stopReason = job.stop_reason;
+  const isCostCapped = stopReason === "cost-cap";
+  const isWallClockCapped = stopReason === "wall-clock";
+  const isResumable = status === "stopped" || status === "failed";
+
+  const run = async (
+    kind: "start" | "stop" | "resume" | "rerun",
+    fn: () => Promise<unknown>,
+  ) => {
+    setBusy(kind);
+    setErr(null);
+    try {
+      await fn();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onStart = () =>
+    run("start", async () => {
+      await rpc.call("start_job", { job_id: job.id });
+      refetchJob();
+    });
+
+  const onStop = () =>
+    run("stop", async () => {
+      await rpc.call("stop_job", { job_id: job.id });
+      refetchJob();
+    });
+
+  const onResume = (costBump: number | null) =>
+    run("resume", async () => {
+      await rpc.call("resume_job", {
+        job_id: job.id,
+        additional_cost_cap_cents: costBump,
+        additional_wall_clock_cap_ms: null,
+      });
+      setShowResumeForm(false);
+      refetchJob();
+    });
+
+  const onRerun = () =>
+    run("rerun", async () => {
+      const fresh = await rpc.call("rerun_job", { source_job_id: job.id });
+      navigate(`/jobs/${fresh.id}`);
+    });
+
+  // Hidden when the row would render nothing meaningful (e.g.
+  // running with no contextual help). For `completed` jobs the
+  // re-run button is the only useful action and it lives here.
+  const disabled = busy !== null;
+  const buttons = (() => {
+    if (status === "draft") {
+      return (
+        <Button
+          size="sm"
+          onClick={onStart}
+          disabled={disabled}
+          className="bg-blue-600 hover:bg-blue-700 text-white"
+        >
+          {busy === "start" ? "starting…" : "run ▶"}
+        </Button>
+      );
+    }
+    if (status === "queued") {
+      return (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onStop}
+          disabled={disabled}
+        >
+          {busy === "stop" ? "cancelling…" : "cancel"}
+        </Button>
+      );
+    }
+    if (status === "running" || status === "awaiting-review") {
+      return (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onStop}
+          disabled={disabled}
+        >
+          {busy === "stop" ? "stopping…" : "stop ■"}
+        </Button>
+      );
+    }
+    // Terminal — stopped / failed / completed.
+    return (
+      <div className="flex items-center gap-2">
+        {isResumable && (isCostCapped || isWallClockCapped) && (
+          <Button
+            size="sm"
+            onClick={() => setShowResumeForm(true)}
+            disabled={disabled}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            title={
+              isCostCapped
+                ? "Resume from the captured session id, with a higher cost cap."
+                : "Resume from the captured session id, with a higher wall-clock budget."
+            }
+          >
+            {busy === "resume" ? "resuming…" : "resume ▶ …"}
+          </Button>
+        )}
+        {isResumable && !(isCostCapped || isWallClockCapped) && (
+          <Button
+            size="sm"
+            onClick={() => onResume(null)}
+            disabled={disabled}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            title="Resume with the same caps; the captured session id continues the same claude conversation."
+          >
+            {busy === "resume" ? "resuming…" : "resume ▶"}
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onRerun}
+          disabled={disabled}
+          title="Clone the spec into a fresh job. Doesn't continue the previous session."
+        >
+          {busy === "rerun" ? "queuing…" : "re-run"}
+        </Button>
+      </div>
+    );
+  })();
+
+  return (
+    <div className="border-border/40 bg-muted/10 shrink-0 rounded border px-2 py-1.5">
+      {showResumeForm && isCostCapped && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground">
+            spent {fmtCents(job.cost_cents)} of {fmtCents(job.cost_cap_cents)} cap. Add:
+          </span>
+          {COST_BUMP_PRESETS_CENTS.map((cents) => (
+            <Button
+              key={cents}
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => onResume(cents)}
+              className="h-6 px-2 text-[11px]"
+            >
+              +{fmtCents(cents)}
+            </Button>
+          ))}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => onResume(null)}
+            className="h-6 px-2 text-[11px]"
+            title="Resume without raising the cap; the job will trip the same cap again unless something changed."
+          >
+            resume unchanged
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => setShowResumeForm(false)}
+            className="h-6 px-2 text-[11px]"
+          >
+            cancel
+          </Button>
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground text-[10px] uppercase tracking-wide">
+          {actionRowLabel(job)}
+        </span>
+        {buttons}
+      </div>
+      {err && (
+        <div className="text-destructive mt-1 text-[11px]">{err}</div>
+      )}
+    </div>
+  );
+}
+
+function actionRowLabel(job: Job): string {
+  switch (job.status) {
+    case "draft":
+      return "draft — edit the spec, then run";
+    case "queued":
+      return "queued — waiting for a driver slot";
+    case "running":
+      return "running";
+    case "awaiting-review":
+      return "awaiting review";
+    case "stopped":
+      return job.stop_reason ? `stopped: ${job.stop_reason}` : "stopped";
+    case "failed":
+      return "failed";
+    case "completed":
+      return "completed";
+  }
+}
+
+function fmtCents(c: number): string {
+  return `$${(c / 100).toFixed(2)}`;
 }
 
 // One tool call, collapsed by default. Shows tool name + a
