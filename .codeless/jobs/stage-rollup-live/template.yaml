@@ -5,4 +5,4 @@ stages:
   - second stage of three
   - title: third stage of three
     docs:
-      - WORKFLOW.md
+      - SCOPE.md
