@@ -189,21 +189,39 @@ async fn dispatch<F: RunnerFactory>(
         return;
     }
 
-    // Prepend the prior session's handover to the prompt the runner
+    // Prepend the prior session's handover and the user-authored job
+    // docs (SCOPE.md / WORKFLOW.md / extras) to the prompt the runner
     // sees, so the next session inherits the inter-session contract
     // (JOB-MODEL.md "the handover is the only contract between
-    // sessions"). The augmented prompt only flows into the factory
-    // local-variable; the job row in SQLite still carries the
-    // original prompt the user submitted — what the UI shows in the
-    // detail header — so handover prefixing stays invisible at the
-    // wire level.
+    // sessions") and the job-level intent (JOB-DIR.md "How the agent
+    // reads the docs"). The augmented prompt only flows into the
+    // factory local-variable; the job row in SQLite still carries the
+    // original prompt the user submitted, so this prefixing stays
+    // invisible at the wire level.
+    //
+    // Order (per JOB-DIR.md): handover → job docs → original. Notes
+    // sit in `runs/<job_id>/notes/` and reach the prompt through the
+    // existing per-run handover, not through this loop.
     if let Ok(Some(repo)) = rpc.store().get_repo(job.repo_id).await {
         let repo_path = std::path::PathBuf::from(&repo.local_path);
+        let mut handover_prefix = String::new();
         if let Some((path, prior)) = crate::handover::find_latest_handover(&repo_path).await {
-            let prefix = crate::handover::prompt_prefix_for(&path, &prior);
-            let original = job.prompt.clone().unwrap_or_default();
-            job.prompt = Some(format!("{prefix}{original}"));
+            handover_prefix = crate::handover::prompt_prefix_for(&path, &prior);
             tracing::info!(handover = %path.display(), "prepended prior handover to prompt");
+        }
+
+        let job_docs = job
+            .template_yaml
+            .as_deref()
+            .and_then(|yaml| crate::template::JobTemplate::parse_yaml(yaml).ok())
+            .map(|tpl| crate::job_dir::read_docs_for_prompt(&repo_path, &tpl.name))
+            .filter(|s| !s.is_empty())
+            .map(|body| format!("{body}\n"))
+            .unwrap_or_default();
+
+        if !handover_prefix.is_empty() || !job_docs.is_empty() {
+            let original = job.prompt.clone().unwrap_or_default();
+            job.prompt = Some(format!("{handover_prefix}{job_docs}{original}"));
         }
     }
 
