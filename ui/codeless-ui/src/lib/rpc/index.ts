@@ -15,14 +15,20 @@ export {
 } from "./hooks";
 export type {
   AddRepoArgs,
+  DeleteJobFileArgs,
   EventFilter,
   GcWorktreeEntry,
   GcWorktreesArgs,
   GcWorktreesResult,
   GetJobArgs,
+  JobFileEntry,
+  ListJobFilesArgs,
+  ListJobFilesResult,
   ListJobsArgs,
   ListJobsResult,
   ListReposResult,
+  ReadJobFileArgs,
+  ReadJobFileResult,
   RemoveRepoArgs,
   RerunJobArgs,
   RpcArgs,
@@ -32,5 +38,7 @@ export type {
   Since,
   StopJobArgs,
   SubmitJobArgs,
+  WriteJobFileArgs,
+  WriteJobFileResult,
 } from "./methods";
 export type * from "./wire";

@@ -174,6 +174,53 @@ export interface FsCwdResult {
   path: string;
 }
 
+// Job-file surface — the four RPCs that back the Spec pane.
+// Mirrored from `codeless-rpc::methods` and gated behind a known
+// `template_yaml`; non-template jobs surface `InvalidArgument`.
+// `layout` is `"directory" | "flat" | "none"` so the UI can render
+// the legacy-flat hint when migration hasn't happened yet.
+
+export interface ListJobFilesArgs {
+  job_id: JobId;
+}
+
+export interface JobFileEntry {
+  name: string;
+  is_template: boolean;
+  is_scope: boolean;
+  is_workflow: boolean;
+}
+
+export interface ListJobFilesResult {
+  entries: JobFileEntry[];
+  layout: string;
+  directory_path: string | null;
+}
+
+export interface ReadJobFileArgs {
+  job_id: JobId;
+  filename: string;
+}
+
+export interface ReadJobFileResult {
+  content: string;
+}
+
+export interface WriteJobFileArgs {
+  job_id: JobId;
+  filename: string;
+  content: string;
+}
+
+export interface WriteJobFileResult {
+  name: string;
+}
+
+export interface DeleteJobFileArgs {
+  job_id: JobId;
+  filename: string;
+}
+
 // Secrets RPC surface. Provisional: hand-mirrored from the forthcoming
 // `codeless-rpc::methods::secrets_*`. Provider keys live in the
 // single-tenant secrets file managed by `codeless-adapters-host`
@@ -224,6 +271,11 @@ export interface RpcMethodMap {
   fs_move: { args: FsMoveArgs; result: null };
   fs_delete: { args: FsDeleteArgs; result: null };
   fs_cwd: { args: Record<string, never>; result: FsCwdResult };
+
+  list_job_files: { args: ListJobFilesArgs; result: ListJobFilesResult };
+  read_job_file: { args: ReadJobFileArgs; result: ReadJobFileResult };
+  write_job_file: { args: WriteJobFileArgs; result: WriteJobFileResult };
+  delete_job_file: { args: DeleteJobFileArgs; result: null };
 
   secrets_set: { args: SecretsSetArgs; result: null };
   secrets_get: { args: SecretsGetArgs; result: string | null };
