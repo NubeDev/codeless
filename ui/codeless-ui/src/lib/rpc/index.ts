@@ -1,4 +1,8 @@
-export type { RpcClient } from "./client";
+export type {
+  RpcClient,
+  SseConnectionState,
+  SseConnectionStatus,
+} from "./client";
 export { HttpSseClient, type HttpSseClientConfig } from "./http-sse-client";
 export { TauriIpcClient } from "./tauri-ipc-client";
 export { RpcError, type RpcErrorKind } from "./error";
@@ -11,6 +15,7 @@ export {
   useJob,
   useReviews,
   useEventStream,
+  useEventStreamWithState,
   type QueryState,
 } from "./hooks";
 export type {
