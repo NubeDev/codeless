@@ -19,6 +19,7 @@ pub mod policy;
 mod registry;
 pub mod testing;
 mod tool;
+pub mod tools;
 
 pub use ctx::ToolCtx;
 pub use error::ToolError;
