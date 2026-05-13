@@ -13,6 +13,7 @@
 //! Design intent lives in `DOCS/TOOLS-PORTING.md` in the outer
 //! workspace.
 
+pub mod browser;
 mod ctx;
 mod error;
 pub mod policy;
