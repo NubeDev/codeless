@@ -48,6 +48,13 @@ function runnerLabel(r: RunnerInfo): string {
   return r.id === "mock" ? "mock (demo)" : r.id;
 }
 
+// Server published only the built-in mock factory (no `--enable-claude`,
+// no `--enable-anthropic`). We surface a one-line hint so the user
+// understands why every job they submit will be a no-op.
+function onlyMockEnabled(runners: RunnerInfo[]): boolean {
+  return runners.length === 1 && runners[0].id === "mock";
+}
+
 // Per-runner capability spec. Drives which knobs the Submit dialog
 // shows — runners absent from this map (or with flags off) hide the
 // corresponding fields. New runners gain UI surface by adding a row
@@ -251,6 +258,13 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
               </Select>
             </div>
           </div>
+          {info && onlyMockEnabled(info.runners) && (
+            <div className="rounded border border-yellow-500/40 bg-yellow-500/10 px-2 py-1.5 text-[11px] text-yellow-700 dark:text-yellow-300">
+              Only the demo `mock` runner is enabled. Restart the server
+              with <code>--enable-claude</code> (or <code>--enable-anthropic</code>)
+              to submit real coding jobs.
+            </div>
+          )}
           {caps && (caps.supportsModel || caps.supportsPermission || caps.supportsEffort) && (
             <div className="grid grid-cols-2 gap-3">
               {caps.supportsModel && (

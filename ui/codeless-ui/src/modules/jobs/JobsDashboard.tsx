@@ -21,8 +21,6 @@ import { navigate, useRoute } from "@/lib/route";
 
 import { JobDetail } from "./JobDetail";
 import { JobRow } from "./JobRow";
-import { NewJobDialog } from "./NewJobDialog";
-import { RunMockJobButton } from "./RunMockJobButton";
 import { SubmitJobDialog } from "./SubmitJobDialog";
 import { WorktreeGcButton } from "./WorktreeGcButton";
 import { summariseEnvelope } from "./eventFormat";
@@ -155,7 +153,6 @@ export function JobsDashboard({ onOpenJob }: JobsDashboardProps = {}) {
           <span>·</span>
           <span title="Cost across jobs created today">today {formatCents(dailyTotal)}</span>
           <WorktreeGcButton />
-          <NewJobDialog repos={repos.data} />
         </div>
       </header>
       <Sheet
@@ -182,14 +179,13 @@ export function JobsDashboard({ onOpenJob }: JobsDashboardProps = {}) {
           <CardHeader className="flex flex-row items-center justify-between space-y-0 py-3">
             <CardTitle className="font-mono text-sm">{repo.name}</CardTitle>
             <div className="flex items-center gap-2">
-              <RunMockJobButton repo={repo} />
               <SubmitJobDialog repo={repo} />
             </div>
           </CardHeader>
           <CardContent className="p-0">
             {jobs.length === 0 ? (
               <div className="text-muted-foreground px-3 py-6 text-center text-sm">
-                no jobs in this repo yet — use "run mock job" or "New job"
+                no jobs in this repo yet — click "new job"
               </div>
             ) : (
               jobs.map((j) => (
@@ -263,10 +259,9 @@ function applyEvent(job: Job, e: { type: string }): Job {
   }
 }
 
-// Top-level empty state for when repos exist but no jobs have ever
-// been queued. The "New job" button in the dashboard header is the
-// fastest way to fix that; this CTA names it explicitly so a new
-// operator does not have to guess where the action lives.
+// Empty state when repos exist but no jobs have been queued. Each
+// repo card has its own "new job" button — name it explicitly so a
+// fresh operator does not have to guess where the action lives.
 function NoJobsCta() {
   return (
     <Card>
@@ -275,19 +270,19 @@ function NoJobsCta() {
       </CardHeader>
       <CardContent className="text-muted-foreground space-y-2 text-sm">
         <p>
-          Repos are registered but no jobs have been queued. Use the{" "}
-          <span className="font-medium">New job</span> button in the header
-          above to queue a mock-runner job against any repo.
+          Repos are registered but no jobs have been queued. Click{" "}
+          <span className="font-medium">new job</span> on any repo card
+          below to submit one.
         </p>
       </CardContent>
     </Card>
   );
 }
 
-// Empty-state shown when `list_repos` comes back empty. Steers a new
-// user to the bootstrap path rather than leaving them staring at a
-// blank dashboard. The `codeless demo bootstrap` command is the
-// quickest way to populate a fresh database for browser-side demoing.
+// Empty-state shown when `list_repos` comes back empty. The UI has no
+// repo-add affordance yet (Phase 2 follow-up); the CLI is the only
+// path. This CTA names it so a fresh operator is not stranded at a
+// blank dashboard.
 function NoReposCta() {
   return (
     <Card>
@@ -296,15 +291,14 @@ function NoReposCta() {
       </CardHeader>
       <CardContent className="text-muted-foreground space-y-2 text-sm">
         <p>
-          The core has no repositories registered. Seed the demo data
-          and a queued mock job with:
+          The core has no repositories registered. Add one from the
+          CLI:
         </p>
         <pre className="bg-muted overflow-x-auto rounded p-2 font-mono text-xs">
-codeless --db ~/.local/share/codeless/demo.db demo bootstrap
+{"codeless --db <path> repos add --name <name> --clone-url <git-url> --local-path <abs-path>"}
         </pre>
         <p>
-          Then refresh this page. Use `codeless repos add` for real
-          repos, or `codeless job submit job.yaml` for typed templates.
+          Then refresh this page. Submit jobs from each repo's card.
         </p>
       </CardContent>
     </Card>

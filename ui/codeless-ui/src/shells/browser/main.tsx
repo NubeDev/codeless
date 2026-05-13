@@ -3,6 +3,7 @@ import "@fontsource/jetbrains-mono/700.css";
 import "@xterm/xterm/css/xterm.css";
 import "../../styles/globals.css";
 
+import { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 
 import App from "../../app/App";
@@ -10,7 +11,6 @@ import {
   HttpSseClient,
   MockRpcClient,
   RpcProvider,
-  isViteDevPort,
   readBaseUrl,
   readToken,
   type RpcClient,
@@ -23,33 +23,18 @@ const capabilities: ShellCapabilities = {
   customWindowControls: false,
 };
 
-// Transport selection, in priority order:
-//   - `?mock=1` → force MockRpcClient.
-//   - Otherwise pick `HttpSseClient` and probe `/healthz` once. The
-//     local server responds 200 `ok`; if the probe fails (server not
-//     running, wrong host, network blocked) fall back to mock so the
-//     dev experience stays usable. The probe is short (1s timeout) so
-//     a missing server does not visibly delay first paint.
-//
-// The previous "default to mock on Vite dev ports" rule made the
-// zero-paste demo (server up, `pnpm dev`, open browser) silently land
-// on the mock client. The probe path lets the same one-line setup
-// reach the real server when it's there.
-async function buildClient(): Promise<RpcClient> {
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("mock") === "1") return new MockRpcClient();
+// Transport selection:
+//   - `?mock=1` → opt into MockRpcClient explicitly. Used for UI-only
+//     dev work without booting the Rust server.
+//   - Otherwise always `HttpSseClient`. If the server is unreachable
+//     the app renders an honest "cannot reach server" screen so the
+//     UI never silently shows fake data.
+function buildHttpClient(): HttpSseClient {
+  return new HttpSseClient({ baseUrl: readBaseUrl(), token: readToken() });
+}
 
-  const baseUrl = readBaseUrl();
-  const http = new HttpSseClient({ baseUrl, token: readToken() });
-
-  if (await healthy(baseUrl)) return http;
-
-  // No real server reachable. Mock keeps Vite-only dev workflows
-  // working; production builds at a real origin keep `HttpSseClient`
-  // so the surfaced error is a clear "server unreachable" rather
-  // than a silent mock fallback.
-  if (isViteDevPort(window.location.port)) return new MockRpcClient();
-  return http;
+function isMockRequested(): boolean {
+  return new URLSearchParams(window.location.search).get("mock") === "1";
 }
 
 async function healthy(baseUrl: string): Promise<boolean> {
@@ -64,23 +49,122 @@ async function healthy(baseUrl: string): Promise<boolean> {
   }
 }
 
-void (async () => {
-  const client = await buildClient();
-  const isMock = client instanceof MockRpcClient;
+function Root() {
+  // null = probing; "ok" = real server; "down" = unreachable.
+  const [state, setState] = useState<"probing" | "ok" | "down" | "mock">(
+    isMockRequested() ? "mock" : "probing",
+  );
+  const [client, setClient] = useState<RpcClient | null>(() =>
+    isMockRequested() ? new MockRpcClient() : null,
+  );
+  const [baseUrl] = useState(readBaseUrl);
 
-  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+  useEffect(() => {
+    if (state !== "probing") return;
+    let cancelled = false;
+    void (async () => {
+      const ok = await healthy(baseUrl);
+      if (cancelled) return;
+      if (ok) {
+        setClient(buildHttpClient());
+        setState("ok");
+      } else {
+        setState("down");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state, baseUrl]);
+
+  if (state === "probing") return null;
+  if (state === "down") return <ServerDownScreen baseUrl={baseUrl} onRetry={() => setState("probing")} />;
+  if (!client) return null;
+
+  const isMock = client instanceof MockRpcClient;
+  return (
     <ShellProvider capabilities={capabilities}>
       <RpcProvider client={client}>
         <App />
         {isMock && <MockBanner />}
       </RpcProvider>
-    </ShellProvider>,
+    </ShellProvider>
   );
-})();
+}
+
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+  <Root />,
+);
+
+// Honest error screen when the Rust core is not reachable. Names the
+// URL we tried so the user can see whether their config or the server
+// is the problem, and offers a one-click retry that re-runs the probe
+// rather than forcing a full page reload.
+function ServerDownScreen({
+  baseUrl,
+  onRetry,
+}: {
+  baseUrl: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "JetBrains Mono, monospace",
+        padding: 24,
+      }}
+    >
+      <div style={{ maxWidth: 540 }}>
+        <h1 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>
+          cannot reach codeless server
+        </h1>
+        <p style={{ fontSize: 13, lineHeight: 1.5, opacity: 0.8 }}>
+          The UI tried to reach the Rust core at:
+        </p>
+        <pre
+          style={{
+            background: "rgba(127,127,127,0.12)",
+            padding: "8px 10px",
+            borderRadius: 6,
+            fontSize: 12,
+            margin: "8px 0 16px",
+          }}
+        >
+          {baseUrl}
+        </pre>
+        <p style={{ fontSize: 13, lineHeight: 1.5, opacity: 0.8 }}>
+          Start the server (see <code>DOCS/START-SERVER-UI.md</code>) and
+          click retry. To run the UI without a backend, append{" "}
+          <code>?mock=1</code> to the URL.
+        </p>
+        <button
+          onClick={onRetry}
+          style={{
+            marginTop: 16,
+            padding: "6px 14px",
+            fontSize: 13,
+            fontFamily: "inherit",
+            border: "1px solid currentColor",
+            borderRadius: 6,
+            background: "transparent",
+            color: "inherit",
+            cursor: "pointer",
+          }}
+        >
+          retry
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // Tiny non-intrusive corner badge so it's obvious which transport
-// the app is talking to. Dismissable but stateless — refreshes back
-// in if you reload; the URL/query string is the source of truth.
+// the app is talking to. Only renders under `?mock=1` now — the
+// server-down case has its own dedicated screen.
 function MockBanner() {
   return (
     <div
@@ -99,7 +183,7 @@ function MockBanner() {
         pointerEvents: "none",
       }}
     >
-      mock mode · no backend
+      mock mode · ?mock=1
     </div>
   );
 }

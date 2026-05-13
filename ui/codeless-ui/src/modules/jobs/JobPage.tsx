@@ -2,6 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
@@ -16,34 +23,73 @@ import {
 
 import { FilesChanged } from "./FilesChanged";
 import { HandoverPanel } from "./HandoverPanel";
-import { JobFilesPane } from "./JobFilesPane";
+import { SpecPane } from "./spec/SpecPane";
 import { JobTimeline } from "./JobTimeline";
 import { CostCell, WallClockCell } from "./JobRow";
 import { ReviewPanel } from "./ReviewPanel";
+import { StageDetail } from "./StageDetail";
 import { StageTree } from "./StageTree";
 import { StatusBadge } from "./StatusBadge";
 
-// Sub-rail sections. Order matches the natural read of a job: what
-// stages, then the live event stream, then the diff, then the
-// handover, then the template/worktree metadata. The active section
-// is parked in the URL search-string so reload restores the same
-// view and a deep-link to "open this job at the handover" is one
-// route away.
+// The job page is structured around three concerns the user has at
+// distinct moments:
+//
+//   SPEC    — what *you* author. template.yaml, SCOPE.md, WORKFLOW.md,
+//             extra docs. Editing here lands a commit in the source
+//             repo via update_job_template / write_job_file. The
+//             current run is unaffected; the next run reads the new
+//             content.
+//   STAGES  — the spine. Live stage list while running; click a stage
+//             to drill into its rollup (duration, cost, and — once
+//             the wishlist lands — session id, commits, tool ribbon,
+//             final message).
+//   RUN     — what the *runtime* produced. Timeline (raw event stream),
+//             Files changed (diff against base), Handover (the
+//             contract for the next session), Worktree (git surface).
+//
+// Selecting a stage replaces the right pane with `StageDetail` so the
+// detail has the full real-estate; a "back" link in StageDetail
+// returns to the regular section content.
 type Section =
   | "stages"
+  | "spec"
   | "timeline"
   | "files"
   | "handover"
-  | "spec"
   | "worktree";
 
-const SECTIONS: { id: Section; label: string }[] = [
-  { id: "stages", label: "Stages" },
-  { id: "timeline", label: "Timeline" },
-  { id: "files", label: "Files changed" },
-  { id: "handover", label: "Handover" },
-  { id: "spec", label: "Spec" },
-  { id: "worktree", label: "Worktree" },
+interface RailSection {
+  id: Section;
+  label: string;
+  hint?: string;
+}
+interface RailGroup {
+  label: string;
+  hint: string;
+  items: RailSection[];
+}
+
+const RAIL: RailGroup[] = [
+  {
+    label: "Spec",
+    hint: "what you author",
+    items: [{ id: "spec", label: "Files (template / docs)" }],
+  },
+  {
+    label: "Stages",
+    hint: "the spine",
+    items: [{ id: "stages", label: "All stages" }],
+  },
+  {
+    label: "Run",
+    hint: "what the runtime produced",
+    items: [
+      { id: "timeline", label: "Timeline" },
+      { id: "files", label: "Files changed" },
+      { id: "handover", label: "Handover" },
+      { id: "worktree", label: "Worktree" },
+    ],
+  },
 ];
 
 interface Props {
@@ -66,6 +112,7 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
   const { data: repos } = useRepos();
   const rpc = useRpc();
   const [section, setSection] = useState<Section>("stages");
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
 
   // Surface the resolved title once, when it changes. The parent
   // (`JobDetailStack`) typically passes an inline arrow, so we pin
@@ -82,6 +129,12 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
   useEffect(() => {
     if (derivedTitle) titleCbRef.current?.(derivedTitle);
   }, [derivedTitle]);
+
+  // Switching jobs should drop any stage selection — the IDs come
+  // from a different job entirely.
+  useEffect(() => {
+    setSelectedStageId(null);
+  }, [jobId]);
 
   // Keep the URL in sync with the active job tab so a reload or
   // shareable link lands the user back on the same view. Only the
@@ -114,6 +167,24 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
     [onOpenFile, job?.worktree_path],
   );
 
+  const onSelectSection = useCallback((s: Section) => {
+    setSection(s);
+    // Switching sections clears the stage drilldown so the user
+    // doesn't see a stale "back to all stages" link in the wrong
+    // section.
+    setSelectedStageId(null);
+  }, []);
+
+  const onEditSpec = useCallback(() => {
+    setSection("spec");
+    setSelectedStageId(null);
+  }, []);
+
+  const onSelectStage = useCallback((stageId: string) => {
+    setSection("stages");
+    setSelectedStageId(stageId);
+  }, []);
+
   if (loading) {
     return <CenteredMessage message="loading job…" tone="muted" />;
   }
@@ -124,18 +195,36 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", !active && "hidden")}>
-      <JobHeader job={job} repo={repo} rpc={rpc} />
+      <JobHeader job={job} repo={repo} rpc={rpc} onEditSpec={onEditSpec} />
       <div className="flex min-h-0 flex-1">
-        <SubRail current={section} onSelect={setSection} />
+        <SubRail current={section} onSelect={onSelectSection} />
         <div className="min-w-0 flex-1 overflow-hidden">
-          {section === "stages" && <StagesSection job={job} />}
-          {section === "timeline" && <JobTimeline jobId={jobId} />}
-          {section === "files" && (
-            <FilesChanged jobId={jobId} onOpenFile={handleOpenFile} />
+          {section === "stages" && selectedStageId !== null ? (
+            <StageDetail
+              jobId={jobId}
+              stageId={selectedStageId}
+              onBack={() => setSelectedStageId(null)}
+            />
+          ) : (
+            <>
+              {section === "stages" && (
+                <StagesSection
+                  job={job}
+                  selectedStageId={selectedStageId}
+                  onSelectStage={onSelectStage}
+                />
+              )}
+              {section === "timeline" && <JobTimeline jobId={jobId} />}
+              {section === "files" && (
+                <FilesChanged jobId={jobId} onOpenFile={handleOpenFile} />
+              )}
+              {section === "handover" && <HandoverPanel job={job} />}
+              {section === "spec" && (
+                <SpecPane jobId={job.id} onOpenFile={onOpenFile} />
+              )}
+              {section === "worktree" && <WorktreeSection job={job} repo={repo} />}
+            </>
           )}
-          {section === "handover" && <HandoverPanel job={job} />}
-          {section === "spec" && <JobFilesPane jobId={job.id} />}
-          {section === "worktree" && <WorktreeSection job={job} repo={repo} />}
         </div>
       </div>
     </div>
@@ -165,10 +254,12 @@ function JobHeader({
   job,
   repo,
   rpc,
+  onEditSpec,
 }: {
   job: Job;
   repo: Repo | null;
   rpc: ReturnType<typeof useRpc>;
+  onEditSpec: () => void;
 }) {
   const [busy, setBusy] = useState<"stop" | "rerun" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -189,7 +280,7 @@ function JobHeader({
       setBusy(null);
     }
   };
-  const rerun = async () => {
+  const rerunFromScratch = async () => {
     setBusy("rerun");
     setError(null);
     try {
@@ -222,6 +313,14 @@ function JobHeader({
           now={Date.now()}
         />
         <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onEditSpec}
+          title="Open the SPEC pane to edit template.yaml / SCOPE.md / WORKFLOW.md"
+        >
+          edit spec
+        </Button>
         {!isTerminal && (
           <Button
             size="sm"
@@ -232,15 +331,41 @@ function JobHeader({
             {busy === "stop" ? "stopping…" : "stop"}
           </Button>
         )}
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={rerun}
-          disabled={busy !== null}
-          title="Queue a fresh run with the same prompt, runner, caps"
-        >
-          {busy === "rerun" ? "queuing…" : "re-run"}
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="outline" disabled={busy !== null}>
+              {busy === "rerun" ? "queuing…" : "re-run ▾"}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="text-xs">
+            <DropdownMenuItem onClick={rerunFromScratch}>
+              <div className="flex flex-col">
+                <span>Re-run from scratch</span>
+                <span className="text-muted-foreground text-[10px]">
+                  fresh job, same prompt + caps + runner
+                </span>
+              </div>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled>
+              <div className="flex flex-col">
+                <span>Re-run with feedback</span>
+                <span className="text-muted-foreground text-[10px]">
+                  not wired yet — needs add_job_note RPC
+                </span>
+              </div>
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled>
+              <div className="flex flex-col">
+                <span>Re-run from a specific stage</span>
+                <span className="text-muted-foreground text-[10px]">
+                  not wired yet — needs Job/Run schema split
+                  (JOB-WORKFLOW.md Phase B)
+                </span>
+              </div>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       {error && (
         <div className="text-destructive w-full text-xs">{error}</div>
@@ -257,31 +382,58 @@ function SubRail({
   onSelect: (s: Section) => void;
 }) {
   return (
-    <nav className="border-border/50 flex w-36 shrink-0 flex-col gap-0.5 border-r p-2">
-      {SECTIONS.map((s) => (
-        <button
-          key={s.id}
-          type="button"
-          onClick={() => onSelect(s.id)}
-          className={cn(
-            "rounded px-2 py-1 text-left text-xs",
-            current === s.id
-              ? "bg-accent text-foreground"
-              : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
-          )}
-        >
-          {s.label}
-        </button>
+    <nav className="border-border/50 flex w-44 shrink-0 flex-col gap-3 overflow-y-auto border-r p-2">
+      {RAIL.map((group) => (
+        <div key={group.label} className="space-y-1">
+          <div className="px-2 pt-1">
+            <div className="text-foreground text-[11px] font-semibold">
+              {group.label}
+            </div>
+            <div className="text-muted-foreground text-[10px]">
+              {group.hint}
+            </div>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {group.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelect(item.id)}
+                className={cn(
+                  "rounded px-2 py-1 text-left text-xs",
+                  current === item.id
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
       ))}
     </nav>
   );
 }
 
-function StagesSection({ job }: { job: Job }) {
+function StagesSection({
+  job,
+  selectedStageId,
+  onSelectStage,
+}: {
+  job: Job;
+  selectedStageId: string | null;
+  onSelectStage: (stageId: string) => void;
+}) {
   return (
     <ScrollArea className="h-full">
       <div className="space-y-3 p-3">
-        <StageTree jobId={job.id} templateYaml={job.template_yaml ?? null} />
+        <StageTree
+          jobId={job.id}
+          templateYaml={job.template_yaml ?? null}
+          selectedStageId={selectedStageId}
+          onSelectStage={onSelectStage}
+        />
         <ReviewPanel jobId={job.id} />
       </div>
     </ScrollArea>

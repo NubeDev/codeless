@@ -19,6 +19,20 @@ interface Props {
    * sequentially (`template_runner.rs`).
    */
   templateYaml?: string | null;
+  /**
+   * The currently-selected stage id, if any. When set, that row
+   * renders highlighted. Owned by the parent so the right pane can
+   * react to selection without StageTree caring what the parent does
+   * with it.
+   */
+  selectedStageId?: string | null;
+  /**
+   * Called when the user clicks a stage row. Pass `null` to clear the
+   * selection (the StageTree never calls with null itself; the parent
+   * decides what "deselect" looks like). When omitted the rows render
+   * read-only and selection is disabled.
+   */
+  onSelectStage?: (stageId: string) => void;
 }
 
 type StageState = "running" | "completed" | "failed";
@@ -41,7 +55,7 @@ interface StageRow {
 // Augmented with persisted `list_stages` rollups when available: the
 // StageRecorder writes per-stage rows with timing and tasks.cost_cents
 // so the row can display duration + cost without the UI doing the math.
-export function StageTree({ jobId, templateYaml }: Props) {
+export function StageTree({ jobId, templateYaml, selectedStageId, onSelectStage }: Props) {
   const rpc = useRpc();
   const stageTitles = useMemo(
     () => parseTemplateStageTitles(templateYaml ?? null),
@@ -228,6 +242,8 @@ export function StageTree({ jobId, templateYaml }: Props) {
             row={r}
             title={stageTitles[i] ?? rollups.get(r.id)?.stage.name ?? null}
             rollup={rollups.get(r.id) ?? null}
+            selected={selectedStageId === r.id}
+            onClick={onSelectStage ? () => onSelectStage(r.id) : undefined}
           />
         ))}
         {/*
@@ -262,10 +278,14 @@ function StageLine({
   row,
   title,
   rollup,
+  selected,
+  onClick,
 }: {
   row: StageRow;
   title: string | null;
   rollup: StageRollup | null;
+  selected?: boolean;
+  onClick?: () => void;
 }) {
   const { glyph, tone, label } = renderStage(row);
   // Prefer the template's user-authored title when we have it; fall
@@ -285,8 +305,30 @@ function StageLine({
   }
   const cost = rollup && rollup.cost_cents > 0 ? formatCost(rollup.cost_cents) : null;
   const tasks = rollup && rollup.task_count > 0 ? `${rollup.task_count} task${rollup.task_count === 1 ? "" : "s"}` : null;
+  const interactive = onClick !== undefined;
   return (
-    <li className="flex items-baseline gap-2 text-xs">
+    <li
+      className={cn(
+        "flex items-baseline gap-2 rounded px-1 py-0.5 text-xs",
+        interactive && "cursor-pointer",
+        interactive && !selected && "hover:bg-accent/40",
+        selected && "bg-accent text-foreground",
+      )}
+      onClick={onClick}
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick?.();
+              }
+            }
+          : undefined
+      }
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-pressed={interactive ? !!selected : undefined}
+    >
       <span className={`w-3 text-center font-mono ${tone}`} aria-hidden>
         {glyph}
       </span>
