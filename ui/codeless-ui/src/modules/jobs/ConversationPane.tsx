@@ -15,12 +15,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
-import { useEventStream, type JobId } from "@/lib/rpc";
+import { useEventStream, type Job, type JobId } from "@/lib/rpc";
 import type { EventEnvelope } from "@/lib/rpc/wire";
 import { Streamdown } from "streamdown";
 
+import { Composer } from "./Composer";
+
 interface Props {
   jobId: JobId;
+  // Live job row, owned by the JobPage's useJob() hook. The composer
+  // reads status/caps/stop_reason off it to render the right
+  // primary action; `null` when the parent hasn't resolved the job
+  // yet (e.g. initial load), in which case the composer is hidden.
+  job: Job | null;
+  refetchJob: () => void;
+  onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
   // Optional override: when the parent has already paid for a
   // `?since=0` replay for the same job, the pane can join that
   // existing shared subscription rather than opening a parallel one.
@@ -78,7 +87,13 @@ function messageKey(m: Message): string {
   return `${m.kind}:${m.cursor}`;
 }
 
-export function ConversationPane({ jobId, since = 0 }: Props) {
+export function ConversationPane({
+  jobId,
+  job,
+  refetchJob,
+  onOpenJobTab,
+  since = 0,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [showRawEvents, setShowRawEvents] = useState(false);
   const [rawEvents, setRawEvents] = useState<EventEnvelope[]>([]);
@@ -134,6 +149,13 @@ export function ConversationPane({ jobId, since = 0 }: Props) {
           )}
         </div>
       </div>
+      {job && (
+        <Composer
+          job={job}
+          refetchJob={refetchJob}
+          onOpenJobTab={onOpenJobTab}
+        />
+      )}
     </div>
   );
 }

@@ -256,7 +256,12 @@ export function JobPage({
                 />
               )}
               {section === "conversation" && (
-                <ConversationPane jobId={jobId} />
+                <ConversationPane
+                  jobId={jobId}
+                  job={job}
+                  refetchJob={refetchJob}
+                  onOpenJobTab={onOpenJobTab}
+                />
               )}
               {section === "timeline" && <JobTimeline jobId={jobId} />}
               {section === "files" && (
