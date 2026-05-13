@@ -32,6 +32,13 @@ impl ToolRegistry {
         self.tools.get(name)
     }
 
+    /// Iterate over every registered tool. Order is unspecified
+    /// (HashMap-backed). Callers that need a stable order should
+    /// collect and sort by `Tool::name`.
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Tool>> {
+        self.tools.values()
+    }
+
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.tools.keys().map(String::as_str)
     }
