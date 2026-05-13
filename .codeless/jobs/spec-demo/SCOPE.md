@@ -7,3 +7,9 @@ This file demonstrates the Spec pane rendering Markdown straight from
 
 The first of three demo stages. Stages two and three will append
 their own sections below as later sessions pick them up.
+
+## Stage 2: two
+
+The middle demo stage appends its own section here, proving that
+successive sessions can extend the same Spec document without
+clobbering earlier content.
