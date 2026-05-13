@@ -36,6 +36,9 @@ async fn rerun_job_clones_source_and_queues_fresh() {
             branch: "feature/wizard-typed".into(),
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();

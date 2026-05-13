@@ -108,6 +108,9 @@ async fn jobs_columns_match_appendix_a() {
             "started_at",
             "ended_at",
             "created_at",
+            "model",
+            "permission_mode",
+            "effort",
         ],
     );
 }

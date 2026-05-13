@@ -7,10 +7,10 @@ use crate::methods::{
     FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
     FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
     ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
-    RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -38,6 +38,13 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job>;
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
+
+    /// List the stages of a job, each enriched with rolled-up
+    /// `cost_cents` (sum over the stage's tasks) and a `task_count`.
+    /// Returns an empty list when the job has no persisted stages
+    /// (pre-recorder jobs, mock jobs without a template). The UI
+    /// renders an event-derived fallback view in that case.
+    async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult>;
 
     /// Mint a new job that clones the prompt/runner/caps/repo of an
     /// existing one. Returns the newly-queued job. The original job

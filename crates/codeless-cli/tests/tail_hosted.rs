@@ -45,6 +45,9 @@ async fn seed_completed_job(db: &Path) -> JobId {
             branch: "codeless/tail-hosted".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();

@@ -47,6 +47,9 @@ async fn seed_repo_job(rpc: &InProcessRpc, name: &str, runner: &str) -> (RepoId,
             branch: "codeless/job-1".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();

@@ -130,6 +130,9 @@ async fn bootstrap(args: BootstrapArgs, db: Option<PathBuf>) -> Result<ExitCode>
             branch: format!("codeless/{}-demo", args.name),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 0,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .map_err(|e| anyhow!("submit_job: {e}"))?;

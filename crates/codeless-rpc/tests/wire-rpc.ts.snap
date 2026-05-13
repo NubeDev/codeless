@@ -219,6 +219,28 @@ export type Job = {
 	cost_cap_cents: CostCents,
 	wall_clock_cap_ms: number,
 	cost_cents: CostCents,
+	/**
+	 *  Optional per-job model override forwarded to the runner. `None`
+	 *  uses the runner adapter's default. Free-form because each runner
+	 *  has its own model catalogue (Claude opus/sonnet/haiku, Copilot
+	 *  gpt-5.x, etc.) — validation is the adapter's job, not this layer.
+	 */
+	model: string | null,
+	/**
+	 *  Optional per-job permission mode. Only meaningful for runners
+	 *  that expose a per-call permission gate (Claude). Wire labels
+	 *  match the snake_case form on `claude-wrapper`'s `PermissionMode`:
+	 *  `default | accept_edits | plan | bypass`. `None` leaves the
+	 *  adapter's headless default (`Bypass` for Claude) in place.
+	 */
+	permission_mode: string | null,
+	/**
+	 *  Optional thinking-budget hint. Only meaningful for runners that
+	 *  honour it (Claude). Wire labels: `low | medium | high`. `None`
+	 *  disables the prompt-trigger prefix that maps to claude's
+	 *  "think" / "think hard" / "ultrathink" cues.
+	 */
+	effort: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
@@ -372,6 +394,14 @@ export type ListReviewsResult = {
 	reviews: Review[],
 };
 
+export type ListStagesArgs = {
+	job_id: JobId,
+};
+
+export type ListStagesResult = {
+	stages: StageRollup[],
+};
+
 export type ReadJobFileArgs = {
 	job_id: JobId,
 	filename: string,
@@ -460,8 +490,39 @@ export type ServerInfo = {
 	claude: ClaudeStatus | null,
 };
 
+// A verify-gated chunk of a job — see SCOPE.md Appendix A `stages`.
+export type Stage = {
+	id: StageId,
+	job_id: JobId,
+	ordinal: number,
+	name: string,
+	status: StageStatus,
+	// `None` when this stage has no verify gate.
+	verify_cmd: string | null,
+	started_at: UnixMillis | null,
+	ended_at: UnixMillis | null,
+};
+
 //Identity of a verify-gated chunk within a job.
 export type StageId = string;
+
+/**
+ *  Per-stage rollup returned by `list_stages`. Carries the canonical
+ *  `Stage` row plus values rolled up from child tasks so the UI can
+ *  render duration and cost without a second query. `task_count`
+ *  surfaces "how many task rows backed this stage" — useful for
+ *  distinguishing "stage ran with 0 tasks recorded" (recorder ran
+ *  but no AI work happened) from "stage was never persisted at all"
+ *  (pre-recorder job).
+ */
+export type StageRollup = {
+	stage: Stage,
+	cost_cents: number,
+	task_count: number,
+};
+
+// Stage lifecycle. Matches `stages.status` wire labels.
+export type StageStatus = "pending" | "running" | "awaiting-review" | "passed" | "failed";
 
 export type StopJobArgs = {
 	job_id: JobId,
@@ -485,6 +546,15 @@ export type SubmitJobArgs = {
 	branch: string,
 	cost_cap_cents: number,
 	wall_clock_cap_ms: number,
+	/**
+	 *  Per-job runner overrides. All three are optional and round-trip
+	 *  onto `Job` so re-runs inherit the original settings. Adapters
+	 *  silently ignore knobs they do not support (Copilot has no
+	 *  `permission_mode` or `effort`, for example).
+	 */
+	model?: string | null,
+	permission_mode?: string | null,
+	effort?: string | null,
 };
 
 /**

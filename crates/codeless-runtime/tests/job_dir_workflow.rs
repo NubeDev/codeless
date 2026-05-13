@@ -85,6 +85,9 @@ async fn fixture_with_job(
             branch: "codeless/job-x".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 0,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();

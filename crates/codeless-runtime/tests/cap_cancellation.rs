@@ -36,6 +36,9 @@ async fn fresh_job(rpc: &InProcessRpc, cost_cap: i64, wall_clock_ms: i64) -> cod
         branch: "codeless/job-cap".into(),
         cost_cap_cents: cost_cap,
         wall_clock_cap_ms: wall_clock_ms,
+        model: None,
+        permission_mode: None,
+        effort: None,
     })
     .await
     .unwrap()

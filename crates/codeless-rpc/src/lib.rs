@@ -20,9 +20,10 @@ pub use methods::{
     FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RunnerInfo, ServerInfo,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RerunJobArgs, RunnerInfo, ServerInfo, StageRollup, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

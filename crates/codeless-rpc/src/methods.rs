@@ -1,5 +1,5 @@
 use codeless_types::{
-    FsEntry, FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus,
+    FsEntry, FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
     StageId, UnixMillis,
 };
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,16 @@ pub struct SubmitJobArgs {
     pub branch: String,
     pub cost_cap_cents: i64,
     pub wall_clock_cap_ms: i64,
+    /// Per-job runner overrides. All three are optional and round-trip
+    /// onto `Job` so re-runs inherit the original settings. Adapters
+    /// silently ignore knobs they do not support (Copilot has no
+    /// `permission_mode` or `effort`, for example).
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -63,6 +73,30 @@ pub struct ListJobsArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct ListJobsResult {
     pub jobs: Vec<Job>,
+}
+
+/// Per-stage rollup returned by `list_stages`. Carries the canonical
+/// `Stage` row plus values rolled up from child tasks so the UI can
+/// render duration and cost without a second query. `task_count`
+/// surfaces "how many task rows backed this stage" — useful for
+/// distinguishing "stage ran with 0 tasks recorded" (recorder ran
+/// but no AI work happened) from "stage was never persisted at all"
+/// (pre-recorder job).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct StageRollup {
+    pub stage: Stage,
+    pub cost_cents: i64,
+    pub task_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListStagesArgs {
+    pub job_id: JobId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListStagesResult {
+    pub stages: Vec<StageRollup>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]

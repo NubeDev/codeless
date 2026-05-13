@@ -46,6 +46,9 @@ async fn seed_three_jobs(db: &Path) {
             branch: format!("feat/{runner}"),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();

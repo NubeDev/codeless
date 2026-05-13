@@ -46,6 +46,22 @@ pub struct Job {
     pub cost_cap_cents: CostCents,
     pub wall_clock_cap_ms: i64,
     pub cost_cents: CostCents,
+    /// Optional per-job model override forwarded to the runner. `None`
+    /// uses the runner adapter's default. Free-form because each runner
+    /// has its own model catalogue (Claude opus/sonnet/haiku, Copilot
+    /// gpt-5.x, etc.) — validation is the adapter's job, not this layer.
+    pub model: Option<String>,
+    /// Optional per-job permission mode. Only meaningful for runners
+    /// that expose a per-call permission gate (Claude). Wire labels
+    /// match the snake_case form on `claude-wrapper`'s `PermissionMode`:
+    /// `default | accept_edits | plan | bypass`. `None` leaves the
+    /// adapter's headless default (`Bypass` for Claude) in place.
+    pub permission_mode: Option<String>,
+    /// Optional thinking-budget hint. Only meaningful for runners that
+    /// honour it (Claude). Wire labels: `low | medium | high`. `None`
+    /// disables the prompt-trigger prefix that maps to claude's
+    /// "think" / "think hard" / "ultrathink" cues.
+    pub effort: Option<String>,
     pub started_at: Option<UnixMillis>,
     pub ended_at: Option<UnixMillis>,
     pub created_at: UnixMillis,

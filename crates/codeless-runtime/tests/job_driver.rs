@@ -58,6 +58,9 @@ async fn fresh_queued_job(rpc: &InProcessRpc) -> codeless_types::JobId {
         branch: "codeless/job-1".into(),
         cost_cap_cents: 500,
         wall_clock_cap_ms: 60_000,
+        model: None,
+        permission_mode: None,
+        effort: None,
     })
     .await
     .expect("submit_job")
@@ -116,6 +119,8 @@ async fn drive_job_failure_outcome_lands_as_failed() {
         MockStep::Emit(Event::StageStarted {
             stage_id: StageId::new(),
             job_id,
+            ordinal: 0,
+            name: "scripted stage".into(),
         }),
         MockStep::Finish(RunnerOutcome::Failed {
             reason: "scripted failure".into(),

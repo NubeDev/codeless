@@ -47,6 +47,14 @@ pub struct TemplateRunner {
     /// per-stage `ClaudeRunnerAdapter`. `None` keeps the headless
     /// default.
     pub system_prompt: Option<String>,
+    /// When `true`, each stage runs `MockRunner` instead of
+    /// `ClaudeRunnerAdapter`. Used by `--enable-claude=false` so the
+    /// iterate-loop UI (stage events, recorder, Spec pane) is
+    /// drivable without a real claude install. Mock stages still
+    /// emit `StageStarted` / `StageCompleted` / one `AiMessageComplete`
+    /// per stage, so the StageRecorder records timing + cost (cost is
+    /// 0 because mock doesn't bill anything).
+    pub use_mock_runner: bool,
 }
 
 impl TemplateRunner {
@@ -54,12 +62,19 @@ impl TemplateRunner {
         Self {
             template,
             system_prompt: None,
+            use_mock_runner: false,
         }
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         let s = prompt.into();
         self.system_prompt = if s.is_empty() { None } else { Some(s) };
+        self
+    }
+
+    /// Opt into per-stage `MockRunner` for development / demos.
+    pub fn with_mock_runner(mut self) -> Self {
+        self.use_mock_runner = true;
         self
     }
 
@@ -140,6 +155,15 @@ impl Runner for TemplateRunner {
             let task_id = TaskId::new();
             // Emit stage-started so the UI's StageTree picks up this
             // user-authored stage in real time.
+            // Carry `ordinal` (0-based, matches the YAML's stage
+            // index) and `name` (the verbatim stage title, REVIEW
+            // prefix included) so the StageRecorder can persist the
+            // row without re-parsing the template.
+            let name_for_event = if stage.is_review {
+                format!("REVIEW {}", stage.title)
+            } else {
+                stage.title.to_owned()
+            };
             publish(
                 &ctx,
                 stage_id,
@@ -147,6 +171,8 @@ impl Runner for TemplateRunner {
                 Event::StageStarted {
                     stage_id,
                     job_id: ctx.job_id,
+                    ordinal: stage.index as u32,
+                    name: name_for_event,
                 },
             )
             .await;
@@ -171,17 +197,70 @@ impl Runner for TemplateRunner {
                 .await;
             } else {
                 let prompt = self.stage_prompt(*stage, total, ctx.worktree_path.as_deref());
-                let mut adapter = ClaudeRunnerAdapter::new(prompt, task_id);
-                if let Some(sp) = &self.system_prompt {
-                    adapter = adapter.with_system_prompt(sp.clone());
-                }
                 let sub_ctx = RunnerContext {
                     job_id: ctx.job_id,
                     bus: Arc::clone(&ctx.bus),
                     worktree_path: ctx.worktree_path.clone(),
                     cancel: derive_cancel(&ctx.cancel),
                 };
-                match adapter.run(sub_ctx).await {
+                let outcome = if self.use_mock_runner {
+                    // Mock stage: a small, realistic-looking event
+                    // sequence so the recorder + UI see the same
+                    // shape they'd see from claude. Cost is a small
+                    // synthetic number per stage (1-3 cents) so the
+                    // demo shows real rollup math without billing.
+                    //
+                    // Emit directly with the stage_id correlation
+                    // baked into the envelope (MockRunner publishes
+                    // events with stage_id=None, which would break the
+                    // recorder's per-stage attribution).
+                    let synth_cost = ((stage.index as i64) % 3) + 1;
+                    publish(&ctx, stage_id, task_id, Event::TaskStarted { task_id }).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    publish(
+                        &ctx,
+                        stage_id,
+                        task_id,
+                        Event::AiToken {
+                            task_id,
+                            delta: format!("mock: working on '{}'\n", stage.title),
+                        },
+                    )
+                    .await;
+                    publish(
+                        &ctx,
+                        stage_id,
+                        task_id,
+                        Event::AiMessageComplete {
+                            task_id,
+                            input_tokens: 128,
+                            output_tokens: 64,
+                            cost_cents: codeless_types::CostCents(synth_cost),
+                        },
+                    )
+                    .await;
+                    publish(
+                        &ctx,
+                        stage_id,
+                        task_id,
+                        Event::TaskCompleted {
+                            task_id,
+                            status: codeless_types::TaskStatus::Completed,
+                        },
+                    )
+                    .await;
+                    // Hold ctx to silence unused warnings around the
+                    // branch's `sub_ctx`.
+                    drop(sub_ctx);
+                    RunnerOutcome::Completed
+                } else {
+                    let mut adapter = ClaudeRunnerAdapter::new(prompt, task_id);
+                    if let Some(sp) = &self.system_prompt {
+                        adapter = adapter.with_system_prompt(sp.clone());
+                    }
+                    adapter.run(sub_ctx).await
+                };
+                match outcome {
                     RunnerOutcome::Completed => {}
                     RunnerOutcome::Failed { reason } => {
                         publish(

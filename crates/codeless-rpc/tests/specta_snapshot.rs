@@ -15,10 +15,10 @@ use codeless_rpc::methods::{
     FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
     FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
     JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RunnerInfo, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RunnerInfo, ServerInfo, StageRollup,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -66,7 +66,10 @@ fn collect() -> TypeCollection {
         .register_mut::<UpdateJobTemplateArgs>()
         .register_mut::<UpdateJobTemplateResult>()
         .register_mut::<WriteHandoverArgs>()
-        .register_mut::<WriteHandoverResult>();
+        .register_mut::<WriteHandoverResult>()
+        .register_mut::<StageRollup>()
+        .register_mut::<ListStagesArgs>()
+        .register_mut::<ListStagesResult>();
     types
 }
 

@@ -10,10 +10,10 @@ use codeless_rpc::{
     FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
     FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
     ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
-    RerunJobArgs, RpcError, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, ServerInfo, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -30,6 +30,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/submit_job", post(submit_job))
         .route("/rpc/get_job", post(get_job))
         .route("/rpc/list_jobs", post(list_jobs))
+        .route("/rpc/list_stages", post(list_stages))
         .route("/rpc/stop_job", post(stop_job))
         .route("/rpc/rerun_job", post(rerun_job))
         .route("/rpc/gc_worktrees", post(gc_worktrees))
@@ -153,6 +154,13 @@ async fn list_jobs(
     Json(args): Json<ListJobsArgs>,
 ) -> HandlerResult<ListJobsResult> {
     st.rpc.list_jobs(args).await.map(Json).map_err(map_err)
+}
+
+async fn list_stages(
+    State(st): State<AppState>,
+    Json(args): Json<ListStagesArgs>,
+) -> HandlerResult<ListStagesResult> {
+    st.rpc.list_stages(args).await.map(Json).map_err(map_err)
 }
 
 async fn stop_job(

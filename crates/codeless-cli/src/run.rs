@@ -77,6 +77,9 @@ async fn run_once(args: RunArgs, repo_path: PathBuf, db: Option<PathBuf>) -> Res
             branch: "codeless/job-once".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .map_err(|e| anyhow!("submit_job: {e}"))?;

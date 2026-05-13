@@ -78,6 +78,9 @@ async fn cursors_are_strictly_monotonic_across_publish_calls() {
             branch: "codeless/job-x".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();

@@ -50,6 +50,14 @@ export interface SubmitJobArgs {
   branch: string;
   cost_cap_cents: number;
   wall_clock_cap_ms: number;
+  /** Optional per-job model id. Adapters that don't understand it
+   * ignore it; `null` means "use the runner's default." */
+  model?: string | null;
+  /** Per-call permission mode. Today only the Claude adapter honours
+   * it; valid values: `default | accept_edits | plan | bypass`. */
+  permission_mode?: string | null;
+  /** Thinking-budget hint: `low | medium | high`. */
+  effort?: string | null;
 }
 
 export interface GetJobArgs {
@@ -62,6 +70,33 @@ export interface ListJobsArgs {
 
 export interface ListJobsResult {
   jobs: Job[];
+}
+
+// Stage rollup returned by `list_stages`. Stage row carries the
+// canonical persistent state (status, started_at, ended_at, name,
+// ordinal); cost_cents and task_count are derived rollups from the
+// stage's child task rows.
+export interface StageRollup {
+  stage: {
+    id: string;
+    job_id: JobId;
+    ordinal: number;
+    name: string;
+    status: "pending" | "running" | "awaiting-review" | "passed" | "failed";
+    verify_cmd: string | null;
+    started_at: number | null;
+    ended_at: number | null;
+  };
+  cost_cents: number;
+  task_count: number;
+}
+
+export interface ListStagesArgs {
+  job_id: JobId;
+}
+
+export interface ListStagesResult {
+  stages: StageRollup[];
 }
 
 export interface StopJobArgs {
@@ -286,6 +321,7 @@ export interface RpcMethodMap {
   submit_job: { args: SubmitJobArgs; result: Job };
   get_job: { args: GetJobArgs; result: Job };
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
+  list_stages: { args: ListStagesArgs; result: ListStagesResult };
   stop_job: { args: StopJobArgs; result: null };
   rerun_job: { args: RerunJobArgs; result: Job };
   gc_worktrees: { args: GcWorktreesArgs; result: GcWorktreesResult };

@@ -119,6 +119,9 @@ async fn submit(args: SubmitArgs, db: Option<PathBuf>) -> Result<ExitCode> {
             branch: template.branch.clone(),
             cost_cap_cents: template.caps.cost_cents,
             wall_clock_cap_ms: template.caps.wall_clock_ms,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .map_err(|e| anyhow!("submit_job: {e}"))?;

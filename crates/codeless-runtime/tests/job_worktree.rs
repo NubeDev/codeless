@@ -111,6 +111,9 @@ async fn submit(rpc: &InProcessRpc, repo_path: &Path) -> codeless_types::JobId {
         branch: "codeless/job-wt".into(),
         cost_cap_cents: 500,
         wall_clock_cap_ms: 60_000,
+        model: None,
+        permission_mode: None,
+        effort: None,
     })
     .await
     .expect("submit_job")

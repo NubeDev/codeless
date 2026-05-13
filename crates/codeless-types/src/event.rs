@@ -60,7 +60,20 @@ pub enum Event {
     JobFailed { job_id: JobId },
 
     #[serde(rename = "stage-started")]
-    StageStarted { stage_id: StageId, job_id: JobId },
+    StageStarted {
+        stage_id: StageId,
+        job_id: JobId,
+        /// 0-based position of this stage in the template's `stages:`
+        /// list. Carried on the wire so subscribers can persist
+        /// `Stage` rows without re-parsing the YAML.
+        #[serde(default)]
+        ordinal: u32,
+        /// Title of the stage (the YAML's `stages:` entry, with any
+        /// `REVIEW ` prefix preserved). Same source of truth the UI
+        /// already uses; persisted on the `Stage` row.
+        #[serde(default)]
+        name: String,
+    },
     #[serde(rename = "verify-started")]
     VerifyStarted { stage_id: StageId },
     #[serde(rename = "verify-passed")]

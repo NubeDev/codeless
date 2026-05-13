@@ -106,6 +106,9 @@ async fn submit_then_stop_job_round_trip() {
             branch: "feat/x".into(),
             cost_cap_cents: 100,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();
@@ -138,6 +141,9 @@ async fn unknown_repo_surfaces_as_not_found() {
             branch: "main".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 0,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .expect_err("expected NotFound");

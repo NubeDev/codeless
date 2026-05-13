@@ -69,6 +69,9 @@ async fn restart_preserves_repos_jobs_tasks_events_and_cursors() {
                 branch: "codeless/job-1".into(),
                 cost_cap_cents: 0,
                 wall_clock_cap_ms: 60_000,
+                model: None,
+                permission_mode: None,
+                effort: None,
             })
             .await
             .unwrap();

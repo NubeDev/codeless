@@ -79,6 +79,9 @@ async fn submit(rpc: &InProcessRpc) -> codeless_types::JobId {
         branch: "codeless/job-anthropic".into(),
         cost_cap_cents: 500,
         wall_clock_cap_ms: 60_000,
+        model: None,
+        permission_mode: None,
+        effort: None,
     })
     .await
     .unwrap()

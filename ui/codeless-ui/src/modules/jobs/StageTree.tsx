@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "@/lib/utils";
-import { useEventStream, type EventEnvelope, type JobId } from "@/lib/rpc";
+import {
+  useEventStream,
+  useRpc,
+  type EventEnvelope,
+  type JobId,
+  type StageRollup,
+} from "@/lib/rpc";
 
 interface Props {
   jobId: JobId;
@@ -32,19 +38,57 @@ interface StageRow {
 // Live per-stage checklist driven by the same per-job event stream the
 // timeline consumes. Folds stage-started, stage-completed, and
 // verify-failed envelopes into a stable, ordered list of stage rows.
-// Render-only — there is no backend involved here.
+// Augmented with persisted `list_stages` rollups when available: the
+// StageRecorder writes per-stage rows with timing and tasks.cost_cents
+// so the row can display duration + cost without the UI doing the math.
 export function StageTree({ jobId, templateYaml }: Props) {
+  const rpc = useRpc();
   const stageTitles = useMemo(
     () => parseTemplateStageTitles(templateYaml ?? null),
     [templateYaml],
   );
   const [stages, setStages] = useState<Map<string, StageRow>>(new Map());
   const [order, setOrder] = useState<string[]>([]);
+  const [rollups, setRollups] = useState<Map<string, StageRollup>>(new Map());
 
   useEffect(() => {
     setStages(new Map());
     setOrder([]);
+    setRollups(new Map());
   }, [jobId]);
+
+  // Pull the persisted rollups on mount + after every stage-completed
+  // event so the row picks up the recorded duration/cost as soon as
+  // the stage terminates. Catches the pre-recorder fallback too:
+  // `stages` is empty → the existing event-derived view shows alone.
+  const fetchRollups = useCallback(async () => {
+    try {
+      const res = await rpc.call("list_stages", { job_id: jobId });
+      const map = new Map<string, StageRollup>();
+      const seen: string[] = [];
+      for (const r of res.stages) {
+        map.set(r.stage.id, r);
+        seen.push(r.stage.id);
+      }
+      setRollups(map);
+      // Seed the ordering from the persisted stages so we don't depend
+      // on the event stream having delivered every StageStarted before
+      // the user opened the page.
+      setOrder((prev) => {
+        const merged = [...seen];
+        for (const id of prev) {
+          if (!merged.includes(id)) merged.push(id);
+        }
+        return merged;
+      });
+    } catch {
+      // Pre-recorder jobs / wiped DB: silent. The event-derived view
+      // is the fallback; nothing here is load-bearing.
+    }
+  }, [rpc, jobId]);
+  useEffect(() => {
+    void fetchRollups();
+  }, [fetchRollups]);
 
   const onEvent = useCallback((env: EventEnvelope) => {
     const e = env.event;
@@ -56,6 +100,11 @@ export function StageTree({ jobId, templateYaml }: Props) {
       e.type !== "verify-failed"
     ) {
       return;
+    }
+    // Refresh rollups when a stage terminates so we pick up the
+    // recorded duration + cost without polling.
+    if (e.type === "stage-completed" || e.type === "verify-failed") {
+      void fetchRollups();
     }
     setStages((prev) => {
       const next = new Map(prev);
@@ -95,9 +144,56 @@ export function StageTree({ jobId, templateYaml }: Props) {
   useEventStream({ scope: "job", job_id: jobId }, onEvent);
 
   const rows = useMemo(
-    () => order.map((id) => stages.get(id)).filter((r): r is StageRow => !!r),
-    [order, stages],
+    () =>
+      order
+        .map((id) => {
+          // Synthesise a stage row from the rollup when the event
+          // stream hasn't delivered StageStarted yet (page opened
+          // after the events were lost from the broadcast tail).
+          const existing = stages.get(id);
+          if (existing) return existing;
+          const rollup = rollups.get(id);
+          if (!rollup) return null;
+          return {
+            id,
+            state:
+              rollup.stage.status === "failed"
+                ? "failed"
+                : rollup.stage.status === "passed"
+                  ? "completed"
+                  : "running",
+            finalStatus:
+              rollup.stage.status === "passed" || rollup.stage.status === "failed"
+                ? rollup.stage.status
+                : null,
+            verifyExit: null,
+          } satisfies StageRow;
+        })
+        .filter((r): r is StageRow => !!r),
+    [order, stages, rollups],
   );
+
+  // Header summary: total wall time + total cost across persisted
+  // stages. Only renders when we have at least one rollup. Lets the
+  // user see "this run cost N cents over M seconds" without doing
+  // the math on each row.
+  const totals = useMemo(() => {
+    if (rollups.size === 0) return null;
+    let costCents = 0;
+    let minStart: number | null = null;
+    let maxEnd: number | null = null;
+    for (const r of rollups.values()) {
+      costCents += r.cost_cents;
+      if (r.stage.started_at !== null) {
+        minStart = minStart === null ? r.stage.started_at : Math.min(minStart, r.stage.started_at);
+      }
+      if (r.stage.ended_at !== null) {
+        maxEnd = maxEnd === null ? r.stage.ended_at : Math.max(maxEnd, r.stage.ended_at);
+      }
+    }
+    const durationMs = minStart !== null && maxEnd !== null ? maxEnd - minStart : null;
+    return { costCents, durationMs };
+  }, [rollups]);
 
   // Hide only when neither the live event stream nor the template
   // can tell us anything — for a template-backed job we want to
@@ -108,12 +204,31 @@ export function StageTree({ jobId, templateYaml }: Props) {
 
   return (
     <div className="border-border/50 border-b px-4 py-2">
-      <div className="text-muted-foreground mb-1.5 text-[10px] uppercase tracking-wide">
-        Stages
+      <div className="mb-1.5 flex items-baseline justify-between">
+        <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
+          Stages
+        </div>
+        {totals && (
+          <div className="text-muted-foreground flex gap-3 text-[10px]">
+            {totals.durationMs !== null && (
+              <span title="Total wall time across all recorded stages">
+                {formatDuration(totals.durationMs)}
+              </span>
+            )}
+            <span title="Total cost across all recorded stages">
+              {formatCost(totals.costCents)}
+            </span>
+          </div>
+        )}
       </div>
       <ul className="space-y-0.5">
         {rows.map((r, i) => (
-          <StageLine key={r.id} row={r} title={stageTitles[i] ?? null} />
+          <StageLine
+            key={r.id}
+            row={r}
+            title={stageTitles[i] ?? rollups.get(r.id)?.stage.name ?? null}
+            rollup={rollups.get(r.id) ?? null}
+          />
         ))}
         {/*
           When the template names more stages than have started yet,
@@ -128,18 +243,48 @@ export function StageTree({ jobId, templateYaml }: Props) {
   );
 }
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 100) / 10;
+  if (s < 60) return `${s}s`;
+  const minutes = Math.floor(s / 60);
+  const remSec = Math.round(s - minutes * 60);
+  return `${minutes}m ${remSec}s`;
+}
+
+function formatCost(cents: number): string {
+  if (cents === 0) return "$0.00";
+  // Cents come in as integer cents; show $X.XX with two decimals.
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 function StageLine({
   row,
   title,
+  rollup,
 }: {
   row: StageRow;
   title: string | null;
+  rollup: StageRollup | null;
 }) {
   const { glyph, tone, label } = renderStage(row);
   // Prefer the template's user-authored title when we have it; fall
   // back to the ULID otherwise. Either way the row's status glyph is
   // the load-bearing signal, so the right-side label is supplemental.
   const primary = title ?? row.id;
+  // Per-stage rollup: duration + cost, only when the StageRecorder
+  // captured them. Pre-recorder jobs render the existing event-only
+  // line (no muted span at all).
+  let duration: string | null = null;
+  if (rollup?.stage.started_at !== null && rollup?.stage.started_at !== undefined) {
+    const end =
+      rollup.stage.ended_at !== null && rollup.stage.ended_at !== undefined
+        ? rollup.stage.ended_at
+        : Date.now();
+    duration = formatDuration(end - rollup.stage.started_at);
+  }
+  const cost = rollup && rollup.cost_cents > 0 ? formatCost(rollup.cost_cents) : null;
+  const tasks = rollup && rollup.task_count > 0 ? `${rollup.task_count} task${rollup.task_count === 1 ? "" : "s"}` : null;
   return (
     <li className="flex items-baseline gap-2 text-xs">
       <span className={`w-3 text-center font-mono ${tone}`} aria-hidden>
@@ -154,6 +299,21 @@ function StageLine({
       >
         {primary}
       </span>
+      {duration && (
+        <span className="text-muted-foreground shrink-0 text-[10px]" title="Duration">
+          {duration}
+        </span>
+      )}
+      {cost && (
+        <span className="text-muted-foreground shrink-0 text-[10px]" title="Cost">
+          {cost}
+        </span>
+      )}
+      {tasks && !cost && (
+        <span className="text-muted-foreground shrink-0 text-[10px]" title="Task count">
+          {tasks}
+        </span>
+      )}
       {label && (
         <span className={`shrink-0 text-[11px] ${tone}`} title={label}>
           {label}

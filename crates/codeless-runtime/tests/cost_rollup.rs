@@ -34,6 +34,9 @@ async fn ai_message_complete_accumulates_cost_on_task_and_job() {
             branch: "codeless/job-cost".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();

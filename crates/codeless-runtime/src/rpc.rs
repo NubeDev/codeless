@@ -10,10 +10,10 @@ use codeless_rpc::{
     FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
-    RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RerunJobArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -291,6 +291,9 @@ impl RpcServer for InProcessRpc {
             cost_cap_cents: CostCents(args.cost_cap_cents),
             wall_clock_cap_ms: args.wall_clock_cap_ms,
             cost_cents: CostCents::ZERO,
+            model: args.model,
+            permission_mode: args.permission_mode,
+            effort: args.effort,
             started_at: None,
             ended_at: None,
             created_at: now,
@@ -324,6 +327,23 @@ impl RpcServer for InProcessRpc {
         Ok(ListJobsResult {
             jobs: self.store.list_jobs(args.repo_id).await.map_err(db_err)?,
         })
+    }
+
+    async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult> {
+        let rows = self
+            .store
+            .list_stages_for_job(args.job_id)
+            .await
+            .map_err(db_err)?;
+        let stages = rows
+            .into_iter()
+            .map(|row| codeless_rpc::StageRollup {
+                stage: row.stage,
+                cost_cents: row.cost_cents,
+                task_count: row.task_count,
+            })
+            .collect();
+        Ok(ListStagesResult { stages })
     }
 
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()> {
@@ -386,6 +406,9 @@ impl RpcServer for InProcessRpc {
             cost_cap_cents: source.cost_cap_cents,
             wall_clock_cap_ms: source.wall_clock_cap_ms,
             cost_cents: CostCents::ZERO,
+            model: source.model,
+            permission_mode: source.permission_mode,
+            effort: source.effort,
             started_at: None,
             ended_at: None,
             created_at: now,

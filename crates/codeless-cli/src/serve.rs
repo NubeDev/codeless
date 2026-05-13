@@ -19,9 +19,10 @@ use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
 use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerInfo};
 use codeless_runtime::{
-    spawn_job_driver_loop, spawn_notifier, template::JobTemplate, template_runner::TemplateRunner,
-    AnthropicRunnerAdapter, ClaudeRunnerAdapter, InProcessRpc, MockRunner, MockStep, Runner,
-    RunnerFactory, RunnerOutcome, WebhookConfig, WebhookNotifier,
+    parse_permission_mode, spawn_job_driver_loop, spawn_notifier, spawn_stage_recorder,
+    template::JobTemplate, template_runner::TemplateRunner, AnthropicRunnerAdapter,
+    ClaudeRunnerAdapter, InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome,
+    WebhookConfig, WebhookNotifier,
 };
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, AuthMode, TokenLoadError, TOKEN_SECRET_KEY,
@@ -176,9 +177,25 @@ async fn run_server(
     };
 
     let mut runtime = rpc_open::open(db.as_deref()).await?;
+    // Resolve the effective worktree root up front so the HostFs
+    // adapter can grant read access to per-job `runs/*/handover.md`
+    // and notes through the same `fs_*` surface. Without this, the
+    // UI's Handover pane errors with `path escapes root` because the
+    // worktree root sits outside `--fs-root` (the source repo).
+    let worktree_root_effective = effective_worktree_root(&args);
     if let Some(root) = &args.fs_root {
-        let host_fs = codeless_adapters_host::HostFs::new(root)
+        let mut host_fs = codeless_adapters_host::HostFs::new(root)
             .map_err(|e| anyhow!("fs root {}: {e}", root.display()))?;
+        if let Some(wt) = &worktree_root_effective {
+            // The worktree root may not exist yet on first boot —
+            // create it so `HostFs::with_extra_root` finds a directory
+            // to canonicalize. Subsequent boots are no-ops.
+            std::fs::create_dir_all(wt).ok();
+            host_fs = host_fs
+                .with_extra_root(wt)
+                .map_err(|e| anyhow!("worktree fs root {}: {e}", wt.display()))?;
+            eprintln!("codeless-server: fs extra root = {}", wt.display());
+        }
         runtime = runtime.with_fs(Arc::new(host_fs));
         eprintln!("codeless-server: fs root = {}", root.display());
     }
@@ -186,8 +203,8 @@ async fn run_server(
     // `gc_worktrees` sees the on-disk state) and the driver below
     // (which provisions per-job trees). Creating it here, before the
     // runtime is sealed into an Arc, lets both halves share the
-    // single source of truth.
-    let worktree_root_effective = effective_worktree_root(&args);
+    // single source of truth. `worktree_root_effective` was resolved
+    // above so the HostFs adapter could mark it as an extra root.
     let worktrees_arc: Option<Arc<WorktreeManager>> =
         worktree_root_effective.as_ref().map(|root| {
             if let Err(e) = std::fs::create_dir_all(root) {
@@ -265,6 +282,15 @@ async fn run_server(
             )
         }
     };
+
+    // StageRecorder: persist Stage / Task rows from the event stream
+    // so the UI's Stages tab can render rolled-up per-stage cost and
+    // duration without reconstructing it from events. Best-effort —
+    // a failure here logs and the loop continues.
+    let _stage_recorder = spawn_stage_recorder(rpc.bus().clone(), rpc.store().clone())
+        .await
+        .map_err(|e| anyhow!("spawn_stage_recorder: {e}"))?;
+    eprintln!("codeless-server: stage recorder enabled");
 
     // Background driver: pick up every `Queued` job and run it
     // through the in-process runtime. Default factory only enables
@@ -494,11 +520,18 @@ impl RunnerFactory for DefaultRunnerFactory {
                     }
                     return Some(Arc::new(runner));
                 }
-                Ok(_) => {
-                    tracing::warn!(
-                        "template_yaml present but --enable-claude is off; cannot run multi-stage template"
+                Ok(template) => {
+                    // Fall back to a mock-driven template runner so
+                    // the iterate-loop UI (stages, recorder, Spec
+                    // pane) is demoable without `--enable-claude`.
+                    // Stages run sequentially, emit synthetic events,
+                    // and produce ~1-3 cents of synthetic cost each.
+                    tracing::info!(
+                        stages = template.stages.len(),
+                        "running template via mock runner (claude disabled)"
                     );
-                    return None;
+                    let runner = TemplateRunner::new(template).with_mock_runner();
+                    return Some(Arc::new(runner));
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -515,6 +548,19 @@ impl RunnerFactory for DefaultRunnerFactory {
                 let mut adapter = ClaudeRunnerAdapter::new(prompt, TaskId::new());
                 if let Some(sp) = &self.claude_system_prompt {
                     adapter = adapter.with_system_prompt(sp);
+                }
+                if let Some(m) = job.model.as_deref() {
+                    adapter = adapter.with_model(m);
+                }
+                if let Some(pm) = job
+                    .permission_mode
+                    .as_deref()
+                    .and_then(parse_permission_mode)
+                {
+                    adapter = adapter.with_permission_mode(pm);
+                }
+                if let Some(e) = job.effort.as_deref() {
+                    adapter = adapter.with_effort(e);
                 }
                 Some(Arc::new(adapter))
             }

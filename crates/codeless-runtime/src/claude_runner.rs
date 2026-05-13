@@ -54,6 +54,19 @@ pub struct ClaudeRunnerAdapter {
     /// the user asked for. Override from the secrets file under
     /// `claude_system_prompt`; explicitly `Some("")` disables it.
     pub system_prompt: Option<String>,
+    /// Optional model override (Anthropic model id, e.g.
+    /// `claude-opus-4-7`). `None` lets `claude-wrapper` pick.
+    pub model: Option<String>,
+    /// Per-run permission mode. `None` keeps the headless default
+    /// (`Bypass`) — the worktree is the blast radius and there is no
+    /// TTY user to answer mid-run prompts. The factory passes
+    /// `Some(...)` when the user explicitly picked a non-bypass mode.
+    pub permission_mode: Option<ai_runner::PermissionMode>,
+    /// Provider-agnostic thinking budget. Mapped onto
+    /// `claude-wrapper`'s prompt-trigger trick ("think" / "think hard"
+    /// / "ultrathink") by `ai_runner`. Accepted labels: `low`,
+    /// `medium`, `high`. `None` means no prefix.
+    pub thinking_budget: Option<String>,
 }
 
 /// Headless default. Codeless's runner has no human at the TTY to
@@ -101,6 +114,21 @@ Example:\n\
 ## Open questions\n\n- (none)\n\
 ```";
 
+/// Parse the wire label for a permission mode (the same string the UI
+/// puts on the job row: `default | accept_edits | plan | bypass`).
+/// Returns `None` on any unrecognised value so callers can fall back
+/// to the headless default rather than refusing the run.
+pub fn parse_permission_mode(label: &str) -> Option<ai_runner::PermissionMode> {
+    use ai_runner::PermissionMode as P;
+    match label.trim().to_ascii_lowercase().as_str() {
+        "default" => Some(P::Default),
+        "accept_edits" | "accept-edits" => Some(P::AcceptEdits),
+        "plan" => Some(P::Plan),
+        "bypass" | "bypass_permissions" => Some(P::Bypass),
+        _ => None,
+    }
+}
+
 impl ClaudeRunnerAdapter {
     pub fn new(prompt: impl Into<String>, task_id: TaskId) -> Self {
         Self {
@@ -108,6 +136,9 @@ impl ClaudeRunnerAdapter {
             task_id,
             event_buffer: 64,
             system_prompt: Some(DEFAULT_SYSTEM_PROMPT.to_owned()),
+            model: None,
+            permission_mode: None,
+            thinking_budget: None,
         }
     }
 
@@ -117,6 +148,30 @@ impl ClaudeRunnerAdapter {
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         let s = prompt.into();
         self.system_prompt = if s.is_empty() { None } else { Some(s) };
+        self
+    }
+
+    /// Override the model the wrapper passes to claude. Pass an empty
+    /// string to clear back to the wrapper's default.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        let s = model.into();
+        self.model = if s.is_empty() { None } else { Some(s) };
+        self
+    }
+
+    /// Override the headless `Bypass` default with a specific
+    /// permission mode. The driver passes whatever the user picked
+    /// in the Submit Job dialog through here verbatim.
+    pub fn with_permission_mode(mut self, mode: ai_runner::PermissionMode) -> Self {
+        self.permission_mode = Some(mode);
+        self
+    }
+
+    /// Provider-agnostic thinking budget label (`low | medium | high`).
+    /// Empty string clears.
+    pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
+        let s = effort.into();
+        self.thinking_budget = if s.is_empty() { None } else { Some(s) };
         self
     }
 }
@@ -162,13 +217,14 @@ impl Runner for ClaudeRunnerAdapter {
                 .worktree_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
-            // Headless: there's no TTY user to approve mid-run tool
-            // calls. Bypass every permission gate so claude actually
-            // runs its tools instead of asking and aborting. The
-            // worktree is the blast radius (isolated branch, isolated
-            // checkout); cleanup is the user's call via the upcoming
-            // gc_worktrees RPC, not ours.
-            permission_mode: Some(PermissionMode::Bypass),
+            model: self.model.clone(),
+            // Headless default is `Bypass` — no TTY user to approve
+            // mid-run tool calls, and the worktree is the blast radius.
+            // The user can override per-job via the Submit dialog by
+            // picking `default | accept_edits | plan`; that lands here
+            // as `Some(...)` and replaces the default.
+            permission_mode: Some(self.permission_mode.unwrap_or(PermissionMode::Bypass)),
+            thinking_budget: self.thinking_budget.clone(),
             ..Default::default()
         });
 

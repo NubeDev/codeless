@@ -95,6 +95,9 @@ async fn claude_runner_streams_events_via_bridge() {
             branch: "codeless/job-claude".into(),
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();

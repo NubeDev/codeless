@@ -204,6 +204,9 @@ async fn submit_job_unknown_repo_maps_to_404() {
         branch: "main".into(),
         cost_cap_cents: 100,
         wall_clock_cap_ms: 60_000,
+        model: None,
+        permission_mode: None,
+        effort: None,
     })
     .unwrap();
 
@@ -243,6 +246,9 @@ async fn submit_then_get_job_round_trip() {
         branch: "feat/x".into(),
         cost_cap_cents: 200,
         wall_clock_cap_ms: 60_000,
+        model: None,
+        permission_mode: None,
+        effort: None,
     })
     .unwrap();
     let resp = app

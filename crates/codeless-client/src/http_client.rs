@@ -4,10 +4,11 @@ use codeless_rpc::{
     FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
     FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
     JobDiffResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
+    RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -159,6 +160,10 @@ impl RpcServer for HttpRpcClient {
 
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult> {
         self.call("list_jobs", &args).await
+    }
+
+    async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult> {
+        self.call("list_stages", &args).await
     }
 
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()> {

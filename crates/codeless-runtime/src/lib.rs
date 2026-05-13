@@ -20,6 +20,7 @@ pub mod queue_config;
 pub mod rpc;
 pub mod runner;
 pub mod session_log;
+pub mod stage_recorder;
 pub mod state_machine;
 pub mod store;
 pub mod template;
@@ -29,7 +30,7 @@ pub mod tracing_init;
 pub mod webhook;
 
 pub use anthropic_runner::AnthropicRunnerAdapter;
-pub use claude_runner::ClaudeRunnerAdapter;
+pub use claude_runner::{parse_permission_mode, ClaudeRunnerAdapter};
 pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};
 pub use heartbeat::spawn_heartbeat;
@@ -42,6 +43,7 @@ pub use notifier::{
 pub use queue_config::QueueConfig;
 pub use rpc::InProcessRpc;
 pub use runner::{Runner, RunnerContext, RunnerOutcome};
+pub use stage_recorder::spawn_stage_recorder;
 pub use state_machine::{
     is_terminal_job, transition_job, transition_stage, transition_task, TransitionError,
 };

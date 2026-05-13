@@ -91,8 +91,9 @@ impl SqliteStore {
             "INSERT INTO jobs \
              (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
               worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
+              model, permission_mode, effort, \
               started_at, ended_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(job.id.to_string())
         .bind(job.repo_id.to_string())
@@ -106,6 +107,9 @@ impl SqliteStore {
         .bind(job.cost_cap_cents.0)
         .bind(job.wall_clock_cap_ms)
         .bind(job.cost_cents.0)
+        .bind(&job.model)
+        .bind(&job.permission_mode)
+        .bind(&job.effort)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -129,7 +133,8 @@ impl SqliteStore {
             "UPDATE jobs SET \
                 repo_id=?, status=?, stop_reason=?, template_yaml=?, prompt=?, runner=?, \
                 branch=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
-                cost_cents=?, started_at=?, ended_at=?, created_at=? \
+                cost_cents=?, model=?, permission_mode=?, effort=?, \
+                started_at=?, ended_at=?, created_at=? \
              WHERE id=?",
         )
         .bind(job.repo_id.to_string())
@@ -143,6 +148,9 @@ impl SqliteStore {
         .bind(job.cost_cap_cents.0)
         .bind(job.wall_clock_cap_ms)
         .bind(job.cost_cents.0)
+        .bind(&job.model)
+        .bind(&job.permission_mode)
+        .bind(&job.effort)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -153,8 +161,12 @@ impl SqliteStore {
     }
 
     pub async fn insert_stage(&self, stage: &Stage) -> sqlx::Result<()> {
+        // `INSERT OR REPLACE`: the StageRecorder runs as a backlog
+        // replay + a live tail, so two StageStarted envelopes for the
+        // same `StageId` are normal at startup. Idempotent upsert is
+        // simpler than a conditional update + insert dance.
         sqlx::query(
-            "INSERT INTO stages \
+            "INSERT OR REPLACE INTO stages \
              (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at) \
              VALUES (?,?,?,?,?,?,?,?)",
         )
@@ -169,6 +181,146 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Set `status` and `ended_at` for a stage on `StageCompleted`.
+    /// `name`, `ordinal`, `started_at` are not touched — the recorder
+    /// learned them at `StageStarted`. Returns `false` when the row
+    /// is missing; the caller logs and continues so a late
+    /// `StageCompleted` against a wiped DB does not crash the
+    /// recorder.
+    pub async fn update_stage_completed(
+        &self,
+        id: codeless_types::StageId,
+        status: StageStatus,
+        ended_at: codeless_types::UnixMillis,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query("UPDATE stages SET status = ?, ended_at = ? WHERE id = ?")
+            .bind(stage_status_label(status))
+            .bind(ended_at.0)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Best-effort upsert used by the StageRecorder when it sees a
+    /// task event for a row the lease path never wrote. `INSERT OR
+    /// IGNORE` so a real lease-driven row already in place wins.
+    pub async fn insert_task_minimal(&self, task: &Task) -> sqlx::Result<()> {
+        let depends_on = serde_json::to_string(&task.depends_on).map_err(serde_err)?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO tasks \
+             (id, stage_id, ordinal, status, depends_on, lease_holder, lease_expires_at, \
+              cost_cents, input_tokens, output_tokens, started_at, ended_at) \
+             VALUES (?,?,?,?,?,NULL,NULL,?,?,?,?,NULL)",
+        )
+        .bind(task.id.to_string())
+        .bind(task.stage_id.to_string())
+        .bind(task.ordinal as i64)
+        .bind(task_status_label(task.status))
+        .bind(&depends_on)
+        .bind(task.cost_cents.0)
+        .bind(task.input_tokens)
+        .bind(task.output_tokens)
+        .bind(task.started_at.map(|t| t.0))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Add an `AiMessageComplete`'s cost + tokens onto a task row.
+    /// Idempotency lives in the recorder, not here — every call adds.
+    pub async fn add_task_cost(
+        &self,
+        task_id: TaskId,
+        cost: CostCents,
+        input_tokens: i64,
+        output_tokens: i64,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query(
+            "UPDATE tasks SET \
+                cost_cents = cost_cents + ?, \
+                input_tokens = input_tokens + ?, \
+                output_tokens = output_tokens + ? \
+             WHERE id = ?",
+        )
+        .bind(cost.0)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(task_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Mark a task terminal — `status` + `ended_at`, no other fields
+    /// touched. Used by the StageRecorder on `TaskCompleted`; the
+    /// lease path has its own `complete_task` / `fail_task` for the
+    /// "I owned this task" path.
+    pub async fn mark_task_terminal(
+        &self,
+        task_id: TaskId,
+        status: TaskStatus,
+        ended_at: UnixMillis,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query("UPDATE tasks SET status = ?, ended_at = ? WHERE id = ?")
+            .bind(task_status_label(status))
+            .bind(ended_at.0)
+            .bind(task_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Return every stage for `job_id` along with a derived
+    /// `cost_cents` (sum of the stage's `tasks.cost_cents`). Ordered
+    /// by `ordinal`. The cost rollup is `0` when no tasks exist for
+    /// the stage yet; the UI renders that as "—" so the user can
+    /// tell "free" from "unknown".
+    pub async fn list_stages_for_job(&self, job_id: JobId) -> sqlx::Result<Vec<StageWithCost>> {
+        use sqlx::Row;
+        let rows = sqlx::query(
+            "SELECT s.id, s.ordinal, s.name, s.status, s.verify_cmd, \
+                    s.started_at, s.ended_at, \
+                    COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
+                    COUNT(t.id) AS task_count \
+             FROM stages s \
+             LEFT JOIN tasks t ON t.stage_id = s.id \
+             WHERE s.job_id = ? \
+             GROUP BY s.id \
+             ORDER BY s.ordinal",
+        )
+        .bind(job_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let id_str: String = row.try_get("id")?;
+                let id: codeless_types::StageId = id_str
+                    .parse()
+                    .map_err(|e| sqlx::Error::Decode(format!("stage id: {e:?}").into()))?;
+                let status: String = row.try_get("status")?;
+                Ok(StageWithCost {
+                    stage: Stage {
+                        id,
+                        job_id,
+                        ordinal: row.try_get::<i64, _>("ordinal")? as u32,
+                        name: row.try_get("name")?,
+                        status: parse_stage_status(&status),
+                        verify_cmd: row.try_get("verify_cmd")?,
+                        started_at: row
+                            .try_get::<Option<i64>, _>("started_at")?
+                            .map(codeless_types::UnixMillis),
+                        ended_at: row
+                            .try_get::<Option<i64>, _>("ended_at")?
+                            .map(codeless_types::UnixMillis),
+                    },
+                    cost_cents: row.try_get::<i64, _>("cost_cents")?,
+                    task_count: row.try_get::<i64, _>("task_count")? as u32,
+                })
+            })
+            .collect()
     }
 
     /// Enqueue a task in `enqueued` state. `lease_holder` /
@@ -502,6 +654,9 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
         cost_cap_cents: CostCents(row.try_get("cost_cap_cents")?),
         wall_clock_cap_ms: row.try_get("wall_clock_cap_ms")?,
         cost_cents: CostCents(row.try_get("cost_cents")?),
+        model: row.try_get("model")?,
+        permission_mode: row.try_get("permission_mode")?,
+        effort: row.try_get("effort")?,
         started_at: started_at.map(UnixMillis),
         ended_at: ended_at.map(UnixMillis),
         created_at: UnixMillis(row.try_get("created_at")?),
@@ -549,6 +704,26 @@ fn stage_status_label(s: StageStatus) -> &'static str {
         StageStatus::Passed => "passed",
         StageStatus::Failed => "failed",
     }
+}
+
+fn parse_stage_status(s: &str) -> StageStatus {
+    match s {
+        "running" => StageStatus::Running,
+        "awaiting-review" => StageStatus::AwaitingReview,
+        "passed" => StageStatus::Passed,
+        "failed" => StageStatus::Failed,
+        _ => StageStatus::Pending,
+    }
+}
+
+/// Stage row plus its rolled-up `cost_cents` (sum of child tasks) and
+/// `task_count`. Returned by `list_stages_for_job` so callers don't
+/// need a second query to enrich each row.
+#[derive(Debug, Clone)]
+pub struct StageWithCost {
+    pub stage: Stage,
+    pub cost_cents: i64,
+    pub task_count: u32,
 }
 
 fn task_status_label(s: TaskStatus) -> &'static str {

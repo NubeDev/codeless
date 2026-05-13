@@ -58,6 +58,9 @@ async fn since_zero_replays_everything_then_attaches_live_tail() {
             branch: "codeless/job-1".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();
@@ -76,6 +79,9 @@ async fn since_zero_replays_everything_then_attaches_live_tail() {
             branch: "codeless/job-2".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .unwrap();
@@ -127,6 +133,9 @@ async fn since_above_max_filters_strictly_by_cursor() {
         branch: "codeless/job-x".into(),
         cost_cap_cents: 0,
         wall_clock_cap_ms: 60_000,
+        model: None,
+        permission_mode: None,
+        effort: None,
     })
     .await
     .unwrap();
@@ -168,6 +177,9 @@ async fn replay_dedupes_overlap_with_live_tail() {
         branch: "codeless/job-x".into(),
         cost_cap_cents: 0,
         wall_clock_cap_ms: 60_000,
+        model: None,
+        permission_mode: None,
+        effort: None,
     })
     .await
     .unwrap();

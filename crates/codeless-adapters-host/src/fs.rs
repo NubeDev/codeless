@@ -17,7 +17,17 @@ use thiserror::Error;
 /// the adapter at an existing workspace directory.
 #[derive(Debug)]
 pub struct HostFs {
+    /// Primary root — what `fs_cwd` returns and the default join
+    /// target for relative paths.
     root: PathBuf,
+    /// Additional roots paths are allowed to resolve under. The
+    /// worktree root (`--worktree-root`) lives here so the UI can
+    /// read per-job `handover.md` / `runs/*/notes/*.md` through
+    /// `fs_read_file` without the host adapter rejecting paths that
+    /// live outside the source tree. Each extra root is canonical;
+    /// the trust check accepts a path that's a descendant of *any*
+    /// listed root, including the primary one.
+    extra_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -43,11 +53,36 @@ impl HostFs {
         if !canonical.is_dir() {
             return Err(FsError::BadRoot(canonical));
         }
-        Ok(Self { root: canonical })
+        Ok(Self {
+            root: canonical,
+            extra_roots: Vec::new(),
+        })
+    }
+
+    /// Register an extra root readable through the `fs_*` surface.
+    /// Use cases: the worktree root (per-job checkouts and their
+    /// `runs/*/handover.md` files), a tmp scratch dir for shared
+    /// uploads. The path must exist and be a directory — same
+    /// contract as the primary root.
+    pub fn with_extra_root(mut self, root: impl Into<PathBuf>) -> Result<Self, FsError> {
+        let raw = root.into();
+        let canonical = std::fs::canonicalize(&raw).map_err(|_| FsError::BadRoot(raw.clone()))?;
+        if !canonical.is_dir() {
+            return Err(FsError::BadRoot(canonical));
+        }
+        self.extra_roots.push(canonical);
+        Ok(self)
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn allowed_under_any_root(&self, path: &Path) -> bool {
+        if path.starts_with(&self.root) {
+            return true;
+        }
+        self.extra_roots.iter().any(|r| path.starts_with(r))
     }
 
     /// Resolve `path` against `root`, refusing anything that would
@@ -82,7 +117,7 @@ impl HostFs {
         };
         match std::fs::canonicalize(&joined) {
             Ok(canon) => {
-                if canon.starts_with(&self.root) {
+                if self.allowed_under_any_root(&canon) {
                     Ok(canon)
                 } else {
                     Err(FsError::Escape(path.to_owned()))
@@ -94,7 +129,7 @@ impl HostFs {
                     .ok_or_else(|| FsError::Escape(path.to_owned()))?;
                 let parent_canon =
                     std::fs::canonicalize(parent).map_err(|_| FsError::Escape(path.to_owned()))?;
-                if !parent_canon.starts_with(&self.root) {
+                if !self.allowed_under_any_root(&parent_canon) {
                     return Err(FsError::Escape(path.to_owned()));
                 }
                 let tail = joined

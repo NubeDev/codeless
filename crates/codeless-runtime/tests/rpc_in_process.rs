@@ -86,6 +86,9 @@ async fn submit_job_rejects_unknown_repo() {
             branch: "codeless/job-x".into(),
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await;
     assert!(matches!(result, Err(RpcError::NotFound(_))), "{result:?}");
@@ -121,6 +124,9 @@ async fn submit_job_succeeds_and_emits_queued_event() {
             branch: "codeless/job-1".into(),
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .expect("submit_job");
@@ -167,6 +173,9 @@ async fn stop_job_emits_event_and_is_idempotent_against_terminal_state() {
             branch: "codeless/job-1".into(),
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .expect("submit_job");
@@ -217,6 +226,9 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             branch: "codeless/job-a".into(),
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .expect("submit_job a");
@@ -235,6 +247,9 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             branch: "codeless/job-b".into(),
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .expect("submit_job b");
@@ -278,6 +293,9 @@ async fn since_cursor_replay_returns_events_above_cursor() {
             branch: "codeless/job-x".into(),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
+            model: None,
+            permission_mode: None,
+            effort: None,
         })
         .await
         .expect("submit_job");

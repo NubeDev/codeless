@@ -85,7 +85,19 @@ export type CostCents = number;
  *  linearly, so the wire format does not need a breaking change when
  *  topological scheduling lands later.
  */
-export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-removed"; repo_id: RepoId } | { type: "repo-updated"; repo_id: RepoId } | { type: "job-queued"; job_id: JobId; repo_id: RepoId } | { type: "job-promoted"; job_id: JobId } | { type: "job-started"; job_id: JobId } | { type: "job-completed"; job_id: JobId } | { type: "job-stopped"; job_id: JobId; reason: StopReason } | { type: "job-failed"; job_id: JobId } | { type: "stage-started"; stage_id: StageId; job_id: JobId } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId };
+export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-removed"; repo_id: RepoId } | { type: "repo-updated"; repo_id: RepoId } | { type: "job-queued"; job_id: JobId; repo_id: RepoId } | { type: "job-promoted"; job_id: JobId } | { type: "job-started"; job_id: JobId } | { type: "job-completed"; job_id: JobId } | { type: "job-stopped"; job_id: JobId; reason: StopReason } | { type: "job-failed"; job_id: JobId } | { type: "stage-started"; stage_id: StageId; job_id: JobId; 
+/**
+ *  0-based position of this stage in the template's `stages:`
+ *  list. Carried on the wire so subscribers can persist
+ *  `Stage` rows without re-parsing the YAML.
+ */
+ordinal?: number; 
+/**
+ *  Title of the stage (the YAML's `stages:` entry, with any
+ *  `REVIEW ` prefix preserved). Same source of truth the UI
+ *  already uses; persisted on the `Stage` row.
+ */
+name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -262,6 +274,28 @@ export type Job = {
 	cost_cap_cents: CostCents,
 	wall_clock_cap_ms: number,
 	cost_cents: CostCents,
+	/**
+	 *  Optional per-job model override forwarded to the runner. `None`
+	 *  uses the runner adapter's default. Free-form because each runner
+	 *  has its own model catalogue (Claude opus/sonnet/haiku, Copilot
+	 *  gpt-5.x, etc.) — validation is the adapter's job, not this layer.
+	 */
+	model: string | null,
+	/**
+	 *  Optional per-job permission mode. Only meaningful for runners
+	 *  that expose a per-call permission gate (Claude). Wire labels
+	 *  match the snake_case form on `claude-wrapper`'s `PermissionMode`:
+	 *  `default | accept_edits | plan | bypass`. `None` leaves the
+	 *  adapter's headless default (`Bypass` for Claude) in place.
+	 */
+	permission_mode: string | null,
+	/**
+	 *  Optional thinking-budget hint. Only meaningful for runners that
+	 *  honour it (Claude). Wire labels: `low | medium | high`. `None`
+	 *  disables the prompt-trigger prefix that maps to claude's
+	 *  "think" / "think hard" / "ultrathink" cues.
+	 */
+	effort: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
@@ -474,6 +508,15 @@ export type SubmitJobArgs = {
 	branch: string,
 	cost_cap_cents: number,
 	wall_clock_cap_ms: number,
+	/**
+	 *  Per-job runner overrides. All three are optional and round-trip
+	 *  onto `Job` so re-runs inherit the original settings. Adapters
+	 *  silently ignore knobs they do not support (Copilot has no
+	 *  `permission_mode` or `effort`, for example).
+	 */
+	model?: string | null,
+	permission_mode?: string | null,
+	effort?: string | null,
 };
 
 /**
