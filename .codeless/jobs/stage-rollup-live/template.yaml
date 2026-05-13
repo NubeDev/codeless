@@ -1,8 +1,8 @@
 name: stage-rollup-live
 goal: Watch the new rollups land per stage.
 stages:
-  - first stage of three
-  - second stage of three
-  - title: third stage of three
+  - title: first stage of three
     docs:
       - SCOPE.md
+  - second stage of three
+  - third stage of three
