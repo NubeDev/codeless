@@ -5,6 +5,7 @@ docs:
   - WORKFLOW.md
   - SCOPE.md
   - FEEDBACK.md
+  - CHAT.md
 stages:
   - title: "expand examples/power-meter.csv to 5 meters x 24 hours at 5-minute intervals"
     docs:
