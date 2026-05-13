@@ -1,15 +1,18 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codeless_adapters_host::{diff_against, FsError, GitDiffError, HostFs, WorktreeManager};
+use codeless_adapters_host::{
+    commit_paths, diff_against, FsError, GitCommitError, GitDiffError, HostFs, WorktreeManager,
+};
 use codeless_rpc::{
     AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream,
     FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
     FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
-    JobDiffArgs, JobDiffFile, JobDiffResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs,
-    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult, RpcServer, Since,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, WriteJobFileArgs, WriteJobFileResult,
+    JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
+    RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -17,8 +20,13 @@ use codeless_types::{
 use sqlx::SqlitePool;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
+use crate::job_dir::{
+    self, directory_path, flat_yaml_path, sanitise_filename, template_yaml_path, FilenameError,
+    JobLayout,
+};
 use crate::migrations::MIGRATOR;
 use crate::store::SqliteStore;
+use crate::template::JobTemplate;
 use crate::time::now_ms;
 
 /// In-process `RpcServer`. The CLI's `codeless run --once` path talks
@@ -643,25 +651,194 @@ impl RpcServer for InProcessRpc {
         })
     }
 
-    async fn list_job_files(&self, _args: ListJobFilesArgs) -> RpcResult<ListJobFilesResult> {
-        Err(job_file_unimplemented())
+    async fn list_job_files(&self, args: ListJobFilesArgs) -> RpcResult<ListJobFilesResult> {
+        let (repo_path, name) = self.resolve_repo_and_template_name(args.job_id).await?;
+        let layout = job_dir::resolve(&repo_path, &name);
+        let mut entries: Vec<JobFileEntry> = Vec::new();
+        let mut directory_path_str: Option<String> = None;
+
+        if matches!(layout, JobLayout::Directory | JobLayout::FlatPreferred) {
+            let dir = directory_path(&repo_path, &name);
+            directory_path_str = Some(dir.to_string_lossy().into_owned());
+            let read_dir = std::fs::read_dir(&dir)
+                .map_err(|e| RpcError::Internal(format!("read job dir {}: {e}", dir.display())))?;
+            let mut files: Vec<std::path::PathBuf> = read_dir
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_file())
+                .collect();
+            files.sort();
+
+            let mut tpl: Option<JobFileEntry> = None;
+            for path in files {
+                let base = match path.file_name().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                let lower = base.to_ascii_lowercase();
+                let entry = JobFileEntry {
+                    name: base.clone(),
+                    is_template: lower == "template.yaml",
+                    is_scope: lower == "scope.md",
+                    is_workflow: lower == "workflow.md",
+                };
+                if entry.is_template {
+                    tpl = Some(entry);
+                } else {
+                    entries.push(entry);
+                }
+            }
+            if let Some(t) = tpl {
+                entries.insert(0, t);
+            }
+        }
+
+        Ok(ListJobFilesResult {
+            entries,
+            layout: layout.wire_name().to_string(),
+            directory_path: directory_path_str,
+        })
     }
 
-    async fn read_job_file(&self, _args: ReadJobFileArgs) -> RpcResult<ReadJobFileResult> {
-        Err(job_file_unimplemented())
+    async fn read_job_file(&self, args: ReadJobFileArgs) -> RpcResult<ReadJobFileResult> {
+        let (repo_path, name) = self.resolve_repo_and_template_name(args.job_id).await?;
+        let filename = sanitise_filename(&args.filename).map_err(filename_err)?;
+        let path = directory_path(&repo_path, &name).join(&filename);
+        let content = std::fs::read_to_string(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                RpcError::NotFound(format!("job file {name}/{filename}"))
+            }
+            _ => RpcError::Internal(format!("read {}: {e}", path.display())),
+        })?;
+        Ok(ReadJobFileResult { content })
     }
 
-    async fn write_job_file(&self, _args: WriteJobFileArgs) -> RpcResult<WriteJobFileResult> {
-        Err(job_file_unimplemented())
+    async fn write_job_file(&self, args: WriteJobFileArgs) -> RpcResult<WriteJobFileResult> {
+        let (repo_path, name) = self.resolve_repo_and_template_name(args.job_id).await?;
+        let filename = sanitise_filename(&args.filename).map_err(filename_err)?;
+
+        let layout = job_dir::resolve(&repo_path, &name);
+        if matches!(layout, JobLayout::Flat | JobLayout::FlatPreferred) {
+            migrate_flat_to_directory(&repo_path, &name)?;
+        }
+
+        let dir = directory_path(&repo_path, &name);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| RpcError::Internal(format!("create job dir {}: {e}", dir.display())))?;
+        let path = dir.join(&filename);
+        std::fs::write(&path, &args.content)
+            .map_err(|e| RpcError::Internal(format!("write {}: {e}", path.display())))?;
+        commit_paths(
+            &repo_path,
+            &format!("update job-file: {name}/{filename}"),
+            std::slice::from_ref(&path),
+        )
+        .map_err(git_commit_err)?;
+
+        Ok(WriteJobFileResult { name: filename })
     }
 
-    async fn delete_job_file(&self, _args: DeleteJobFileArgs) -> RpcResult<()> {
-        Err(job_file_unimplemented())
+    async fn delete_job_file(&self, args: DeleteJobFileArgs) -> RpcResult<()> {
+        let (repo_path, name) = self.resolve_repo_and_template_name(args.job_id).await?;
+        let filename = sanitise_filename(&args.filename).map_err(filename_err)?;
+        let path = directory_path(&repo_path, &name).join(&filename);
+        if !path.exists() {
+            return Err(RpcError::NotFound(format!("job file {name}/{filename}")));
+        }
+        std::fs::remove_file(&path)
+            .map_err(|e| RpcError::Internal(format!("delete {}: {e}", path.display())))?;
+        commit_paths(
+            &repo_path,
+            &format!("delete job-file: {name}/{filename}"),
+            &[path],
+        )
+        .map_err(git_commit_err)?;
+        Ok(())
     }
 }
 
-fn job_file_unimplemented() -> RpcError {
-    RpcError::Internal("job-file surface not yet wired".to_owned())
+impl InProcessRpc {
+    /// Resolve a `job_id` to the repo's on-disk path and the job's
+    /// `template.name`. The job-file surface is template-only: a raw
+    /// `prompt`-only job has no directory to read from, so it gets
+    /// `InvalidArgument` rather than an empty list. `NotFound` covers
+    /// unknown job or repo ids.
+    async fn resolve_repo_and_template_name(
+        &self,
+        job_id: codeless_types::JobId,
+    ) -> RpcResult<(std::path::PathBuf, String)> {
+        let job = self
+            .store
+            .get_job(job_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("job {job_id}")))?;
+        let yaml = job.template_yaml.as_ref().ok_or_else(|| {
+            RpcError::InvalidArgument(format!(
+                "job {job_id} has no template; file surface is template-only"
+            ))
+        })?;
+        let template = JobTemplate::parse_yaml(yaml)
+            .map_err(|e| RpcError::InvalidArgument(format!("job {job_id} template parse: {e}")))?;
+        let repo = self
+            .store
+            .get_repo(job.repo_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
+        Ok((std::path::PathBuf::from(repo.local_path), template.name))
+    }
+}
+
+/// Promote a legacy flat `<name>.yaml` to the directory layout. Two
+/// separate commits — write the new file first, then delete the
+/// flat YAML — so `git log` records the move as two atomic steps and
+/// a crash between them leaves both files on disk, which `JobLayout`
+/// surfaces as `FlatPreferred` and a retry resolves.
+fn migrate_flat_to_directory(repo: &std::path::Path, name: &str) -> RpcResult<()> {
+    let flat = flat_yaml_path(repo, name);
+    let tpl = template_yaml_path(repo, name);
+    let body = std::fs::read_to_string(&flat)
+        .map_err(|e| RpcError::Internal(format!("read flat {}: {e}", flat.display())))?;
+    if let Some(parent) = tpl.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| RpcError::Internal(format!("create job dir {}: {e}", parent.display())))?;
+    }
+    std::fs::write(&tpl, &body)
+        .map_err(|e| RpcError::Internal(format!("write {}: {e}", tpl.display())))?;
+    commit_paths(
+        repo,
+        &format!("migrate template: {name} → directory layout"),
+        &[tpl],
+    )
+    .map_err(git_commit_err)?;
+
+    std::fs::remove_file(&flat)
+        .map_err(|e| RpcError::Internal(format!("remove flat {}: {e}", flat.display())))?;
+    commit_paths(
+        repo,
+        &format!("migrate template: {name} (remove flat YAML)"),
+        &[flat],
+    )
+    .map_err(git_commit_err)?;
+    Ok(())
+}
+
+fn filename_err(e: FilenameError) -> RpcError {
+    match e {
+        FilenameError::PathTraversal => {
+            RpcError::InvalidArgument("filename contains path traversal".to_owned())
+        }
+        FilenameError::Dotfile => RpcError::InvalidArgument("dotfiles are not allowed".to_owned()),
+        FilenameError::ReservedTemplateYaml => {
+            RpcError::InvalidArgument("template.yaml is reserved; use the spec editor".to_owned())
+        }
+        FilenameError::Empty => RpcError::InvalidArgument("filename is empty".to_owned()),
+    }
+}
+
+fn git_commit_err(e: GitCommitError) -> RpcError {
+    RpcError::Internal(format!("git: {e}"))
 }
 
 fn fs_not_configured() -> RpcError {

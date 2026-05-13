@@ -8,6 +8,7 @@
 pub mod ai_runner_bridge;
 pub mod claude;
 pub mod fs;
+pub mod git_commit;
 pub mod git_diff;
 pub mod secrets;
 pub mod worktree;
@@ -15,6 +16,7 @@ pub mod worktree;
 pub use ai_runner_bridge::{forward_events, map_event};
 pub use claude::probe as probe_claude;
 pub use fs::{FsError, HostFs};
+pub use git_commit::{commit_paths, GitCommitError};
 pub use git_diff::{diff_against, DiffFile, GitDiffError};
 pub use secrets::{SecretError, SecretStore};
 pub use worktree::{OnDiskWorktree, WorktreeError, WorktreeHandle, WorktreeManager};
