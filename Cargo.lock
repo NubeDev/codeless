@@ -530,6 +530,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
 ]
@@ -538,6 +539,7 @@ dependencies = [
 name = "codeless-cli"
 version = "0.0.0"
 dependencies = [
+ "ai-runner",
  "anyhow",
  "assert_cmd",
  "clap",

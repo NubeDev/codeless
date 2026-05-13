@@ -177,10 +177,14 @@ export class MockRpcClient implements RpcClient {
           throw new RpcError("not_found", `repo ${a.repo_id}`);
         }
         const now = Date.now();
+        // Mirror the runtime: default to Draft so the user can edit
+        // the spec first; `start_immediately = true` lands the job
+        // straight in Queued and the synthetic lifecycle fires.
+        const startImmediately = a.start_immediately ?? false;
         const job: Job = {
           id: ulid(),
           repo_id: a.repo_id,
-          status: "queued",
+          status: startImmediately ? "queued" : "draft",
           stop_reason: null,
           template_yaml: a.template_yaml,
           prompt: a.prompt,
@@ -199,6 +203,24 @@ export class MockRpcClient implements RpcClient {
         };
         this.jobs.push(job);
         this.emit({ type: "job-queued", job_id: job.id, repo_id: job.repo_id });
+        if (startImmediately) {
+          this.synthesiseLifecycle(job);
+        }
+        return job as RpcResultOf<M>;
+      }
+
+      case "start_job": {
+        const a = args as RpcArgs<"start_job">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        if (job.status !== "draft") {
+          throw new RpcError(
+            "conflict",
+            `job ${a.job_id} is ${job.status}, not draft`,
+          );
+        }
+        job.status = "queued";
+        this.emit({ type: "job-promoted", job_id: job.id });
         this.synthesiseLifecycle(job);
         return job as RpcResultOf<M>;
       }
@@ -579,6 +601,18 @@ export class MockRpcClient implements RpcClient {
         return { name: parsed.name } as RpcResultOf<M>;
       }
 
+      case "agent_chat": {
+        // Mock client cannot spawn host binaries. Returning a result
+        // shape (so the caller's `await` resolves) plus an immediate
+        // error chunk on the event stream keeps the UI's contract
+        // honest: real hosts stream tokens, the mock declines politely.
+        const a = args as RpcArgs<"agent_chat">;
+        return {
+          session_id: a.session_id,
+          task_id: a.session_id,
+        } as RpcResultOf<M>;
+      }
+
       case "write_handover": {
         const a = args as RpcArgs<"write_handover">;
         const job = this.jobs.find((j) => j.id === a.job_id);
@@ -789,6 +823,11 @@ export class MockRpcClient implements RpcClient {
       fs_root: MOCK_FS_ROOT,
       worktree_root: null,
       claude: null,
+      // Mock client is a pure in-browser fixture; no host CLI binaries
+      // are reachable, so the footer agent's CLI dropdown stays empty
+      // under the mock client just as it would on a real host without
+      // any CLI installed.
+      available_cli_runners: [],
     };
   }
 

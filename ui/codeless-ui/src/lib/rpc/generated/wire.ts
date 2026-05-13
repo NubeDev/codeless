@@ -27,6 +27,52 @@ export type AddRepoArgs = {
 	default_runner: string | null,
 };
 
+/**
+ *  One-shot chat turn routed to a CLI coder runner (Claude Code,
+ *  Codex, Copilot). The runner is invoked in the server's working
+ *  directory with the user's prompt; streaming output flows back via
+ *  the regular event bus, scoped by `session_id` so the panel can
+ *  subscribe to just its own turn without seeing job-driven traffic.
+ * 
+ *  `session_id` is opaque to the runtime — no `jobs` row backs it.
+ *  The `events` table has no FK on `job_id`, so synthetic IDs persist
+ *  alongside real ones and `subscribe(EventFilter::Job)` matches them
+ *  uniformly. Choosing a `JobId` as the wire type keeps the existing
+ *  envelope shape and avoids growing the `EventFilter` enum for v1.
+ * 
+ *  Standalone per-turn: no multi-turn session continuation in v1. A
+ *  future revision can carry a `previous_session_id` so the wrapper
+ *  can pass `--continue` to the underlying CLI.
+ */
+export type AgentChatArgs = {
+	/**
+	 *  Wire id of the CLI runner: `claude`, `codex`, or `copilot`.
+	 *  Matches `ServerInfo.available_cli_runners` entries. REST
+	 *  runners (`anthropic`, `openai`) are rejected with
+	 *  `InvalidArgument` — those still run browser-direct via the
+	 *  existing DirectChatTransport path.
+	 */
+	runner: string,
+	prompt: string,
+	/**
+	 *  Caller-minted correlation id. The client subscribes with
+	 *  `EventFilter::Job { job_id: session_id }` before issuing the
+	 *  call so it sees every emitted event.
+	 */
+	session_id: JobId,
+};
+
+export type AgentChatResult = {
+	// Echoed back so a caller that lost track can re-subscribe.
+	session_id: JobId,
+	/**
+	 *  Task id the runner's events are tagged with. The UI uses it to
+	 *  distinguish AiToken / ToolCall envelopes belonging to this turn
+	 *  when multiple chat turns share a panel.
+	 */
+	task_id: TaskId,
+};
+
 export type ApproveReviewArgs = {
 	review_id: ReviewId,
 };
@@ -354,8 +400,15 @@ export type JobId = string;
 /**
  *  Lifecycle states for a job row. String form matches the
  *  `jobs.status` column wire labels in SCOPE.md Appendix A.
+ * 
+ *  `Draft` is the landing state when a job is submitted with
+ *  `start_immediately = false` — the row exists, the user can edit
+ *  the spec / docs / handover, but the driver does **not** pick it
+ *  up. The user calls `start_job` (or submits with
+ *  `start_immediately = true`) to promote `Draft → Queued`. From
+ *  there the lifecycle is unchanged.
  */
-export type JobStatus = "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped";
+export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped";
 
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
@@ -465,6 +518,15 @@ export type ServerInfo = {
 	 *  surface renders an "enable with --enable-claude" hint instead.
 	 */
 	claude: ClaudeStatus | null,
+	/**
+	 *  CLI coder runners (`claude`, `codex`, `copilot`) the host has
+	 *  probed and found ready — binary discoverable, basic auth state
+	 *  surface-able. The footer agent panel reads this to filter its
+	 *  model dropdown so the user never picks a runner that will
+	 *  immediately fail. Probed once at boot via `Runner::ready`;
+	 *  re-launch the server to refresh after installing a new CLI.
+	 */
+	available_cli_runners?: string[],
 };
 
 // A verify-gated chunk of a job — see SCOPE.md Appendix A `stages`.
@@ -485,6 +547,10 @@ export type StageId = string;
 
 // Stage lifecycle. Matches `stages.status` wire labels.
 export type StageStatus = "pending" | "running" | "awaiting-review" | "passed" | "failed";
+
+export type StartJobArgs = {
+	job_id: JobId,
+};
 
 export type StopJobArgs = {
 	job_id: JobId,
@@ -517,6 +583,15 @@ export type SubmitJobArgs = {
 	model?: string | null,
 	permission_mode?: string | null,
 	effort?: string | null,
+	/**
+	 *  `false` (default) lands the job in `Draft` status — the row
+	 *  exists, the user can edit the spec / docs / handover, but the
+	 *  driver does not pick it up. The user calls `start_job` to
+	 *  promote `Draft → Queued`. `true` (legacy / power-user behaviour)
+	 *  skips the draft state and lands directly in `Queued` so the
+	 *  driver runs immediately.
+	 */
+	start_immediately?: boolean,
 };
 
 /**

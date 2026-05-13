@@ -1,6 +1,6 @@
 use codeless_types::{
     FsEntry, FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
-    StageId, UnixMillis,
+    StageId, TaskId, UnixMillis,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,19 @@ pub struct SubmitJobArgs {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// `false` (default) lands the job in `Draft` status — the row
+    /// exists, the user can edit the spec / docs / handover, but the
+    /// driver does not pick it up. The user calls `start_job` to
+    /// promote `Draft → Queued`. `true` (legacy / power-user behaviour)
+    /// skips the draft state and lands directly in `Queued` so the
+    /// driver runs immediately.
+    #[serde(default)]
+    pub start_immediately: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct StartJobArgs {
+    pub job_id: JobId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -300,6 +313,14 @@ pub struct ServerInfo {
     /// not poll. `None` when the runner is disabled — the settings
     /// surface renders an "enable with --enable-claude" hint instead.
     pub claude: Option<ClaudeStatus>,
+    /// CLI coder runners (`claude`, `codex`, `copilot`) the host has
+    /// probed and found ready — binary discoverable, basic auth state
+    /// surface-able. The footer agent panel reads this to filter its
+    /// model dropdown so the user never picks a runner that will
+    /// immediately fail. Probed once at boot via `Runner::ready`;
+    /// re-launch the server to refresh after installing a new CLI.
+    #[serde(default)]
+    pub available_cli_runners: Vec<String>,
 }
 
 impl Default for ServerInfo {
@@ -310,6 +331,7 @@ impl Default for ServerInfo {
             fs_root: None,
             worktree_root: None,
             claude: None,
+            available_cli_runners: Vec::new(),
         }
     }
 }
@@ -492,4 +514,44 @@ pub struct WriteHandoverResult {
     /// (e.g. for "open in editor tab"). Always inside the job's
     /// worktree under `runs/<job_id>/handover.md`.
     pub path: String,
+}
+
+/// One-shot chat turn routed to a CLI coder runner (Claude Code,
+/// Codex, Copilot). The runner is invoked in the server's working
+/// directory with the user's prompt; streaming output flows back via
+/// the regular event bus, scoped by `session_id` so the panel can
+/// subscribe to just its own turn without seeing job-driven traffic.
+///
+/// `session_id` is opaque to the runtime — no `jobs` row backs it.
+/// The `events` table has no FK on `job_id`, so synthetic IDs persist
+/// alongside real ones and `subscribe(EventFilter::Job)` matches them
+/// uniformly. Choosing a `JobId` as the wire type keeps the existing
+/// envelope shape and avoids growing the `EventFilter` enum for v1.
+///
+/// Standalone per-turn: no multi-turn session continuation in v1. A
+/// future revision can carry a `previous_session_id` so the wrapper
+/// can pass `--continue` to the underlying CLI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct AgentChatArgs {
+    /// Wire id of the CLI runner: `claude`, `codex`, or `copilot`.
+    /// Matches `ServerInfo.available_cli_runners` entries. REST
+    /// runners (`anthropic`, `openai`) are rejected with
+    /// `InvalidArgument` — those still run browser-direct via the
+    /// existing DirectChatTransport path.
+    pub runner: String,
+    pub prompt: String,
+    /// Caller-minted correlation id. The client subscribes with
+    /// `EventFilter::Job { job_id: session_id }` before issuing the
+    /// call so it sees every emitted event.
+    pub session_id: JobId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct AgentChatResult {
+    /// Echoed back so a caller that lost track can re-subscribe.
+    pub session_id: JobId,
+    /// Task id the runner's events are tagged with. The UI uses it to
+    /// distinguish AiToken / ToolCall envelopes belonging to this turn
+    /// when multiple chat turns share a panel.
+    pub task_id: TaskId,
 }

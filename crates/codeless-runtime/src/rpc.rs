@@ -5,15 +5,16 @@ use codeless_adapters_host::{
     commit_paths, diff_against, FsError, GitCommitError, GitDiffError, HostFs, WorktreeManager,
 };
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream,
-    FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
-    FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
-    JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
-    RerunJobArgs, RpcError, RpcResult, RpcServer, Since, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
+    DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreeEntry,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
+    JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
+    RpcServer, Since, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -52,6 +53,17 @@ pub struct InProcessRpc {
     /// message rather than a misleading empty sweep. The driver
     /// receives its own clone of this Arc from the CLI layer.
     worktrees: Option<Arc<WorktreeManager>>,
+    /// Optional CLI-runner registry that powers `agent_chat`. `None`
+    /// means the footer agent panel is not wired — calls return
+    /// `Internal`. Tests construct the runtime without it; the hosted
+    /// server installs `Registry::with_defaults()` once at boot.
+    agent_chat_registry: Option<Arc<ai_runner::Registry>>,
+    /// Working directory CLI runners are invoked in for a chat turn.
+    /// Defaults to the process cwd at runtime construction time so a
+    /// quickstart server "just runs" against whatever directory the
+    /// operator launched `codeless serve` from. A future "select
+    /// folder" UI surface lands here.
+    agent_chat_cwd: Option<std::path::PathBuf>,
 }
 
 /// Default event-broadcast lag tolerance per subscriber. See
@@ -111,6 +123,8 @@ impl InProcessRpc {
             bus,
             fs: None,
             worktrees: None,
+            agent_chat_registry: None,
+            agent_chat_cwd: None,
         })
     }
 
@@ -128,6 +142,23 @@ impl InProcessRpc {
     /// tree, just from different sides.
     pub fn with_worktrees(mut self, worktrees: Arc<WorktreeManager>) -> Self {
         self.worktrees = Some(worktrees);
+        self
+    }
+
+    /// Wire the CLI-runner registry the footer agent panel dispatches
+    /// onto. The hosted server constructs a single
+    /// `Registry::with_defaults()` at boot and clones the Arc into
+    /// both this method and the boot-time readiness probe that fills
+    /// `ServerInfo.available_cli_runners`. `cwd` is the directory each
+    /// chat turn runs in; passing the operator's launch cwd means a
+    /// quickstart `codeless serve` "just works" without an extra flag.
+    pub fn with_agent_chat(
+        mut self,
+        registry: Arc<ai_runner::Registry>,
+        cwd: std::path::PathBuf,
+    ) -> Self {
+        self.agent_chat_registry = Some(registry);
+        self.agent_chat_cwd = Some(cwd);
         self
     }
 
@@ -278,10 +309,22 @@ impl RpcServer for InProcessRpc {
             return Err(RpcError::NotFound(format!("repo {}", args.repo_id)));
         }
         let now = now_ms();
+        // Default landing state is `Draft` so the user can edit
+        // spec / docs / handover before the driver picks the job up.
+        // `start_immediately = true` is the legacy / power-user path
+        // that skips the draft and queues the job for immediate
+        // execution. JobQueued is emitted in both cases (it carries
+        // the repo_id needed for the dashboard's row mount); the
+        // status itself is what gates the driver.
+        let initial_status = if args.start_immediately {
+            JobStatus::Queued
+        } else {
+            JobStatus::Draft
+        };
         let job = Job {
             id: JobId::new(),
             repo_id: args.repo_id,
-            status: JobStatus::Queued,
+            status: initial_status,
             stop_reason: None,
             template_yaml: args.template_yaml,
             prompt: args.prompt,
@@ -309,6 +352,46 @@ impl RpcServer for InProcessRpc {
                     repo_id: job.repo_id,
                 },
                 now,
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(job)
+    }
+
+    async fn start_job(&self, args: StartJobArgs) -> RpcResult<Job> {
+        let mut job = self
+            .store
+            .get_job(args.job_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+        if job.status != JobStatus::Draft {
+            return Err(RpcError::Conflict(format!(
+                "job {} is {:?}, not Draft — only Draft jobs can be started",
+                job.id, job.status
+            )));
+        }
+        crate::state_machine::transition_job(job.status, JobStatus::Queued).map_err(|e| {
+            RpcError::Conflict(format!(
+                "illegal job transition from {:?} to Queued: {e}",
+                job.status
+            ))
+        })?;
+        job.status = JobStatus::Queued;
+        if !self.store.update_job(&job).await.map_err(db_err)? {
+            return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+        }
+        // Reuse the long-defined-but-never-emitted `JobPromoted`
+        // variant for Draft → Queued. The dashboard already maps it
+        // to "running" optimistically; we'll refine the UI side to
+        // show the real new status next.
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobPromoted { job_id: job.id },
+                now_ms(),
             )
             .await
             .map_err(db_err)?;
@@ -865,6 +948,54 @@ impl RpcServer for InProcessRpc {
         .map_err(|e| RpcError::Internal(format!("write handover: {e}")))?;
         Ok(WriteHandoverResult {
             path: path.to_string_lossy().into_owned(),
+        })
+    }
+
+    async fn agent_chat(&self, args: AgentChatArgs) -> RpcResult<AgentChatResult> {
+        let registry = self.agent_chat_registry.as_ref().ok_or_else(|| {
+            RpcError::Internal("agent_chat registry is not configured on this runtime".to_owned())
+        })?;
+        let cwd = self.agent_chat_cwd.clone().ok_or_else(|| {
+            RpcError::Internal("agent_chat cwd is not configured on this runtime".to_owned())
+        })?;
+        let provider =
+            codeless_adapters_host::parse_cli_runner_id(&args.runner).ok_or_else(|| {
+                RpcError::InvalidArgument(format!("unknown CLI runner id `{}`", args.runner))
+            })?;
+
+        let session_id = args.session_id;
+        let task_id = codeless_types::TaskId::new();
+        let bus = Arc::clone(&self.bus);
+        let registry = Arc::clone(registry);
+        let prompt = args.prompt;
+
+        // Detached: the call returns once the runner has been spawned;
+        // its tokens / tool-calls / completion event flow back through
+        // the bus, keyed by `session_id` so the caller's subscribe
+        // filter matches them. A panicked task only kills the chat
+        // turn — log it and let other turns continue.
+        tokio::spawn(async move {
+            let publish = move |event: codeless_types::Event| {
+                let bus = Arc::clone(&bus);
+                async move {
+                    bus.publish(Some(session_id), None, Some(task_id), event, now_ms())
+                        .await
+                        .map(|_| ())
+                }
+            };
+            let cancel = tokio_util::sync::CancellationToken::new();
+            if let Err(e) = codeless_adapters_host::run_chat(
+                registry, provider, prompt, cwd, task_id, publish, cancel,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "agent_chat run failed");
+            }
+        });
+
+        Ok(AgentChatResult {
+            session_id,
+            task_id,
         })
     }
 }

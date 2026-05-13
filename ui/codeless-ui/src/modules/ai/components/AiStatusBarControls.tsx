@@ -28,7 +28,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getModel,
   MODELS,
@@ -38,6 +38,7 @@ import {
   type ProviderId,
 } from "../config";
 import { ACCEPTED_FILES, useComposer } from "../lib/composer";
+import { getNativeRpc } from "../lib/native";
 import { useChatStore } from "../store/chatStore";
 
 const PROVIDER_ICON = {
@@ -49,6 +50,10 @@ const PROVIDER_ICON = {
   groq: FlashIcon,
   deepseek: DeepseekIcon,
   lmstudio: ComputerIcon,
+  // CLI runners (`claude` / `codex` / `copilot`) are grouped under the
+  // synthetic "codeless" provider; reuse the terminal/computer glyph so
+  // the row reads as "host-managed binaries" rather than a cloud vendor.
+  codeless: ComputerIcon,
 } as const satisfies Record<ProviderId, typeof ChatGptIcon>;
 
 export function AiOpenButton({ onOpen }: { onOpen: () => void }) {
@@ -203,8 +208,44 @@ function ModelDropdown() {
   const current = getModel(selected);
   const currentProviderHasKey = !!apiKeys[current.provider];
 
+  // Available host-side CLI runners, populated once from the server
+  // `ServerInfo.available_cli_runners` probe. `null` until the request
+  // resolves so the dropdown does not flash an empty Codeless group
+  // before the first paint. After resolution, `cli:<id>` entries with
+  // no matching backend runner are hidden — a server without `claude`
+  // installed should not expose Claude Code as a pickable option.
+  const [availableCli, setAvailableCli] = useState<readonly string[] | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    try {
+      const rpc = getNativeRpc();
+      rpc
+        .serverInfo()
+        .then((info) => {
+          if (cancelled) return;
+          setAvailableCli(info.available_cli_runners ?? []);
+        })
+        .catch(() => {
+          if (!cancelled) setAvailableCli([]);
+        });
+    } catch {
+      // Browser shell may load this component before `configureNative`
+      // has wired the RpcClient. Fall back to an empty list rather than
+      // crashing — the user gets a Codeless-less dropdown until reload.
+      setAvailableCli([]);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const onPick = (id: ModelId, providerId: ProviderId) => {
-    if (!apiKeys[providerId]) {
+    // Keyless providers (host-managed CLI runners, local LM Studio)
+    // bypass the "open settings to set a key" detour — there is no
+    // key to set; the host owns auth.
+    if (providerNeedsKey(providerId) && !apiKeys[providerId]) {
       void settingsWindow.open("models");
       return;
     }
@@ -246,7 +287,14 @@ function ModelDropdown() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[240px]">
         {PROVIDERS.map((p) => {
-          const models = MODELS.filter((m) => m.provider === p.id);
+          let models = MODELS.filter((m) => m.provider === p.id);
+          if (p.id === "codeless") {
+            const ready = new Set(availableCli ?? []);
+            models = models.filter((m) =>
+              ready.has(m.id.replace(/^cli:/, "")),
+            );
+            if (models.length === 0) return null;
+          }
           const hasKey = providerNeedsKey(p.id) ? !!apiKeys[p.id] : true;
           return (
             <div key={p.id} className="px-1 pt-1.5 first:pt-1">

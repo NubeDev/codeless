@@ -51,6 +51,14 @@ export function configureNative(rpc: RpcClient): void {
   bound = rpc;
 }
 
+/** Access the configured RpcClient for callers that need to drive
+ *  the wire surface directly (e.g. CLI-runner chat transport,
+ *  subscribe pumps). Throws with the same hint as `rpc()` when the
+ *  shell entry hasn't run `configureNative`. */
+export function getNativeRpc(): RpcClient {
+  return rpc();
+}
+
 function rpc(): RpcClient {
   if (!bound) {
     throw new Error(

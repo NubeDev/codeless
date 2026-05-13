@@ -18,6 +18,11 @@ export const EMPTY_PROVIDER_KEYS: ProviderKeys = {
   groq: null,
   deepseek: null,
   lmstudio: null,
+  // Codeless CLI runners are host-managed (Claude Code / Copilot /
+  // Codex own their own auth). The keyring entry exists only so the
+  // `ProviderKeys` record stays exhaustive over `ProviderId`; it is
+  // never populated and `providerNeedsKey` returns false for it.
+  codeless: null,
 };
 
 export async function getKey(

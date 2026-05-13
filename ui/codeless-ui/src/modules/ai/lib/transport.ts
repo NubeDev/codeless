@@ -2,8 +2,12 @@ import type { UIMessage } from "@ai-sdk/react";
 import { DirectChatTransport } from "ai";
 import { TERMINAL_BUFFER_LINES, type ModelId } from "../config";
 import { createCodelessAgent } from "./agent";
+import {
+  cliRunnerIdFromModelId,
+  createCliRunnerTransport,
+} from "./cliRunnerTransport";
 import type { ProviderKeys } from "./keyring";
-import { native } from "./native";
+import { getNativeRpc, native } from "./native";
 import type { ToolContext } from "../tools/tools";
 
 const CODELESS_MD_MAX_BYTES = 32 * 1024;
@@ -61,6 +65,16 @@ export function createContextAwareTransport(deps: Deps) {
       messages: UIMessage[];
       [k: string]: unknown;
     }) {
+      // CLI-runner branch: skip the browser-side agent loop entirely.
+      // The host owns the model, the tools, and the working directory;
+      // we just pipe upstream events through the panel's renderer.
+      const cliRunner = cliRunnerIdFromModelId(deps.getModelId());
+      if (cliRunner) {
+        const cli = createCliRunnerTransport(getNativeRpc(), cliRunner);
+        const augmented = injectContext(options.messages, deps.getLive());
+        return cli.sendMessages({ ...options, messages: augmented });
+      }
+
       const live = deps.getLive();
       const projectMemory = await readCodelessMd(live.workspaceRoot);
       const agent = await createCodelessAgent({
@@ -82,6 +96,12 @@ export function createContextAwareTransport(deps: Deps) {
       } as Parameters<typeof base.sendMessages>[0]);
     },
     async reconnectToStream(options: unknown) {
+      // CLI-runner turns are not resumable in v1 — the underlying
+      // subscription is owned by the original `sendMessages` call.
+      // Returning `null` is the documented "no live stream to attach"
+      // shape `@ai-sdk/react`'s `reconnectToStream` accepts.
+      if (cliRunnerIdFromModelId(deps.getModelId())) return null;
+
       const live = deps.getLive();
       const projectMemory = await readCodelessMd(live.workspaceRoot);
       const agent = await createCodelessAgent({

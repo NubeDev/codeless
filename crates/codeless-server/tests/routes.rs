@@ -75,6 +75,7 @@ async fn server_info_returns_configured_snapshot_without_token() {
         fs_root: Some("/tmp/demo".into()),
         worktree_root: Some("/tmp/demo/.codeless/worktrees".into()),
         claude: None,
+        available_cli_runners: Vec::new(),
     };
     let state = AppState::new(rpc, TOKEN).with_server_info(info.clone());
     let app = build_router(state);
@@ -207,6 +208,7 @@ async fn submit_job_unknown_repo_maps_to_404() {
         model: None,
         permission_mode: None,
         effort: None,
+        start_immediately: true,
     })
     .unwrap();
 
@@ -249,6 +251,7 @@ async fn submit_then_get_job_round_trip() {
         model: None,
         permission_mode: None,
         effort: None,
+        start_immediately: true,
     })
     .unwrap();
     let resp = app

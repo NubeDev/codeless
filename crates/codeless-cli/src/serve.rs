@@ -219,6 +219,22 @@ async fn run_server(
     if let Some(worktrees) = worktrees_arc.clone() {
         runtime = runtime.with_worktrees(worktrees);
     }
+    // CLI-runner registry powering the footer agent panel. The footer
+    // is chat-only (no job, no worktree); it runs in whichever
+    // directory the operator launched the server from. A future
+    // "pick folder" UI surface lands as an arg to `with_agent_chat`.
+    let agent_chat_registry = Arc::new(ai_runner::Registry::with_defaults());
+    let agent_chat_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    runtime = runtime.with_agent_chat(Arc::clone(&agent_chat_registry), agent_chat_cwd.clone());
+    let available_cli_runners =
+        codeless_adapters_host::probe_available_cli_runners(&agent_chat_registry).await;
+    if !available_cli_runners.is_empty() {
+        eprintln!(
+            "codeless-server: agent_chat CLI runners ready: {} (cwd={})",
+            available_cli_runners.join(","),
+            agent_chat_cwd.display()
+        );
+    }
     let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
     if args.enable_claude {
@@ -252,6 +268,7 @@ async fn run_server(
         &args,
         worktree_root_effective.clone(),
         claude_status,
+        available_cli_runners,
     ));
     let state = AppState {
         rpc: rpc_dyn,
@@ -305,12 +322,20 @@ async fn run_server(
         None
     } else {
         let worktrees = worktrees_arc.clone();
-        let mut enabled = vec!["mock"];
+        // Match the published runner list: mock is only registered
+        // when no real runner is enabled. Logging the wrong set was
+        // confusing — operators would see `runners=mock,claude` and
+        // assume mock jobs would run, when in fact a `runner: mock`
+        // submit returns None from the factory.
+        let mut enabled: Vec<&str> = Vec::new();
         if args.enable_claude {
             enabled.push("claude");
         }
         if args.enable_anthropic {
             enabled.push("anthropic");
+        }
+        if enabled.is_empty() {
+            enabled.push("mock");
         }
         eprintln!(
             "codeless-server: background driver enabled (concurrency={}, runners={}, worktrees={})",
@@ -372,13 +397,23 @@ fn build_server_info(
     args: &ServeArgs,
     worktree_root: Option<PathBuf>,
     claude: Option<ClaudeStatus>,
+    available_cli_runners: Vec<String>,
 ) -> ServerInfo {
     let mut runners = Vec::new();
     let real_runner_enabled = args.enable_claude || args.enable_anthropic;
-    runners.push(RunnerInfo {
-        id: "mock".to_owned(),
-        default: !real_runner_enabled,
-    });
+    // `mock` is only published when no real runner is enabled. When
+    // the operator passes `--enable-claude` or `--enable-anthropic`
+    // they have signalled that real coding work is what they want; a
+    // mock entry in the dropdown is just noise that lets the user
+    // accidentally submit a no-op job. Tests don't go through this
+    // factory — they construct `MockRunner` directly — so the test
+    // suite is unaffected.
+    if !real_runner_enabled {
+        runners.push(RunnerInfo {
+            id: "mock".to_owned(),
+            default: true,
+        });
+    }
     if args.enable_claude {
         runners.push(RunnerInfo {
             id: "claude".to_owned(),
@@ -399,6 +434,7 @@ fn build_server_info(
         fs_root: args.fs_root.as_ref().map(|p| p.display().to_string()),
         worktree_root: worktree_root.as_ref().map(|p| p.display().to_string()),
         claude,
+        available_cli_runners,
     }
 }
 
@@ -542,8 +578,16 @@ impl RunnerFactory for DefaultRunnerFactory {
             }
         }
         let prompt = job.prompt.clone().unwrap_or_default();
+        // `mock` is only built when no real runner is enabled — same
+        // gate as the published runner list. A `runner: "mock"` job
+        // submitted to a `--enable-claude` server returns None and
+        // the driver fails the job loudly rather than silently
+        // running a no-op against the user's repo.
+        let real_runner_enabled = self.enable_claude || self.enable_anthropic;
         match job.runner.as_str() {
-            "mock" => Some(Arc::new(MockRunner::new(demo_mock_script(&prompt)))),
+            "mock" if !real_runner_enabled => {
+                Some(Arc::new(MockRunner::new(demo_mock_script(&prompt))))
+            }
             "claude" if self.enable_claude => {
                 let mut adapter = ClaudeRunnerAdapter::new(prompt, TaskId::new());
                 if let Some(sp) = &self.claude_system_prompt {

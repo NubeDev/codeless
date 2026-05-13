@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream,
-    FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
-    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
-    JobDiffResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
-    RpcServer, Since, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
+    DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
+    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
+    RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -170,6 +170,10 @@ impl RpcServer for HttpRpcClient {
         self.call_void("stop_job", &args).await
     }
 
+    async fn start_job(&self, args: StartJobArgs) -> RpcResult<Job> {
+        self.call("start_job", &args).await
+    }
+
     async fn rerun_job(&self, args: RerunJobArgs) -> RpcResult<Job> {
         self.call("rerun_job", &args).await
     }
@@ -282,6 +286,10 @@ impl RpcServer for HttpRpcClient {
 
     async fn write_handover(&self, args: WriteHandoverArgs) -> RpcResult<WriteHandoverResult> {
         self.call("write_handover", &args).await
+    }
+
+    async fn agent_chat(&self, args: AgentChatArgs) -> RpcResult<AgentChatResult> {
+        self.call("agent_chat", &args).await
     }
 }
 

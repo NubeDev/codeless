@@ -22,11 +22,12 @@
 use std::path::{Path, PathBuf};
 
 use codeless_rpc::methods::{
-    AddRepoArgs, ApproveReviewArgs, ClaudeStatus, CommentReviewArgs, FsCwdResult, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, ClaudeStatus,
+    CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs,
+    JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo, StartJobArgs, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
@@ -78,6 +79,7 @@ fn collect() -> TypeCollection {
         .register_mut::<ListJobsArgs>()
         .register_mut::<ListJobsResult>()
         .register_mut::<StopJobArgs>()
+        .register_mut::<StartJobArgs>()
         .register_mut::<ListReviewsArgs>()
         .register_mut::<ListReviewsResult>()
         .register_mut::<ApproveReviewArgs>()
@@ -97,7 +99,9 @@ fn collect() -> TypeCollection {
         .register_mut::<ServerInfo>()
         .register_mut::<JobDiffArgs>()
         .register_mut::<JobDiffFile>()
-        .register_mut::<JobDiffResult>();
+        .register_mut::<JobDiffResult>()
+        .register_mut::<AgentChatArgs>()
+        .register_mut::<AgentChatResult>();
     types
 }
 

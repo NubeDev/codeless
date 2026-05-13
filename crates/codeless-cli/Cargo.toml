@@ -15,6 +15,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+ai-runner = { path = "../../../ai-runner" }
 codeless-adapters-host = { path = "../codeless-adapters-host" }
 codeless-client = { path = "../codeless-client" }
 codeless-rpc = { path = "../codeless-rpc" }

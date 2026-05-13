@@ -8,7 +8,8 @@ export type ProviderId =
   | "cerebras"
   | "groq"
   | "deepseek"
-  | "lmstudio";
+  | "lmstudio"
+  | "codeless";
 
 export type ProviderInfo = {
   id: ProviderId;
@@ -74,6 +75,20 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     keyringAccount: "",
     keyPrefix: null,
     consoleUrl: "https://lmstudio.ai/docs/basics/server",
+  },
+  // The "codeless" provider is not a remote model vendor — it routes
+  // chat turns through the host's CLI coder runners (Claude Code,
+  // Copilot CLI, Codex CLI) via `agent_chat`. The CLI binaries own
+  // their own auth (Claude: `claude auth login`; Copilot: GitHub
+  // device flow; Codex: `OPENAI_API_KEY` in env). No API key is
+  // configured through the UI keychain, so `keyringAccount` is empty
+  // and `KEYLESS_PROVIDERS` lists it below.
+  {
+    id: "codeless",
+    label: "Codeless CLI",
+    keyringAccount: "",
+    keyPrefix: null,
+    consoleUrl: "https://docs.anthropic.com/en/docs/claude-code",
   },
 ] as const;
 
@@ -201,6 +216,28 @@ export const MODELS = [
     label: "LM Studio (local)",
     hint: "Custom local model",
   },
+  // Codeless CLI runners. The host invokes the named binary in the
+  // server's working directory; output streams through `agent_chat`.
+  // The dropdown filters these against `ServerInfo.available_cli_runners`
+  // so missing binaries do not appear as selectable.
+  {
+    id: "cli:claude",
+    provider: "codeless",
+    label: "Claude Code (CLI)",
+    hint: "Host binary",
+  },
+  {
+    id: "cli:codex",
+    provider: "codeless",
+    label: "Codex (CLI)",
+    hint: "Host binary",
+  },
+  {
+    id: "cli:copilot",
+    provider: "codeless",
+    label: "Copilot (CLI)",
+    hint: "Host binary",
+  },
 ] as const satisfies readonly ModelInfo[];
 
 export type ModelId = (typeof MODELS)[number]["id"];
@@ -234,6 +271,9 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "deepseek-v4-flash": 1_000_000,
   "deepseek-v4-pro": 1_000_000,
   "lmstudio-local": 32_000,
+  "cli:claude": 200_000,
+  "cli:codex": 200_000,
+  "cli:copilot": 128_000,
 };
 
 export function getModelContextLimit(modelId: string | undefined): number {
@@ -241,8 +281,12 @@ export function getModelContextLimit(modelId: string | undefined): number {
   return MODEL_CONTEXT_LIMITS[modelId] ?? 128_000;
 }
 
-/** Providers that do not require an API key (e.g. local servers). */
-export const KEYLESS_PROVIDERS: readonly ProviderId[] = ["lmstudio"] as const;
+/** Providers that do not require an API key (e.g. local servers,
+ *  host-managed CLI runners that own their own auth). */
+export const KEYLESS_PROVIDERS: readonly ProviderId[] = [
+  "lmstudio",
+  "codeless",
+] as const;
 
 export function providerNeedsKey(id: ProviderId): boolean {
   return !KEYLESS_PROVIDERS.includes(id);

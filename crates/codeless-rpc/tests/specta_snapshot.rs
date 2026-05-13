@@ -11,14 +11,15 @@
 use std::path::PathBuf;
 
 use codeless_rpc::methods::{
-    AddRepoArgs, ApproveReviewArgs, ClaudeStatus, CommentReviewArgs, DeleteJobFileArgs,
-    FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
-    FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
-    JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RunnerInfo, ServerInfo, StageRollup,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, ClaudeStatus,
+    CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
+    JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RunnerInfo, ServerInfo, StageRollup, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -69,7 +70,9 @@ fn collect() -> TypeCollection {
         .register_mut::<WriteHandoverResult>()
         .register_mut::<StageRollup>()
         .register_mut::<ListStagesArgs>()
-        .register_mut::<ListStagesResult>();
+        .register_mut::<ListStagesResult>()
+        .register_mut::<AgentChatArgs>()
+        .register_mut::<AgentChatResult>();
     types
 }
 

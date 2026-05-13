@@ -6,14 +6,15 @@ use axum::{
     Json, Router,
 };
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, DeleteJobFileArgs, FsCwdResult,
-    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
-    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, ServerInfo, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
+    DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
+    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
+    RemoveRepoArgs, RerunJobArgs, RpcError, ServerInfo, StartJobArgs, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -32,6 +33,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/list_jobs", post(list_jobs))
         .route("/rpc/list_stages", post(list_stages))
         .route("/rpc/stop_job", post(stop_job))
+        .route("/rpc/start_job", post(start_job))
         .route("/rpc/rerun_job", post(rerun_job))
         .route("/rpc/gc_worktrees", post(gc_worktrees))
         .route("/rpc/job_diff", post(job_diff))
@@ -50,6 +52,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/delete_job_file", post(delete_job_file))
         .route("/rpc/update_job_template", post(update_job_template))
         .route("/rpc/write_handover", post(write_handover))
+        .route("/rpc/agent_chat", post(agent_chat))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -172,6 +175,13 @@ async fn stop_job(
         .await
         .map(|()| Json(Value::Null))
         .map_err(map_err)
+}
+
+async fn start_job(
+    State(st): State<AppState>,
+    Json(args): Json<StartJobArgs>,
+) -> HandlerResult<Job> {
+    st.rpc.start_job(args).await.map(Json).map_err(map_err)
 }
 
 async fn rerun_job(
@@ -318,4 +328,11 @@ async fn write_handover(
     Json(args): Json<WriteHandoverArgs>,
 ) -> HandlerResult<WriteHandoverResult> {
     st.rpc.write_handover(args).await.map(Json).map_err(map_err)
+}
+
+async fn agent_chat(
+    State(st): State<AppState>,
+    Json(args): Json<AgentChatArgs>,
+) -> HandlerResult<AgentChatResult> {
+    st.rpc.agent_chat(args).await.map(Json).map_err(map_err)
 }

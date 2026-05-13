@@ -3,12 +3,13 @@ use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, DeleteJobFileArgs, FsCwdResult,
-    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
-    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
+    DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
+    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
+    RemoveRepoArgs, RerunJobArgs, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
     UpdateJobTemplateArgs, UpdateJobTemplateResult, WriteHandoverArgs, WriteHandoverResult,
     WriteJobFileArgs, WriteJobFileResult,
 };
@@ -38,6 +39,13 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job>;
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
+
+    /// Promote a `Draft` job to `Queued` so the background driver
+    /// picks it up. The user calls this once they have edited the
+    /// spec / docs / handover and are happy for the job to run.
+    /// Errors with `Conflict` if the job is not currently in `Draft`,
+    /// and `NotFound` for an unknown id.
+    async fn start_job(&self, args: StartJobArgs) -> RpcResult<Job>;
 
     /// List the stages of a job, each enriched with rolled-up
     /// `cost_cents` (sum over the stage's tasks) and a `task_count`.
@@ -157,4 +165,18 @@ pub trait RpcServer: Send + Sync + 'static {
     /// the job has no worktree provisioned yet (runner hasn't run).
     /// `NotFound` for an unknown job id.
     async fn write_handover(&self, args: WriteHandoverArgs) -> RpcResult<WriteHandoverResult>;
+
+    /// Invoke a CLI coder runner for a single chat turn. The call
+    /// returns once the runner has been spawned; output streams through
+    /// the regular event bus tagged with `args.session_id` as the
+    /// envelope `job_id`, so the caller subscribes via
+    /// `EventFilter::Job { job_id: session_id }` to receive
+    /// `AiToken` / `ToolCall` / `AiMessageComplete` envelopes.
+    ///
+    /// `InvalidArgument` for an unknown or non-CLI runner id;
+    /// `Internal` when the host has no registry configured (the
+    /// `Open`-auth test harness paths). The runner itself runs in a
+    /// detached task — its success/failure surfaces as events, not as
+    /// the RPC result, because the wire shape commits to streaming.
+    async fn agent_chat(&self, args: AgentChatArgs) -> RpcResult<AgentChatResult>;
 }

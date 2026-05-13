@@ -4,6 +4,8 @@
 // not yet in the codegen output. When that lands, replace this file.
 
 import type {
+  AgentChatArgs,
+  AgentChatResult,
   EventCursor,
   FsEntry,
   FsGlobHit,
@@ -58,6 +60,12 @@ export interface SubmitJobArgs {
   permission_mode?: string | null;
   /** Thinking-budget hint: `low | medium | high`. */
   effort?: string | null;
+  /** When `false` (default) the job lands in `Draft` status — the row
+   * exists, the user can edit the spec / docs / handover, but the
+   * driver does not pick it up. The user calls `start_job` to promote
+   * the job to `Queued`. `true` queues the job for immediate run, the
+   * legacy / power-user behaviour. */
+  start_immediately?: boolean;
 }
 
 export interface GetJobArgs {
@@ -100,6 +108,10 @@ export interface ListStagesResult {
 }
 
 export interface StopJobArgs {
+  job_id: JobId;
+}
+
+export interface StartJobArgs {
   job_id: JobId;
 }
 
@@ -323,6 +335,7 @@ export interface RpcMethodMap {
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   list_stages: { args: ListStagesArgs; result: ListStagesResult };
   stop_job: { args: StopJobArgs; result: null };
+  start_job: { args: StartJobArgs; result: Job };
   rerun_job: { args: RerunJobArgs; result: Job };
   gc_worktrees: { args: GcWorktreesArgs; result: GcWorktreesResult };
   job_diff: { args: JobDiffArgs; result: JobDiffResult };
@@ -366,7 +379,11 @@ export interface RpcMethodMap {
   approve_review: { args: ReviewActionArgs; result: Review };
   comment_review: { args: CommentReviewArgs; result: Review };
   stop_review: { args: ReviewActionArgs; result: Review };
+
+  agent_chat: { args: AgentChatArgs; result: AgentChatResult };
 }
+
+export type { AgentChatArgs, AgentChatResult };
 
 // Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,
 // `ApproveReviewArgs`, `CommentReviewArgs`, and `StopReviewArgs` are
