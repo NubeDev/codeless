@@ -2,4 +2,5 @@ name: bacnet
 goal: "write me a csv example"
 stages:
   - title: "\"make a simple power meter csv example\""
-    docs: []
+    docs:
+      - SCOPE.md
