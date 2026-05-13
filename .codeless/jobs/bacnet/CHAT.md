@@ -14,3 +14,28 @@ The files from the recent commits are in `examples/`:
 - `examples/jobs/` — directory
 
 Full path: `/tmp/codeless-worktrees/job-01KRGKZBS0A667396FV0A3WDX3/examples/`
+
+## user @ 2026-05-13T12:21:52Z
+
+give me the data here
+
+## assistant @ 2026-05-13T12:22:18Z
+
+Here's the data. The CSV is 1,441 lines (1 header + 1,440 readings = 5 meters × 288 timestamps over 24h).
+
+**`examples/power-meter.csv`** — first rows:
+
+```
+timestamp,meter_id,voltage_v,current_a,power_w,energy_kwh,power_factor
+2026-05-13T00:00:00Z,PM-001,229.33,1.167,243.18,1523.4203,0.909
+2026-05-13T00:00:00Z,PM-002,231.18,0.844,168.46,982.1640,0.863
+2026-05-13T00:00:00Z,PM-003,229.16,2.022,440.19,2104.8067,0.950
+2026-05-13T00:00:00Z,PM-004,230.45,1.265,283.21,611.0436,0.972
+2026-05-13T00:00:00Z,PM-005,230.93,2.877,584.79,1788.5987,0.880
+2026-05-13T00:05:00Z,PM-001,229.52,1.232,256.19,1523.4416,0.906
+...
+```
+
+The full CSV is too large to paste inline (60k tokens). Want me to:
+- show a specific slice (e.g. last rows, one meter, one hour),
+- or run `analyse_power.py` and show the summary output?
