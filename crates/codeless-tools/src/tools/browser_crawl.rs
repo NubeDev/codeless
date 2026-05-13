@@ -8,9 +8,9 @@
 // Differences from upstream:
 // - NetworkMode + allowlist gating uses ctx (codeless-side helpers)
 //   rather than the manager's bundled allowlist file.
-// - Link extraction uses the codeless-native html_links module —
-//   moxxy's html_text is a heavier port (readability + text +
-//   links); we only need the link list here.
+// - Link extraction uses html_text::extract_links. The crawl tool
+//   only consumes the URL field; anchor text is dropped before the
+//   per-page result is built.
 // - Per-page result is { url, final_url, status, depth, title,
 //   links_found } — no text body. Callers that want the body can
 //   call codeless.browser.read per URL.
@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use crate::browser::BrowserManager;
 use crate::ctx::ToolCtx;
 use crate::error::ToolError;
-use crate::html_links;
+use crate::html_text;
 use crate::tool::Tool;
 
 const HARD_MAX_DEPTH: u64 = 10;
@@ -243,7 +243,7 @@ impl BrowserCrawlTool {
                 .unwrap_or(&url)
                 .to_string();
 
-            let links = html_links::extract_links(&html, &final_url);
+            let links = html_text::extract_links(&html, &final_url);
 
             pages_out.push(json!({
                 "url": url,
@@ -256,9 +256,9 @@ impl BrowserCrawlTool {
 
             if depth < max_depth {
                 for link in &links {
-                    let n = normalise_url(link);
+                    let n = normalise_url(&link.url);
                     if !visited.contains(&n) {
-                        queue.push_back((link.clone(), depth + 1));
+                        queue.push_back((link.url.clone(), depth + 1));
                     }
                 }
             }

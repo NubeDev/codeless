@@ -152,6 +152,40 @@ async fn navigate_dispatches_when_allowed() {
 }
 
 #[tokio::test]
+async fn read_markdown_mode_returns_text_and_links_field() {
+    let h = fake_harness();
+    let tool = BrowserReadTool::new(h.mgr.clone());
+    let ctx = fake_ctx_builder().network_mode(NetworkMode::Open).build();
+    let result = tool
+        .call(
+            &ctx.ctx,
+            json!({ "page_id": "page-fake", "mode": "markdown" }),
+        )
+        .await
+        .expect("ok");
+    assert!(result.get("text").is_some(), "got {result}");
+    assert!(result.get("links").is_some(), "got {result}");
+    // The fake sidecar returns "<p>hello</p>" so markdown text
+    // contains "hello".
+    let text = result["text"].as_str().expect("text is string");
+    assert!(text.contains("hello"), "got text={text:?}");
+    h.mgr.shutdown().await;
+}
+
+#[tokio::test]
+async fn read_rejects_unknown_mode() {
+    let h = fake_harness();
+    let tool = BrowserReadTool::new(h.mgr.clone());
+    let ctx = fake_ctx_builder().network_mode(NetworkMode::Open).build();
+    let err = tool
+        .call(&ctx.ctx, json!({ "page_id": "page-fake", "mode": "pdf" }))
+        .await
+        .expect_err("unknown mode");
+    assert!(matches!(err, ToolError::InvalidArgs(_)), "got {err:?}");
+    h.mgr.shutdown().await;
+}
+
+#[tokio::test]
 async fn read_returns_html_payload() {
     let h = fake_harness();
     let tool = BrowserReadTool::new(h.mgr.clone());
