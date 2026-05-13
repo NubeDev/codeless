@@ -204,6 +204,9 @@ async fn run_server(
     }
     let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
+    if args.enable_claude {
+        scrub_caller_session_env();
+    }
     let claude_status = if args.enable_claude {
         let status = codeless_adapters_host::probe_claude().await;
         match &status {
@@ -539,6 +542,41 @@ fn init_tracing() {
         .with(filter)
         .with(fmt::layer().with_writer(std::io::stderr))
         .try_init();
+}
+
+/// Drop any environment variables that would make a child `claude`
+/// process attempt to attach to the *caller's* Claude Code session.
+/// When `codeless serve --enable-claude` is launched from inside an
+/// interactive Claude Code terminal — the most common dev-loop —
+/// every spawned runner inherits the parent shell's env. A fresh
+/// `claude` invocation that sees `CLAUDECODE=1` and a matching
+/// `CLAUDE_CODE_SESSION_ID` will hand its events back into the
+/// originating session instead of running independently.
+///
+/// We scrub the parent process here (after the runtime is built so
+/// startup logging still has the originals) so every child the
+/// runner factory spawns inherits a clean slate. The set is
+/// conservative: only the vars Claude Code itself uses to thread a
+/// session identity, plus the SDK-checkpoint flag that has the same
+/// "attach to the caller" failure mode.
+fn scrub_caller_session_env() {
+    for key in [
+        "CLAUDECODE",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+        "AI_AGENT",
+    ] {
+        // SAFETY: process-wide env mutation is safe pre-runtime
+        // because the only other live thread is the tokio worker
+        // pool, which is not yet reading env vars at this point in
+        // boot. The runner factories that *do* read env (claude
+        // binary discovery via CLAUDE_BINARY, anthropic_api_key from
+        // the secrets file) are constructed later, after this scrub
+        // completes — so they see the post-scrub view.
+        std::env::remove_var(key);
+    }
+    tracing::info!("scrubbed caller Claude Code session env so spawned runners run clean");
 }
 
 /// 16 random bytes encoded as 32 lowercase hex chars — 128 bits of
