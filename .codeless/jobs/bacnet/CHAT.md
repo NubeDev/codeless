@@ -47,3 +47,23 @@ hey
 ## assistant @ 2026-05-13T12:59:49Z
 
 Hey — what do you need? Want me to run the analyser and show the kWh/peak summary, or slice the CSV (one meter, one hour, last rows)?
+
+## user @ 2026-05-13T22:40:13Z
+
+sum the ebergy for me
+
+## assistant @ 2026-05-13T22:40:30Z
+
+Energy consumed over the 24h window (end − start of `energy_kwh`):
+
+| Meter   | Start (kWh) | End (kWh)  | Δ (kWh) |
+|---------|-------------|------------|---------|
+| PM-001  | 1523.4203   | 1539.1274  | 15.7071 |
+| PM-002  |  982.1640   |  992.6194  | 10.4554 |
+| PM-003  | 2104.8067   | 2115.5836  | 10.7769 |
+| PM-004  |  611.0436   |  618.2299  |  7.1863 |
+| PM-005  | 1788.5987   | 1802.9562  | 14.3575 |
+
+**Total: 58.4832 kWh** across all 5 meters.
+
+Note: `energy_kwh` is a cumulative meter reading, so the right sum is end − start per meter. Summing the raw column would just add up the running totals and be meaningless.
