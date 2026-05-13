@@ -16,7 +16,8 @@ import { HandoverPanel } from "./HandoverPanel";
 import { CostCell, WallClockCell } from "./JobRow";
 import { JobTimeline } from "./JobTimeline";
 import { ReviewPanel } from "./ReviewPanel";
-import { JobChat, RunStrip } from "./RunPane";
+import { ConversationPane } from "./ConversationPane";
+import { RunStrip } from "./RunPane";
 import { SpecPane } from "./spec/SpecPane";
 import { StageTree } from "./StageTree";
 import { StatusBadge } from "./StatusBadge";
@@ -25,7 +26,7 @@ type SidebarTab = "summary" | "files" | "timeline" | "handover" | "stages";
 type MainView = "chat" | "spec";
 
 export function JobChatPage({ jobId }: { jobId: JobId }) {
-  const { data: job, error, loading } = useJob(jobId);
+  const { data: job, error, loading, refetch: refetchJob } = useJob(jobId);
   const { data: repos } = useRepos();
   const rpc = useRpc();
   const [tab, setTab] = useState<SidebarTab>("summary");
@@ -107,9 +108,11 @@ export function JobChatPage({ jobId }: { jobId: JobId }) {
         </div>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {view === "chat" ? (
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col px-4 py-4 md:px-8">
-              <JobChat job={job} uiLocation={`jobs/${job.id}`} />
-            </div>
+            <ConversationPane
+              jobId={jobId}
+              job={job}
+              refetchJob={refetchJob}
+            />
           ) : (
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
               <SpecPane jobId={jobId} />
