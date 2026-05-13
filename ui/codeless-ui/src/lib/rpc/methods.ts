@@ -11,6 +11,8 @@ import type {
   FsGlobHit,
   FsGrepHit,
   FsReadResult,
+  FsStatArgs,
+  FsStatResult,
   GitAuth,
   Handover,
   Job,
@@ -364,6 +366,7 @@ export interface RpcMethodMap {
   fs_glob: { args: FsGlobArgs; result: FsGlobResult };
   fs_move: { args: FsMoveArgs; result: null };
   fs_delete: { args: FsDeleteArgs; result: null };
+  fs_stat: { args: FsStatArgs; result: FsStatResult };
   fs_cwd: { args: Record<string, never>; result: FsCwdResult };
 
   list_job_files: { args: ListJobFilesArgs; result: ListJobFilesResult };
