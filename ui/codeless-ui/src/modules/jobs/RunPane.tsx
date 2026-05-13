@@ -993,6 +993,15 @@ export function JobChat({
   const [uploading, setUploading] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // `null` while the existence check is in flight or has not run
+  // (e.g. the job never had a worktree to begin with — a draft).
+  // `true` when the job *did* have a worktree but the path on
+  // disk no longer resolves (gc'd, /tmp cleared, manual removal).
+  // The chat surface uses this to render a banner and disable
+  // send: `agent_chat` runs the runner inside the worktree, and
+  // the daemon rejects calls whose cwd doesn't exist with an
+  // `InvalidArgument`.
+  const [worktreeMissing, setWorktreeMissing] = useState<boolean | null>(null);
 
   // Load prior chat on mount / job change.
   useEffect(() => {
@@ -1013,6 +1022,36 @@ export function JobChat({
       cancelled = true;
     };
   }, [rpc, job.id]);
+
+  // Probe the worktree's existence so the chat can surface a
+  // gc'd-worktree state up front rather than letting the user hit
+  // send and see an `InvalidArgument` from the daemon. The probe
+  // only runs when the job already claims a worktree_path; jobs
+  // that never had one are not in an *error* state.
+  // `fs_stat` is non-throwing: it returns `kind: null` when the
+  // path doesn't exist. Any network/error is treated as "unknown"
+  // (false) — better to let the user try and fail loudly than to
+  // wrongly hide the chat over a transient probe failure.
+  useEffect(() => {
+    if (!job.worktree_path) {
+      setWorktreeMissing(null);
+      return;
+    }
+    let cancelled = false;
+    setWorktreeMissing(null);
+    rpc
+      .call("fs_stat", { path: job.worktree_path })
+      .then((r) => {
+        if (cancelled) return;
+        setWorktreeMissing(r.kind === null);
+      })
+      .catch(() => {
+        if (!cancelled) setWorktreeMissing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, job.id, job.worktree_path]);
 
   // Subscribe to the chat session's event stream. We use the job's
   // own id as session_id so every chat turn for this job shares the
@@ -1235,6 +1274,10 @@ export function JobChat({
         </p>
       )}
 
+      {worktreeMissing === true && (
+        <WorktreeMissingBanner worktreePath={job.worktree_path ?? ""} />
+      )}
+
       <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
         {mergeChatFeed(history, liveItems).map((row, i) => {
           if (row.kind === "message") {
@@ -1350,11 +1393,13 @@ export function JobChat({
           size="sm"
           variant="outline"
           onClick={() => fileInputRef.current?.click()}
-          disabled={busy || !job.worktree_path}
+          disabled={busy || !job.worktree_path || worktreeMissing === true}
           title={
-            job.worktree_path
-              ? "attach files (also: drop or paste)"
-              : "no worktree yet — submit/run the job first"
+            worktreeMissing === true
+              ? "worktree has been reaped — re-run to recreate"
+              : job.worktree_path
+                ? "attach files (also: drop or paste)"
+                : "no worktree yet — submit/run the job first"
           }
         >
           attach
@@ -1362,8 +1407,17 @@ export function JobChat({
         <Button
           size="sm"
           onClick={send}
-          disabled={busy || (!input.trim() && attachments.length === 0)}
+          disabled={
+            busy ||
+            (!input.trim() && attachments.length === 0) ||
+            worktreeMissing === true
+          }
           className="bg-blue-600 text-white hover:bg-blue-700"
+          title={
+            worktreeMissing === true
+              ? "this job's worktree no longer exists — chat needs a worktree to run in"
+              : undefined
+          }
         >
           {busy ? "thinking…" : "send ▶"}
         </Button>
@@ -1448,6 +1502,38 @@ function chatTsToMs(iso: string): number {
   if (!iso) return 0;
   const n = Date.parse(iso);
   return Number.isFinite(n) ? n : 0;
+}
+
+// Surfaced when the job's `worktree_path` no longer resolves on
+// disk. The chat runs claude inside the worktree, so a missing
+// dir means send is going to fail with `InvalidArgument` from the
+// daemon. Telling the user up front (and disabling send / attach)
+// is more honest than letting the click fail.
+//
+// Re-running the job recreates a fresh worktree at a new path;
+// the action row in this same chat already exposes [re-run], so
+// the recovery path is one click away from the banner.
+function WorktreeMissingBanner({ worktreePath }: { worktreePath: string }) {
+  return (
+    <div className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 shrink-0 rounded border px-2.5 py-1.5 text-[11px]">
+      <div className="font-medium">worktree no longer exists</div>
+      <div className="text-muted-foreground mt-0.5">
+        Chat runs inside the job's worktree, which has been reaped from
+        disk:
+        {worktreePath && (
+          <>
+            {" "}
+            <code className="bg-background/60 rounded px-1 font-mono">
+              {worktreePath}
+            </code>
+            .
+          </>
+        )}{" "}
+        Use the <span className="font-medium">re-run</span> button below
+        to create a fresh worktree and continue.
+      </div>
+    </div>
+  );
 }
 
 // State-driven action row above the textarea. The primary button
