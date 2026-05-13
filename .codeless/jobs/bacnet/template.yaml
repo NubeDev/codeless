@@ -1,4 +1,4 @@
 name: bacnet
-goal: "TODO: describe what success looks like for this job."
+goal: "write me a csv example"
 stages:
-  - "TODO: rename me to the first stage's title"
+  - "make a simple power meter csv example"
