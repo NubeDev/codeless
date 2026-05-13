@@ -19,7 +19,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { useRpc, type Repo, type RunnerInfo, type ServerInfo } from "@/lib/rpc";
 
 interface Props {
@@ -28,18 +27,29 @@ interface Props {
   trigger?: React.ReactNode;
 }
 
-// 6 lowercase base36 chars: enough to disambiguate concurrent jobs in a
-// session without forcing the user to read a full ULID. The branch is
-// the one durable artefact of a job; collisions just bounce off
-// `git worktree add` and the user retries.
-function freshBranchSuffix(): string {
-  return Math.floor(Math.random() * 36 ** 6)
-    .toString(36)
-    .padStart(6, "0");
+// Constrain the job name to a slug — it becomes a folder name on
+// disk (`.codeless/jobs/<name>/`), so we lower-case + collapse
+// non-alphanumeric runs into single dashes + trim leading/trailing
+// dashes. Returning the cleaned form also lets us preview "this is
+// what your job will be called" under the input.
+function slugifyName(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
-function freshBranch(): string {
-  return `codeless/job-${freshBranchSuffix()}`;
+// Minimal template YAML for a fresh job. The runtime rejects empty
+// `goal` and empty `stages`, so we seed with explicit placeholder
+// strings the user can't miss. They edit these in the SPEC pane
+// before clicking [run]. Both keep the YAML parseable; both render
+// in the template summary as obvious "fill me in" cues.
+function buildInitialTemplate(name: string): string {
+  return `name: ${name}
+goal: "TODO: describe what success looks like for this job."
+stages:
+  - "TODO: rename me to the first stage's title"
+`;
 }
 
 // `mock` is the no-prereqs no-side-effects runner; tagging it as "demo"
@@ -103,8 +113,16 @@ const SERVER_PICK = "__server_default__";
 export function SubmitJobDialog({ repo, trigger }: Props) {
   const rpc = useRpc();
   const [open, setOpen] = useState(false);
-  const [prompt, setPrompt] = useState("");
-  const [branch, setBranch] = useState(freshBranch);
+  // The job's name is the only required field. It becomes the
+  // `.codeless/jobs/<name>/` folder, so it has to be a slug — letters,
+  // digits, dashes. We validate live and surface the rule below the
+  // input so the user never types something the server will reject.
+  const [name, setName] = useState("");
+  const [branch, setBranch] = useState("");
+  // Track whether the user has hand-edited the branch. If they
+  // haven't, we keep the branch in sync with the slugified name so
+  // submitting a job doesn't require touching two fields.
+  const [branchTouched, setBranchTouched] = useState(false);
   const [info, setInfo] = useState<ServerInfo | null>(null);
   const [runner, setRunner] = useState<string>(repo.default_runner ?? "");
   // Per-job runner overrides. `SERVER_PICK` is the sentinel for "no
@@ -115,8 +133,35 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
   const [effort, setEffort] = useState<string>(SERVER_PICK);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Default OFF — landing in `Draft` lets the user edit SCOPE.md /
+  // WORKFLOW.md / per-stage docs before the driver picks the job up.
+  // Power users who want the legacy submit-and-run can flip this on.
+  const [runImmediately, setRunImmediately] = useState(false);
 
   const caps = RUNNER_CAPS[runner];
+  const nameSlug = slugifyName(name);
+  const nameValid = nameSlug.length > 0 && nameSlug === name.trim();
+  // Refuse the repo's default branch (`main`, `master`, whatever the
+  // repo declares). Submitting on the default branch lets the agent
+  // commit + push directly to it — almost never what the user wants
+  // (the worktree manager would also fail to allocate a worktree
+  // because the default branch is already checked out elsewhere).
+  // Common protected names are also rejected as a defence-in-depth.
+  const branchTrimmed = branch.trim();
+  const branchClashesDefault =
+    branchTrimmed.length > 0 &&
+    (branchTrimmed === repo.default_branch ||
+      branchTrimmed === "main" ||
+      branchTrimmed === "master");
+
+  // Keep the branch synced with the slugified name unless the user
+  // has hand-edited the branch — typing a name shouldn't lose their
+  // bespoke branch, but typing nothing shouldn't leave the branch
+  // empty either.
+  useEffect(() => {
+    if (branchTouched) return;
+    setBranch(nameSlug ? `codeless/${nameSlug}` : "");
+  }, [nameSlug, branchTouched]);
 
   // When the user switches runners, reset overrides so we never carry a
   // Claude-only permission_mode into a future runner that can't honour
@@ -161,6 +206,16 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
   }, [open, rpc, repo.default_runner]);
 
   const submit = async () => {
+    if (!nameValid) {
+      setError("name must be a slug: lowercase letters, digits, and dashes");
+      return;
+    }
+    if (branchClashesDefault) {
+      setError(
+        `branch must not be ${branchTrimmed} — that's the repo's default branch; pick something like codeless/${nameSlug}`,
+      );
+      return;
+    }
     setSubmitting(true);
     setError(null);
     // Hard timeout so a hung transport (server down mid-submit, an
@@ -172,10 +227,18 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
       setSubmitting(false);
     }, 10_000);
     try {
+      // Minimal valid template YAML. The server's submit_job parses
+      // this, scaffolds `.codeless/jobs/<name>/template.yaml`,
+      // SCOPE.md, and WORKFLOW.md, and commits all three. Goal +
+      // stages start empty; the user fills them in via the SPEC pane
+      // before clicking `[run]`.
+      const templateYaml = buildInitialTemplate(nameSlug);
       const job = await rpc.call("submit_job", {
         repo_id: repo.id,
-        prompt: prompt || null,
-        template_yaml: null,
+        // Prompt-only submits are a CLI concern now; the UI always
+        // sends a template so the spec exists from second one.
+        prompt: null,
+        template_yaml: templateYaml,
         runner,
         branch,
         cost_cap_cents: 500,
@@ -189,12 +252,14 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
             ? permissionMode
             : null,
         effort: caps?.supportsEffort && effort !== SERVER_PICK ? effort : null,
+        start_immediately: runImmediately,
       });
       // eslint-disable-next-line no-console
       console.log("submit_job ok", job);
       setOpen(false);
-      setPrompt("");
-      setBranch(freshBranch());
+      setName("");
+      setBranch("");
+      setBranchTouched(false);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("submit_job failed", e);
@@ -214,20 +279,32 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
         <DialogHeader>
           <DialogTitle>Submit job — {repo.name}</DialogTitle>
           <DialogDescription>
-            Queue a new job in this repo. The core will provision a worktree
-            and run it on the chosen runner.
+            Pick a name. The job lands as a draft with{" "}
+            <code>template.yaml</code>, <code>SCOPE.md</code>, and{" "}
+            <code>WORKFLOW.md</code> already on disk — edit them in the
+            SPEC pane, then click <code>run</code>.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3">
           <div className="grid gap-1.5">
-            <Label htmlFor="prompt">Prompt</Label>
-            <Textarea
-              id="prompt"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Describe what the agent should do…"
-              rows={5}
+            <Label htmlFor="name">Name</Label>
+            <Input
+              id="name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="user-profile"
+              spellCheck={false}
+              autoFocus
             />
+            <span className="text-muted-foreground text-[10px]">
+              Folder name under <code>.codeless/jobs/</code>; lowercase
+              letters, digits, and dashes.{" "}
+              {name && !nameValid && nameSlug && (
+                <span className="text-amber-700 dark:text-amber-400">
+                  Will be saved as <code>{nameSlug}</code>.
+                </span>
+              )}
+            </span>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5">
@@ -235,8 +312,19 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
               <Input
                 id="branch"
                 value={branch}
-                onChange={(e) => setBranch(e.target.value)}
+                onChange={(e) => {
+                  setBranchTouched(true);
+                  setBranch(e.target.value);
+                }}
+                aria-invalid={branchClashesDefault}
               />
+              {branchClashesDefault && (
+                <span className="text-destructive text-[10px]">
+                  refused: that's the repo's default branch (
+                  <code>{repo.default_branch}</code>). Pick a unique branch
+                  like <code>codeless/{nameSlug || "<name>"}</code>.
+                </span>
+              )}
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="runner">Runner</Label>
@@ -324,13 +412,38 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
             </div>
           )}
           {error && <div className="text-destructive text-xs">{error}</div>}
+          <label className="hover:bg-accent/40 flex cursor-pointer items-start gap-2 rounded p-2 text-xs">
+            <input
+              type="checkbox"
+              checked={runImmediately}
+              onChange={(e) => setRunImmediately(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="font-medium">Run immediately</span>
+              <span className="text-muted-foreground block">
+                Off (default): the job lands as a <code>draft</code> so you
+                can edit SCOPE.md / WORKFLOW.md / per-stage docs before it
+                runs. Click <code>run</code> on the job page when ready.
+              </span>
+            </span>
+          </label>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>
             cancel
           </Button>
-          <Button onClick={submit} disabled={submitting}>
-            {submitting ? "submitting…" : "submit"}
+          <Button
+            onClick={submit}
+            disabled={
+              submitting || nameSlug.length === 0 || branchClashesDefault
+            }
+          >
+            {submitting
+              ? "submitting…"
+              : runImmediately
+                ? "submit + run"
+                : "save as draft"}
           </Button>
         </DialogFooter>
       </DialogContent>

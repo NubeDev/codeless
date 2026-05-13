@@ -114,6 +114,7 @@ async fn submit(rpc: &InProcessRpc, repo_path: &Path) -> codeless_types::JobId {
         model: None,
         permission_mode: None,
         effort: None,
+        start_immediately: true,
     })
     .await
     .expect("submit_job")

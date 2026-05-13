@@ -753,6 +753,7 @@ fn parse_task_status(s: &str) -> sqlx::Result<TaskStatus> {
 
 fn job_status_label(s: JobStatus) -> &'static str {
     match s {
+        JobStatus::Draft => "draft",
         JobStatus::Queued => "queued",
         JobStatus::Running => "running",
         JobStatus::AwaitingReview => "awaiting-review",
@@ -764,6 +765,7 @@ fn job_status_label(s: JobStatus) -> &'static str {
 
 fn parse_job_status(s: &str) -> sqlx::Result<JobStatus> {
     Ok(match s {
+        "draft" => JobStatus::Draft,
         "queued" => JobStatus::Queued,
         "running" => JobStatus::Running,
         "awaiting-review" => JobStatus::AwaitingReview,

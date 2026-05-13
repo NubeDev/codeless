@@ -81,6 +81,7 @@ async fn cursors_are_strictly_monotonic_across_publish_calls() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .unwrap();

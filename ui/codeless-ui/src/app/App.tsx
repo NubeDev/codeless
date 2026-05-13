@@ -954,6 +954,9 @@ export default function App() {
                           activeId={activeId}
                           onOpenFile={(abs) => openFileTab(abs, true)}
                           onUpdateTab={updateTab}
+                          onOpenJobTab={(jobId, title) =>
+                            newJobDetailTab(jobId, title)
+                          }
                         />
                       ) : null}
                     </div>

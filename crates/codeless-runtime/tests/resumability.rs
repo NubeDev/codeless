@@ -72,6 +72,7 @@ async fn restart_preserves_repos_jobs_tasks_events_and_cursors() {
                 model: None,
                 permission_mode: None,
                 effort: None,
+                start_immediately: true,
             })
             .await
             .unwrap();

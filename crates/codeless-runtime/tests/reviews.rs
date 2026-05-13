@@ -62,6 +62,7 @@ async fn new_stage(rpc: &InProcessRpc) -> StageId {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .unwrap();

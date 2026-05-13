@@ -299,16 +299,31 @@ impl RpcServer for InProcessRpc {
     }
 
     async fn submit_job(&self, args: SubmitJobArgs) -> RpcResult<Job> {
-        if self
+        let repo = self
             .store
             .get_repo(args.repo_id)
             .await
             .map_err(db_err)?
-            .is_none()
-        {
-            return Err(RpcError::NotFound(format!("repo {}", args.repo_id)));
-        }
+            .ok_or_else(|| RpcError::NotFound(format!("repo {}", args.repo_id)))?;
         let now = now_ms();
+
+        // If the submit carries a template that parses into the
+        // canonical `JobTemplate` shape, scaffold the on-disk job
+        // directory *before* the Job row lands. The user never has
+        // to "promote" a job later — the spec exists from the moment
+        // the row exists, ready for editing in the SPEC pane.
+        //
+        // CLI submits whose YAML is the wrapper format
+        // (`repo: …, runner: …, stages: [{name: …}]`) don't parse
+        // here; they fall through unscaffolded and continue to behave
+        // as today (the wrapper format is a `codeless-cli` concern,
+        // not the runtime's). Prompt-only submits also fall through.
+        if let Some(template_src) = args.template_yaml.as_deref() {
+            if JobTemplate::parse_yaml(template_src).is_ok() {
+                seed_job_directory(&repo.local_path, template_src)?;
+            }
+        }
+
         // Default landing state is `Draft` so the user can edit
         // spec / docs / handover before the driver picks the job up.
         // `start_immediately = true` is the legacy / power-user path
@@ -955,9 +970,39 @@ impl RpcServer for InProcessRpc {
         let registry = self.agent_chat_registry.as_ref().ok_or_else(|| {
             RpcError::Internal("agent_chat registry is not configured on this runtime".to_owned())
         })?;
-        let cwd = self.agent_chat_cwd.clone().ok_or_else(|| {
+        let default_cwd = self.agent_chat_cwd.clone().ok_or_else(|| {
             RpcError::Internal("agent_chat cwd is not configured on this runtime".to_owned())
         })?;
+        // Per-call cwd override (used by the per-job chat panel so a
+        // question can read files that only exist on the job's branch).
+        // The path must be a real directory under one of the configured
+        // fs roots; otherwise reject with InvalidArgument rather than
+        // silently fall back, so callers see the misconfiguration.
+        let cwd = match args.cwd.as_deref() {
+            Some(p) => {
+                let abs = std::path::PathBuf::from(p);
+                let canon = std::fs::canonicalize(&abs).map_err(|_| {
+                    RpcError::InvalidArgument(format!("agent_chat cwd does not exist: {p}"))
+                })?;
+                if !canon.is_dir() {
+                    return Err(RpcError::InvalidArgument(format!(
+                        "agent_chat cwd is not a directory: {p}"
+                    )));
+                }
+                let allowed = self
+                    .fs
+                    .as_ref()
+                    .map(|fs| fs.is_path_allowed(&canon))
+                    .unwrap_or(false);
+                if !allowed {
+                    return Err(RpcError::InvalidArgument(format!(
+                        "agent_chat cwd is outside the configured fs roots: {p}"
+                    )));
+                }
+                canon
+            }
+            None => default_cwd,
+        };
         let provider =
             codeless_adapters_host::parse_cli_runner_id(&args.runner).ok_or_else(|| {
                 RpcError::InvalidArgument(format!("unknown CLI runner id `{}`", args.runner))
@@ -1087,6 +1132,64 @@ fn git_commit_err(e: GitCommitError) -> RpcError {
 fn fs_not_configured() -> RpcError {
     RpcError::Internal("fs.* not available: runtime has no filesystem root configured".to_owned())
 }
+
+/// Seed a fresh job directory at `<repo>/.codeless/jobs/<name>/` with
+/// `template.yaml`, `SCOPE.md`, and `WORKFLOW.md`, and commit them in
+/// a single commit. Called from `submit_job` so the user never has to
+/// "promote" a prompt into a template — every UI submit lands a job
+/// whose spec already exists on disk and is editable from the moment
+/// the row appears in the dashboard.
+///
+/// Refuses (`Conflict`) if the directory already exists. Renaming is
+/// out of scope here — submit a fresh job to use a different name.
+/// `template.yaml` parse errors surface as `InvalidArgument` so the
+/// UI can show the line/column inline; the runtime is the source of
+/// truth for what counts as valid YAML.
+fn seed_job_directory(repo_local_path: &str, template_yaml: &str) -> Result<(), RpcError> {
+    let parsed = JobTemplate::parse_yaml(template_yaml)
+        .map_err(|e| RpcError::InvalidArgument(format!("template parse: {e}")))?;
+
+    let repo_path = std::path::PathBuf::from(repo_local_path);
+    let dir = directory_path(&repo_path, &parsed.name);
+    if dir.exists() {
+        return Err(RpcError::Conflict(format!(
+            "a job named `{}` already exists at {}; pick a different name",
+            parsed.name,
+            dir.display(),
+        )));
+    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| RpcError::Internal(format!("create job dir {}: {e}", dir.display())))?;
+
+    let tpl_path = template_yaml_path(&repo_path, &parsed.name);
+    std::fs::write(&tpl_path, template_yaml)
+        .map_err(|e| RpcError::Internal(format!("write {}: {e}", tpl_path.display())))?;
+
+    let scope_path = dir.join("SCOPE.md");
+    std::fs::write(&scope_path, SCOPE_PRESET)
+        .map_err(|e| RpcError::Internal(format!("write {}: {e}", scope_path.display())))?;
+
+    let workflow_path = dir.join("WORKFLOW.md");
+    std::fs::write(&workflow_path, WORKFLOW_PRESET)
+        .map_err(|e| RpcError::Internal(format!("write {}: {e}", workflow_path.display())))?;
+
+    commit_paths(
+        &repo_path,
+        &format!("scaffold job: {}", parsed.name),
+        &[tpl_path, scope_path, workflow_path],
+    )
+    .map_err(git_commit_err)?;
+
+    Ok(())
+}
+
+const SCOPE_PRESET: &str = "# Scope\n\n\
+What this job is for. Replace this with what success looks like, what\n\
+is out of scope, the constraints, and the deliverables.\n";
+
+const WORKFLOW_PRESET: &str = "# Workflow\n\n\
+How the agent should drive the work. Replace this with how to sequence\n\
+the stages, what to verify between them, and what counts as done.\n";
 
 /// Map host-side `FsError` to the wire `RpcError` so transports can
 /// surface the right status code. Path-escape is `InvalidArgument`

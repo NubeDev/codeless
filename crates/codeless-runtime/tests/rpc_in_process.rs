@@ -89,6 +89,7 @@ async fn submit_job_rejects_unknown_repo() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await;
     assert!(matches!(result, Err(RpcError::NotFound(_))), "{result:?}");
@@ -127,6 +128,7 @@ async fn submit_job_succeeds_and_emits_queued_event() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .expect("submit_job");
@@ -176,6 +178,7 @@ async fn stop_job_emits_event_and_is_idempotent_against_terminal_state() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .expect("submit_job");
@@ -229,6 +232,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .expect("submit_job a");
@@ -250,6 +254,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .expect("submit_job b");
@@ -296,6 +301,7 @@ async fn since_cursor_replay_returns_events_above_cursor() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .expect("submit_job");

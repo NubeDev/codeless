@@ -48,6 +48,7 @@ async fn seed_completed_job(db: &Path) -> JobId {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .unwrap();

@@ -4,9 +4,10 @@
 // need cache invalidation across components, swap in TanStack Query
 // behind these signatures and call sites won't notice.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useRpc } from "./provider";
+import type { RpcClient } from "./client";
 import type { EventFilter, ListJobsArgs, ListReviewsArgs } from "./methods";
 import type { EventEnvelope, Job, JobId, Repo, Review } from "./wire";
 
@@ -93,13 +94,33 @@ export function useJobs(args: ListJobsArgs = { repo_id: null }): QueryState<Job[
   return state;
 }
 
-export function useJob(jobId: JobId | null): QueryState<Job> {
+export interface JobQueryState extends QueryState<Job> {
+  /**
+   * Force a fresh `get_job` call. Use after any RPC that mutates the
+   * job server-side (start_job, update_job_template, write_job_file,
+   * write_handover, …) so consumers re-render with current state.
+   *
+   * Without this the hook would stay pinned to the row it loaded on
+   * mount: clicking "run" would flip the server's status but the UI's
+   * `job.status` would stay `draft`, the header's `[run]` button
+   * would stay clickable, and a second click would 409.
+   */
+  refetch: () => void;
+}
+
+export function useJob(jobId: JobId | null): JobQueryState {
   const rpc = useRpc();
   const [state, setState] = useState<QueryState<Job>>({
     data: null,
     error: null,
     loading: jobId != null,
   });
+  // `tick` is the refetch trigger. Bumping it re-runs the effect
+  // without changing `jobId` or `rpc`. Stable reference for the
+  // returned `refetch` so callers can pass it to `useEffect`/
+  // `useCallback` deps without triggering recreate loops.
+  const [tick, setTick] = useState(0);
+  const refetch = useCallback(() => setTick((t) => t + 1), []);
   useEffect(() => {
     if (jobId == null) {
       setState({ data: null, error: null, loading: false });
@@ -124,8 +145,10 @@ export function useJob(jobId: JobId | null): QueryState<Job> {
     return () => {
       cancelled = true;
     };
-  }, [jobId, rpc]);
-  return state;
+    // tick bumps force a re-fetch; eslint can't see through it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, rpc, tick]);
+  return { ...state, refetch };
 }
 
 // Live reviews for a scope. Refetches `list_reviews` on any `review-*`
@@ -168,42 +191,103 @@ export function useReviews(args: ListReviewsArgs): QueryState<Review[]> {
   }, [key, rpc, tick]);
 
   useEffect(() => {
-    let cancelled = false;
     const filter: EventFilter =
       args.job_id != null ? { scope: "job", job_id: args.job_id } : { scope: "all" };
-    const stream = rpc.subscribe(filter);
+    const subKey = JSON.stringify({ filter, since: 0 });
+    const leave = joinSubscription(rpc, subKey, filter, 0, (env) => {
+      const t = env.event.type;
+      if (
+        t === "review-requested" ||
+        t === "review-approved" ||
+        t === "review-commented" ||
+        t === "review-stopped"
+      ) {
+        setTick((n) => n + 1);
+      }
+    });
+    return leave;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args.job_id, rpc]);
+
+  return state;
+}
+
+// Per-(rpc, filter, since) shared subscription. The browser's
+// HTTP/1.1 per-origin connection cap is 6; one EventSource per
+// useEventStream call site burns through that quickly when multiple
+// components on the same page subscribe to the same job feed (the
+// JobPage, the JobTimeline, the RunPane's live stage cards, the
+// dashboard's "all" stream). Sharing the underlying iterator means
+// N components subscribed to the same filter use 1 EventSource. The
+// fs explorer was the canary: with the cap consumed, fs_read_dir
+// POSTs queued indefinitely and the tree sat on "Loading…".
+interface SharedSubscription {
+  listeners: Set<(env: EventEnvelope) => void>;
+  cancel: () => void;
+}
+const SHARED_SUBSCRIPTIONS = new WeakMap<
+  RpcClient,
+  Map<string, SharedSubscription>
+>();
+
+function joinSubscription(
+  rpc: RpcClient,
+  key: string,
+  filter: EventFilter,
+  since: number,
+  listener: (env: EventEnvelope) => void,
+): () => void {
+  let perRpc = SHARED_SUBSCRIPTIONS.get(rpc);
+  if (!perRpc) {
+    perRpc = new Map();
+    SHARED_SUBSCRIPTIONS.set(rpc, perRpc);
+  }
+  let shared = perRpc.get(key);
+  if (!shared) {
+    const listeners = new Set<(env: EventEnvelope) => void>();
+    const stream = rpc.subscribe(filter, since);
     const iter = stream[Symbol.asyncIterator]();
+    let cancelled = false;
+    shared = {
+      listeners,
+      cancel: () => {
+        cancelled = true;
+        iter.return?.();
+      },
+    };
+    perRpc.set(key, shared);
     (async () => {
       try {
         while (true) {
           const r = await iter.next();
           if (r.done || cancelled) return;
-          const t = r.value.event.type;
-          if (
-            t === "review-requested" ||
-            t === "review-approved" ||
-            t === "review-commented" ||
-            t === "review-stopped"
-          ) {
-            setTick((n) => n + 1);
+          for (const cb of listeners) {
+            try {
+              cb(r.value);
+            } catch {
+              // Listener errors must not break the shared pump.
+            }
           }
         }
       } catch {
-        // Stream errors end the iteration; consumer can re-mount.
+        // Stream errors end iteration; consumers that re-mount will
+        // recreate the shared subscription on next listener join.
+      } finally {
+        if (perRpc?.get(key) === shared) {
+          perRpc.delete(key);
+        }
       }
     })();
-    return () => {
-      cancelled = true;
-      // Explicit close so the underlying EventSource is released
-      // synchronously on unmount. Without this, the browser's per-origin
-      // SSE connection cap (6 in Chrome) is reached after a few job
-      // navigations and new subscriptions stall.
-      iter.return?.();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.job_id, rpc]);
-
-  return state;
+  }
+  shared.listeners.add(listener);
+  return () => {
+    if (!shared) return;
+    shared.listeners.delete(listener);
+    if (shared.listeners.size === 0) {
+      shared.cancel();
+      perRpc?.delete(key);
+    }
+  };
 }
 
 export function useEventStream(
@@ -219,34 +303,16 @@ export function useEventStream(
 
   const key = JSON.stringify({ filter, since });
   useEffect(() => {
-    let cancelled = false;
     // `since: 0` replays every persisted event for the filter before
     // going live. Completed jobs have no live events left, so without
     // replay the JobTimeline pane sits forever on "waiting for
     // events…". Callers that genuinely want live-only state pass a
     // non-zero cursor (a recent cursor, or one captured from a
     // previous batch).
-    const stream = rpc.subscribe(filter, since);
-    const iter = stream[Symbol.asyncIterator]();
-    (async () => {
-      try {
-        while (true) {
-          const r = await iter.next();
-          if (r.done || cancelled) return;
-          cbRef.current(r.value);
-        }
-      } catch {
-        // Stream errors end the iteration; consumer can re-mount to retry.
-      }
-    })();
-    return () => {
-      cancelled = true;
-      // Explicit close so the underlying EventSource is released
-      // synchronously on unmount. Without this, the browser's per-origin
-      // SSE connection cap (6 in Chrome) is reached after a few job
-      // navigations and new subscriptions stall.
-      iter.return?.();
-    };
+    const leave = joinSubscription(rpc, key, filter, since, (env) => {
+      cbRef.current(env);
+    });
+    return leave;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, rpc]);
 }

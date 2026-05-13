@@ -80,6 +80,10 @@ async fn run_once(args: RunArgs, repo_path: PathBuf, db: Option<PathBuf>) -> Res
             model: None,
             permission_mode: None,
             effort: None,
+            // `codeless run` is a streaming one-shot CLI — the user
+            // would never expect it to land a Draft they then have to
+            // promote separately. Submit-and-run preserves intent.
+            start_immediately: true,
         })
         .await
         .map_err(|e| anyhow!("submit_job: {e}"))?;

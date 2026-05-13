@@ -143,8 +143,15 @@ export type JobId = string;
 /**
  *  Lifecycle states for a job row. String form matches the
  *  `jobs.status` column wire labels in SCOPE.md Appendix A.
+ * 
+ *  `Draft` is the landing state when a job is submitted with
+ *  `start_immediately = false` — the row exists, the user can edit
+ *  the spec / docs / handover, but the driver does **not** pick it
+ *  up. The user calls `start_job` (or submits with
+ *  `start_immediately = true`) to promote `Draft → Queued`. From
+ *  there the lifecycle is unchanged.
  */
-export type JobStatus = "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped";
+export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped";
 
 // A managed git repository row — see SCOPE.md Appendix A `repos`.
 export type Repo = {

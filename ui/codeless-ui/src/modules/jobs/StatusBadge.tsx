@@ -3,6 +3,9 @@ import { cn } from "@/lib/utils";
 import type { JobStatus } from "@/lib/rpc";
 
 const TONE: Record<JobStatus, string> = {
+  // Draft is the editable pre-run state — visually softer than queued
+  // so the user can tell at a glance that nothing is running yet.
+  draft: "bg-muted/50 text-muted-foreground italic",
   queued: "bg-muted text-muted-foreground",
   running: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
   "awaiting-review": "bg-amber-500/15 text-amber-700 dark:text-amber-300",

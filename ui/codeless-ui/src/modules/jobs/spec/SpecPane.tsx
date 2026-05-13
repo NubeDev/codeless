@@ -10,7 +10,6 @@ import {
   type ListJobFilesResult,
 } from "@/lib/rpc";
 
-import { PromoteToTemplate } from "../PromoteToTemplate";
 import { MarkdownSection } from "./MarkdownSection";
 import { TemplateSection } from "./TemplateSection";
 
@@ -49,7 +48,7 @@ the stages, what to verify between them, and what counts as done.
 // reason about a 'global' save covering edits across files.
 export function SpecPane({ jobId, onOpenFile }: Props) {
   const rpc = useRpc();
-  const { data: job } = useJob(jobId);
+  const { data: job, refetch: refetchJob } = useJob(jobId);
   const [listing, setListing] = useState<ListJobFilesResult | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [promptOnly, setPromptOnly] = useState(false);
@@ -83,6 +82,18 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
     void refresh();
   }, [refresh]);
 
+  // Common post-save callback for every editable surface in the
+  // pane. Re-fetches the file list (so add/remove shows up) AND the
+  // job row (so `template_yaml` is fresh — without this, a save in
+  // TemplateSection would leave the parent's `job.template_yaml`
+  // stale, the SPEC summary would re-render the pre-edit YAML, and
+  // the user would think their save vanished).
+  const afterSave = useCallback(() => {
+    setLoading(true);
+    void refresh();
+    refetchJob();
+  }, [refresh, refetchJob]);
+
   const onOpenInTab = useCallback(
     (filename: string) => {
       if (!onOpenFile || !listing?.directory_path) return;
@@ -98,16 +109,34 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
     );
   }
 
+  // Legacy prompt-only jobs (submitted via `codeless run` or via the
+  // CLI before the UI started always seeding a template). The Spec
+  // pane has no files to show; surface the prompt itself for context
+  // and tell the user how to iterate.
   if (promptOnly) {
     return (
-      <PromoteToTemplate
-        jobId={jobId}
-        prompt={job?.prompt ?? null}
-        onPromoted={() => {
-          setLoading(true);
-          void refresh();
-        }}
-      />
+      <div className="text-muted-foreground mx-auto max-w-2xl space-y-3 p-6 text-sm">
+        <h2 className="text-foreground text-base font-medium">
+          Prompt-only job
+        </h2>
+        <p>
+          This job was submitted with a free-form prompt and has no
+          editable spec on disk. The new submit flow always seeds{" "}
+          <code>template.yaml</code> + <code>SCOPE.md</code> +{" "}
+          <code>WORKFLOW.md</code> so the Spec pane has something to show
+          — submit a fresh job (with a name) to use the iterate loop.
+        </p>
+        {job?.prompt && (
+          <div className="space-y-1">
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
+              prompt
+            </div>
+            <pre className="bg-muted/40 max-h-64 overflow-auto rounded p-2 text-xs whitespace-pre-wrap">
+              {job.prompt}
+            </pre>
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -136,20 +165,14 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
         <Header
           dirPath={listing.directory_path}
           jobId={jobId}
-          onAdded={() => {
-            setLoading(true);
-            void refresh();
-          }}
+          onAdded={afterSave}
         />
 
         <TemplateSection
           jobId={jobId}
           templateYaml={job?.template_yaml ?? null}
           availableDocs={availableDocs}
-          onSaved={() => {
-            setLoading(true);
-            void refresh();
-          }}
+          onSaved={afterSave}
         />
 
         <MarkdownSection
@@ -159,10 +182,7 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
           hint="the brief — what the job is for"
           presetBody={SCOPE_PRESET}
           exists={hasScope}
-          onChanged={() => {
-            setLoading(true);
-            void refresh();
-          }}
+          onChanged={afterSave}
           onOpenInTab={onOpenFile ? onOpenInTab : undefined}
         />
 
@@ -173,20 +193,14 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
           hint="how the agent should drive the work"
           presetBody={WORKFLOW_PRESET}
           exists={hasWorkflow}
-          onChanged={() => {
-            setLoading(true);
-            void refresh();
-          }}
+          onChanged={afterSave}
           onOpenInTab={onOpenFile ? onOpenInTab : undefined}
         />
 
         <OtherDocs
           jobId={jobId}
           others={others}
-          onChanged={() => {
-            setLoading(true);
-            void refresh();
-          }}
+          onChanged={afterSave}
           onOpenInTab={onOpenFile ? onOpenInTab : undefined}
         />
       </div>

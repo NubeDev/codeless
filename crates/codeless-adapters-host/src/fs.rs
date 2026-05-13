@@ -85,6 +85,18 @@ impl HostFs {
         self.extra_roots.iter().any(|r| path.starts_with(r))
     }
 
+    /// Public sandbox check for absolute paths handed in by callers
+    /// outside the read/write/move API (e.g. `agent_chat`'s per-call
+    /// cwd override). Canonicalises the input first so symlinks can't
+    /// escape; returns false when the path does not exist or sits
+    /// outside every configured root.
+    pub fn is_path_allowed(&self, abs: &Path) -> bool {
+        match std::fs::canonicalize(abs) {
+            Ok(canon) => self.allowed_under_any_root(&canon),
+            Err(_) => false,
+        }
+    }
+
     /// Resolve `path` against `root`, refusing anything that would
     /// escape. Two input shapes are accepted:
     ///

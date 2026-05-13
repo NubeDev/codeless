@@ -98,6 +98,7 @@ async fn claude_runner_streams_events_via_bridge() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .unwrap();

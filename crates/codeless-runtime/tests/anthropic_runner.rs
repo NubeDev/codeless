@@ -82,6 +82,7 @@ async fn submit(rpc: &InProcessRpc) -> codeless_types::JobId {
         model: None,
         permission_mode: None,
         effort: None,
+        start_immediately: true,
     })
     .await
     .unwrap()

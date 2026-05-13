@@ -2,20 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import {
+  useEventStream,
   useJob,
   useRepos,
-  useRpc,
   type Job,
   type JobId,
   type Repo,
@@ -27,6 +20,7 @@ import { SpecPane } from "./spec/SpecPane";
 import { JobTimeline } from "./JobTimeline";
 import { CostCell, WallClockCell } from "./JobRow";
 import { ReviewPanel } from "./ReviewPanel";
+import { RunPane } from "./RunPane";
 import { StageDetail } from "./StageDetail";
 import { StageTree } from "./StageTree";
 import { StatusBadge } from "./StatusBadge";
@@ -53,6 +47,7 @@ import { StatusBadge } from "./StatusBadge";
 type Section =
   | "stages"
   | "spec"
+  | "status"
   | "timeline"
   | "files"
   | "handover"
@@ -84,6 +79,7 @@ const RAIL: RailGroup[] = [
     label: "Run",
     hint: "what the runtime produced",
     items: [
+      { id: "status", label: "Status" },
       { id: "timeline", label: "Timeline" },
       { id: "files", label: "Files changed" },
       { id: "handover", label: "Handover" },
@@ -105,13 +101,23 @@ interface Props {
   // see in the tab strip than "Job <ulid>". Driven by the YAML
   // template name (preferred) or the prompt's first line.
   onTitleResolved?: (title: string) => void;
+  // Open a brand-new job-detail tab. Re-run uses this so the freshly
+  // cloned job appears as its own tab rather than silently swapping
+  // the current tab's URL (which the JobPage ignores — its jobId is
+  // a prop from JobDetailStack, not a route parameter).
+  onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
 }
 
-export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
-  const { data: job, error, loading } = useJob(jobId);
+export function JobPage({
+  jobId,
+  active,
+  onOpenFile,
+  onTitleResolved,
+  onOpenJobTab,
+}: Props) {
+  const { data: job, error, loading, refetch: refetchJob } = useJob(jobId);
   const { data: repos } = useRepos();
-  const rpc = useRpc();
-  const [section, setSection] = useState<Section>("stages");
+  const [section, setSection] = useState<Section>("status");
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
 
   // Surface the resolved title once, when it changes. The parent
@@ -135,6 +141,31 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
   useEffect(() => {
     setSelectedStageId(null);
   }, [jobId]);
+
+  // Live-refetch the job row whenever the runtime emits a
+  // status-changing event for it. Without this, clicking `[run]`
+  // would flip status server-side but the header badge would stay
+  // `draft` until reload — and a second click would 409. The cost is
+  // one `get_job` per emitted lifecycle event for the focused job;
+  // the dashboard already does the same calculus per row.
+  useEventStream(
+    { scope: "job", job_id: jobId },
+    useCallback(
+      (env) => {
+        const t = env.event.type;
+        if (
+          t === "job-promoted" ||
+          t === "job-started" ||
+          t === "job-completed" ||
+          t === "job-failed" ||
+          t === "job-stopped"
+        ) {
+          refetchJob();
+        }
+      },
+      [refetchJob],
+    ),
+  );
 
   // Keep the URL in sync with the active job tab so a reload or
   // shareable link lands the user back on the same view. Only the
@@ -175,11 +206,6 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
     setSelectedStageId(null);
   }, []);
 
-  const onEditSpec = useCallback(() => {
-    setSection("spec");
-    setSelectedStageId(null);
-  }, []);
-
   const onSelectStage = useCallback((stageId: string) => {
     setSection("stages");
     setSelectedStageId(stageId);
@@ -195,7 +221,7 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", !active && "hidden")}>
-      <JobHeader job={job} repo={repo} rpc={rpc} onEditSpec={onEditSpec} />
+      <JobHeader job={job} repo={repo} />
       <div className="flex min-h-0 flex-1">
         <SubRail current={section} onSelect={onSelectSection} />
         <div className="min-w-0 flex-1 overflow-hidden">
@@ -212,6 +238,14 @@ export function JobPage({ jobId, active, onOpenFile, onTitleResolved }: Props) {
                   job={job}
                   selectedStageId={selectedStageId}
                   onSelectStage={onSelectStage}
+                />
+              )}
+              {section === "status" && (
+                <RunPane
+                  job={job}
+                  refetchJob={refetchJob}
+                  onOpenJobTab={onOpenJobTab}
+                  onEditSpec={() => onSelectSection("spec")}
                 />
               )}
               {section === "timeline" && <JobTimeline jobId={jobId} />}
@@ -250,49 +284,12 @@ function CenteredMessage({
   );
 }
 
-function JobHeader({
-  job,
-  repo,
-  rpc,
-  onEditSpec,
-}: {
-  job: Job;
-  repo: Repo | null;
-  rpc: ReturnType<typeof useRpc>;
-  onEditSpec: () => void;
-}) {
-  const [busy, setBusy] = useState<"stop" | "rerun" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const isTerminal =
-    job.status === "completed" ||
-    job.status === "failed" ||
-    job.status === "stopped";
-
-  const stop = async () => {
-    setBusy("stop");
-    setError(null);
-    try {
-      await rpc.call("stop_job", { job_id: job.id });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const rerunFromScratch = async () => {
-    setBusy("rerun");
-    setError(null);
-    try {
-      const fresh = await rpc.call("rerun_job", { source_job_id: job.id });
-      navigate(`/jobs/${fresh.id}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
+// Thin orientation strip: identity and cost only. Lifecycle actions
+// (run / stop / re-run / edit spec) live in the RunPane and SpecPane
+// respectively — keeping them out of the header stops the header from
+// conflating "what is this job" with "what can I do to it" and frees
+// the action surface to render with real layout breathing room.
+function JobHeader({ job, repo }: { job: Job; repo: Repo | null }) {
   return (
     <div className="border-border/50 flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
       <StatusBadge status={job.status} />
@@ -313,63 +310,7 @@ function JobHeader({
           now={Date.now()}
         />
         <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={onEditSpec}
-          title="Open the SPEC pane to edit template.yaml / SCOPE.md / WORKFLOW.md"
-        >
-          edit spec
-        </Button>
-        {!isTerminal && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={stop}
-            disabled={busy !== null}
-          >
-            {busy === "stop" ? "stopping…" : "stop"}
-          </Button>
-        )}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button size="sm" variant="outline" disabled={busy !== null}>
-              {busy === "rerun" ? "queuing…" : "re-run ▾"}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="text-xs">
-            <DropdownMenuItem onClick={rerunFromScratch}>
-              <div className="flex flex-col">
-                <span>Re-run from scratch</span>
-                <span className="text-muted-foreground text-[10px]">
-                  fresh job, same prompt + caps + runner
-                </span>
-              </div>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem disabled>
-              <div className="flex flex-col">
-                <span>Re-run with feedback</span>
-                <span className="text-muted-foreground text-[10px]">
-                  not wired yet — needs add_job_note RPC
-                </span>
-              </div>
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled>
-              <div className="flex flex-col">
-                <span>Re-run from a specific stage</span>
-                <span className="text-muted-foreground text-[10px]">
-                  not wired yet — needs Job/Run schema split
-                  (JOB-WORKFLOW.md Phase B)
-                </span>
-              </div>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
       </div>
-      {error && (
-        <div className="text-destructive w-full text-xs">{error}</div>
-      )}
     </div>
   );
 }
@@ -455,7 +396,7 @@ function WorktreeSection({ job, repo }: { job: Job; repo: Repo | null }) {
           hint={
             job.worktree_path
               ? "preserved on disk after the job ends — cd into it to inspect"
-              : "not provisioned (mock runner or pre-run crash)"
+              : "not provisioned (the runner crashed before allocating a worktree)"
           }
           altCopy={
             job.worktree_path

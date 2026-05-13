@@ -37,6 +37,7 @@ async fn ai_message_complete_accumulates_cost_on_task_and_job() {
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .unwrap();

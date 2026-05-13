@@ -106,6 +106,7 @@ async fn submitted_mock_job_reaches_completed_via_driver() {
             "branch": "feat/driven",
             "cost_cap_cents": 0,
             "wall_clock_cap_ms": 60000,
+            "start_immediately": true,
         }))
         .send()
         .await
@@ -196,6 +197,7 @@ async fn unknown_runner_leaves_job_queued() {
             "branch": "x",
             "cost_cap_cents": 0,
             "wall_clock_cap_ms": 0,
+            "start_immediately": true,
         }))
         .send()
         .await
@@ -321,6 +323,7 @@ async fn anthropic_runner_disabled_by_default_leaves_job_queued() {
             "branch": "x",
             "cost_cap_cents": 0,
             "wall_clock_cap_ms": 0,
+            "start_immediately": true,
         }))
         .send()
         .await
@@ -450,6 +453,7 @@ async fn driver_provisions_worktree_when_root_set() {
             "branch": "",
             "cost_cap_cents": 0,
             "wall_clock_cap_ms": 60000,
+            "start_immediately": true,
         }))
         .send()
         .await

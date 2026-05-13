@@ -22,6 +22,10 @@ worktrees/
 # but worktrees and any future scratch should never be tracked.
 .codeless/worktrees/
 
+# Local dev orchestration scratch space written by the top-level Makefile
+# (codeless/Makefile): pid files, dev SQLite, backend/ui log files.
+.codeless-dev/
+
 # Secrets / local config
 .env
 .env.*

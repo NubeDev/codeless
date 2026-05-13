@@ -50,6 +50,7 @@ async fn seed_repo_job(rpc: &InProcessRpc, name: &str, runner: &str) -> (RepoId,
             model: None,
             permission_mode: None,
             effort: None,
+            start_immediately: true,
         })
         .await
         .unwrap();

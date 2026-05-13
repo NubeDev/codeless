@@ -544,6 +544,17 @@ pub struct AgentChatArgs {
     /// `EventFilter::Job { job_id: session_id }` before issuing the
     /// call so it sees every emitted event.
     pub session_id: JobId,
+    /// Per-call working-directory override. When `Some`, the runner
+    /// runs in this directory instead of the server's configured chat
+    /// cwd; used by the per-job chat panel so questions like "how many
+    /// rows in the csv" can read files that live on the job's branch
+    /// (the file may not exist in the server's cwd if the worktree
+    /// hasn't been merged). The runtime resolves and canonicalises the
+    /// path; values outside the configured fs roots are rejected with
+    /// `InvalidArgument` so a chat turn can't be used to read arbitrary
+    /// host paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]

@@ -122,6 +122,11 @@ async fn submit(args: SubmitArgs, db: Option<PathBuf>) -> Result<ExitCode> {
             model: None,
             permission_mode: None,
             effort: None,
+            // `codeless job submit` is a fire-and-forget CLI; keep the
+            // legacy "submit and run" semantics rather than landing
+            // the job in Draft. UI submissions default to Draft so the
+            // user can edit the spec first.
+            start_immediately: true,
         })
         .await
         .map_err(|e| anyhow!("submit_job: {e}"))?;

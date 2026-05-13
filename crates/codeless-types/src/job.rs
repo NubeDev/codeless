@@ -6,9 +6,17 @@ use crate::time::UnixMillis;
 
 /// Lifecycle states for a job row. String form matches the
 /// `jobs.status` column wire labels in SCOPE.md Appendix A.
+///
+/// `Draft` is the landing state when a job is submitted with
+/// `start_immediately = false` — the row exists, the user can edit
+/// the spec / docs / handover, but the driver does **not** pick it
+/// up. The user calls `start_job` (or submits with
+/// `start_immediately = true`) to promote `Draft → Queued`. From
+/// there the lifecycle is unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum JobStatus {
+    Draft,
     Queued,
     Running,
     AwaitingReview,

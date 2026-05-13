@@ -35,6 +35,7 @@ fn task_enqueued_carries_depends_on_from_day_one() {
 #[test]
 fn job_lifecycle_status_wire_labels() {
     let cases = [
+        (JobStatus::Draft, "draft"),
         (JobStatus::Queued, "queued"),
         (JobStatus::Running, "running"),
         (JobStatus::AwaitingReview, "awaiting-review"),

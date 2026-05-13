@@ -133,6 +133,10 @@ async fn bootstrap(args: BootstrapArgs, db: Option<PathBuf>) -> Result<ExitCode>
             model: None,
             permission_mode: None,
             effort: None,
+            // CLI demo bootstrap is a "submit and run" command, not a
+            // user-driven editing flow — keep the legacy behaviour of
+            // queueing the job for immediate driver pickup.
+            start_immediately: true,
         })
         .await
         .map_err(|e| anyhow!("submit_job: {e}"))?;

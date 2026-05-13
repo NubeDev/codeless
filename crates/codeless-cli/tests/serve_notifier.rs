@@ -125,6 +125,7 @@ async fn job_failed_event_fires_signed_webhook() {
             "branch": "x",
             "cost_cap_cents": 0,
             "wall_clock_cap_ms": 60000,
+            "start_immediately": true,
         }))
         .send()
         .await

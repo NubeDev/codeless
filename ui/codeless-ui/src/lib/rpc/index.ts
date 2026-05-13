@@ -39,6 +39,7 @@ export type {
   RpcMethodMap,
   RpcResultOf,
   Since,
+  StartJobArgs,
   StopJobArgs,
   SubmitJobArgs,
   UpdateJobTemplateArgs,

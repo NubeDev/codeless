@@ -17,13 +17,24 @@ interface Props {
   // friendlier label than the initial best-guess one the dashboard
   // opened the tab with.
   onUpdateTab: (id: number, patch: TabPatch) => void;
+  // Open a new job-detail tab for a freshly created job (Re-run from
+  // scratch). Without this the re-run RPC succeeds server-side but
+  // the user sees no UI change — the current tab keeps showing the
+  // source job because its jobId is a tab-anchored prop.
+  onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
 }
 
 // Mirror of `AiDiffStack` / `PreviewStack`: render every job-detail
 // tab simultaneously, but only the active one is visible. Keeping
 // inactive tabs mounted means switching back is instant and the
 // per-job event subscriptions don't tear down on tab change.
-export function JobDetailStack({ tabs, activeId, onOpenFile, onUpdateTab }: Props) {
+export function JobDetailStack({
+  tabs,
+  activeId,
+  onOpenFile,
+  onUpdateTab,
+  onOpenJobTab,
+}: Props) {
   const handleTitle = useCallback(
     (tabId: number, title: string) => {
       onUpdateTab(tabId, { title });
@@ -44,6 +55,7 @@ export function JobDetailStack({ tabs, activeId, onOpenFile, onUpdateTab }: Prop
           active={t.id === activeId}
           onOpenFile={onOpenFile}
           onTitleResolved={(title) => handleTitle(t.id, title)}
+          onOpenJobTab={onOpenJobTab}
         />
       ))}
     </>

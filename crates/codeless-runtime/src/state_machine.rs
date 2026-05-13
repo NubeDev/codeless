@@ -27,9 +27,13 @@ fn deny<F: std::fmt::Debug, T: std::fmt::Debug>(
 
 /// Job lifecycle guard. Allowed edges:
 /// - `Queued -> Running | Stopped`
+/// - `Draft -> Queued | Stopped`
+/// - `Queued -> Running | Stopped`
 /// - `Running -> AwaitingReview | Completed | Failed | Stopped`
 /// - `AwaitingReview -> Running | Completed | Stopped`
 ///
+/// `Draft` is the editable pre-run holding state — the user has
+/// submitted the job but not asked the driver to run it yet.
 /// Terminal states (`Completed`, `Failed`, `Stopped`) accept no further
 /// transitions; the runtime reports `Conflict` when asked. This matches
 /// the lifecycle described in SCOPE.md "Runtime / scheduler".
@@ -37,7 +41,9 @@ pub fn transition_job(from: JobStatus, to: JobStatus) -> Result<(), TransitionEr
     use JobStatus::*;
     let ok = matches!(
         (from, to),
-        (Queued, Running)
+        (Draft, Queued)
+            | (Draft, Stopped)
+            | (Queued, Running)
             | (Queued, Stopped)
             | (Running, AwaitingReview)
             | (Running, Completed)

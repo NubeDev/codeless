@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -13,6 +13,7 @@ import {
   useEventStream,
   useJobs,
   useRepos,
+  useRpc,
   type Job,
   type JobId,
   type Repo,
@@ -49,7 +50,14 @@ interface JobsDashboardProps {
 export function JobsDashboard({ onOpenJob }: JobsDashboardProps = {}) {
   const repos = useRepos();
   const jobs = useJobs();
+  const rpc = useRpc();
   const [overlay, setOverlay] = useState<Map<string, Job>>(new Map());
+  // Mirror overlay into a ref so the event-stream callback can read
+  // the latest map without depending on the state value (which would
+  // re-create the callback on every overlay change and resubscribe
+  // SSE on every event).
+  const overlayRef = useRef(overlay);
+  overlayRef.current = overlay;
   const [lastSummaries, setLastSummaries] = useState<
     Map<string, { text: string; at: number }>
   >(new Map());
@@ -103,16 +111,39 @@ export function JobsDashboard({ onOpenJob }: JobsDashboardProps = {}) {
         });
       }
       if ("job_id" in e === false) return;
+      const existingInList =
+        overlayRef.current.get(env.job_id!) ?? findJob(jobs.data, env.job_id!);
+      // Unknown job — the dashboard's `useJobs` snapshot was loaded
+      // before this row existed. `useJobs` is fetch-once, so without
+      // this branch a freshly submitted job stays invisible until the
+      // user navigates away and back. Fetch the row and seed the
+      // overlay so the dashboard renders it immediately.
+      if (!existingInList) {
+        if (e.type === "job-queued") {
+          rpc
+            .call("get_job", { job_id: env.job_id! })
+            .then((job) => {
+              setOverlay((prev) => {
+                const next = new Map(prev);
+                next.set(job.id, job);
+                return next;
+              });
+            })
+            .catch(() => {
+              // Best-effort: if the fetch fails the user can still
+              // see the job after a manual reload.
+            });
+        }
+        return;
+      }
       setOverlay((prev) => {
         const next = new Map(prev);
-        const existing = next.get(env.job_id!) ?? findJob(jobs.data, env.job_id!);
-        if (!existing) return prev;
-        const updated = applyEvent(existing, e);
-        if (updated === existing) return prev;
+        const updated = applyEvent(existingInList, e);
+        if (updated === existingInList) return prev;
         next.set(env.job_id!, updated);
         return next;
       });
-    }, [jobs.data]),
+    }, [jobs.data, rpc]),
   );
 
   if (repos.loading || jobs.loading) {
@@ -295,7 +326,7 @@ function NoReposCta() {
           CLI:
         </p>
         <pre className="bg-muted overflow-x-auto rounded p-2 font-mono text-xs">
-{"codeless --db <path> repos add --name <name> --clone-url <git-url> --local-path <abs-path>"}
+{"codeless --db <path> repos add <name> --clone-url <git-url> --local-path <abs-path>"}
         </pre>
         <p>
           Then refresh this page. Submit jobs from each repo's card.

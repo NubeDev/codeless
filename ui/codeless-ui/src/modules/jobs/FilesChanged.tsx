@@ -49,9 +49,9 @@ export function FilesChanged({ jobId, onOpenFile }: FilesChangedProps) {
       .catch((e: unknown) => {
         if (cancelled) return;
         // The most common error here is "head ref missing" — the job
-        // never provisioned a worktree (mock runner, or pre-provision
-        // crash). Surface it as an empty state rather than an angry
-        // error because it's expected, not exceptional.
+        // never provisioned a worktree (runner crashed before
+        // allocation). Surface it as an empty state rather than an
+        // angry error because it's expected, not exceptional.
         const message = e instanceof Error ? e.message : String(e);
         if (/head ref|base ref/i.test(message)) {
           setState({

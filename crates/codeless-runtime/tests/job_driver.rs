@@ -61,6 +61,7 @@ async fn fresh_queued_job(rpc: &InProcessRpc) -> codeless_types::JobId {
         model: None,
         permission_mode: None,
         effort: None,
+        start_immediately: true,
     })
     .await
     .expect("submit_job")
