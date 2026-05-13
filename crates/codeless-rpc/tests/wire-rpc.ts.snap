@@ -61,6 +61,11 @@ export type CommentReviewArgs = {
  */
 export type CostCents = number;
 
+export type DeleteJobFileArgs = {
+	job_id: JobId,
+	filename: string,
+};
+
 /**
  *  Filter passed to `RpcServer::subscribe`. Variants stay coarse on
  *  purpose — per-stage / per-task filtering happens client-side from
@@ -238,6 +243,35 @@ export type JobDiffResult = {
 	files: JobDiffFile[],
 };
 
+/**
+ *  One file under `<repo>/.codeless/jobs/<name>/`. The boolean flags
+ *  give the UI everything it needs to render the file list without
+ *  re-parsing filenames: the spec gets a "(spec)" suffix and is
+ *  pinned to the top of the list, `SCOPE.md` / `WORKFLOW.md` render
+ *  with their own affordances (preset buttons stay hidden when the
+ *  file is already there), and any other markdown renders plain.
+ */
+export type JobFileEntry = {
+	/**
+	 *  Basename only — no directory segments. The runtime guarantees
+	 *  no nested files exist (the surface is one level deep).
+	 */
+	name: string,
+	/**
+	 *  True for `template.yaml`. There is at most one such entry per
+	 *  job; the UI uses it to label the file and to suppress the
+	 *  delete affordance.
+	 */
+	is_template: boolean,
+	/**
+	 *  True for `SCOPE.md` (case-insensitive). UI uses this to skip
+	 *  the "+ scope preset" button when the file is already on disk.
+	 */
+	is_scope: boolean,
+	// True for `WORKFLOW.md` (case-insensitive). Same rationale.
+	is_workflow: boolean,
+};
+
 //Identity of one unit of work scoped to one repo.
 export type JobId = string;
 
@@ -246,6 +280,38 @@ export type JobId = string;
  *  `jobs.status` column wire labels in SCOPE.md Appendix A.
  */
 export type JobStatus = "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped";
+
+/**
+ *  Arguments for `list_job_files`. The runtime resolves `job_id` to
+ *  `<repo>/.codeless/jobs/<template.name>/` and returns the directory
+ *  contents. A job that has no parseable `template_yaml` (a raw
+ *  `prompt`-only job) returns `InvalidArgument` — the directory
+ *  surface is template-only.
+ */
+export type ListJobFilesArgs = {
+	job_id: JobId,
+};
+
+/**
+ *  Result of `list_job_files`. `entries` is ordered: `template.yaml`
+ *  first (when present), then `*.md` in filename-ascending order
+ *  (other extensions interleave alphabetically). `layout` reports
+ *  `"directory"` / `"flat"` / `"none"` so the UI can render the
+ *  legacy-flat hint when migration hasn't happened yet — see
+ *  `DOCS/JOB-DIR.md` "Layout marker".
+ */
+export type ListJobFilesResult = {
+	entries: JobFileEntry[],
+	layout: string,
+	/**
+	 *  Absolute path of the job directory on disk, when it exists.
+	 *  `None` for the `"none"` / `"flat"` layouts where the directory
+	 *  has not been created yet. The UI surfaces this via "Open in
+	 *  editor tab" for users who prefer a host-side editor for long
+	 *  docs.
+	 */
+	directory_path: string | null,
+};
 
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
@@ -276,6 +342,15 @@ export type ListReviewsArgs = {
 
 export type ListReviewsResult = {
 	reviews: Review[],
+};
+
+export type ReadJobFileArgs = {
+	job_id: JobId,
+	filename: string,
+};
+
+export type ReadJobFileResult = {
+	content: string,
 };
 
 export type RemoveRepoArgs = {
@@ -390,3 +465,27 @@ export type SubmitJobArgs = {
  *  `INTEGER` round-trips with `sqlx` (which surfaces signed integers).
  */
 export type UnixMillis = number;
+
+/**
+ *  `write_job_file` creates or overwrites a single file under the
+ *  job directory. The runtime sanitises the filename, refuses
+ *  `template.yaml` (callers use `update_job_template` for the spec),
+ *  and migrates flat→directory transparently on the first write
+ *  against a legacy-flat job. Each migration step is its own commit
+ *  so `git log` records the move explicitly — see `DOCS/JOB-DIR.md`
+ *  "Migration".
+ */
+export type WriteJobFileArgs = {
+	job_id: JobId,
+	filename: string,
+	content: string,
+};
+
+/**
+ *  Result of a successful write. `name` is the *normalised* filename
+ *  the runtime stored (a bare `design` becomes `design.md`). The UI
+ *  uses this to re-select the file in the list after the round-trip.
+ */
+export type WriteJobFileResult = {
+	name: string,
+};

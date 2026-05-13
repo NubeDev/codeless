@@ -15,12 +15,13 @@ pub mod subscribe;
 
 pub use error::{RpcError, RpcResult};
 pub use methods::{
-    AddRepoArgs, ApproveReviewArgs, ClaudeStatus, CommentReviewArgs, FsCwdResult, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile,
-    JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, RemoveRepoArgs, RerunJobArgs, RunnerInfo, ServerInfo, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, ClaudeStatus, CommentReviewArgs, DeleteJobFileArgs,
+    FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
+    JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RunnerInfo, ServerInfo,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, WriteJobFileArgs, WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

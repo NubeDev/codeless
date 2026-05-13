@@ -3,11 +3,12 @@ use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RerunJobArgs, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, DeleteJobFileArgs, FsCwdResult,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RerunJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -102,4 +103,32 @@ pub trait RpcServer: Send + Sync + 'static {
     /// configured — same shape as the other `fs_*` methods when the
     /// runtime was built without `with_fs`.
     async fn fs_cwd(&self) -> RpcResult<FsCwdResult>;
+
+    /// List the user-authored files under
+    /// `<repo>/.codeless/jobs/<template.name>/`. The result also
+    /// carries a `layout` marker that the UI surfaces as the
+    /// legacy-flat hint — see `DOCS/JOB-DIR.md` "Layout marker".
+    /// Errors with `InvalidArgument` for non-template jobs (those
+    /// without a parseable `template_yaml`) and `NotFound` for an
+    /// unknown `job_id`.
+    async fn list_job_files(&self, args: ListJobFilesArgs) -> RpcResult<ListJobFilesResult>;
+
+    /// Read one file from the job directory by basename. Errors with
+    /// `InvalidArgument` if the filename fails the sanitiser (path
+    /// traversal, dotfile), `NotFound` if the file does not exist.
+    async fn read_job_file(&self, args: ReadJobFileArgs) -> RpcResult<ReadJobFileResult>;
+
+    /// Create or overwrite one file in the job directory.
+    /// `template.yaml` is reserved — callers use `update_job_template`
+    /// for the spec. The first write against a legacy-flat job
+    /// promotes it to the directory layout in separate commits so the
+    /// migration shows up in `git log`. The returned `name` is the
+    /// normalised filename (`design` → `design.md`).
+    async fn write_job_file(&self, args: WriteJobFileArgs) -> RpcResult<WriteJobFileResult>;
+
+    /// Delete one file from the job directory. `template.yaml` is
+    /// reserved. `NotFound` is returned for an absent file so the UI
+    /// can distinguish "you already deleted this" from a sanitiser
+    /// rejection.
+    async fn delete_job_file(&self, args: DeleteJobFileArgs) -> RpcResult<()>;
 }

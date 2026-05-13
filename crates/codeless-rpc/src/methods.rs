@@ -321,3 +321,92 @@ pub struct JobDiffResult {
     pub head: String,
     pub files: Vec<JobDiffFile>,
 }
+
+/// Arguments for `list_job_files`. The runtime resolves `job_id` to
+/// `<repo>/.codeless/jobs/<template.name>/` and returns the directory
+/// contents. A job that has no parseable `template_yaml` (a raw
+/// `prompt`-only job) returns `InvalidArgument` — the directory
+/// surface is template-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListJobFilesArgs {
+    pub job_id: JobId,
+}
+
+/// One file under `<repo>/.codeless/jobs/<name>/`. The boolean flags
+/// give the UI everything it needs to render the file list without
+/// re-parsing filenames: the spec gets a "(spec)" suffix and is
+/// pinned to the top of the list, `SCOPE.md` / `WORKFLOW.md` render
+/// with their own affordances (preset buttons stay hidden when the
+/// file is already there), and any other markdown renders plain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobFileEntry {
+    /// Basename only — no directory segments. The runtime guarantees
+    /// no nested files exist (the surface is one level deep).
+    pub name: String,
+    /// True for `template.yaml`. There is at most one such entry per
+    /// job; the UI uses it to label the file and to suppress the
+    /// delete affordance.
+    pub is_template: bool,
+    /// True for `SCOPE.md` (case-insensitive). UI uses this to skip
+    /// the "+ scope preset" button when the file is already on disk.
+    pub is_scope: bool,
+    /// True for `WORKFLOW.md` (case-insensitive). Same rationale.
+    pub is_workflow: bool,
+}
+
+/// Result of `list_job_files`. `entries` is ordered: `template.yaml`
+/// first (when present), then `*.md` in filename-ascending order
+/// (other extensions interleave alphabetically). `layout` reports
+/// `"directory"` / `"flat"` / `"none"` so the UI can render the
+/// legacy-flat hint when migration hasn't happened yet — see
+/// `DOCS/JOB-DIR.md` "Layout marker".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListJobFilesResult {
+    pub entries: Vec<JobFileEntry>,
+    pub layout: String,
+    /// Absolute path of the job directory on disk, when it exists.
+    /// `None` for the `"none"` / `"flat"` layouts where the directory
+    /// has not been created yet. The UI surfaces this via "Open in
+    /// editor tab" for users who prefer a host-side editor for long
+    /// docs.
+    pub directory_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ReadJobFileArgs {
+    pub job_id: JobId,
+    pub filename: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ReadJobFileResult {
+    pub content: String,
+}
+
+/// `write_job_file` creates or overwrites a single file under the
+/// job directory. The runtime sanitises the filename, refuses
+/// `template.yaml` (callers use `update_job_template` for the spec),
+/// and migrates flat→directory transparently on the first write
+/// against a legacy-flat job. Each migration step is its own commit
+/// so `git log` records the move explicitly — see `DOCS/JOB-DIR.md`
+/// "Migration".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct WriteJobFileArgs {
+    pub job_id: JobId,
+    pub filename: String,
+    pub content: String,
+}
+
+/// Result of a successful write. `name` is the *normalised* filename
+/// the runtime stored (a bare `design` becomes `design.md`). The UI
+/// uses this to re-select the file in the list after the round-trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct WriteJobFileResult {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct DeleteJobFileArgs {
+    pub job_id: JobId,
+    pub filename: String,
+}

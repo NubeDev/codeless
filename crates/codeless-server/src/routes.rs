@@ -6,11 +6,13 @@ use axum::{
     Json, Router,
 };
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RerunJobArgs, RpcError,
-    ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, DeleteJobFileArgs, FsCwdResult,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RerunJobArgs, RpcError, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -40,6 +42,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/fs_write_file", post(fs_write_file))
         .route("/rpc/fs_stat", post(fs_stat))
         .route("/rpc/fs_cwd", post(fs_cwd))
+        .route("/rpc/list_job_files", post(list_job_files))
+        .route("/rpc/read_job_file", post(read_job_file))
+        .route("/rpc/write_job_file", post(write_job_file))
+        .route("/rpc/delete_job_file", post(delete_job_file))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -251,4 +257,36 @@ async fn fs_cwd(
 /// owned and decoupled from the shared `Arc` inside `AppState`.
 async fn server_info(State(st): State<AppState>) -> Json<ServerInfo> {
     Json((*st.server_info).clone())
+}
+
+async fn list_job_files(
+    State(st): State<AppState>,
+    Json(args): Json<ListJobFilesArgs>,
+) -> HandlerResult<ListJobFilesResult> {
+    st.rpc.list_job_files(args).await.map(Json).map_err(map_err)
+}
+
+async fn read_job_file(
+    State(st): State<AppState>,
+    Json(args): Json<ReadJobFileArgs>,
+) -> HandlerResult<ReadJobFileResult> {
+    st.rpc.read_job_file(args).await.map(Json).map_err(map_err)
+}
+
+async fn write_job_file(
+    State(st): State<AppState>,
+    Json(args): Json<WriteJobFileArgs>,
+) -> HandlerResult<WriteJobFileResult> {
+    st.rpc.write_job_file(args).await.map(Json).map_err(map_err)
+}
+
+async fn delete_job_file(
+    State(st): State<AppState>,
+    Json(args): Json<DeleteJobFileArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .delete_job_file(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
 }

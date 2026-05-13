@@ -3,12 +3,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use codeless_adapters_host::{diff_against, FsError, GitDiffError, HostFs, WorktreeManager};
 use codeless_rpc::{
-    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, EventFilter, EventStream, FsCwdResult,
-    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
-    FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
-    JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult, RpcServer, Since,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream,
+    FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
+    JobDiffArgs, JobDiffFile, JobDiffResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs,
+    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult, RpcServer, Since,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
@@ -641,6 +642,26 @@ impl RpcServer for InProcessRpc {
             path: fs.root().to_string_lossy().into_owned(),
         })
     }
+
+    async fn list_job_files(&self, _args: ListJobFilesArgs) -> RpcResult<ListJobFilesResult> {
+        Err(job_file_unimplemented())
+    }
+
+    async fn read_job_file(&self, _args: ReadJobFileArgs) -> RpcResult<ReadJobFileResult> {
+        Err(job_file_unimplemented())
+    }
+
+    async fn write_job_file(&self, _args: WriteJobFileArgs) -> RpcResult<WriteJobFileResult> {
+        Err(job_file_unimplemented())
+    }
+
+    async fn delete_job_file(&self, _args: DeleteJobFileArgs) -> RpcResult<()> {
+        Err(job_file_unimplemented())
+    }
+}
+
+fn job_file_unimplemented() -> RpcError {
+    RpcError::Internal("job-file surface not yet wired".to_owned())
 }
 
 fn fs_not_configured() -> RpcError {

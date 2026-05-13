@@ -11,11 +11,13 @@
 use std::path::PathBuf;
 
 use codeless_rpc::methods::{
-    AddRepoArgs, ApproveReviewArgs, ClaudeStatus, CommentReviewArgs, FsCwdResult, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, ApproveReviewArgs, ClaudeStatus, CommentReviewArgs, DeleteJobFileArgs,
+    FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
+    JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, ReadJobFileArgs, ReadJobFileResult,
+    RemoveRepoArgs, RunnerInfo, ServerInfo, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -51,7 +53,15 @@ fn collect() -> TypeCollection {
         .register_mut::<ServerInfo>()
         .register_mut::<JobDiffArgs>()
         .register_mut::<JobDiffFile>()
-        .register_mut::<JobDiffResult>();
+        .register_mut::<JobDiffResult>()
+        .register_mut::<ListJobFilesArgs>()
+        .register_mut::<JobFileEntry>()
+        .register_mut::<ListJobFilesResult>()
+        .register_mut::<ReadJobFileArgs>()
+        .register_mut::<ReadJobFileResult>()
+        .register_mut::<WriteJobFileArgs>()
+        .register_mut::<WriteJobFileResult>()
+        .register_mut::<DeleteJobFileArgs>();
     types
 }
 
