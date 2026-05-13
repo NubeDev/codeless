@@ -58,6 +58,26 @@ pub enum Event {
     JobStopped { job_id: JobId, reason: StopReason },
     #[serde(rename = "job-failed")]
     JobFailed { job_id: JobId },
+    /// User-initiated re-queue of a terminal-but-recoverable job
+    /// (A0 — intra-stage session continuation). The job's branch,
+    /// worktree, and captured per-stage `Stage.session_id` survive;
+    /// the next claude task passes the session id as
+    /// `CliCfg::resume_id` so the agent continues the same
+    /// conversation rather than re-deriving. Distinct from
+    /// `JobPromoted` (which is for `Draft -> Queued`) and `JobQueued`
+    /// (which is for fresh submit) so the dashboard and chat can
+    /// render a "resumed" divider rather than treating it as a new
+    /// run.
+    #[serde(rename = "job-resumed")]
+    JobResumed {
+        job_id: JobId,
+        /// The reason the job had stopped before the resume. `None`
+        /// when the row had no `stop_reason` recorded (a fresh
+        /// resume of a never-stopped row is a programming error;
+        /// the RPC enforces it).
+        #[serde(default)]
+        previous_reason: Option<StopReason>,
+    },
 
     #[serde(rename = "stage-started")]
     StageStarted {

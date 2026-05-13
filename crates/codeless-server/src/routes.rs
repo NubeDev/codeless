@@ -12,7 +12,8 @@ use codeless_rpc::{
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, RpcError, ServerInfo, StartJobArgs, StopJobArgs, StopReviewArgs,
+    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo, StartJobArgs, StopJobArgs,
+    StopReviewArgs,
     SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
@@ -35,6 +36,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/list_stages", post(list_stages))
         .route("/rpc/stop_job", post(stop_job))
         .route("/rpc/start_job", post(start_job))
+        .route("/rpc/resume_job", post(resume_job))
         .route("/rpc/rerun_job", post(rerun_job))
         .route("/rpc/gc_worktrees", post(gc_worktrees))
         .route("/rpc/job_diff", post(job_diff))
@@ -194,6 +196,13 @@ async fn rerun_job(
     Json(args): Json<RerunJobArgs>,
 ) -> HandlerResult<Job> {
     st.rpc.rerun_job(args).await.map(Json).map_err(map_err)
+}
+
+async fn resume_job(
+    State(st): State<AppState>,
+    Json(args): Json<ResumeJobArgs>,
+) -> HandlerResult<Job> {
+    st.rpc.resume_job(args).await.map(Json).map_err(map_err)
 }
 
 async fn gc_worktrees(

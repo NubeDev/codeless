@@ -11,8 +11,8 @@ use codeless_rpc::{
     GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
     JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
     ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
-    RpcServer, Since, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
+    RpcResult, RpcServer, Since, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
     UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
@@ -407,6 +407,74 @@ impl RpcServer for InProcessRpc {
                 None,
                 None,
                 Event::JobPromoted { job_id: job.id },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(job)
+    }
+
+    async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job> {
+        let mut job = self
+            .store
+            .get_job(args.job_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+        if !matches!(job.status, JobStatus::Stopped | JobStatus::Failed) {
+            return Err(RpcError::Conflict(format!(
+                "job {} is {:?}; only Stopped or Failed jobs are resumable. \
+                 Use stop_job first to interrupt a running job.",
+                job.id, job.status
+            )));
+        }
+        crate::state_machine::transition_job(job.status, JobStatus::Queued).map_err(|e| {
+            RpcError::Conflict(format!(
+                "illegal job transition from {:?} to Queued: {e}",
+                job.status
+            ))
+        })?;
+        // Cap bumps are additive on the previous values. Saturating
+        // add so a user who passes a huge number doesn't overflow the
+        // SQLite-side i64 and produce a negative cap that the watcher
+        // would trip immediately.
+        let previous_reason = job.stop_reason;
+        if let Some(bump) = args.additional_cost_cap_cents {
+            if bump > 0 {
+                job.cost_cap_cents = CostCents(job.cost_cap_cents.0.saturating_add(bump));
+            }
+        }
+        if let Some(bump) = args.additional_wall_clock_cap_ms {
+            if bump > 0 {
+                job.wall_clock_cap_ms = job.wall_clock_cap_ms.saturating_add(bump);
+            }
+        }
+        job.status = JobStatus::Queued;
+        // Clearing `stop_reason` here would erase the original
+        // outcome from the row, which is the only place future
+        // history (re-run-with-feedback, audit, dashboards) can read
+        // why the job ended. `previous_reason` rides on the
+        // `JobResumed` event for now; once A1's handover synthesiser
+        // runs at stage boundaries, the `stop_reason` will be
+        // captured into the handover and *then* cleared.
+        job.stop_reason = None;
+        // `ended_at` likewise clears — the job is live again. The
+        // captured worktree path, branch, and per-stage `session_id`
+        // values are untouched; the driver picks them up exactly as
+        // they are.
+        job.ended_at = None;
+        if !self.store.update_job(&job).await.map_err(db_err)? {
+            return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+        }
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobResumed {
+                    job_id: job.id,
+                    previous_reason,
+                },
                 now_ms(),
             )
             .await

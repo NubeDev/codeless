@@ -51,7 +51,18 @@ pub fn transition_job(from: JobStatus, to: JobStatus) -> Result<(), TransitionEr
             | (Running, Stopped)
             | (AwaitingReview, Running)
             | (AwaitingReview, Completed)
-            | (AwaitingReview, Stopped),
+            | (AwaitingReview, Stopped)
+            // Resume paths (A0 — intra-stage session continuation per
+            // SCOPE.md hard rule #1). A user-resumed job re-enters the
+            // queue with its captured `Stage.session_id` intact; the
+            // claude adapter passes that id via `CliCfg::resume_id` so
+            // the agent picks up the same conversation rather than
+            // re-deriving from scratch. `Failed` is included so a
+            // cost-cap that fired mid-tool-call (sometimes recorded as
+            // failed rather than stopped depending on cancel ordering)
+            // is also resumable.
+            | (Stopped, Queued)
+            | (Failed, Queued),
     );
     if ok {
         Ok(())

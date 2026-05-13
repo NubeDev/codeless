@@ -72,6 +72,33 @@ pub struct StartJobArgs {
     pub job_id: JobId,
 }
 
+/// Re-queue a terminal-but-recoverable job so the driver picks it up
+/// again, optionally bumping the caps that ended it. The job's branch,
+/// worktree, and captured per-stage `Stage.session_id` are reused —
+/// the next claude invocation passes the session id as
+/// `CliCfg::resume_id`, which the claude-wrapper renders to
+/// `--continue <id>`. The agent picks up the same conversation rather
+/// than re-deriving the codebase from scratch. See SCOPE.md hard
+/// rule #1: the stage is the session boundary; within a stage the
+/// runner session is continuous, and a cost/wall-clock cap is a
+/// pause, not a reset.
+///
+/// Both bumps are *additive* on the existing caps; `None` leaves the
+/// cap as-is. A resume that does not raise the cap will simply trip
+/// it again — the RPC accepts this, the user is expected to know
+/// what they want.
+///
+/// Errors `Conflict` if the source job is not in a resumable state
+/// (`Stopped` or `Failed`), `NotFound` for an unknown id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ResumeJobArgs {
+    pub job_id: JobId,
+    #[serde(default)]
+    pub additional_cost_cap_cents: Option<i64>,
+    #[serde(default)]
+    pub additional_wall_clock_cap_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct GetJobArgs {
     pub job_id: JobId,

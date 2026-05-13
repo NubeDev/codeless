@@ -352,6 +352,47 @@ impl SqliteStore {
             .collect()
     }
 
+    /// Focused single-stage read, used by `TemplateRunner` to pick
+    /// up the captured `session_id` for resume-aware execution
+    /// (A0 — intra-stage session continuation). Returns `None` for
+    /// an unknown stage id rather than erroring so the caller can
+    /// fall through to a fresh-session path.
+    pub async fn get_stage(
+        &self,
+        id: codeless_types::StageId,
+    ) -> sqlx::Result<Option<Stage>> {
+        use sqlx::Row;
+        let row = sqlx::query(
+            "SELECT id, job_id, ordinal, name, status, verify_cmd, \
+                    started_at, ended_at, session_id \
+             FROM stages WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let job_id_str: String = row.try_get("job_id")?;
+        let job_id: JobId = job_id_str
+            .parse()
+            .map_err(|e| sqlx::Error::Decode(format!("stage.job_id: {e:?}").into()))?;
+        let status: String = row.try_get("status")?;
+        Ok(Some(Stage {
+            id,
+            job_id,
+            ordinal: row.try_get::<i64, _>("ordinal")? as u32,
+            name: row.try_get("name")?,
+            status: parse_stage_status(&status),
+            verify_cmd: row.try_get("verify_cmd")?,
+            started_at: row
+                .try_get::<Option<i64>, _>("started_at")?
+                .map(codeless_types::UnixMillis),
+            ended_at: row
+                .try_get::<Option<i64>, _>("ended_at")?
+                .map(codeless_types::UnixMillis),
+            session_id: row.try_get("session_id")?,
+        }))
+    }
+
     /// Enqueue a task in `enqueued` state. `lease_holder` /
     /// `lease_expires_at` / `started_at` / `ended_at` are forced to
     /// NULL regardless of what the caller put in the struct — a

@@ -67,6 +67,17 @@ pub struct ClaudeRunnerAdapter {
     /// / "ultrathink") by `ai_runner`. Accepted labels: `low`,
     /// `medium`, `high`. `None` means no prefix.
     pub thinking_budget: Option<String>,
+    /// Claude session id to resume — when `Some`, the upstream
+    /// `claude-wrapper` runs `claude --continue <id>` instead of
+    /// starting a fresh conversation. Used by A0 (intra-stage
+    /// session continuation per SCOPE.md hard rule #1): a
+    /// cost-cap / wall-clock / user-stop interrupting a stage
+    /// captures the session id on the `Stage` row; the user
+    /// resumes via `resume_job` and the next task on that stage
+    /// picks up where the agent left off — same in-context files,
+    /// same half-formed plan — rather than re-deriving from
+    /// scratch. `None` (default) means a fresh session.
+    pub resume_id: Option<String>,
 }
 
 /// Headless default. Codeless's runner has no human at the TTY to
@@ -139,7 +150,18 @@ impl ClaudeRunnerAdapter {
             model: None,
             permission_mode: None,
             thinking_budget: None,
+            resume_id: None,
         }
+    }
+
+    /// Resume the upstream claude session with the given id. The
+    /// wrapper renders `claude --continue <id>`; the agent picks up
+    /// the same conversation rather than re-deriving the codebase.
+    /// Empty string clears back to "fresh session".
+    pub fn with_resume_id(mut self, id: impl Into<String>) -> Self {
+        let s = id.into();
+        self.resume_id = if s.is_empty() { None } else { Some(s) };
+        self
     }
 
     /// Replace the headless default system prompt. Passing an empty
@@ -225,6 +247,7 @@ impl Runner for ClaudeRunnerAdapter {
             // as `Some(...)` and replaces the default.
             permission_mode: Some(self.permission_mode.unwrap_or(PermissionMode::Bypass)),
             thinking_budget: self.thinking_budget.clone(),
+            resume_id: self.resume_id.clone(),
             ..Default::default()
         });
 

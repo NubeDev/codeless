@@ -225,6 +225,37 @@ export class MockRpcClient implements RpcClient {
         return job as RpcResultOf<M>;
       }
 
+      case "resume_job": {
+        const a = args as RpcArgs<"resume_job">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        if (job.status !== "stopped" && job.status !== "failed") {
+          throw new RpcError(
+            "conflict",
+            `job ${a.job_id} is ${job.status}; only stopped or failed jobs are resumable`,
+          );
+        }
+        const costBump = a.additional_cost_cap_cents ?? null;
+        if (costBump != null && costBump > 0) {
+          job.cost_cap_cents = job.cost_cap_cents + costBump;
+        }
+        const wallBump = a.additional_wall_clock_cap_ms ?? null;
+        if (wallBump != null && wallBump > 0) {
+          job.wall_clock_cap_ms = job.wall_clock_cap_ms + wallBump;
+        }
+        const previousReason = job.stop_reason;
+        job.status = "queued";
+        job.stop_reason = null;
+        job.ended_at = null;
+        this.emit({
+          type: "job-resumed",
+          job_id: job.id,
+          previous_reason: previousReason,
+        });
+        this.synthesiseLifecycle(job);
+        return job as RpcResultOf<M>;
+      }
+
       case "stop_job": {
         const a = args as RpcArgs<"stop_job">;
         const job = this.jobs.find((j) => j.id === a.job_id);

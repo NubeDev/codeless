@@ -118,6 +118,17 @@ export interface StartJobArgs {
   job_id: JobId;
 }
 
+// A0 — intra-stage session continuation. Re-queues a terminal-but-
+// recoverable job (Stopped or Failed) so the driver picks it up
+// again, reusing the captured per-stage session id so the next
+// claude task passes `--continue` instead of starting fresh. Both
+// caps are additive on the existing job; null leaves them as-is.
+export interface ResumeJobArgs {
+  job_id: JobId;
+  additional_cost_cap_cents?: number | null;
+  additional_wall_clock_cap_ms?: number | null;
+}
+
 export interface RerunJobArgs {
   source_job_id: JobId;
 }
@@ -339,6 +350,7 @@ export interface RpcMethodMap {
   list_stages: { args: ListStagesArgs; result: ListStagesResult };
   stop_job: { args: StopJobArgs; result: null };
   start_job: { args: StartJobArgs; result: Job };
+  resume_job: { args: ResumeJobArgs; result: Job };
   rerun_job: { args: RerunJobArgs; result: Job };
   gc_worktrees: { args: GcWorktreesArgs; result: GcWorktreesResult };
   job_diff: { args: JobDiffArgs; result: JobDiffResult };

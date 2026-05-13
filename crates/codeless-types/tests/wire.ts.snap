@@ -26,7 +26,27 @@ export type CostCents = number;
  *  linearly, so the wire format does not need a breaking change when
  *  topological scheduling lands later.
  */
-export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-removed"; repo_id: RepoId } | { type: "repo-updated"; repo_id: RepoId } | { type: "job-queued"; job_id: JobId; repo_id: RepoId } | { type: "job-promoted"; job_id: JobId } | { type: "job-started"; job_id: JobId } | { type: "job-completed"; job_id: JobId } | { type: "job-stopped"; job_id: JobId; reason: StopReason } | { type: "job-failed"; job_id: JobId } | { type: "stage-started"; stage_id: StageId; job_id: JobId; 
+export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-removed"; repo_id: RepoId } | { type: "repo-updated"; repo_id: RepoId } | { type: "job-queued"; job_id: JobId; repo_id: RepoId } | { type: "job-promoted"; job_id: JobId } | { type: "job-started"; job_id: JobId } | { type: "job-completed"; job_id: JobId } | { type: "job-stopped"; job_id: JobId; reason: StopReason } | { type: "job-failed"; job_id: JobId } | 
+/**
+ *  User-initiated re-queue of a terminal-but-recoverable job
+ *  (A0 — intra-stage session continuation). The job's branch,
+ *  worktree, and captured per-stage `Stage.session_id` survive;
+ *  the next claude task passes the session id as
+ *  `CliCfg::resume_id` so the agent continues the same
+ *  conversation rather than re-deriving. Distinct from
+ *  `JobPromoted` (which is for `Draft -> Queued`) and `JobQueued`
+ *  (which is for fresh submit) so the dashboard and chat can
+ *  render a "resumed" divider rather than treating it as a new
+ *  run.
+ */
+{ type: "job-resumed"; job_id: JobId; 
+/**
+ *  The reason the job had stopped before the resume. `None`
+ *  when the row had no `stop_reason` recorded (a fresh
+ *  resume of a never-stopped row is a programming error;
+ *  the RPC enforces it).
+ */
+previous_reason?: StopReason | null } | { type: "stage-started"; stage_id: StageId; job_id: JobId; 
 /**
  *  0-based position of this stage in the template's `stages:`
  *  list. Carried on the wire so subscribers can persist

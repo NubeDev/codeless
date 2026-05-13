@@ -9,7 +9,8 @@ use crate::methods::{
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs,
     UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
@@ -47,6 +48,15 @@ pub trait RpcServer: Send + Sync + 'static {
     /// Errors with `Conflict` if the job is not currently in `Draft`,
     /// and `NotFound` for an unknown id.
     async fn start_job(&self, args: StartJobArgs) -> RpcResult<Job>;
+
+    /// Re-queue a terminal-but-recoverable job, reusing its
+    /// per-stage `Stage.session_id` so the next claude invocation
+    /// resumes the same conversation via `--continue`. See SCOPE.md
+    /// hard rule #1 (the stage is the session boundary) and
+    /// `ResumeJobArgs` for the cap-bump semantics. Errors with
+    /// `Conflict` if the job is not in a resumable state (`Stopped`
+    /// or `Failed`), `NotFound` for an unknown id.
+    async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job>;
 
     /// List the stages of a job, each enriched with rolled-up
     /// `cost_cents` (sum over the stage's tasks) and a `task_count`.
