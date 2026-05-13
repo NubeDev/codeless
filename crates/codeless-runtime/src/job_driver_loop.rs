@@ -214,7 +214,10 @@ async fn dispatch<F: RunnerFactory>(
             .template_yaml
             .as_deref()
             .and_then(|yaml| crate::template::JobTemplate::parse_yaml(yaml).ok())
-            .map(|tpl| crate::job_dir::read_docs_for_prompt(&repo_path, &tpl.name))
+            .map(|tpl| match tpl.docs.as_deref() {
+                Some(list) => crate::job_dir::read_docs_ordered(&repo_path, &tpl.name, list),
+                None => crate::job_dir::read_docs_for_prompt(&repo_path, &tpl.name),
+            })
             .filter(|s| !s.is_empty())
             .map(|body| format!("{body}\n"))
             .unwrap_or_default();

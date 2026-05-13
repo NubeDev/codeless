@@ -224,6 +224,7 @@ mod tests {
         JobTemplate {
             name: "t".into(),
             goal: "test goal".into(),
+            docs: None,
             stages: stages.iter().map(|s| (*s).to_string()).collect(),
         }
     }

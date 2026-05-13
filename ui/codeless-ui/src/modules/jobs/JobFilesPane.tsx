@@ -324,6 +324,9 @@ export function JobFilesPane({ jobId }: Props) {
           <StagesEditor
             jobId={jobId}
             templateYaml={job?.template_yaml ?? null}
+            availableDocs={listing.entries
+              .filter((e) => !e.is_template)
+              .map((e) => e.name)}
             onSaved={() => void refresh()}
           />
         ) : selected && selectedEntry ? (
@@ -387,6 +390,10 @@ interface StagesEditorProps {
   // `null` for prompt-only jobs — the editor renders a friendly
   // "not a template-style job" state in that case.
   templateYaml: string | null;
+  // Filenames in the job directory (excluding template.yaml) that
+  // the user can add to the ordered `docs:` list. The picker shows
+  // these in a dropdown filtered by what's not already attached.
+  availableDocs: string[];
   onSaved: () => void;
 }
 
@@ -410,11 +417,21 @@ const mkRow = (title: string, isReview: boolean): StageRow => ({
 // to YAML and round-trips through `update_job_template`, which is
 // the only path that mutates `template.yaml` — `write_job_file`
 // rejects it as reserved.
-function StagesEditor({ jobId, templateYaml, onSaved }: StagesEditorProps) {
+function StagesEditor({
+  jobId,
+  templateYaml,
+  availableDocs,
+  onSaved,
+}: StagesEditorProps) {
   const rpc = useRpc();
   const [seedKey, setSeedKey] = useState<string>("");
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
+  // `null` ⇒ no docs: block in YAML (legacy auto-discover, all *.md
+  // in alpha order). `[]` ⇒ explicit empty (no docs at all). The UI
+  // toggles between the two via a "control docs order" affordance so
+  // both states are reachable from the editor.
+  const [docs, setDocs] = useState<string[] | null>(null);
   const [stages, setStages] = useState<StageRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -423,6 +440,7 @@ function StagesEditor({ jobId, templateYaml, onSaved }: StagesEditorProps) {
     if (templateYaml === null) {
       setName("");
       setGoal("");
+      setDocs(null);
       setStages([]);
       setSeedKey("");
       return;
@@ -431,20 +449,21 @@ function StagesEditor({ jobId, templateYaml, onSaved }: StagesEditorProps) {
     const parsed = parseTemplate(templateYaml);
     setName(parsed.name);
     setGoal(parsed.goal);
+    setDocs(parsed.docs);
     setStages(parsed.stages.map((s) => mkRow(s.title, s.isReview)));
     setSeedKey(templateYaml);
   }, [templateYaml, seedKey]);
 
   const dirty = useMemo(() => {
     if (templateYaml === null) return false;
-    return serialise(name, goal, stages) !== templateYaml;
-  }, [name, goal, stages, templateYaml]);
+    return serialise(name, goal, docs, stages) !== templateYaml;
+  }, [name, goal, docs, stages, templateYaml]);
 
   const onSave = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      const yaml = serialise(name, goal, stages);
+      const yaml = serialise(name, goal, docs, stages);
       await rpc.call("update_job_template", {
         job_id: jobId,
         template_yaml: yaml,
@@ -456,13 +475,14 @@ function StagesEditor({ jobId, templateYaml, onSaved }: StagesEditorProps) {
     } finally {
       setBusy(false);
     }
-  }, [rpc, jobId, name, goal, stages, onSaved]);
+  }, [rpc, jobId, name, goal, docs, stages, onSaved]);
 
   const onDiscard = useCallback(() => {
     if (templateYaml === null) return;
     const parsed = parseTemplate(templateYaml);
     setName(parsed.name);
     setGoal(parsed.goal);
+    setDocs(parsed.docs);
     setStages(parsed.stages.map((s) => mkRow(s.title, s.isReview)));
   }, [templateYaml]);
 
@@ -534,6 +554,12 @@ function StagesEditor({ jobId, templateYaml, onSaved }: StagesEditorProps) {
               disabled={busy}
             />
           </div>
+          <DocsSection
+            docs={docs}
+            setDocs={setDocs}
+            availableDocs={availableDocs}
+            busy={busy}
+          />
           <div>
             <div className="text-muted-foreground mb-1 flex items-center justify-between text-[10px] uppercase">
               <span>stages</span>
@@ -659,6 +685,174 @@ function StagesEditor({ jobId, templateYaml, onSaved }: StagesEditorProps) {
   );
 }
 
+interface DocsSectionProps {
+  docs: string[] | null;
+  setDocs: (next: string[] | null) => void;
+  availableDocs: string[];
+  busy: boolean;
+}
+
+// Docs section of the spec editor. Two distinct states:
+//   - `docs === null`: no `docs:` block in YAML. The runtime falls
+//     back to auto-discover (every .md, SCOPE/WORKFLOW first, rest
+//     alpha). UI shows a hint + a "Control docs order" button that
+//     seeds the list from `availableDocs` so the user can curate.
+//   - `docs === []` or non-empty: explicit ordered list. UI shows
+//     rows with ↑/↓ reorder, × remove, plus a "+ add doc" dropdown
+//     filtered to docs that aren't already attached. A "Reset to
+//     auto" button removes the block entirely (back to `null`).
+function DocsSection({ docs, setDocs, availableDocs, busy }: DocsSectionProps) {
+  if (docs === null) {
+    return (
+      <div className="border-border/40 rounded border border-dashed p-3">
+        <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
+          docs
+        </div>
+        <p className="text-muted-foreground mt-1 text-xs">
+          Auto-discover: every <code>*.md</code> in the job dir is read,
+          SCOPE.md and WORKFLOW.md first, then the rest alphabetically.
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-2 h-6 px-2 text-[10px]"
+          onClick={() => setDocs(autoDiscoverDefault(availableDocs))}
+          disabled={busy}
+        >
+          Control docs order
+        </Button>
+      </div>
+    );
+  }
+
+  const attached = new Set(docs);
+  const addable = availableDocs.filter((n) => !attached.has(n));
+
+  return (
+    <div>
+      <div className="text-muted-foreground mb-1 flex items-center justify-between text-[10px] uppercase">
+        <span>docs (in order)</span>
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground text-[10px] underline-offset-2 hover:underline"
+          onClick={() => setDocs(null)}
+          disabled={busy}
+        >
+          Reset to auto
+        </button>
+      </div>
+      <ul className="space-y-1">
+        {docs.map((d, i) => (
+          <li
+            key={`${d}-${i}`}
+            className="border-border/40 flex items-center gap-1 rounded border px-2 py-1"
+          >
+            <span className="text-muted-foreground w-5 text-right font-mono text-[10px]">
+              {i + 1}.
+            </span>
+            <span className="flex-1 truncate font-mono text-xs">{d}</span>
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground h-7 w-7 text-xs"
+              onClick={() =>
+                setDocs(
+                  i === 0
+                    ? docs
+                    : docs.map((x, j) =>
+                        j === i - 1 ? docs[i] : j === i ? docs[i - 1] : x,
+                      ),
+                )
+              }
+              disabled={busy || i === 0}
+              aria-label="Move up"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground h-7 w-7 text-xs"
+              onClick={() =>
+                setDocs(
+                  i === docs.length - 1
+                    ? docs
+                    : docs.map((x, j) =>
+                        j === i + 1 ? docs[i] : j === i ? docs[i + 1] : x,
+                      ),
+                )
+              }
+              disabled={busy || i === docs.length - 1}
+              aria-label="Move down"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-destructive h-7 w-7 text-xs"
+              onClick={() => setDocs(docs.filter((_, j) => j !== i))}
+              disabled={busy}
+              aria-label="Remove"
+            >
+              ×
+            </button>
+          </li>
+        ))}
+        {docs.length === 0 && (
+          <li className="text-muted-foreground border-border/40 rounded border border-dashed p-3 text-center text-xs italic">
+            No docs attached. The agent will see only the goal + stages.
+          </li>
+        )}
+      </ul>
+      {addable.length > 0 && (
+        <div className="mt-2 flex items-center gap-2">
+          <select
+            className="border-border/60 h-7 rounded border bg-transparent px-2 text-xs"
+            value=""
+            onChange={(e) => {
+              if (e.target.value) setDocs([...docs, e.target.value]);
+            }}
+            disabled={busy}
+          >
+            <option value="">+ add doc</option>
+            {addable.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <span className="text-muted-foreground text-[10px]">
+            choose from files in the Spec pane sidebar
+          </span>
+        </div>
+      )}
+      {availableDocs.length === 0 && (
+        <p className="text-muted-foreground mt-2 text-[10px]">
+          No markdown files in the job dir yet. Use{" "}
+          <em>+ file</em> in the sidebar to add SCOPE.md, WORKFLOW.md, or any
+          design notes.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Default seed for the docs list when the user first clicks "Control
+// docs order". Mirrors the auto-discover order so toggling control on
+// then saving with no further edits is a no-op for the agent.
+function autoDiscoverDefault(available: string[]): string[] {
+  const md = available.filter((n) => /\.md$/i.test(n));
+  const scope = md.find((n) => n.toLowerCase() === "scope.md");
+  const workflow = md.find((n) => n.toLowerCase() === "workflow.md");
+  const rest = md.filter(
+    (n) => n.toLowerCase() !== "scope.md" && n.toLowerCase() !== "workflow.md",
+  );
+  rest.sort();
+  const out: string[] = [];
+  if (scope) out.push(scope);
+  if (workflow) out.push(workflow);
+  out.push(...rest);
+  return out;
+}
+
 interface ParsedStage {
   title: string;
   isReview: boolean;
@@ -667,6 +861,10 @@ interface ParsedStage {
 interface ParsedSpec {
   name: string;
   goal: string;
+  // `null` ⇒ no `docs:` block in the YAML at all (legacy auto-discover
+  // behaviour). `[]` ⇒ explicit empty list (no docs flow to the agent).
+  // Both meanings are user-visible so we don't collapse them on parse.
+  docs: string[] | null;
   stages: ParsedStage[];
 }
 
@@ -677,6 +875,7 @@ interface ParsedSpec {
 function parseTemplate(yaml: string): ParsedSpec {
   const name = /^\s*name\s*:\s*(.+?)\s*$/m.exec(yaml)?.[1] ?? "";
   const goal = /^\s*goal\s*:\s*(.+?)\s*$/m.exec(yaml)?.[1] ?? "";
+  const docs = parseListBlock(yaml, "docs");
   const stages: ParsedStage[] = [];
   const stagesIdx = yaml.search(/^\s*stages\s*:\s*$/m);
   if (stagesIdx >= 0) {
@@ -698,15 +897,63 @@ function parseTemplate(yaml: string): ParsedSpec {
       if (/^\S/.test(raw)) break;
     }
   }
-  return { name, goal, stages };
+  return { name, goal, docs, stages };
+}
+
+// Pull a single-level YAML list out of the template by key. Returns
+// `null` when the key is absent (so the caller can distinguish "no
+// docs block" from "empty docs block"). Stops at the first top-level
+// key after the block, identical to the stages parser.
+function parseListBlock(yaml: string, key: string): string[] | null {
+  const headRe = new RegExp(`^\\s*${key}\\s*:\\s*(.*)$`, "m");
+  const m = headRe.exec(yaml);
+  if (!m) return null;
+  // Inline form: `docs: []` or `docs: [a, b]`
+  const inline = m[1].trim();
+  if (inline.startsWith("[") && inline.endsWith("]")) {
+    const body = inline.slice(1, -1).trim();
+    if (body === "") return [];
+    return body
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
+  if (inline !== "") return null;
+  // Block form: lines that follow until the next top-level key.
+  const after = yaml.slice(yaml.indexOf(m[0]) + m[0].length).split("\n").slice(1);
+  const out: string[] = [];
+  for (const raw of after) {
+    const item = raw.match(/^\s*-\s+(.*)$/);
+    if (item) {
+      out.push(item[1].trim());
+      continue;
+    }
+    if (raw.trim() === "") continue;
+    if (/^\S/.test(raw)) break;
+  }
+  return out;
 }
 
 // Inverse of `parseTemplate`. Keeps the YAML stable across save
 // round-trips so the dirty check (`current === templateYaml`) is
 // meaningful — same field order, same quoting (none, lines are
 // authored as raw scalars).
-function serialise(name: string, goal: string, stages: StageRow[]): string {
-  const lines = [`name: ${name}`, `goal: ${goal}`, "stages:"];
+function serialise(
+  name: string,
+  goal: string,
+  docs: string[] | null,
+  stages: StageRow[],
+): string {
+  const lines = [`name: ${name}`, `goal: ${goal}`];
+  if (docs !== null) {
+    if (docs.length === 0) {
+      lines.push("docs: []");
+    } else {
+      lines.push("docs:");
+      for (const d of docs) lines.push(`  - ${d.trim()}`);
+    }
+  }
+  lines.push("stages:");
   for (const s of stages) {
     const t = s.title.trim();
     const prefix = s.isReview ? (t.length > 0 ? "REVIEW " : "REVIEW") : "";

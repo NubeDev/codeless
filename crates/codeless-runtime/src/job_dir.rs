@@ -224,6 +224,55 @@ pub fn read_docs_for_prompt(repo: &Path, name: &str) -> String {
     out
 }
 
+/// Build the `# Job docs` prompt section, but in the user-controlled
+/// order given by `docs`. Each entry is a basename relative to
+/// `<repo>/.codeless/jobs/<name>/`; missing files are skipped without
+/// erroring (the user is asserting "include these if present", not
+/// "fail if absent"). Read failures are skipped the same way as in
+/// the auto-discover path.
+///
+/// Section headings are case-aware: a SCOPE.md entry renders under
+/// `## Scope`, WORKFLOW.md under `## Workflow`, everything else under
+/// `## <filename>` so the agent sees the original casing.
+pub fn read_docs_ordered(repo: &Path, name: &str, docs: &[String]) -> String {
+    let dir = directory_path(repo, name);
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for raw in docs {
+        let trimmed = raw.trim();
+        if trimmed.is_empty()
+            || trimmed.contains('/')
+            || trimmed.contains('\\')
+            || trimmed.starts_with('.')
+            || trimmed.split('.').any(|seg| seg == "..")
+        {
+            continue;
+        }
+        let path = dir.join(trimmed);
+        if let Ok(body) = fs::read_to_string(&path) {
+            entries.push((trimmed.to_string(), body));
+        }
+    }
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("# Job docs\n");
+    for (base, body) in entries {
+        let lower = base.to_ascii_lowercase();
+        let heading = if lower == "scope.md" {
+            "Scope".to_string()
+        } else if lower == "workflow.md" {
+            "Workflow".to_string()
+        } else {
+            base
+        };
+        out.push_str(&format!("\n## {heading}\n\n"));
+        out.push_str(body.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +351,53 @@ mod tests {
             Err(FilenameError::ReservedTemplateYaml),
         );
         assert_eq!(sanitise_filename("   "), Err(FilenameError::Empty));
+    }
+
+    #[test]
+    fn read_docs_ordered_honours_explicit_order_and_skips_missing() {
+        let tmp = TempDir::new().unwrap();
+        let dir = directory_path(tmp.path(), "alpha");
+        touch(&dir.join("SCOPE.md"), "scope-body");
+        touch(&dir.join("design.md"), "design-body");
+        touch(&dir.join("WORKFLOW.md"), "workflow-body");
+        // Order is design → workflow → scope → ghost (missing).
+        let docs = vec![
+            "design.md".to_string(),
+            "WORKFLOW.md".to_string(),
+            "SCOPE.md".to_string(),
+            "ghost.md".to_string(),
+        ];
+        let out = read_docs_ordered(tmp.path(), "alpha", &docs);
+        let design_at = out.find("design-body").expect("design present");
+        let workflow_at = out.find("workflow-body").expect("workflow present");
+        let scope_at = out.find("scope-body").expect("scope present");
+        assert!(
+            design_at < workflow_at && workflow_at < scope_at,
+            "order wrong: {out}"
+        );
+        assert!(!out.contains("ghost.md"), "missing file leaked into output");
+        // SCOPE.md still renders under `## Scope`, casing-aware.
+        assert!(out.contains("## Scope"), "scope heading missing");
+        assert!(out.contains("## Workflow"), "workflow heading missing");
+        assert!(out.contains("## design.md"), "design heading missing");
+    }
+
+    #[test]
+    fn read_docs_ordered_rejects_traversal_and_dotfiles() {
+        let tmp = TempDir::new().unwrap();
+        let dir = directory_path(tmp.path(), "alpha");
+        touch(&dir.join("SCOPE.md"), "ok");
+        let docs = vec![
+            "../escape.md".to_string(),
+            ".env".to_string(),
+            "nested/path.md".to_string(),
+            "SCOPE.md".to_string(),
+        ];
+        let out = read_docs_ordered(tmp.path(), "alpha", &docs);
+        assert!(out.contains("## Scope"));
+        assert!(!out.contains("escape"));
+        assert!(!out.contains(".env"));
+        assert!(!out.contains("nested"));
     }
 
     #[test]

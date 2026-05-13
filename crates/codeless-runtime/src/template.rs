@@ -35,6 +35,18 @@ pub struct JobTemplate {
     /// AND its commit subject when the stage lands successfully.
     /// `REVIEW`-prefixed entries are gate stages.
     pub stages: Vec<String>,
+    /// Ordered list of job-dir filenames the agent reads as context
+    /// before each stage. `None` means "every `.md` in the job dir,
+    /// SCOPE.md first, then WORKFLOW.md, then the rest in alphabetical
+    /// order" — the legacy auto-discover behaviour. `Some([...])`
+    /// pins the exact order and set; entries that don't exist on disk
+    /// are skipped silently (the agent is best-effort about doc
+    /// inclusion, not a build gate).
+    ///
+    /// Filenames are basenames only — same sanitisation rules as
+    /// `write_job_file`. Nothing outside `.codeless/jobs/<name>/`.
+    #[serde(default)]
+    pub docs: Option<Vec<String>>,
 }
 
 impl JobTemplate {
@@ -127,6 +139,7 @@ stages:
         let t = JobTemplate {
             name: "x".into(),
             goal: "x".into(),
+            docs: None,
             stages: vec![
                 "do thing".into(),
                 "REVIEW the result".into(),
