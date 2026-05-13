@@ -123,8 +123,8 @@ pub async fn drive_job(
     let Some(current) = store.get_job(job_id).await.map_err(db_err)? else {
         return Err(RpcError::NotFound(format!("job {job_id}")));
     };
-    if is_terminal_job(current.status) {
-        tracing::info!(status = ?current.status, "runner returned after stop");
+    if is_terminal_job(current.status) || current.status == JobStatus::Paused {
+        tracing::info!(status = ?current.status, "runner returned after stop or pause");
         // Worktree is intentionally left on disk. SCOPE.md "Crash
         // recovery": "Worktrees: a job whose task crashed leaves its
         // worktree on disk. The reaper either preserves it (default —
@@ -133,6 +133,11 @@ pub async fn drive_job(
         // work." The user-driven cleanup path (a future
         // `gc_worktrees` RPC + UI button) reaps; the driver never
         // does. `worktree_path` on the job row still points at it.
+        //
+        // `Paused` lands here when the cap-watcher paused the job
+        // mid-stage (resumable via `resume_job`); the row + branch +
+        // captured `Stage.session_id` all survive for the resume
+        // path.
         return Ok(());
     }
 
@@ -328,13 +333,29 @@ async fn watch_caps(
             }
         };
         if let Some(reason) = stop_reason {
-            fire_stop(&store, &bus, job_id, reason, &cancel).await;
+            fire_pause_or_stop(&store, &bus, job_id, reason, &cancel).await;
             return;
         }
     }
 }
 
-async fn fire_stop(
+/// When a cap trips mid-stage, decide whether the job is resumable
+/// (any stage on this job has a captured `Stage.session_id` — the
+/// claude wrapper can `--continue` from it) or terminal (no session
+/// captured anywhere, so a fresh session would be the only path
+/// forward, which is what `Stopped` semantics already mean).
+///
+/// Resumable -> `Paused` + `JobPaused` event. The row stays
+/// non-terminal; `resume_job` accepts it. The user's recovery is
+/// "raise the cap and click resume."
+///
+/// Non-resumable -> today's behaviour: `Stopped` + `JobStopped`.
+/// The user's recovery is "re-run from scratch."
+///
+/// `is_terminal_job` and the cancellation token semantics are
+/// unchanged for both paths — the runner sees a cancellation and
+/// exits regardless.
+async fn fire_pause_or_stop(
     store: &Arc<SqliteStore>,
     bus: &Arc<EventBus>,
     job_id: JobId,
@@ -345,28 +366,52 @@ async fn fire_stop(
         cancel.cancel();
         return;
     };
-    if is_terminal_job(job.status) {
+    if is_terminal_job(job.status) || job.status == JobStatus::Paused {
         cancel.cancel();
         return;
     }
+    let resumable = has_captured_session(store, job_id).await;
     let ended = now_ms();
-    job.status = JobStatus::Stopped;
     job.stop_reason = Some(reason);
     job.ended_at = Some(ended);
+    if resumable {
+        job.status = JobStatus::Paused;
+    } else {
+        job.status = JobStatus::Stopped;
+    }
     if let Err(e) = store.update_job(&job).await {
         tracing::warn!(error = %e, "cap watcher: update_job failed");
     }
+    let event = if resumable {
+        Event::JobPaused { job_id, reason }
+    } else {
+        Event::JobStopped { job_id, reason }
+    };
     if let Err(e) = bus
-        .publish(
-            Some(job_id),
-            None,
-            None,
-            Event::JobStopped { job_id, reason },
-            ended,
-        )
+        .publish(Some(job_id), None, None, event, ended)
         .await
     {
-        tracing::warn!(error = %e, "cap watcher: publish JobStopped failed");
+        tracing::warn!(
+            error = %e,
+            resumable,
+            "cap watcher: publish JobPaused/JobStopped failed"
+        );
     }
     cancel.cancel();
+}
+
+/// True when any stage on this job has captured a runner session
+/// id — `Stage.session_id IS NOT NULL`. The list query is cheap
+/// (a single SELECT scoped to one job's stages); avoiding a
+/// targeted `WHERE session_id IS NOT NULL` keeps the SqliteStore
+/// surface area smaller without hurting the cap-watcher's hot path
+/// (the watcher only fires once per cap trip).
+async fn has_captured_session(store: &Arc<SqliteStore>, job_id: JobId) -> bool {
+    match store.list_stages_for_job(job_id).await {
+        Ok(stages) => stages.iter().any(|s| s.stage.session_id.is_some()),
+        Err(e) => {
+            tracing::warn!(error = %e, "cap watcher: list_stages_for_job failed; falling back to stop");
+            false
+        }
+    }
 }

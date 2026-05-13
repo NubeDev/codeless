@@ -23,6 +23,14 @@ pub enum JobStatus {
     Completed,
     Failed,
     Stopped,
+    /// User has paused, or a cap tripped on a resumable stage —
+    /// the agent's captured `Stage.session_id` is the resume
+    /// handle. Distinct from `Stopped`: a paused row is *expected*
+    /// to be resumed; a stopped row is the user saying "I'm done."
+    /// `resume_job` accepts both. See SCOPE.md hard rule #1
+    /// (the stage is the session boundary; within a stage the
+    /// runner session is continuous).
+    Paused,
 }
 
 /// Why a job left the running set early. `None` while running or after a

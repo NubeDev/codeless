@@ -58,6 +58,17 @@ pub enum Event {
     JobStopped { job_id: JobId, reason: StopReason },
     #[serde(rename = "job-failed")]
     JobFailed { job_id: JobId },
+    /// Job moved from `Running` (or `AwaitingReview`) to `Paused`.
+    /// Distinct from `JobStopped`: a paused row is *expected* to
+    /// be resumed via `resume_job`; the captured per-stage
+    /// `Stage.session_id` is the resume handle. Emitted by the
+    /// cap-watcher when a cost/wall-clock cap trips on a stage
+    /// that has a captured session id (resumable) and by the
+    /// `pause_job` RPC. The `reason` distinguishes user intent
+    /// from cap-tripped pauses so dashboards and chat dividers
+    /// can render the right copy.
+    #[serde(rename = "job-paused")]
+    JobPaused { job_id: JobId, reason: StopReason },
     /// User-initiated re-queue of a terminal-but-recoverable job
     /// (A0 — intra-stage session continuation). The job's branch,
     /// worktree, and captured per-stage `Stage.session_id` survive;

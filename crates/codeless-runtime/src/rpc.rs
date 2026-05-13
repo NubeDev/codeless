@@ -421,10 +421,13 @@ impl RpcServer for InProcessRpc {
             .await
             .map_err(db_err)?
             .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
-        if !matches!(job.status, JobStatus::Stopped | JobStatus::Failed) {
+        if !matches!(
+            job.status,
+            JobStatus::Stopped | JobStatus::Failed | JobStatus::Paused
+        ) {
             return Err(RpcError::Conflict(format!(
-                "job {} is {:?}; only Stopped or Failed jobs are resumable. \
-                 Use stop_job first to interrupt a running job.",
+                "job {} is {:?}; only Stopped, Failed, or Paused jobs are \
+                 resumable. Use stop_job or pause_job to interrupt a running job.",
                 job.id, job.status
             )));
         }

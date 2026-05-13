@@ -830,6 +830,7 @@ fn job_status_label(s: JobStatus) -> &'static str {
         JobStatus::Completed => "completed",
         JobStatus::Failed => "failed",
         JobStatus::Stopped => "stopped",
+        JobStatus::Paused => "paused",
     }
 }
 
@@ -842,6 +843,7 @@ fn parse_job_status(s: &str) -> sqlx::Result<JobStatus> {
         "completed" => JobStatus::Completed,
         "failed" => JobStatus::Failed,
         "stopped" => JobStatus::Stopped,
+        "paused" => JobStatus::Paused,
         other => {
             return Err(sqlx::Error::Decode(
                 format!("unknown job status: {other}").into(),

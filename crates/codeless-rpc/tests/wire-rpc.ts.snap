@@ -454,7 +454,17 @@ export type JobId = string;
  *  `start_immediately = true`) to promote `Draft → Queued`. From
  *  there the lifecycle is unchanged.
  */
-export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped";
+export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped" | 
+/**
+ *  User has paused, or a cap tripped on a resumable stage —
+ *  the agent's captured `Stage.session_id` is the resume
+ *  handle. Distinct from `Stopped`: a paused row is *expected*
+ *  to be resumed; a stopped row is the user saying "I'm done."
+ *  `resume_job` accepts both. See SCOPE.md hard rule #1
+ *  (the stage is the session boundary; within a stage the
+ *  runner session is continuous).
+ */
+"paused";
 
 /**
  *  Arguments for `list_job_files`. The runtime resolves `job_id` to

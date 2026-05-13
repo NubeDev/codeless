@@ -205,6 +205,18 @@ export type CostCents = number;
  */
 export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-removed"; repo_id: RepoId } | { type: "repo-updated"; repo_id: RepoId } | { type: "job-queued"; job_id: JobId; repo_id: RepoId } | { type: "job-promoted"; job_id: JobId } | { type: "job-started"; job_id: JobId } | { type: "job-completed"; job_id: JobId } | { type: "job-stopped"; job_id: JobId; reason: StopReason } | { type: "job-failed"; job_id: JobId } | 
 /**
+ *  Job moved from `Running` (or `AwaitingReview`) to `Paused`.
+ *  Distinct from `JobStopped`: a paused row is *expected* to
+ *  be resumed via `resume_job`; the captured per-stage
+ *  `Stage.session_id` is the resume handle. Emitted by the
+ *  cap-watcher when a cost/wall-clock cap trips on a stage
+ *  that has a captured session id (resumable) and by the
+ *  `pause_job` RPC. The `reason` distinguishes user intent
+ *  from cap-tripped pauses so dashboards and chat dividers
+ *  can render the right copy.
+ */
+{ type: "job-paused"; job_id: JobId; reason: StopReason } | 
+/**
  *  User-initiated re-queue of a terminal-but-recoverable job
  *  (A0 — intra-stage session continuation). The job's branch,
  *  worktree, and captured per-stage `Stage.session_id` survive;
@@ -510,7 +522,17 @@ export type JobId = string;
  *  `start_immediately = true`) to promote `Draft → Queued`. From
  *  there the lifecycle is unchanged.
  */
-export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped";
+export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped" | 
+/**
+ *  User has paused, or a cap tripped on a resumable stage —
+ *  the agent's captured `Stage.session_id` is the resume
+ *  handle. Distinct from `Stopped`: a paused row is *expected*
+ *  to be resumed; a stopped row is the user saying "I'm done."
+ *  `resume_job` accepts both. See SCOPE.md hard rule #1
+ *  (the stage is the session boundary; within a stage the
+ *  runner session is continuous).
+ */
+"paused";
 
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.

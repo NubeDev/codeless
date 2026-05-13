@@ -62,7 +62,17 @@ pub fn transition_job(from: JobStatus, to: JobStatus) -> Result<(), TransitionEr
             // failed rather than stopped depending on cancel ordering)
             // is also resumable.
             | (Stopped, Queued)
-            | (Failed, Queued),
+            | (Failed, Queued)
+            // Pause paths (user-initiated `pause_job`, or cap-watcher
+            // pausing instead of stopping when the stage has a
+            // captured `Stage.session_id`). A paused job is expected
+            // to be resumed; it is NOT a terminal state. Resume goes
+            // back through `Queued` so the driver re-picks it up via
+            // the same loop as a fresh submit.
+            | (Running, Paused)
+            | (AwaitingReview, Paused)
+            | (Paused, Queued)
+            | (Paused, Stopped),
     );
     if ok {
         Ok(())
