@@ -13,7 +13,6 @@ use tokio::select;
 
 use crate::ctx::ToolCtx;
 use crate::error::ToolError;
-use crate::policy::NetworkMode;
 use crate::tool::Tool;
 
 /// Maximum response body kept in memory. Chosen to roughly match
@@ -75,25 +74,10 @@ impl Tool for BrowseFetchTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::invalid_args("missing 'url'"))?;
 
-        let host = url_host(url).ok_or_else(|| ToolError::invalid_args("URL has no host"))?;
+        let host =
+            super::url_host(url).ok_or_else(|| ToolError::invalid_args("URL has no host"))?;
 
-        match ctx.network_mode() {
-            NetworkMode::None => {
-                return Err(ToolError::denied(format!(
-                    "network disabled; cannot fetch '{}'",
-                    url
-                )));
-            }
-            NetworkMode::Allowlist => {
-                if !ctx.allowlist().allows(&host) {
-                    return Err(ToolError::denied(format!(
-                        "host '{}' not in allowlist",
-                        host
-                    )));
-                }
-            }
-            NetworkMode::Open => {}
-        }
+        super::check_network_policy(ctx, &host, url)?;
 
         if ctx.is_cancelled() {
             return Err(ToolError::Cancelled);
@@ -142,30 +126,6 @@ impl Tool for BrowseFetchTool {
     }
 }
 
-/// Extract the host portion of a URL.
-///
-/// Pulled out of the older moxxy `url_policy::extract_host`. Kept
-/// stdlib-only to avoid a `url` crate dep for one function — the
-/// matching rules (exact host, no scheme, no port) match
-/// `AllowlistFile::allows` semantics.
-fn url_host(url: &str) -> Option<String> {
-    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    let host_with_port = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    let host = host_with_port
-        .split('@')
-        .next_back()
-        .unwrap_or(host_with_port);
-    let host = host.split(':').next().unwrap_or(host);
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_string())
-    }
-}
-
 fn build_browser_client(timeout: Duration) -> Result<reqwest::Client, reqwest::Error> {
     use reqwest::header::{self, HeaderMap, HeaderValue};
 
@@ -191,31 +151,4 @@ fn build_browser_client(timeout: Duration) -> Result<reqwest::Client, reqwest::E
         .default_headers(headers)
         .cookie_store(true)
         .build()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn url_host_strips_scheme_path_port_and_userinfo() {
-        assert_eq!(
-            url_host("https://example.com/foo"),
-            Some("example.com".into())
-        );
-        assert_eq!(
-            url_host("http://example.com:8080"),
-            Some("example.com".into())
-        );
-        assert_eq!(
-            url_host("https://user:pw@example.com/foo"),
-            Some("example.com".into())
-        );
-        assert_eq!(
-            url_host("https://example.com?q=1#frag"),
-            Some("example.com".into())
-        );
-        assert_eq!(url_host("example.com/foo"), Some("example.com".into()));
-        assert_eq!(url_host(""), None);
-    }
 }
