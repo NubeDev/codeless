@@ -44,7 +44,7 @@ Format: `[ ] N. [S|M|L] title` — complexity tag mandatory.
        Cap each section by `MAX_CHAT_SPEC_BYTES`; the new history fold gets
        its own byte cap (independent of the per-file cap already in
        `truncate_for_chat`).
-- [ ] 3. [S] Tests: unit tests for the new fold (empty refs / spec-only /
+- [x] 3. [S] Tests: unit tests for the new fold (empty refs / spec-only /
        history-only / spec+history / over-budget truncation /
        cross-repo rejection).
 - [ ] 4. [M] UI: add an "attach job" button next to "attach" in `RunPane.tsx`.

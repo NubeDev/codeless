@@ -333,9 +333,7 @@ pub(super) async fn load_chat_job_refs(
         return Ok(None);
     }
     let active_repo_id = active_repo_id.ok_or_else(|| {
-        RpcError::InvalidArgument(
-            "job_refs require chat to be scoped to a real job".to_owned(),
-        )
+        RpcError::InvalidArgument("job_refs require chat to be scoped to a real job".to_owned())
     })?;
 
     let mut out = String::from("## Referenced jobs\n\n");
@@ -345,7 +343,9 @@ pub(super) async fn load_chat_job_refs(
             .get_job(r.job_id)
             .await
             .map_err(super::db_err)?
-            .ok_or_else(|| RpcError::InvalidArgument(format!("referenced job {} not found", r.job_id)))?;
+            .ok_or_else(|| {
+                RpcError::InvalidArgument(format!("referenced job {} not found", r.job_id))
+            })?;
         if job.repo_id != active_repo_id {
             return Err(RpcError::InvalidArgument(format!(
                 "referenced job {} is in a different repo from the active job",
@@ -366,8 +366,13 @@ pub(super) async fn load_chat_job_refs(
         if r.include_spec {
             if let Some(repo) = rpc.store.get_repo(job.repo_id).await.ok().flatten() {
                 if let Ok(template) = JobTemplate::parse_yaml(template_yaml) {
-                    let section =
-                        render_job_spec_section(&job, &template, template_yaml, &repo.local_path, false);
+                    let section = render_job_spec_section(
+                        &job,
+                        &template,
+                        template_yaml,
+                        &repo.local_path,
+                        false,
+                    );
                     out.push_str(&section);
                 } else {
                     out.push_str("_(spec unavailable: job has no parseable template)_\n\n");
@@ -672,3 +677,267 @@ const MAX_CHAT_HISTORY_BYTES: usize = 4 * 1024;
 /// usually enough to characterise "what is this job up to" without
 /// pulling in the entire conversation.
 const DEFAULT_REF_HISTORY_TURN_LIMIT: u32 = 5;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codeless_rpc::{AddRepoArgs, ChatContext, JobContextRef, RpcServer, SubmitJobArgs};
+    use codeless_types::{GitAuth, JobId};
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    const TEMPLATE_A: &str = "name: alpha\ngoal: g\nstages:\n  - one\n";
+    const TEMPLATE_B: &str = "name: bravo\ngoal: g\nstages:\n  - one\n";
+
+    fn init_git_repo(dir: &std::path::Path) {
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "test@example.com"][..],
+            &["config", "user.name", "test"][..],
+            &["commit", "--allow-empty", "-q", "-m", "root"][..],
+        ] {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args.iter().copied())
+                .output()
+                .expect("spawn git");
+            assert!(out.status.success(), "git {args:?}: {:?}", out);
+        }
+    }
+
+    async fn submit_seed(
+        rpc: &InProcessRpc,
+        repo_id: codeless_types::RepoId,
+        template_yaml: &str,
+        branch: &str,
+    ) -> JobId {
+        let job = rpc
+            .submit_job(SubmitJobArgs {
+                repo_id,
+                prompt: None,
+                template_yaml: Some(template_yaml.into()),
+                runner: "mock".into(),
+                branch: branch.into(),
+                workspace_mode: Some(codeless_types::WorkspaceMode::Worktree),
+                cost_cap_cents: 0,
+                wall_clock_cap_ms: 0,
+                model: None,
+                permission_mode: None,
+                effort: None,
+                start_immediately: true,
+            })
+            .await
+            .unwrap();
+        job.id
+    }
+
+    async fn add_repo(
+        rpc: &InProcessRpc,
+        name: &str,
+        dir: &std::path::Path,
+    ) -> codeless_types::Repo {
+        rpc.add_repo(AddRepoArgs {
+            name: name.into(),
+            clone_url: format!("https://example.test/{name}.git"),
+            default_branch: "main".into(),
+            local_path: dir.to_string_lossy().into_owned(),
+            git_auth: GitAuth::Token {
+                env_var: "GITHUB_TOKEN".into(),
+            },
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn build_chat_prompt_passes_through_when_nothing_set() {
+        let out = build_chat_prompt(None, None, None, ChatMode::Work, "hello");
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn build_chat_prompt_includes_refs_block_after_spec() {
+        let ctx = ChatContext::default();
+        let out = build_chat_prompt(
+            Some(&ctx),
+            Some("ACTIVE SPEC"),
+            Some("REFS BLOCK"),
+            ChatMode::Work,
+            "do thing",
+        );
+        let active_at = out.find("ACTIVE SPEC").expect("active spec rendered");
+        let refs_at = out.find("REFS BLOCK").expect("refs rendered");
+        let req_at = out.find("# Request").expect("request header rendered");
+        assert!(active_at < refs_at, "refs should follow active spec");
+        assert!(refs_at < req_at, "refs should precede the user request");
+        assert!(out.ends_with("do thing"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_refs_empty_returns_none() {
+        let rpc = InProcessRpc::new().await.unwrap();
+        let out = load_chat_job_refs(&rpc, None, &[]).await.unwrap();
+        assert!(out.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_refs_without_active_repo_is_rejected() {
+        let rpc = InProcessRpc::new().await.unwrap();
+        let err = load_chat_job_refs(
+            &rpc,
+            None,
+            &[JobContextRef {
+                job_id: JobId::new(),
+                include_spec: true,
+                include_history: false,
+                history_turn_limit: None,
+            }],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidArgument(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_refs_cross_repo_rejected() {
+        let tmp_a = TempDir::new().unwrap();
+        let tmp_b = TempDir::new().unwrap();
+        init_git_repo(tmp_a.path());
+        init_git_repo(tmp_b.path());
+
+        let rpc = InProcessRpc::new().await.unwrap();
+        let repo_a = add_repo(&rpc, "alpha", tmp_a.path()).await;
+        let repo_b = add_repo(&rpc, "bravo", tmp_b.path()).await;
+        let _job_a = submit_seed(&rpc, repo_a.id, TEMPLATE_A, "codeless/job-a").await;
+        let job_b = submit_seed(&rpc, repo_b.id, TEMPLATE_B, "codeless/job-b").await;
+
+        let err = load_chat_job_refs(
+            &rpc,
+            Some(repo_a.id),
+            &[JobContextRef {
+                job_id: job_b,
+                include_spec: true,
+                include_history: false,
+                history_turn_limit: None,
+            }],
+        )
+        .await
+        .unwrap_err();
+        match err {
+            RpcError::InvalidArgument(m) => assert!(m.contains("different repo"), "msg: {m}"),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_refs_spec_only_renders_section() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path());
+        let rpc = InProcessRpc::new().await.unwrap();
+        let repo = add_repo(&rpc, "demo", tmp.path()).await;
+        let job_a = submit_seed(&rpc, repo.id, TEMPLATE_A, "codeless/job-a").await;
+        let _job_b = submit_seed(&rpc, repo.id, TEMPLATE_B, "codeless/job-b").await;
+
+        let out = load_chat_job_refs(
+            &rpc,
+            Some(repo.id),
+            &[JobContextRef {
+                job_id: job_a,
+                include_spec: true,
+                include_history: false,
+                history_turn_limit: None,
+            }],
+        )
+        .await
+        .unwrap()
+        .expect("ref block present");
+        assert!(out.contains("## Referenced jobs"));
+        assert!(out.contains("alpha"));
+        assert!(out.contains("template.yaml"));
+        assert!(!out.contains("Recent activity"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_refs_history_only_renders_recent_activity_header() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path());
+        let rpc = InProcessRpc::new().await.unwrap();
+        let repo = add_repo(&rpc, "demo", tmp.path()).await;
+        let job_a = submit_seed(&rpc, repo.id, TEMPLATE_A, "codeless/job-a").await;
+
+        let out = load_chat_job_refs(
+            &rpc,
+            Some(repo.id),
+            &[JobContextRef {
+                job_id: job_a,
+                include_spec: false,
+                include_history: true,
+                history_turn_limit: Some(5),
+            }],
+        )
+        .await
+        .unwrap()
+        .expect("ref block present");
+        assert!(out.contains("Recent activity"));
+        assert!(!out.contains("template.yaml"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_refs_spec_and_history_render_both() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path());
+        let rpc = InProcessRpc::new().await.unwrap();
+        let repo = add_repo(&rpc, "demo", tmp.path()).await;
+        let job_a = submit_seed(&rpc, repo.id, TEMPLATE_A, "codeless/job-a").await;
+
+        let out = load_chat_job_refs(
+            &rpc,
+            Some(repo.id),
+            &[JobContextRef {
+                job_id: job_a,
+                include_spec: true,
+                include_history: true,
+                history_turn_limit: None,
+            }],
+        )
+        .await
+        .unwrap()
+        .expect("ref block present");
+        assert!(out.contains("template.yaml"));
+        assert!(out.contains("Recent activity"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_refs_truncates_oversized_spec_file() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path());
+        let rpc = InProcessRpc::new().await.unwrap();
+        let repo = add_repo(&rpc, "demo", tmp.path()).await;
+        let job_a = submit_seed(&rpc, repo.id, TEMPLATE_A, "codeless/job-a").await;
+
+        let scope_path = tmp.path().join(".codeless/jobs/alpha/SCOPE.md");
+        let mut huge = String::with_capacity(MAX_CHAT_SPEC_BYTES * 2);
+        while huge.len() < MAX_CHAT_SPEC_BYTES * 2 {
+            huge.push_str("padding line that is longer than zero bytes\n");
+        }
+        std::fs::write(&scope_path, &huge).unwrap();
+
+        let out = load_chat_job_refs(
+            &rpc,
+            Some(repo.id),
+            &[JobContextRef {
+                job_id: job_a,
+                include_spec: true,
+                include_history: false,
+                history_turn_limit: None,
+            }],
+        )
+        .await
+        .unwrap()
+        .expect("ref block present");
+        assert!(out.contains("truncated for chat preamble"));
+    }
+}
