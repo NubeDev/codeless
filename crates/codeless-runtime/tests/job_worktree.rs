@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{AddRepoArgs, RpcServer, SubmitJobArgs};
 use codeless_runtime::{drive_job, InProcessRpc, Runner, RunnerContext, RunnerOutcome};
-use codeless_types::{GitAuth, JobStatus};
+use codeless_types::{GitAuth, JobStatus, WorkspaceMode};
 use parking_lot::Mutex;
 use tempfile::TempDir;
 
@@ -109,7 +109,7 @@ async fn submit(rpc: &InProcessRpc, repo_path: &Path) -> codeless_types::JobId {
         template_yaml: None,
         runner: "mock".into(),
         branch: "codeless/job-wt".into(),
-        workspace_mode: None,
+        workspace_mode: Some(WorkspaceMode::Worktree),
         cost_cap_cents: 500,
         wall_clock_cap_ms: 60_000,
         model: None,

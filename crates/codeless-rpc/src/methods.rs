@@ -749,6 +749,30 @@ pub struct ChatContext {
     /// UI is responsible for ordering.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_prompts: Vec<UserPromptSnippet>,
+    /// Other jobs the user wants folded into this turn's preamble.
+    /// Each entry opts into the referenced job's spec files and/or
+    /// recent history snapshot. Restricted server-side to refs whose
+    /// repo matches the active job's — cross-repo refs return
+    /// `InvalidArgument`. Additive: an empty vec preserves the
+    /// pre-`job_refs` preamble shape exactly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub job_refs: Vec<JobContextRef>,
+}
+
+/// One referenced job folded into the chat preamble. Toggles let the
+/// caller pick a spec-only attach (cheap, useful for "what is job B
+/// trying to do"), a history-only attach (cheap-ish, useful for "what
+/// has job B actually done lately"), or both. `history_turn_limit`
+/// bounds the walk before rendering so a long-running job doesn't
+/// silently blow the per-section byte budget on the runtime side.
+/// `None` means "use the runtime default".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobContextRef {
+    pub job_id: JobId,
+    pub include_spec: bool,
+    pub include_history: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_turn_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]

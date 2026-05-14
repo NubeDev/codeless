@@ -1008,6 +1008,21 @@ export function JobChat({
   const [attachments, setAttachments] = useState<
     Array<{ filename: string; relativePath: string; mimeType?: string }>
   >([]);
+  // Other jobs the user has attached as preamble context. Persisted
+  // across the conversation — re-asking a follow-up about the same
+  // referenced job should not require re-attaching it — and dropped
+  // only when the user removes a chip explicitly. Mirrors the runtime
+  // `JobContextRef` shape so it threads straight into `agent_chat`.
+  const [jobRefs, setJobRefs] = useState<
+    Array<{
+      jobId: JobId;
+      label: string;
+      includeSpec: boolean;
+      includeHistory: boolean;
+    }>
+  >([]);
+  const [jobPickerOpen, setJobPickerOpen] = useState(false);
+  const [pickerJobs, setPickerJobs] = useState<Job[] | null>(null);
   const [uploading, setUploading] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -1162,6 +1177,12 @@ export function JobChat({
           ui_location: uiLocation ?? `jobs/${job.id}`,
           selection: null,
           user_prompts: [],
+          job_refs: jobRefs.map((r) => ({
+            job_id: r.jobId,
+            include_spec: r.includeSpec,
+            include_history: r.includeHistory,
+            history_turn_limit: null,
+          })),
         },
         mode: chatMode,
       });
@@ -1361,6 +1382,81 @@ export function JobChat({
         />
       )}
 
+      {jobRefs.length > 0 && (
+        <div className="flex shrink-0 flex-wrap gap-1">
+          {jobRefs.map((r, i) => (
+            <span
+              key={`${r.jobId}-${i}`}
+              className="border-border/60 bg-muted/40 flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]"
+              title={r.jobId}
+            >
+              <span className="truncate">@{r.label}</span>
+              <label className="flex items-center gap-0.5">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3"
+                  checked={r.includeSpec}
+                  onChange={(e) =>
+                    setJobRefs((prev) =>
+                      prev.map((p, j) =>
+                        j === i ? { ...p, includeSpec: e.target.checked } : p,
+                      ),
+                    )
+                  }
+                />
+                spec
+              </label>
+              <label className="flex items-center gap-0.5">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3"
+                  checked={r.includeHistory}
+                  onChange={(e) =>
+                    setJobRefs((prev) =>
+                      prev.map((p, j) =>
+                        j === i ? { ...p, includeHistory: e.target.checked } : p,
+                      ),
+                    )
+                  }
+                />
+                history
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  setJobRefs((prev) => prev.filter((_, j) => j !== i))
+                }
+                className="text-muted-foreground hover:text-foreground shrink-0"
+                aria-label={`remove ${r.label}`}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {jobPickerOpen && (
+        <JobRefPicker
+          jobs={pickerJobs}
+          selectedJobIds={new Set(jobRefs.map((r) => r.jobId))}
+          currentJobId={job.id}
+          onPick={(picked) => {
+            setJobRefs((prev) => [
+              ...prev,
+              {
+                jobId: picked.id,
+                label: jobShortLabel(picked),
+                includeSpec: true,
+                includeHistory: true,
+              },
+            ]);
+            setJobPickerOpen(false);
+          }}
+          onClose={() => setJobPickerOpen(false)}
+        />
+      )}
+
       {(attachments.length > 0 || uploading > 0) && (
         <div className="flex shrink-0 flex-wrap gap-1">
           {attachments.map((a, i) => (
@@ -1473,6 +1569,23 @@ export function JobChat({
         </Button>
         <Button
           size="sm"
+          variant="outline"
+          onClick={() => {
+            if (pickerJobs === null) {
+              void rpc
+                .call("list_jobs", { repo_id: job.repo_id })
+                .then((r) => setPickerJobs(r.jobs))
+                .catch(() => setPickerJobs([]));
+            }
+            setJobPickerOpen(true);
+          }}
+          disabled={busy}
+          title="attach another job from this repo as context (spec + recent activity)"
+        >
+          + job
+        </Button>
+        <Button
+          size="sm"
           onClick={busy ? () => void stopActive() : send}
           disabled={
             busy
@@ -1501,6 +1614,86 @@ export function JobChat({
         </span>
       </div>
       {err && <div className="text-destructive text-xs">{err}</div>}
+    </div>
+  );
+}
+
+/// Compact label for a job in chip/picker rows. Falls back to a
+/// shortened id when the template hasn't been named yet (raw-prompt
+/// jobs) — better than rendering an empty pill.
+function jobShortLabel(j: Job): string {
+  const name = j.template_yaml?.match(/^name:\s*(\S+)/m)?.[1];
+  if (name) return name;
+  return `job-${j.id.slice(-6)}`;
+}
+
+function JobRefPicker({
+  jobs,
+  selectedJobIds,
+  currentJobId,
+  onPick,
+  onClose,
+}: {
+  jobs: Job[] | null;
+  selectedJobIds: Set<JobId>;
+  currentJobId: JobId;
+  onPick: (j: Job) => void;
+  onClose: () => void;
+}) {
+  // Same-repo filtering is already applied at fetch time via
+  // `list_jobs({ repo_id })`. The picker still hides the *active* job
+  // (attaching itself is a no-op) and any job already selected so the
+  // user can't double-attach.
+  const candidates = (jobs ?? []).filter(
+    (j) => j.id !== currentJobId && !selectedJobIds.has(j.id),
+  );
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="border-border bg-background w-full max-w-md rounded border p-3 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-xs font-medium">attach another job</span>
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground text-xs"
+            onClick={onClose}
+            aria-label="close picker"
+          >
+            ×
+          </button>
+        </div>
+        {jobs === null ? (
+          <div className="text-muted-foreground py-4 text-center text-xs">
+            loading…
+          </div>
+        ) : candidates.length === 0 ? (
+          <div className="text-muted-foreground py-4 text-center text-xs">
+            no other jobs in this repo
+          </div>
+        ) : (
+          <ul className="max-h-64 space-y-0.5 overflow-y-auto">
+            {candidates.map((j) => (
+              <li key={j.id}>
+                <button
+                  type="button"
+                  onClick={() => onPick(j)}
+                  className="hover:bg-muted/60 flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs"
+                >
+                  <span className="truncate">{jobShortLabel(j)}</span>
+                  <span className="text-muted-foreground shrink-0 text-[10px]">
+                    {j.status}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -1622,6 +1815,12 @@ function WorktreeMissingBanner({ worktreePath }: { worktreePath: string }) {
 // case; an arbitrary custom amount is a follow-up if real usage
 // shows people reaching for it.
 const COST_BUMP_PRESETS_CENTS = [500, 1000, 2500, 5000];
+const WALL_CLOCK_BUMP_PRESETS_MS = [
+  5 * 60 * 1000,
+  15 * 60 * 1000,
+  30 * 60 * 1000,
+  60 * 60 * 1000,
+];
 function JobActionRow({
   job,
   refetchJob,
@@ -1688,12 +1887,15 @@ function JobActionRow({
       refetchJob();
     });
 
-  const onResume = (costBump: number | null) =>
+  const onResume = (
+    costBump: number | null,
+    wallClockBumpMs: number | null = null,
+  ) =>
     run("resume", async () => {
       await rpc.call("resume_job", {
         job_id: job.id,
         additional_cost_cap_cents: costBump,
-        additional_wall_clock_cap_ms: null,
+        additional_wall_clock_cap_ms: wallClockBumpMs,
       });
       setShowResumeForm(false);
       refetchJob();
@@ -1822,6 +2024,44 @@ function JobActionRow({
               className="h-6 px-2 text-[11px]"
             >
               +{fmtCents(cents)}
+            </Button>
+          ))}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => onResume(null)}
+            className="h-6 px-2 text-[11px]"
+            title="Resume without raising the cap; the job will trip the same cap again unless something changed."
+          >
+            resume unchanged
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => setShowResumeForm(false)}
+            className="h-6 px-2 text-[11px]"
+          >
+            cancel
+          </Button>
+        </div>
+      )}
+      {showResumeForm && isWallClockCapped && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground">
+            cap {formatMs(job.wall_clock_cap_ms)} reached. Add:
+          </span>
+          {WALL_CLOCK_BUMP_PRESETS_MS.map((ms) => (
+            <Button
+              key={ms}
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => onResume(null, ms)}
+              className="h-6 px-2 text-[11px]"
+            >
+              +{formatMs(ms)}
             </Button>
           ))}
           <Button
