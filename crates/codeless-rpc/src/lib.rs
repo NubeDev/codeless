@@ -16,7 +16,7 @@ pub mod subscribe;
 pub use error::{RpcError, RpcResult};
 pub use methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    ChatAttachmentRef, ChatContext, ClaudeStatus, CommentReviewArgs, DeleteJobFileArgs,
+    ChatAttachmentRef, ChatContext, ChatMode, ClaudeStatus, CommentReviewArgs, DeleteJobFileArgs,
     FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
     FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, JobReportArgs, JobReportEventTally,

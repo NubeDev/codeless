@@ -695,6 +695,29 @@ pub struct AgentChatArgs {
     /// preamble prepended to `prompt` before the runner is spawned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ChatContext>,
+    /// What the user means this turn to do. `Work` (default) is the
+    /// existing behaviour: full ambient tools, agent edits whatever
+    /// it needs in the worktree. `Spec` narrows the agent to editing
+    /// `.codeless/jobs/<name>/*` (template.yaml, SCOPE.md, etc.) —
+    /// the runtime swaps in a stricter preamble and passes
+    /// `allowed_tools` to the CLI runner so the agent literally
+    /// cannot Bash / commit / touch repo source. Mirrors the
+    /// claude-code plan-mode mental model: an explicit intent
+    /// signal so the user isn't relying on the agent inferring it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ChatMode>,
+}
+
+/// Mode the chat composer is in for a given turn. Default `Work`
+/// keeps the existing footer/job chat behaviour; `Spec` flips the
+/// preamble to "you are authoring the job spec" and clamps tool
+/// access so the agent cannot accidentally edit repo source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatMode {
+    #[default]
+    Work,
+    Spec,
 }
 
 /// Forward-compatible bag of "what the user has on screen / wants

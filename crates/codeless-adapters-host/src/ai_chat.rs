@@ -88,6 +88,7 @@ pub async fn run_chat<F, Fut, E>(
     prompt: String,
     cwd: PathBuf,
     task_id: TaskId,
+    allowed_tools: Option<String>,
     publish: F,
     cancel: CancellationToken,
 ) -> Result<(), AgentChatError<E>>
@@ -112,6 +113,7 @@ where
         // executes in the server's cwd rather than a worktree, so any
         // approval prompt would deadlock the chat turn.
         permission_mode: Some(PermissionMode::Bypass),
+        allowed_tools,
         ..Default::default()
     });
 

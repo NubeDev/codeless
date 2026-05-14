@@ -980,6 +980,11 @@ export function JobChat({
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [input, setInput] = useState("");
+  // Spec-mode toggle. `work` (default) keeps the existing full-tool
+  // chat; `spec` flips the backend preamble to "you are authoring the
+  // job spec" and clamps the runner's `allowed_tools` so the agent
+  // cannot touch repo source. Mirrors claude-code's plan-mode signal.
+  const [chatMode, setChatMode] = useState<"work" | "spec">("work");
   const [busy, setBusy] = useState(false);
   const [streaming, setStreaming] = useState<{
     sessionId: JobId;
@@ -1158,6 +1163,7 @@ export function JobChat({
           selection: null,
           user_prompts: [],
         },
+        mode: chatMode,
       });
 
       setStreaming({ sessionId: result.session_id, taskId: result.task_id, text: "" });
@@ -1399,7 +1405,11 @@ export function JobChat({
         value={input}
         onChange={(e) => setInput(e.target.value)}
         rows={2}
-        placeholder="message claude about this job…"
+        placeholder={
+          chatMode === "spec"
+            ? "spec mode: describe the spec change — agent edits .codeless/jobs/<name>/* only"
+            : "message claude about this job…"
+        }
         className="border-border/60 bg-background w-full resize-none rounded border px-2 py-1.5 text-xs"
         disabled={busy}
         onPaste={(e) => {
@@ -1426,6 +1436,26 @@ export function JobChat({
         }}
       />
       <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant={chatMode === "spec" ? "default" : "outline"}
+          onClick={() =>
+            setChatMode((m) => (m === "spec" ? "work" : "spec"))
+          }
+          disabled={busy}
+          className={
+            chatMode === "spec"
+              ? "bg-amber-600 text-white hover:bg-amber-700"
+              : undefined
+          }
+          title={
+            chatMode === "spec"
+              ? "spec mode: agent edits only .codeless/jobs/<name>/* (no repo source, no shell). click to return to work mode."
+              : "work mode: agent has full worktree access. click to flip into spec mode (authoring the job's spec only)."
+          }
+        >
+          {chatMode === "spec" ? "spec ✎" : "work"}
+        </Button>
         <Button
           size="sm"
           variant="outline"

@@ -6,7 +6,7 @@ use codeless_adapters_host::{
     FsError, GitCommitError, GitDiffError, HostFs, WorktreeManager, commit_paths, diff_against,
 };
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs, ChatMode,
     CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs,
     FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
     GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile,
@@ -1479,12 +1479,25 @@ impl RpcServer for InProcessRpc {
         // that does not resolve to a job, and a job in the directory
         // layout might lack one of the supporting files. Both cases
         // skip the block silently rather than failing the turn.
+        let mode = args.mode.unwrap_or_default();
         let job_spec_block = self.load_chat_job_spec(session_id).await;
         let prompt = build_chat_prompt(
             args.context.as_ref(),
             job_spec_block.as_deref(),
+            mode,
             &args.prompt,
         );
+        // Spec mode: clamp the agent to the read + edit tools so it
+        // can author the job spec but cannot run `Bash`, hit the
+        // network, or `git commit` over repo source. The wrapper takes
+        // a comma-separated list; entries match the claude-code tool
+        // names (Read / Edit / Write / Glob / Grep / LS / TodoWrite).
+        // Work mode passes `None` to keep the existing full-tool
+        // behaviour.
+        let allowed_tools = match mode {
+            ChatMode::Spec => Some(SPEC_MODE_ALLOWED_TOOLS.to_owned()),
+            ChatMode::Work => None,
+        };
 
         // Register the cancel token before the spawn so a racing
         // `cancel_chat_task` issued between `agent_chat` returning and
@@ -1518,7 +1531,14 @@ impl RpcServer for InProcessRpc {
                 }
             };
             if let Err(e) = codeless_adapters_host::run_chat(
-                registry, provider, prompt, cwd, task_id, publish, cancel,
+                registry,
+                provider,
+                prompt,
+                cwd,
+                task_id,
+                allowed_tools,
+                publish,
+                cancel,
             )
             .await
             {
@@ -1675,6 +1695,7 @@ static ATTACHMENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 fn build_chat_prompt(
     ctx: Option<&codeless_rpc::ChatContext>,
     job_spec_block: Option<&str>,
+    mode: ChatMode,
     prompt: &str,
 ) -> String {
     let ctx_has_any = ctx.is_some_and(|c| {
@@ -1684,11 +1705,16 @@ fn build_chat_prompt(
             || !c.user_prompts.is_empty()
     });
     let job_has_any = job_spec_block.is_some_and(|s| !s.is_empty());
-    if !ctx_has_any && !job_has_any {
+    let spec_mode = mode == ChatMode::Spec;
+    if !ctx_has_any && !job_has_any && !spec_mode {
         return prompt.to_owned();
     }
 
     let mut out = String::new();
+    if spec_mode {
+        out.push_str(SPEC_MODE_BANNER);
+        out.push('\n');
+    }
     out.push_str("# Context\n\n");
     if let Some(block) = job_spec_block.filter(|s| !s.is_empty()) {
         out.push_str(block);
@@ -1908,6 +1934,31 @@ impl InProcessRpc {
 /// transitioning to Queued, so direct filesystem edits land without a
 /// separate "save" gesture. The agent must not touch `CHAT.md` — the
 /// runtime appends to it on every turn.
+/// Top-of-prompt banner the spec-mode preamble opens with. Mirrors
+/// the claude-code plan-mode model: the user has explicitly flipped
+/// the chat into "I am here to shape the job spec, not to run it,"
+/// and the agent must respect that intent even when the conversation
+/// drifts toward implementation details.
+const SPEC_MODE_BANNER: &str = "# Spec mode (active)\n\n\
+The user has flipped this chat into SPEC MODE. You are authoring the \
+job's spec, not implementing it. Edit only files under \
+`.codeless/jobs/<name>/` (template.yaml, SCOPE.md, WORKFLOW.md, and \
+per-stage `*.md`). Do NOT edit repo source code, run shell commands, \
+commit, push, or invoke the network. Your tool surface has been \
+restricted to read + edit + write + grep on the worktree; calls to \
+disallowed tools will fail.\n\n\
+If the user asks you to implement something rather than describe it, \
+remind them they are in spec mode and either (a) capture the request \
+as a stage in `template.yaml` for them to run later, or (b) suggest \
+they flip back to work mode.\n";
+
+/// Tool list passed to the CLI wrapper via `CliCfg::allowed_tools`
+/// when the chat turn is spec-mode. Comma-separated; entries match
+/// the claude-code tool names that the wrapper recognises. Keep this
+/// in sync with the banner above — if a tool is mentioned there as
+/// "available" it must be in this list, and vice versa.
+const SPEC_MODE_ALLOWED_TOOLS: &str = "Read,Edit,Write,Glob,Grep,LS,TodoWrite";
+
 const CHAT_JOB_SPEC_AUTHORING_PRIMER: &str = "## Job-spec authoring\n\n\
 You may edit this job's spec directly using your ambient `Edit`, `Write`, \
 and `Read` tools on files under `.codeless/jobs/<name>/`:\n\n\
