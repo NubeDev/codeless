@@ -136,3 +136,22 @@ Same numbers as just above — this worktree's CSV is 6 rows of PM-001:
 **Energy used** (end − start of `energy_kwh`): **0.11 kWh** over the 6-minute window.
 
 Is there a different aggregation you want — a specific column, a different file, or the larger 1,440-row CSV from the other worktree?
+
+## user @ 2026-05-14T00:38:52Z
+
+sum the data
+
+## assistant @ 2026-05-14T00:38:58Z
+
+Same result — this worktree's `examples/power-meter.csv` has 6 rows (PM-001 only):
+
+| Column | Sum |
+|---|---|
+| voltage_v | 1439.60 |
+| current_a | 25.21 |
+| power_w | 6048.60 |
+| power_factor | 5.87 |
+
+Energy used (end − start of cumulative `energy_kwh`): **0.11 kWh**.
+
+If you want something different, tell me which column or which file.
