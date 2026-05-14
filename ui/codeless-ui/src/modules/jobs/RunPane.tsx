@@ -1606,9 +1606,13 @@ function JobActionRow({
       refetchJob();
     });
 
+  // The umbrella covers both job-driver and chat-turn cancellation
+  // in a single round-trip. Replaces the old direct `stop_job` so the
+  // user can stop a chat turn that's running over an already-completed
+  // job (where there is no driver to stop).
   const onStop = () =>
     run("stop", async () => {
-      await rpc.call("stop_job", { job_id: job.id });
+      await rpc.call("stop_active", { job_id: job.id });
       refetchJob();
     });
 
