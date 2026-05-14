@@ -677,7 +677,7 @@ impl RpcServer for InProcessRpc {
         let job = Job {
             id: JobId::new(),
             repo_id: source.repo_id,
-            status: JobStatus::Queued,
+            status: JobStatus::Draft,
             stop_reason: None,
             template_yaml: source.template_yaml,
             prompt: source.prompt,
@@ -1173,12 +1173,25 @@ impl RpcServer for InProcessRpc {
                         "agent_chat cwd is not a directory: {p}"
                     )));
                 }
-                let allowed = self
+                let fs_allowed = self
                     .fs
                     .as_ref()
                     .map(|fs| fs.is_path_allowed(&canon))
                     .unwrap_or(false);
-                if !allowed {
+                // Also allow cwd under any registered repo's local_path
+                // so the per-job chat panel can target repos that sit
+                // outside the primary --fs-root.
+                let repo_allowed = if !fs_allowed {
+                    let repos = self.store.list_repos().await.map_err(db_err)?;
+                    repos.iter().any(|r| {
+                        std::fs::canonicalize(&r.local_path)
+                            .map(|rp| canon.starts_with(&rp))
+                            .unwrap_or(false)
+                    })
+                } else {
+                    false
+                };
+                if !fs_allowed && !repo_allowed {
                     return Err(RpcError::InvalidArgument(format!(
                         "agent_chat cwd is outside the configured fs roots: {p}"
                     )));
@@ -1331,7 +1344,11 @@ impl RpcServer for InProcessRpc {
             Some(job)
                 if matches!(
                     job.status,
-                    JobStatus::Running | JobStatus::AwaitingReview | JobStatus::Queued
+                    JobStatus::Running
+                        | JobStatus::AwaitingReview
+                        | JobStatus::Queued
+                        | JobStatus::Paused
+                        | JobStatus::Draft
                 ) =>
             {
                 self.stop_job(StopJobArgs {
@@ -1425,10 +1442,9 @@ fn build_chat_prompt(ctx: Option<&codeless_rpc::ChatContext>, prompt: &str) -> S
 
 impl InProcessRpc {
     /// Resolve a `job_id` to the repo's on-disk path and the job's
-    /// `template.name`. The job-file surface is template-only: a raw
-    /// `prompt`-only job has no directory to read from, so it gets
-    /// `InvalidArgument` rather than an empty list. `NotFound` covers
-    /// unknown job or repo ids.
+    /// directory name. Template jobs use the template's `name` field;
+    /// prompt-only jobs fall back to `job-<id>` so the file surface
+    /// (chat.md, supporting docs) works even without a template.
     async fn resolve_repo_and_template_name(
         &self,
         job_id: codeless_types::JobId,
@@ -1439,20 +1455,22 @@ impl InProcessRpc {
             .await
             .map_err(db_err)?
             .ok_or_else(|| RpcError::NotFound(format!("job {job_id}")))?;
-        let yaml = job.template_yaml.as_ref().ok_or_else(|| {
-            RpcError::InvalidArgument(format!(
-                "job {job_id} has no template; file surface is template-only"
-            ))
-        })?;
-        let template = JobTemplate::parse_yaml(yaml)
-            .map_err(|e| RpcError::InvalidArgument(format!("job {job_id} template parse: {e}")))?;
+        let name = match job.template_yaml.as_ref() {
+            Some(yaml) => {
+                let template = JobTemplate::parse_yaml(yaml).map_err(|e| {
+                    RpcError::InvalidArgument(format!("job {job_id} template parse: {e}"))
+                })?;
+                template.name
+            }
+            None => format!("job-{job_id}"),
+        };
         let repo = self
             .store
             .get_repo(job.repo_id)
             .await
             .map_err(db_err)?
             .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
-        Ok((std::path::PathBuf::from(repo.local_path), template.name))
+        Ok((std::path::PathBuf::from(repo.local_path), name))
     }
 }
 

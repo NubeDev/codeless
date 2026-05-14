@@ -273,6 +273,11 @@ async fn provision_in_repo(
     // checkout. Test repos and placeholder paths skip the branch
     // creation — the mock runner doesn't need a working git tree.
     if repo_path.join(".git").exists() {
+        // An empty branch (set by rerun_job) gets a canonical name so
+        // `git checkout -B ""` never runs.
+        if job.branch.is_empty() {
+            job.branch = format!("codeless/job-{}", job.id);
+        }
         let branch = &job.branch;
         let output = std::process::Command::new("git")
             .args(["checkout", "-B", branch])

@@ -51,7 +51,6 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
   const { data: job, refetch: refetchJob } = useJob(jobId);
   const [listing, setListing] = useState<ListJobFilesResult | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  const [promptOnly, setPromptOnly] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
@@ -59,19 +58,9 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
       const res = await rpc.call("list_job_files", { job_id: jobId });
       setListing(res);
       setListError(null);
-      setPromptOnly(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const looksTemplateOnly =
-        msg.includes("template-only") || msg.includes("invalid_argument");
-      if (looksTemplateOnly) {
-        setListing(null);
-        setPromptOnly(true);
-        setListError(null);
-      } else {
-        setListError(msg);
-        setPromptOnly(false);
-      }
+      setListError(msg);
     } finally {
       setLoading(false);
     }
@@ -103,7 +92,11 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
     [onOpenFile, listing?.directory_path],
   );
 
-  if (loading && !listing && !promptOnly) {
+  // Derive promptOnly from the job data — no template_yaml means
+  // the job was submitted with a free-form prompt only.
+  const isPromptOnly = !!job && !job.template_yaml;
+
+  if (loading && !listing && !isPromptOnly) {
     return (
       <div className="text-muted-foreground p-4 text-sm italic">loading…</div>
     );
@@ -113,7 +106,7 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
   // CLI before the UI started always seeding a template). The Spec
   // pane has no files to show; surface the prompt itself for context
   // and tell the user how to iterate.
-  if (promptOnly) {
+  if (isPromptOnly) {
     return (
       <div className="text-muted-foreground mx-auto max-w-2xl space-y-3 p-6 text-sm">
         <h2 className="text-foreground text-base font-medium">

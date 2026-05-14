@@ -83,6 +83,7 @@ backend: | $(DEV_DIR) $(DB)
 	@setsid bash -c '$(CARGO_CMD) --db $(DB) serve \
 	    --bind $(BACKEND_BIND) \
 	    --fs-root "$(FS_ROOT)" \
+	    --enable-claude \
 	    >$(BACKEND_LOG) 2>&1 & echo $$! >$(BACKEND_PID)' < /dev/null
 	@sleep 1
 	@if ! kill -0 $$(cat $(BACKEND_PID)) 2>/dev/null; then \
@@ -124,7 +125,7 @@ start: backend ui
 # isolation (e.g. attaching a debugger, running with RUST_LOG=debug).
 # They never touch the PID files so `make stop` will not interfere.
 backend-fg: | $(DEV_DIR) $(DB)
-	$(CARGO_CMD) --db $(DB) serve --bind $(BACKEND_BIND) --fs-root "$(FS_ROOT)"
+	$(CARGO_CMD) --db $(DB) serve --bind $(BACKEND_BIND) --fs-root "$(FS_ROOT)" --enable-claude
 
 ui-fg:
 	@if [ ! -d ui/codeless-ui/node_modules ]; then $(PNPM_CMD) install; fi

@@ -1,8 +1,9 @@
-//! `stop_active` umbrella RPC: combines `stop_job` (when the row is
-//! Running / AwaitingReview / Queued) with `cancel_chat_task` against
-//! every in-flight chat turn whose `session_id` matches the job. The
-//! UI's unified stop button calls this so it works for chat-over-
-//! completed-jobs as well as the live-driver case.
+//! `stop_active` umbrella RPC: combines `stop_job` (when the row is in
+//! a non-terminal state — Running, AwaitingReview, Queued, Paused, or
+//! Draft) with `cancel_chat_task` against every in-flight chat turn
+//! whose `session_id` matches the job. The UI's unified stop button
+//! calls this so it works for chat-over-completed-jobs as well as the
+//! live-driver case.
 
 use codeless_rpc::{AddRepoArgs, RpcServer, StopActiveArgs, SubmitJobArgs};
 use codeless_runtime::{ChatCancelEntry, InProcessRpc};
@@ -165,4 +166,22 @@ async fn stop_active_only_fires_chat_for_matching_job() {
     assert_eq!(result.cancelled_chat_task_ids, vec![target_task]);
     assert!(target_token.is_cancelled());
     assert!(!other_token.is_cancelled(), "unrelated chat untouched");
+}
+
+#[tokio::test]
+async fn stop_active_paused_job() {
+    // Pause → stop via the UI's unified button must transition to
+    // Stopped so the terminal-state buttons (including re-run) appear.
+    let rpc = InProcessRpc::new().await.unwrap();
+    let job = seed_job(&rpc).await;
+    let job = force_status(&rpc, job, JobStatus::Paused).await;
+
+    let result = rpc
+        .stop_active(StopActiveArgs { job_id: job.id })
+        .await
+        .expect("stop_active on paused");
+
+    assert!(result.stopped_job, "paused job should be stopped");
+    let after = rpc.store().get_job(job.id).await.unwrap().unwrap();
+    assert_eq!(after.status, JobStatus::Stopped);
 }
