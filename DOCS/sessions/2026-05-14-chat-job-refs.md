@@ -47,7 +47,7 @@ Format: `[ ] N. [S|M|L] title` — complexity tag mandatory.
 - [x] 3. [S] Tests: unit tests for the new fold (empty refs / spec-only /
        history-only / spec+history / over-budget truncation /
        cross-repo rejection).
-- [ ] 4. [M] UI: add an "attach job" button next to "attach" in `RunPane.tsx`.
+- [x] 4. [M] UI: add an "attach job" button next to "attach" in `RunPane.tsx`.
        Opens a picker listing jobs from `list_jobs` (filtered to the active
        job's repo). Selecting one appends a chip showing job name + id with
        two toggles (`spec`, `history`). Chips persist for the conversation,
