@@ -223,6 +223,13 @@ export function useReviews(args: ListReviewsArgs): QueryState<Review[]> {
 // POSTs queued indefinitely and the tree sat on "Loading…".
 interface SharedSubscription {
   listeners: Set<(env: EventEnvelope) => void>;
+  /** Replay buffer: every event received so far. Late-joining
+   *  listeners (e.g. the right-panel Timeline mounting after the
+   *  center RunPane has already consumed the replay) get the full
+   *  history before going live. Without this, completed-job pages
+   *  show "waiting for events…" in any panel that mounts after the
+   *  initial EventSource replay finishes. */
+  buffer: EventEnvelope[];
   cancel: () => void;
 }
 const SHARED_SUBSCRIPTIONS = new WeakMap<
@@ -245,11 +252,13 @@ function joinSubscription(
   let shared = perRpc.get(key);
   if (!shared) {
     const listeners = new Set<(env: EventEnvelope) => void>();
+    const buffer: EventEnvelope[] = [];
     const stream = rpc.subscribe(filter, since);
     const iter = stream[Symbol.asyncIterator]();
     let cancelled = false;
     shared = {
       listeners,
+      buffer,
       cancel: () => {
         cancelled = true;
         iter.return?.();
@@ -261,6 +270,7 @@ function joinSubscription(
         while (true) {
           const r = await iter.next();
           if (r.done || cancelled) return;
+          buffer.push(r.value);
           for (const cb of listeners) {
             try {
               cb(r.value);
@@ -278,6 +288,14 @@ function joinSubscription(
         }
       }
     })();
+  }
+  // Replay buffered events so late joiners see the full history.
+  for (const env of shared.buffer) {
+    try {
+      listener(env);
+    } catch {
+      // Same policy as the live pump: swallow listener errors.
+    }
   }
   shared.listeners.add(listener);
   return () => {
