@@ -85,6 +85,11 @@ async fn handle_event(
                     // not carry the authored docs fields.
                     goal: None,
                     acceptance: None,
+                    // Touched by the idle sweeper / resume helper; the
+                    // recorder leaves both fields at their initial
+                    // values when first writing the stage row.
+                    last_activity_at: Some(env.created_at),
+                    archived: false,
                 })
                 .await?;
         }

@@ -91,6 +91,8 @@ async fn restart_preserves_repos_jobs_tasks_events_and_cursors() {
             session_id: None,
             goal: None,
             acceptance: None,
+            last_activity_at: None,
+            archived: false,
         };
         store.insert_stage(&stage).await.unwrap();
 

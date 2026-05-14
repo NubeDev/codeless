@@ -287,7 +287,7 @@ ordinal?: number;
  *  `REVIEW ` prefix preserved). Same source of truth the UI
  *  already uses; persisted on the `Stage` row.
  */
-name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } |
+name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | 
 /**
  *  One layered verify gate started running. Paired with
  *  `verify-step-passed`, `verify-step-failed`, or
@@ -296,38 +296,38 @@ name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verif
  *  stage's whole verify run; the per-step events let the UI render
  *  a glyph per gate (`○ → ● → ✓` or `!`) instead of a single bit.
  */
-{ type: "verify-step-started"; stage_id: StageId;
+{ type: "verify-step-started"; stage_id: StageId; 
 /**
  *  0-based index into the stage's `verify:` list. The
  *  list ordering is the contract; the recorder pins
  *  per-step rows by `(stage_id, step_index)`.
  */
-step_index: number; name: string } | { type: "verify-step-passed"; stage_id: StageId; step_index: number; name: string;
+step_index: number; name: string } | { type: "verify-step-passed"; stage_id: StageId; step_index: number; name: string; 
 /**
  *  Wall-clock duration of the step's shell invocation, in
  *  milliseconds. Surfaced in the UI's per-gate row so a slow
  *  gate is visible without opening the log.
  */
-duration_ms: number } | { type: "verify-step-failed"; stage_id: StageId; step_index: number; name: string; exit_code: number;
+duration_ms: number } | { type: "verify-step-failed"; stage_id: StageId; step_index: number; name: string; exit_code: number; 
 /**
  *  Last ~16 lines of merged stdout+stderr from the step. Kept
  *  short on the wire so the UI doesn't have to fetch a separate
  *  log blob to render the failure preview.
  */
-tail: string } |
+tail: string } | 
 /**
  *  A verify step that did not run because a prior step in the same
  *  stage already failed. Emitted (rather than silently omitted) so
  *  the UI can render a `-` or grey-out glyph instead of leaving the
  *  row blank, per SCOPE.md operator-visibility hard rule.
  */
-{ type: "verify-step-skipped"; stage_id: StageId; step_index: number; name: string;
+{ type: "verify-step-skipped"; stage_id: StageId; step_index: number; name: string; 
 /**
  *  Today the only reason is `"prior-gate-red"`; carried as a
  *  string so future reasons (e.g. timeout, cancelled) can land
  *  without a wire-format change.
  */
-reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } |
+reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | 
 /**
  *  First-and-only-time capture of the runner-supplied session id
  *  for this stage. Emitted by `StageRecorder` the first time a
@@ -337,7 +337,18 @@ reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageSt
  *  `stages.session_id` in SQLite so the observation survives
  *  session boundaries.
  */
-{ type: "stage-session-captured"; stage_id: StageId; session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
+{ type: "stage-session-captured"; stage_id: StageId; session_id: string } | 
+/**
+ *  The stage's warm session was archived (idle timeout elapsed) and
+ *  the next user message against the stage transparently opened a
+ *  fresh session preceded by a handover document. Emitted exactly
+ *  once per session boundary so the UI can render an inline divider
+ *  (`prior session archived; resumed with handover`) without
+ *  polling for state changes. `prior_session_id` is the value that
+ *  was on `stages.session_id` at archive time; the new session's
+ *  id arrives later via `StageSessionCaptured`.
+ */
+{ type: "session-archived-then-resumed"; stage_id: StageId; prior_session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
 /**
  *  `template.yaml` for the job changed in SQLite. Emitted by
  *  `update_job_template` (user edits from the Spec pane) and by
@@ -802,6 +813,40 @@ export type Stage = {
 	 *  codebase-exploration every time.
 	 */
 	session_id: string | null,
+	/**
+	 *  One-sentence statement of what success for this stage means.
+	 *  Authored in the per-stage docs; surfaced in the UI overview so
+	 *  the reader doesn't have to open the stage doc to remember the
+	 *  intent. `None` for stages authored before the field existed.
+	 */
+	goal?: string | null,
+	/**
+	 *  Acceptance criteria bullets, in author order. The UI renders
+	 *  each as a tickable line so the human reviewer can match output
+	 *  against the contract the stage was written to. `None` (not
+	 *  `Some(vec![])`) for stages authored before the field existed
+	 *  so a missing list and a deliberately empty list stay
+	 *  distinguishable.
+	 */
+	acceptance?: string[] | null,
+	/**
+	 *  Wall-clock millis of the last activity observed on this stage's
+	 *  warm session (turn start, user message, sweeper tick). `None`
+	 *  when the stage has never had a session captured. Used by the
+	 *  runtime's idle-timeout sweeper to decide when to archive the
+	 *  session so a paused/failed stage does not hold a runner
+	 *  subprocess open forever; see `session_idle` module.
+	 */
+	last_activity_at?: UnixMillis | null,
+	/**
+	 *  `true` once the warm session has been archived (idle timeout
+	 *  elapsed or explicit `archive_session` RPC). One-way flag: the
+	 *  next user message against this stage opens a fresh session with
+	 *  a handover document rather than resuming the recorded
+	 *  `session_id`. The captured id is preserved on the row for
+	 *  audit / UI labelling of the archived turn.
+	 */
+	archived?: boolean,
 };
 
 //Identity of a verify-gated chunk within a job.

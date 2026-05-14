@@ -19,6 +19,7 @@ pub mod notifier;
 pub mod queue_config;
 pub mod rpc;
 pub mod runner;
+pub mod session_idle;
 pub mod session_log;
 pub mod stage_recorder;
 pub mod state_machine;
@@ -45,6 +46,10 @@ pub use queue_config::QueueConfig;
 pub use rpc::InProcessRpc;
 pub use rpc::{ChatCancelEntry, ChatCancels};
 pub use runner::{Runner, RunnerContext, RunnerOutcome};
+pub use session_idle::{
+    resolve_stage_resume, spawn_idle_sweeper, sweep_once, ResumeDecision,
+    DEFAULT_SESSION_IDLE_TIMEOUT,
+};
 pub use stage_recorder::spawn_stage_recorder;
 pub use state_machine::{
     is_terminal_job, transition_job, transition_stage, transition_task, TransitionError,

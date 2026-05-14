@@ -34,7 +34,7 @@ async fn fresh_job(rpc: &InProcessRpc, cost_cap: i64, wall_clock_ms: i64) -> cod
         template_yaml: None,
         runner: "mock".into(),
         branch: "codeless/job-cap".into(),
-            workspace_mode: None,
+        workspace_mode: None,
         cost_cap_cents: cost_cap,
         wall_clock_cap_ms: wall_clock_ms,
         model: None,
@@ -132,6 +132,8 @@ async fn cost_cap_pauses_when_stage_has_captured_session() {
         session_id: Some("sess-captured".into()),
         goal: None,
         acceptance: None,
+        last_activity_at: None,
+        archived: false,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
 

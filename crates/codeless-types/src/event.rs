@@ -178,6 +178,19 @@ pub enum Event {
         stage_id: StageId,
         session_id: String,
     },
+    /// The stage's warm session was archived (idle timeout elapsed) and
+    /// the next user message against the stage transparently opened a
+    /// fresh session preceded by a handover document. Emitted exactly
+    /// once per session boundary so the UI can render an inline divider
+    /// (`prior session archived; resumed with handover`) without
+    /// polling for state changes. `prior_session_id` is the value that
+    /// was on `stages.session_id` at archive time; the new session's
+    /// id arrives later via `StageSessionCaptured`.
+    #[serde(rename = "session-archived-then-resumed")]
+    SessionArchivedThenResumed {
+        stage_id: StageId,
+        prior_session_id: String,
+    },
 
     #[serde(rename = "task-enqueued")]
     TaskEnqueued {

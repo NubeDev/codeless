@@ -216,8 +216,8 @@ impl SqliteStore {
         sqlx::query(
             "INSERT OR REPLACE INTO stages \
              (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at, session_id, \
-              goal, acceptance) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+              goal, acceptance, last_activity_at, archived) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(stage.id.to_string())
         .bind(stage.job_id.to_string())
@@ -230,6 +230,8 @@ impl SqliteStore {
         .bind(&stage.session_id)
         .bind(&stage.goal)
         .bind(&acceptance_json)
+        .bind(stage.last_activity_at.map(|t| t.0))
+        .bind(stage.archived as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -275,6 +277,92 @@ impl SqliteStore {
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    /// Bump `last_activity_at` on a stage. Used by the idle sweeper +
+    /// the resume-resolution path to record interactive activity on the
+    /// stage's warm session. Returns `true` when the row exists.
+    /// Archived rows are still touched so the archive timestamp does
+    /// not look stale to observers, but archive itself is one-way and
+    /// touching does not un-archive.
+    pub async fn touch_stage_activity(
+        &self,
+        id: codeless_types::StageId,
+        now: codeless_types::UnixMillis,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query("UPDATE stages SET last_activity_at = ? WHERE id = ?")
+            .bind(now.0)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Mark a stage's warm session as archived. Returns the prior
+    /// `session_id` value when the row transitioned from
+    /// `archived = 0` to `archived = 1` and had a captured session id;
+    /// returns `None` when the row was already archived, missing, or
+    /// had no session id to begin with. The one-shot return value is
+    /// the signal `resolve_stage_resume` uses to emit
+    /// `SessionArchivedThenResumed` exactly once per session boundary.
+    pub async fn archive_stage_session(
+        &self,
+        id: codeless_types::StageId,
+    ) -> sqlx::Result<Option<String>> {
+        use sqlx::Row;
+        let row = sqlx::query(
+            "UPDATE stages SET archived = 1 \
+             WHERE id = ? AND archived = 0 AND session_id IS NOT NULL \
+             RETURNING session_id",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(r) => Ok(r.try_get::<Option<String>, _>("session_id")?),
+            None => Ok(None),
+        }
+    }
+
+    /// Find stages whose warm session has been idle past `cutoff` and
+    /// archive them in one statement. Returns the `(stage_id,
+    /// prior_session_id)` pairs that transitioned so the caller can
+    /// emit one `SessionArchivedThenResumed` per archived row.
+    ///
+    /// Idle is defined as `last_activity_at <= cutoff`: callers compute
+    /// `cutoff = now - timeout` per job's `session_idle_timeout` and
+    /// pass the result here. A NULL `last_activity_at` is treated as
+    /// "no activity recorded" and is *not* archived — a brand-new stage
+    /// that has not yet been touched should not be archived simply
+    /// because it has no timestamp.
+    pub async fn archive_idle_stage_sessions(
+        &self,
+        cutoff: codeless_types::UnixMillis,
+    ) -> sqlx::Result<Vec<(codeless_types::StageId, String)>> {
+        use sqlx::Row;
+        let rows = sqlx::query(
+            "UPDATE stages SET archived = 1 \
+             WHERE archived = 0 \
+               AND session_id IS NOT NULL \
+               AND last_activity_at IS NOT NULL \
+               AND last_activity_at <= ? \
+             RETURNING id, session_id",
+        )
+        .bind(cutoff.0)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let id_str: String = r.try_get("id")?;
+            let id: codeless_types::StageId = id_str
+                .parse()
+                .map_err(|e| sqlx::Error::Decode(format!("stage id: {e:?}").into()))?;
+            let sid: Option<String> = r.try_get("session_id")?;
+            if let Some(sid) = sid {
+                out.push((id, sid));
+            }
+        }
+        Ok(out)
     }
 
     /// Best-effort upsert used by the StageRecorder when it sees a
@@ -356,6 +444,7 @@ impl SqliteStore {
         let rows = sqlx::query(
             "SELECT s.id, s.ordinal, s.name, s.status, s.verify_cmd, \
                     s.started_at, s.ended_at, s.session_id, s.goal, s.acceptance, \
+                    s.last_activity_at, s.archived, \
                     COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
                     COUNT(t.id) AS task_count \
              FROM stages s \
@@ -397,6 +486,10 @@ impl SqliteStore {
                         session_id: row.try_get("session_id")?,
                         goal: row.try_get("goal")?,
                         acceptance: parse_acceptance(row.try_get("acceptance")?)?,
+                        last_activity_at: row
+                            .try_get::<Option<i64>, _>("last_activity_at")?
+                            .map(codeless_types::UnixMillis),
+                        archived: row.try_get::<i64, _>("archived")? != 0,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,
@@ -410,14 +503,12 @@ impl SqliteStore {
     /// (A0 — intra-stage session continuation). Returns `None` for
     /// an unknown stage id rather than erroring so the caller can
     /// fall through to a fresh-session path.
-    pub async fn get_stage(
-        &self,
-        id: codeless_types::StageId,
-    ) -> sqlx::Result<Option<Stage>> {
+    pub async fn get_stage(&self, id: codeless_types::StageId) -> sqlx::Result<Option<Stage>> {
         use sqlx::Row;
         let row = sqlx::query(
             "SELECT id, job_id, ordinal, name, status, verify_cmd, \
-                    started_at, ended_at, session_id, goal, acceptance \
+                    started_at, ended_at, session_id, goal, acceptance, \
+                    last_activity_at, archived \
              FROM stages WHERE id = ?",
         )
         .bind(id.to_string())
@@ -445,6 +536,10 @@ impl SqliteStore {
             session_id: row.try_get("session_id")?,
             goal: row.try_get("goal")?,
             acceptance: parse_acceptance(row.try_get("acceptance")?)?,
+            last_activity_at: row
+                .try_get::<Option<i64>, _>("last_activity_at")?
+                .map(codeless_types::UnixMillis),
+            archived: row.try_get::<i64, _>("archived")? != 0,
         }))
     }
 
@@ -675,10 +770,7 @@ impl SqliteStore {
     /// Returns `Some(job)` if there is already an `in_repo` job for
     /// `repo_id` in a non-terminal state. Used by `submit_job` to
     /// enforce the one-in_repo-per-repo invariant.
-    pub async fn active_in_repo_job(
-        &self,
-        repo_id: RepoId,
-    ) -> sqlx::Result<Option<Job>> {
+    pub async fn active_in_repo_job(&self, repo_id: RepoId) -> sqlx::Result<Option<Job>> {
         let row = sqlx::query(
             "SELECT * FROM jobs \
              WHERE repo_id = ? \

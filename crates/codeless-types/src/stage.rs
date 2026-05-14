@@ -52,4 +52,20 @@ pub struct Stage {
     /// distinguishable.
     #[serde(default)]
     pub acceptance: Option<Vec<String>>,
+    /// Wall-clock millis of the last activity observed on this stage's
+    /// warm session (turn start, user message, sweeper tick). `None`
+    /// when the stage has never had a session captured. Used by the
+    /// runtime's idle-timeout sweeper to decide when to archive the
+    /// session so a paused/failed stage does not hold a runner
+    /// subprocess open forever; see `session_idle` module.
+    #[serde(default)]
+    pub last_activity_at: Option<UnixMillis>,
+    /// `true` once the warm session has been archived (idle timeout
+    /// elapsed or explicit `archive_session` RPC). One-way flag: the
+    /// next user message against this stage opens a fresh session with
+    /// a handover document rather than resuming the recorded
+    /// `session_id`. The captured id is preserved on the row for
+    /// audit / UI labelling of the archived turn.
+    #[serde(default)]
+    pub archived: bool,
 }

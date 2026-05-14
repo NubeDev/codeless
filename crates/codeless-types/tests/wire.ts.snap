@@ -120,7 +120,18 @@ reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageSt
  *  `stages.session_id` in SQLite so the observation survives
  *  session boundaries.
  */
-{ type: "stage-session-captured"; stage_id: StageId; session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
+{ type: "stage-session-captured"; stage_id: StageId; session_id: string } | 
+/**
+ *  The stage's warm session was archived (idle timeout elapsed) and
+ *  the next user message against the stage transparently opened a
+ *  fresh session preceded by a handover document. Emitted exactly
+ *  once per session boundary so the UI can render an inline divider
+ *  (`prior session archived; resumed with handover`) without
+ *  polling for state changes. `prior_session_id` is the value that
+ *  was on `stages.session_id` at archive time; the new session's
+ *  id arrives later via `StageSessionCaptured`.
+ */
+{ type: "session-archived-then-resumed"; stage_id: StageId; prior_session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
 /**
  *  `template.yaml` for the job changed in SQLite. Emitted by
  *  `update_job_template` (user edits from the Spec pane) and by
@@ -353,6 +364,24 @@ export type Stage = {
 	 *  distinguishable.
 	 */
 	acceptance?: string[] | null,
+	/**
+	 *  Wall-clock millis of the last activity observed on this stage's
+	 *  warm session (turn start, user message, sweeper tick). `None`
+	 *  when the stage has never had a session captured. Used by the
+	 *  runtime's idle-timeout sweeper to decide when to archive the
+	 *  session so a paused/failed stage does not hold a runner
+	 *  subprocess open forever; see `session_idle` module.
+	 */
+	last_activity_at?: UnixMillis | null,
+	/**
+	 *  `true` once the warm session has been archived (idle timeout
+	 *  elapsed or explicit `archive_session` RPC). One-way flag: the
+	 *  next user message against this stage opens a fresh session with
+	 *  a handover document rather than resuming the recorded
+	 *  `session_id`. The captured id is preserved on the row for
+	 *  audit / UI labelling of the archived turn.
+	 */
+	archived?: boolean,
 };
 
 //Identity of a verify-gated chunk within a job.
