@@ -1,7 +1,7 @@
 import type { JobDetailTab, TabPatch } from "@/modules/tabs";
 import type { JobId } from "@/lib/rpc";
 
-import { JobChatPage } from "./JobChatPage";
+import { JobPage } from "./JobPage";
 
 interface Props {
   tabs: Array<{ id: number; kind: string; jobId?: string }>;
@@ -29,12 +29,11 @@ export function JobDetailStack({ tabs, activeId }: Props) {
   return (
     <>
       {jobTabs.map((t) => (
-        <div
-          key={t.id}
-          className="h-full w-full"
-          style={{ display: t.id === activeId ? "block" : "none" }}
-        >
-          <JobChatPage jobId={t.jobId as JobId} />
+        // JobPage owns visibility via its `active` prop (hidden class when
+        // not active). The outer wrapper stays mounted so the per-job event
+        // subscription doesn't tear down on every tab switch.
+        <div key={t.id} className="h-full w-full">
+          <JobPage jobId={t.jobId as JobId} active={t.id === activeId} />
         </div>
       ))}
     </>

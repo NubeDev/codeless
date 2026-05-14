@@ -1,6 +1,0 @@
-name: bacnet2
-goal: "Generate a CSV file containing 10 BACnet data points with realistic building-automation values."
-docs:
-  - CHAT.md
-stages:
-  - "generate bacnet_points.csv"

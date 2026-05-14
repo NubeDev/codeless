@@ -31,7 +31,10 @@ async fn resolve_pending_review(
     let now = now_ms();
     review.status = next;
     review.resolved_at = Some(now);
-    rpc.store.update_review(&review).await.map_err(super::db_err)?;
+    rpc.store
+        .update_review(&review)
+        .await
+        .map_err(super::db_err)?;
     Ok(review)
 }
 
@@ -79,7 +82,10 @@ pub(super) async fn comment_review(
         .map_err(super::db_err)?
         .ok_or_else(|| RpcError::NotFound(format!("review {}", args.review_id)))?;
     review.comment = Some(args.comment.clone());
-    rpc.store.update_review(&review).await.map_err(super::db_err)?;
+    rpc.store
+        .update_review(&review)
+        .await
+        .map_err(super::db_err)?;
     rpc.bus
         .publish(
             None,

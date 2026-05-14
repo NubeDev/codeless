@@ -1,7 +1,8 @@
 use codeless_adapters_host::FsError;
 use codeless_rpc::{
-    FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
-    FsStatResult, FsWriteFileArgs, RpcError, RpcResult,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    RpcError, RpcResult,
 };
 
 use super::InProcessRpc;
@@ -56,6 +57,32 @@ pub(super) async fn fs_cwd(rpc: &InProcessRpc) -> RpcResult<FsCwdResult> {
     })
 }
 
+pub(super) async fn fs_create_file(rpc: &InProcessRpc, args: FsCreateFileArgs) -> RpcResult<()> {
+    let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
+    fs.create_file(&args.path, args.content.as_deref(), args.overwrite)
+        .await
+        .map_err(fs_err)
+}
+
+pub(super) async fn fs_create_dir(rpc: &InProcessRpc, args: FsCreateDirArgs) -> RpcResult<()> {
+    let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
+    fs.create_dir(&args.path, args.recursive)
+        .await
+        .map_err(fs_err)
+}
+
+pub(super) async fn fs_move(rpc: &InProcessRpc, args: FsMoveArgs) -> RpcResult<()> {
+    let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
+    fs.rename(&args.from, &args.to, args.overwrite)
+        .await
+        .map_err(fs_err)
+}
+
+pub(super) async fn fs_delete(rpc: &InProcessRpc, args: FsDeleteArgs) -> RpcResult<()> {
+    let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
+    fs.delete(&args.path, args.recursive).await.map_err(fs_err)
+}
+
 fn fs_not_configured() -> RpcError {
     RpcError::Internal("fs.* not available: runtime has no filesystem root configured".to_owned())
 }
@@ -72,6 +99,9 @@ pub(super) fn fs_err(e: FsError) -> RpcError {
         }
         FsError::Io(err) if err.kind() == std::io::ErrorKind::NotFound => {
             RpcError::NotFound(err.to_string())
+        }
+        FsError::Io(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            RpcError::Conflict(err.to_string())
         }
         FsError::Io(err) => RpcError::Internal(format!("fs io: {err}")),
     }

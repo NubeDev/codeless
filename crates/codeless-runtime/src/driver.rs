@@ -135,9 +135,7 @@ pub async fn drive_job(
                     // row during provision_in_repo.
                     job.worktree_path.as_ref().map(PathBuf::from)
                 }
-                WorkspaceMode::Worktree => {
-                    provisioned.as_ref().map(|p| p.worktree.clone())
-                }
+                WorkspaceMode::Worktree => provisioned.as_ref().map(|p| p.worktree.clone()),
             },
             cancel: cancel.clone(),
         })
@@ -485,10 +483,7 @@ async fn fire_pause_or_stop(
     } else {
         Event::JobStopped { job_id, reason }
     };
-    if let Err(e) = bus
-        .publish(Some(job_id), None, None, event, ended)
-        .await
-    {
+    if let Err(e) = bus.publish(Some(job_id), None, None, event, ended).await {
         tracing::warn!(
             error = %e,
             resumable,

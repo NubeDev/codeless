@@ -5,10 +5,10 @@ use async_trait::async_trait;
 use codeless_adapters_host::{HostFs, WorktreeManager};
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    ListJobFilesArgs,
+    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs,
+    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
     ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
@@ -237,6 +237,14 @@ impl RpcServer for InProcessRpc {
         jobs::stop_job(self, args).await
     }
 
+    async fn update_job(&self, args: codeless_rpc::UpdateJobArgs) -> RpcResult<Job> {
+        jobs::update_job_fields(self, args).await
+    }
+
+    async fn delete_job(&self, args: codeless_rpc::DeleteJobArgs) -> RpcResult<()> {
+        jobs::delete_job(self, args).await
+    }
+
     async fn pause_job(&self, args: PauseJobArgs) -> RpcResult<()> {
         jobs::pause_job(self, args).await
     }
@@ -295,6 +303,22 @@ impl RpcServer for InProcessRpc {
 
     async fn fs_cwd(&self) -> RpcResult<FsCwdResult> {
         fs::fs_cwd(self).await
+    }
+
+    async fn fs_create_file(&self, args: FsCreateFileArgs) -> RpcResult<()> {
+        fs::fs_create_file(self, args).await
+    }
+
+    async fn fs_create_dir(&self, args: FsCreateDirArgs) -> RpcResult<()> {
+        fs::fs_create_dir(self, args).await
+    }
+
+    async fn fs_move(&self, args: FsMoveArgs) -> RpcResult<()> {
+        fs::fs_move(self, args).await
+    }
+
+    async fn fs_delete(&self, args: FsDeleteArgs) -> RpcResult<()> {
+        fs::fs_delete(self, args).await
     }
 
     async fn list_job_files(&self, args: ListJobFilesArgs) -> RpcResult<ListJobFilesResult> {

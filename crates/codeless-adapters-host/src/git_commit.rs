@@ -58,6 +58,7 @@ pub fn commit_paths(repo: &Path, subject: &str, paths: &[PathBuf]) -> Result<boo
         .arg("-C")
         .arg(repo)
         .arg("add")
+        .arg("-f")
         .arg("--")
         .args(paths)
         .output()

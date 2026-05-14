@@ -1,17 +1,17 @@
 use async_trait::async_trait;
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListJobFilesArgs,
-    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
-    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs,
+    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
+    RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -177,6 +177,14 @@ impl RpcServer for HttpRpcClient {
         self.call_void("stop_job", &args).await
     }
 
+    async fn update_job(&self, args: codeless_rpc::UpdateJobArgs) -> RpcResult<Job> {
+        self.call("update_job", &args).await
+    }
+
+    async fn delete_job(&self, args: codeless_rpc::DeleteJobArgs) -> RpcResult<()> {
+        self.call_void("delete_job", &args).await
+    }
+
     async fn pause_job(&self, args: PauseJobArgs) -> RpcResult<()> {
         self.call_void("pause_job", &args).await
     }
@@ -274,6 +282,22 @@ impl RpcServer for HttpRpcClient {
 
     async fn fs_cwd(&self) -> RpcResult<FsCwdResult> {
         self.call("fs_cwd", &serde_json::json!({})).await
+    }
+
+    async fn fs_create_file(&self, args: FsCreateFileArgs) -> RpcResult<()> {
+        self.call_void("fs_create_file", &args).await
+    }
+
+    async fn fs_create_dir(&self, args: FsCreateDirArgs) -> RpcResult<()> {
+        self.call_void("fs_create_dir", &args).await
+    }
+
+    async fn fs_move(&self, args: FsMoveArgs) -> RpcResult<()> {
+        self.call_void("fs_move", &args).await
+    }
+
+    async fn fs_delete(&self, args: FsDeleteArgs) -> RpcResult<()> {
+        self.call_void("fs_delete", &args).await
     }
 
     async fn list_job_files(&self, args: ListJobFilesArgs) -> RpcResult<ListJobFilesResult> {

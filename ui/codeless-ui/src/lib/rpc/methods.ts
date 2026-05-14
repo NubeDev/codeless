@@ -207,6 +207,21 @@ export interface RerunJobArgs {
   source_job_id: JobId;
 }
 
+export interface UpdateJobArgs {
+  job_id: JobId;
+  runner?: string | null;
+  model?: string | null;
+  permission_mode?: string | null;
+  effort?: string | null;
+  cost_cap_cents?: number | null;
+  wall_clock_cap_ms?: number | null;
+  branch?: string | null;
+}
+
+export interface DeleteJobArgs {
+  job_id: JobId;
+}
+
 export interface GcWorktreesArgs {
   older_than_ms: number | null;
   job_ids: JobId[] | null;
@@ -429,6 +444,8 @@ export interface RpcMethodMap {
   start_job: { args: StartJobArgs; result: Job };
   resume_job: { args: ResumeJobArgs; result: Job };
   rerun_job: { args: RerunJobArgs; result: Job };
+  update_job: { args: UpdateJobArgs; result: Job };
+  delete_job: { args: DeleteJobArgs; result: null };
   gc_worktrees: { args: GcWorktreesArgs; result: GcWorktreesResult };
   job_diff: { args: JobDiffArgs; result: JobDiffResult };
 

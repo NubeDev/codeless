@@ -233,6 +233,33 @@ pub struct StopJobArgs {
     pub job_id: JobId,
 }
 
+/// Patch mutable fields on a job. Only editable while the job is
+/// `Draft` or a terminal state (`Stopped`, `Failed`, `Completed`).
+/// Every field is optional — `None` means "leave unchanged".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UpdateJobArgs {
+    pub job_id: JobId,
+    #[serde(default)]
+    pub runner: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub cost_cap_cents: Option<i64>,
+    #[serde(default)]
+    pub wall_clock_cap_ms: Option<i64>,
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct DeleteJobArgs {
+    pub job_id: JobId,
+}
+
 /// Move a `Running` (or `AwaitingReview`) job to `Paused`. The
 /// captured per-stage `Stage.session_id` becomes the resume handle
 /// for the next `resume_job` call; the in-flight runner is cancelled
@@ -397,6 +424,32 @@ pub struct FsStatResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsCwdResult {
     pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsCreateFileArgs {
+    pub path: String,
+    pub content: Option<String>,
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsCreateDirArgs {
+    pub path: String,
+    pub recursive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsMoveArgs {
+    pub from: String,
+    pub to: String,
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsDeleteArgs {
+    pub path: String,
+    pub recursive: bool,
 }
 
 /// One entry in `ServerInfo.runners`. The `id` matches the runner key

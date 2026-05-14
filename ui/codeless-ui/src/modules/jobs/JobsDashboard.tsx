@@ -163,7 +163,12 @@ export function JobsDashboard({ onOpenJob }: JobsDashboardProps = {}) {
   }
   if (!repos.data || !jobs.data) return null;
 
-  const merged = jobs.data.map((j) => overlay.get(j.id) ?? j);
+  const existingIds = new Set(jobs.data.map((j) => j.id));
+  const merged = [
+    ...jobs.data.map((j) => overlay.get(j.id) ?? j),
+    // Append jobs discovered via SSE that weren't in the initial fetch.
+    ...[...overlay.values()].filter((j) => !existingIds.has(j.id)),
+  ];
   const grouped = groupByRepo(merged, repos.data);
   const today = dayBucket(Date.now());
   const dailyTotal = merged

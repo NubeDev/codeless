@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,7 @@ import {
   type Repo,
 } from "@/lib/rpc";
 
+import { EditJobDialog } from "./EditJobDialog";
 import { FilesChanged } from "./FilesChanged";
 import { HandoverPanel } from "./HandoverPanel";
 import { CostCell, WallClockCell } from "./JobRow";
@@ -33,8 +34,16 @@ export function JobChatPage({ jobId }: { jobId: JobId }) {
   const [view, setView] = useState<MainView>("chat");
   const [rerunning, setRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const specRefreshRef = useRef<(() => void) | null>(null);
   const repo = job ? repos?.find((r) => r.id === job.repo_id) ?? null : null;
+
+  const handleRefresh = useCallback(() => {
+    refetchJob();
+    specRefreshRef.current?.();
+  }, [refetchJob]);
 
   const rerun = async () => {
     if (!job) return;
@@ -49,6 +58,27 @@ export function JobChatPage({ jobId }: { jobId: JobId }) {
       setRerunning(false);
     }
   };
+
+  const handleDeleteJob = async () => {
+    if (!job) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await rpc.call("delete_job", { job_id: job.id });
+      window.location.assign("/jobs");
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleJobUpdated = useCallback(
+    (_updated: Job) => {
+      refetchJob();
+    },
+    [refetchJob],
+  );
 
   if (loading) {
     return <div className="text-muted-foreground p-8">Loading…</div>;
@@ -99,7 +129,18 @@ export function JobChatPage({ jobId }: { jobId: JobId }) {
             </button>
           </div>
           <button
-            className="bg-card/80 border-border ml-2 shrink-0 rounded border px-2 py-1 text-xs md:hidden"
+            className="text-muted-foreground hover:text-foreground ml-2 shrink-0 rounded p-1.5 transition-colors"
+            onClick={handleRefresh}
+            aria-label="Refresh"
+            title="Refresh"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1.5 2v4.5H6" />
+              <path d="M2.5 10A5.5 5.5 0 1 0 3.52 5.5" />
+            </svg>
+          </button>
+          <button
+            className="bg-card/80 border-border ml-1 shrink-0 rounded border px-2 py-1 text-xs md:hidden"
             onClick={() => setSidebarOpen(true)}
             aria-label="Open job details"
           >
@@ -117,7 +158,7 @@ export function JobChatPage({ jobId }: { jobId: JobId }) {
             </div>
           ) : (
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-              <SpecPane jobId={jobId} />
+              <SpecPane jobId={jobId} refreshRef={specRefreshRef} />
             </div>
           )}
         </div>
@@ -133,6 +174,10 @@ export function JobChatPage({ jobId }: { jobId: JobId }) {
           tab={tab}
           setTab={setTab}
           jobId={jobId}
+          onJobUpdated={handleJobUpdated}
+          onDeleteJob={handleDeleteJob}
+          deleting={deleting}
+          deleteError={deleteError}
         />
       </aside>
 
@@ -159,6 +204,10 @@ export function JobChatPage({ jobId }: { jobId: JobId }) {
               tab={tab}
               setTab={setTab}
               jobId={jobId}
+              onJobUpdated={handleJobUpdated}
+              onDeleteJob={handleDeleteJob}
+              deleting={deleting}
+              deleteError={deleteError}
             />
           </aside>
         </div>
@@ -176,6 +225,10 @@ interface SidebarContentProps {
   tab: SidebarTab;
   setTab: (tab: SidebarTab) => void;
   jobId: JobId;
+  onJobUpdated: (j: Job) => void;
+  onDeleteJob: () => void;
+  deleting: boolean;
+  deleteError: string | null;
 }
 
 function SidebarContent({
@@ -187,7 +240,20 @@ function SidebarContent({
   tab,
   setTab,
   jobId,
+  onJobUpdated,
+  onDeleteJob,
+  deleting,
+  deleteError,
 }: SidebarContentProps) {
+  const [editOpen, setEditOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const canDelete =
+    job.status === "draft" ||
+    job.status === "stopped" ||
+    job.status === "failed" ||
+    job.status === "completed";
+
   return (
     <>
       <div className="border-b p-4">
@@ -196,16 +262,27 @@ function SidebarContent({
           {repo && (
             <span className="text-muted-foreground text-xs">· {repo.name}</span>
           )}
-          <Button
-            size="sm"
-            variant="outline"
-            className="ml-auto h-6 px-2 text-[11px]"
-            onClick={rerun}
-            disabled={rerunning}
-            title="Queue a fresh run with the same prompt, runner, and caps"
-          >
-            {rerunning ? "queuing…" : "re-run"}
-          </Button>
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => setEditOpen(true)}
+              title="Edit job settings"
+            >
+              edit
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto h-6 px-2 text-[11px]"
+              onClick={rerun}
+              disabled={rerunning}
+              title="Queue a fresh run with the same prompt, runner, and caps"
+            >
+              {rerunning ? "queuing…" : "re-run"}
+            </Button>
+          </div>
         </div>
         <div className="mb-2 flex items-center gap-2">
           <WallClockCell
@@ -237,6 +314,51 @@ function SidebarContent({
         {job.prompt && (
           <p className="mt-3 line-clamp-3 text-sm">{job.prompt}</p>
         )}
+        {canDelete && (
+          <div className="mt-3 border-t pt-3">
+            {!confirmDelete ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => setConfirmDelete(true)}
+                disabled={deleting}
+              >
+                delete job
+              </Button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-destructive text-xs">Delete permanently?</span>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={() => { setConfirmDelete(false); onDeleteJob(); }}
+                  disabled={deleting}
+                >
+                  {deleting ? "deleting…" : "confirm"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={() => setConfirmDelete(false)}
+                >
+                  cancel
+                </Button>
+              </div>
+            )}
+            {deleteError && (
+              <p className="text-destructive mt-1 text-xs">{deleteError}</p>
+            )}
+          </div>
+        )}
+        <EditJobDialog
+          job={job}
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          onSaved={onJobUpdated}
+        />
       </div>
       <nav className="flex gap-1 border-b px-4 py-2 text-xs">
         <SidebarTabButton current={tab} value="summary" onSelect={setTab}>

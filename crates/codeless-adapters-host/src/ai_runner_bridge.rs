@@ -193,15 +193,13 @@ mod tests {
     fn connected_and_error_drop() {
         let task_id = TaskId::new();
         assert!(map_event(ai_event(EventKind::Connected { model: None }), task_id).is_none());
-        assert!(
-            map_event(
-                ai_event(EventKind::Error {
-                    message: "boom".into()
-                }),
-                task_id,
-            )
-            .is_none()
-        );
+        assert!(map_event(
+            ai_event(EventKind::Error {
+                message: "boom".into()
+            }),
+            task_id,
+        )
+        .is_none());
     }
 
     #[tokio::test]

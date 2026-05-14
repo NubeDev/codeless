@@ -557,8 +557,7 @@ impl RunnerFactory for DefaultRunnerFactory {
         if let Some(template_src) = job.template_yaml.as_ref() {
             match JobTemplate::parse_yaml(template_src) {
                 Ok(template) if self.enable_claude => {
-                    let mut runner =
-                        TemplateRunner::new(template).with_store(self.store.clone());
+                    let mut runner = TemplateRunner::new(template).with_store(self.store.clone());
                     if let Some(sp) = &self.claude_system_prompt {
                         runner = runner.with_system_prompt(sp.clone());
                     }

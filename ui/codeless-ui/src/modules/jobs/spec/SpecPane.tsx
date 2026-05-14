@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import type { MutableRefObject } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +22,10 @@ interface Props {
   // in tab] button. The dashboard-singleton mount path doesn't pass
   // this; the tabbed-workspace mount does.
   onOpenFile?: (absPath: string) => void;
+  // Expose the pane's refresh function to the parent so a shared
+  // refresh icon in the header can trigger a reload of both the job
+  // row and the spec file listing.
+  refreshRef?: MutableRefObject<(() => void) | null>;
 }
 
 const SCOPE_PRESET = `# Scope
@@ -47,7 +52,7 @@ the stages, what to verify between them, and what counts as done.
 // commit, its own dirty indicator. Per-section save = small commits =
 // a clean `git log` of "what evolved when". The user never has to
 // reason about a 'global' save covering edits across files.
-export function SpecPane({ jobId, onOpenFile }: Props) {
+export function SpecPane({ jobId, onOpenFile, refreshRef }: Props) {
   const rpc = useRpc();
   const { data: job, refetch: refetchJob } = useJob(jobId);
   const [listing, setListing] = useState<ListJobFilesResult | null>(null);
@@ -66,6 +71,18 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
       setLoading(false);
     }
   }, [rpc, jobId]);
+
+  // Expose the combined refresh to the parent via the ref.
+  useEffect(() => {
+    if (refreshRef) {
+      refreshRef.current = () => {
+        setLoading(true);
+        void refresh();
+        refetchJob();
+      };
+      return () => { refreshRef.current = null; };
+    }
+  }, [refreshRef, refresh, refetchJob]);
 
   useEffect(() => {
     setLoading(true);

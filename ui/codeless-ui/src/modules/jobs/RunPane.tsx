@@ -8,12 +8,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
   useEventStream,
+  useEventStreamWithState,
   useRpc,
   type EventEnvelope,
   type Job,
   type JobDiffResult,
   type JobId,
   type JobStatus,
+  type SseConnectionStatus,
   type StageRollup,
 } from "@/lib/rpc";
 
@@ -1086,14 +1088,24 @@ export function JobChat({
     };
   }, [rpc, job.id, job.worktree_path]);
 
+  // Last time the event stream delivered *any* envelope for this
+  // job. Drives the agent-activity pill so the user has continuous
+  // visual confirmation the agent is doing something during long
+  // tool runs, not just a frozen "streaming" bubble.
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null);
+
   // Subscribe to the chat session's event stream. We use the job's
   // own id as session_id so every chat turn for this job shares the
   // same filter; the streaming-text accumulator distinguishes turns
-  // by task_id (one task per agent_chat call).
-  useEventStream(
+  // by task_id (one task per agent_chat call). The `withState`
+  // variant additionally exposes SSE liveness — connecting / live /
+  // reconnecting / disconnected — so the chat header can show the
+  // user when the stream itself is the reason updates have stopped.
+  const sseStatus = useEventStreamWithState(
     { scope: "job", job_id: job.id },
     useCallback(
       (env) => {
+        setLastEventAt(Date.now());
         // Streaming-token accumulator for the in-flight assistant
         // bubble (unchanged behaviour). Distinguished by task_id so
         // a stray event for an earlier turn cannot pollute the
@@ -1320,9 +1332,17 @@ export function JobChat({
         <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
           chat with this job
         </div>
-        <span className="text-muted-foreground font-mono text-[10px]">
-          {loaded ? `${history.length} message${history.length === 1 ? "" : "s"}` : "loading…"}
-        </span>
+        <div className="flex items-center gap-2">
+          <AgentActivityIndicator
+            sseStatus={sseStatus}
+            lastEventAt={lastEventAt}
+            jobStatus={job.status}
+            chatBusy={busy || streaming != null}
+          />
+          <span className="text-muted-foreground font-mono text-[10px]">
+            {loaded ? `${history.length} message${history.length === 1 ? "" : "s"}` : "loading…"}
+          </span>
+        </div>
       </div>
 
       {history.length === 0 && !streaming && loaded && (
@@ -2141,7 +2161,9 @@ function fmtCents(c: number): string {
 // One tool call, collapsed by default. Shows tool name + a
 // one-line argument summary (`Edit …/stage.rs`, `Bash <cmd>`) so
 // the user can scan a long run without expanding every card.
-// Click to reveal the pretty-printed args JSON.
+// Click to reveal a Copilot-style preview: a +/- diff for
+// Edit/MultiEdit, the new file body for Write, and the raw
+// pretty-printed args JSON as a fallback for everything else.
 function ToolCallCard({
   tool,
   argsJson,
@@ -2153,6 +2175,10 @@ function ToolCallCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const summary = toolCallSummary(tool, argsJson);
+  const preview = useMemo(
+    () => editPreviewFromArgs(tool, argsJson),
+    [tool, argsJson],
+  );
   return (
     <li>
       <button
@@ -2168,17 +2194,291 @@ function ToolCallCard({
               {summary}
             </span>
           )}
+          {preview && preview.totals && (
+            <span className="ml-2 font-mono text-[10px]">
+              <span className="text-emerald-500">+{preview.totals.adds}</span>{" "}
+              <span className="text-destructive">−{preview.totals.dels}</span>
+            </span>
+          )}
         </span>
         <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
           {wallClockTime(ts)}
         </span>
       </button>
-      {expanded && (
+      {expanded && preview && (
+        <EditPreviewBody preview={preview} />
+      )}
+      {expanded && !preview && (
         <pre className="border-border/40 bg-background/60 mt-1 max-h-72 overflow-auto rounded border px-2 py-1.5 font-mono text-[10px] whitespace-pre-wrap break-all">
           {prettyJson(argsJson)}
         </pre>
       )}
     </li>
+  );
+}
+
+// Parsed shape of an edit-style tool call ready for inline render.
+// `hunks` is one entry per edit; `Write`/`NotebookEdit` produce a
+// single hunk with `dels = []`. Returns null for tools whose args
+// don't fit this shape (Bash, Read, Grep, …) so the card falls back
+// to the raw-JSON view.
+interface EditPreview {
+  path: string | null;
+  hunks: Array<{ dels: string[]; adds: string[] }>;
+  totals: { adds: number; dels: number } | null;
+}
+
+function editPreviewFromArgs(
+  tool: string,
+  argsJson: string,
+): EditPreview | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argsJson);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const args = parsed as Record<string, unknown>;
+  const path =
+    (typeof args.file_path === "string" && args.file_path) ||
+    (typeof args.path === "string" && args.path) ||
+    (typeof args.notebook_path === "string" && args.notebook_path) ||
+    null;
+  const displayPath = path ? relativiseWorktreePath(path) : null;
+
+  const splitLines = (s: string): string[] =>
+    s === "" ? [] : s.replace(/\n$/, "").split("\n");
+
+  switch (tool) {
+    case "Edit":
+    case "NotebookEdit": {
+      const oldS = typeof args.old_string === "string" ? args.old_string : null;
+      const newS = typeof args.new_string === "string" ? args.new_string : null;
+      if (oldS == null || newS == null) return null;
+      const dels = splitLines(oldS);
+      const adds = splitLines(newS);
+      return {
+        path: displayPath,
+        hunks: [{ dels, adds }],
+        totals: { adds: adds.length, dels: dels.length },
+      };
+    }
+    case "MultiEdit": {
+      const edits = Array.isArray(args.edits) ? args.edits : null;
+      if (!edits) return null;
+      const hunks: Array<{ dels: string[]; adds: string[] }> = [];
+      let adds = 0;
+      let dels = 0;
+      for (const e of edits) {
+        if (!e || typeof e !== "object") continue;
+        const er = e as Record<string, unknown>;
+        const oldS = typeof er.old_string === "string" ? er.old_string : null;
+        const newS = typeof er.new_string === "string" ? er.new_string : null;
+        if (oldS == null || newS == null) continue;
+        const d = splitLines(oldS);
+        const a = splitLines(newS);
+        hunks.push({ dels: d, adds: a });
+        dels += d.length;
+        adds += a.length;
+      }
+      if (hunks.length === 0) return null;
+      return { path: displayPath, hunks, totals: { adds, dels } };
+    }
+    case "Write": {
+      const content = typeof args.content === "string" ? args.content : null;
+      if (content == null) return null;
+      const adds = splitLines(content);
+      return {
+        path: displayPath,
+        hunks: [{ dels: [], adds }],
+        totals: { adds: adds.length, dels: 0 },
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+// Render the parsed edit preview as a small unified-diff body.
+// Same visual vocabulary as `FilesChanged` so an Edit card in the
+// chat reads identically to the same change in the Files tab.
+function EditPreviewBody({ preview }: { preview: EditPreview }) {
+  return (
+    <div className="border-border/40 bg-background/60 mt-1 overflow-hidden rounded border">
+      {preview.path && (
+        <div className="border-border/40 text-muted-foreground border-b px-2 py-1 font-mono text-[10px]">
+          {preview.path}
+        </div>
+      )}
+      <div className="max-h-72 overflow-auto px-2 py-1.5">
+        {preview.hunks.map((h, i) => (
+          <pre
+            key={i}
+            className="font-mono text-[10.5px] leading-tight whitespace-pre"
+          >
+            {i > 0 && (
+              <span className="text-muted-foreground bg-muted/30 block">
+                @@ edit {i + 1} @@
+              </span>
+            )}
+            {h.dels.map((line, j) => (
+              <span key={`d-${j}`} className="text-destructive block">
+                {`- ${line || ""}`}
+              </span>
+            ))}
+            {h.adds.map((line, j) => (
+              <span key={`a-${j}`} className="text-emerald-500 block">
+                {`+ ${line || ""}`}
+              </span>
+            ))}
+          </pre>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Best-effort path shortener: drop everything up to and including
+// the worktree root marker, leaving the repo-relative path the
+// user thinks in. Falls through unchanged for paths that don't
+// match (the model occasionally writes already-relative paths).
+function relativiseWorktreePath(absolute: string): string {
+  const m = absolute.match(/\.codeless\/worktrees\/job-[^/]+\/(.*)$/);
+  return m ? m[1] : absolute;
+}
+
+// Continuous-feedback indicator: tells the user whether the SSE
+// stream is healthy and, when running, how recently the agent
+// produced any signal at all (tool call, token, lifecycle event).
+// This is the load-bearing fix for "long agent tasks feel dead":
+// even when no message is streaming, the seconds-since-last-event
+// counter ticks so the user sees the agent is actually working.
+function AgentActivityIndicator({
+  sseStatus,
+  lastEventAt,
+  jobStatus,
+  chatBusy,
+}: {
+  sseStatus: SseConnectionStatus;
+  lastEventAt: number | null;
+  jobStatus: JobStatus;
+  chatBusy: boolean;
+}) {
+  // Re-render once per second while the job (or chat) is active so
+  // the "last update Ns ago" label keeps moving. We don't subscribe
+  // to a global tick when the job is idle — the indicator is then
+  // just a static SSE-state pill.
+  const active =
+    chatBusy || jobStatus === "running" || jobStatus === "awaiting-review";
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => force((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
+  // Stream-level state takes priority over agent-level signal: a
+  // disconnected stream is "we don't know if it's working" not
+  // "it stopped working", and the user needs to see that distinction.
+  if (sseStatus.state === "disconnected") {
+    return (
+      <ActivityPill tone="bad" dot label="disconnected" />
+    );
+  }
+  if (sseStatus.state === "reconnecting") {
+    const secs = Math.floor(sseStatus.since_ms / 1000);
+    return (
+      <ActivityPill
+        tone="warn"
+        dot
+        pulse
+        label={`reconnecting · ${secs}s`}
+      />
+    );
+  }
+  if (sseStatus.state === "connecting") {
+    return <ActivityPill tone="neutral" dot pulse label="connecting…" />;
+  }
+
+  // SSE is live. Now report agent-level activity.
+  if (!active) {
+    return <ActivityPill tone="good" dot label="live" />;
+  }
+  const ago =
+    lastEventAt == null ? null : Math.max(0, Math.floor((Date.now() - lastEventAt) / 1000));
+  if (ago == null) {
+    return <ActivityPill tone="neutral" dot pulse label="waiting for agent…" />;
+  }
+  // 30s is the same threshold the SSE layer uses for stale; once we
+  // cross it without an event the user deserves a stronger signal
+  // than "still thinking".
+  if (ago >= 30) {
+    return (
+      <ActivityPill
+        tone="warn"
+        dot
+        label={`no agent activity · ${ago}s`}
+      />
+    );
+  }
+  return (
+    <ActivityPill
+      tone="good"
+      dot
+      pulse
+      label={`agent active · ${ago}s ago`}
+    />
+  );
+}
+
+function ActivityPill({
+  tone,
+  label,
+  dot,
+  pulse,
+}: {
+  tone: "good" | "neutral" | "warn" | "bad";
+  label: string;
+  dot?: boolean;
+  pulse?: boolean;
+}) {
+  const palette =
+    tone === "good"
+      ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+      : tone === "warn"
+        ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
+        : tone === "bad"
+          ? "border-destructive/50 text-destructive"
+          : "border-border/60 text-muted-foreground";
+  const dotColour =
+    tone === "good"
+      ? "bg-emerald-500"
+      : tone === "warn"
+        ? "bg-amber-500"
+        : tone === "bad"
+          ? "bg-destructive"
+          : "bg-muted-foreground";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+        palette,
+      )}
+      role="status"
+      aria-live="polite"
+    >
+      {dot && (
+        <span
+          className={cn(
+            "h-1.5 w-1.5 rounded-full",
+            dotColour,
+            pulse && "animate-pulse",
+          )}
+        />
+      )}
+      {label}
+    </span>
   );
 }
 

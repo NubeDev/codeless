@@ -237,6 +237,73 @@ impl HostFs {
             .map(|d| UnixMillis(d.as_millis() as i64));
         Ok(Some((kind, size, mtime)))
     }
+
+    /// Create a file. When `content` is `None` the file is empty.
+    /// When `overwrite` is false and the path already exists, returns
+    /// `Io(AlreadyExists)`.
+    pub async fn create_file(
+        &self,
+        rel: &str,
+        content: Option<&str>,
+        overwrite: bool,
+    ) -> Result<(), FsError> {
+        let abs = self.resolve(rel)?;
+        if !overwrite && abs.exists() {
+            return Err(FsError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("file already exists: {}", abs.display()),
+            )));
+        }
+        let bytes = content.unwrap_or("").as_bytes();
+        tokio::fs::write(&abs, bytes).await?;
+        Ok(())
+    }
+
+    /// Create a directory. When `recursive` is true, missing ancestors
+    /// are created; when false, the parent must already exist.
+    pub async fn create_dir(&self, rel: &str, recursive: bool) -> Result<(), FsError> {
+        let abs = self.resolve(rel)?;
+        if recursive {
+            tokio::fs::create_dir_all(&abs).await?;
+        } else {
+            tokio::fs::create_dir(&abs).await?;
+        }
+        Ok(())
+    }
+
+    /// Move (rename) a path. Both `from` and `to` must resolve within
+    /// the sandbox. When `overwrite` is false and `to` already exists,
+    /// returns `AlreadyExists`.
+    pub async fn rename(&self, from: &str, to: &str, overwrite: bool) -> Result<(), FsError> {
+        let abs_from = self.resolve(from)?;
+        let abs_to = self.resolve(to)?;
+        if !overwrite && abs_to.exists() {
+            return Err(FsError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("target already exists: {}", abs_to.display()),
+            )));
+        }
+        tokio::fs::rename(&abs_from, &abs_to).await?;
+        Ok(())
+    }
+
+    /// Delete a path. When `recursive` is true, directories are
+    /// removed with all contents; when false, only empty directories
+    /// and files are removed.
+    pub async fn delete(&self, rel: &str, recursive: bool) -> Result<(), FsError> {
+        let abs = self.resolve(rel)?;
+        let meta = tokio::fs::symlink_metadata(&abs).await?;
+        if meta.is_dir() {
+            if recursive {
+                tokio::fs::remove_dir_all(&abs).await?;
+            } else {
+                tokio::fs::remove_dir(&abs).await?;
+            }
+        } else {
+            tokio::fs::remove_file(&abs).await?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

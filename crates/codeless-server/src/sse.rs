@@ -5,11 +5,11 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::sse::{Event as SseEvent, KeepAlive, Sse},
 };
-use std::time::Duration;
 use codeless_rpc::{EventFilter, Since};
 use codeless_types::{EventCursor, JobId};
 use futures_util::stream::{Stream, StreamExt};
 use serde::Deserialize;
+use std::time::Duration;
 
 use crate::{auth::constant_time_eq, AppState, AuthMode};
 
@@ -61,9 +61,7 @@ pub(crate) async fn events_handler(
     // reflects the in-flight cursor the *browser* believes it last saw,
     // which is strictly newer than a stale query value carried over
     // from a closed tab.
-    let since: Since = parse_last_event_id(&headers)
-        .or(q.since)
-        .map(EventCursor);
+    let since: Since = parse_last_event_id(&headers).or(q.since).map(EventCursor);
 
     let stream = state
         .rpc

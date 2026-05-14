@@ -201,11 +201,19 @@ pub(super) async fn resume_job(rpc: &InProcessRpc, args: ResumeJobArgs) -> RpcRe
 }
 
 pub(super) async fn get_job(rpc: &InProcessRpc, args: GetJobArgs) -> RpcResult<Job> {
-    rpc.store
+    let mut job = rpc
+        .store
         .get_job(args.job_id)
         .await
         .map_err(super::db_err)?
-        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+    let before = job.template_yaml.clone();
+    if let Err(e) = resync_template_from_disk(rpc, &mut job).await {
+        tracing::warn!(job_id = %job.id, error = %e, "get_job: template resync skipped");
+    } else if job.template_yaml != before {
+        rpc.store.update_job(&job).await.map_err(super::db_err)?;
+    }
+    Ok(job)
 }
 
 pub(super) async fn list_jobs(rpc: &InProcessRpc, args: ListJobsArgs) -> RpcResult<ListJobsResult> {
@@ -446,7 +454,12 @@ pub(super) async fn job_report(
 }
 
 pub(super) async fn stop_job(rpc: &InProcessRpc, args: StopJobArgs) -> RpcResult<()> {
-    let Some(mut job) = rpc.store.get_job(args.job_id).await.map_err(super::db_err)? else {
+    let Some(mut job) = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+    else {
         return Err(RpcError::NotFound(format!("job {}", args.job_id)));
     };
     match job.status {
@@ -479,8 +492,86 @@ pub(super) async fn stop_job(rpc: &InProcessRpc, args: StopJobArgs) -> RpcResult
     Ok(())
 }
 
+pub(super) async fn update_job_fields(
+    rpc: &InProcessRpc,
+    args: codeless_rpc::UpdateJobArgs,
+) -> RpcResult<Job> {
+    let mut job = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+    match job.status {
+        JobStatus::Draft | JobStatus::Stopped | JobStatus::Failed | JobStatus::Completed => {}
+        _ => {
+            return Err(RpcError::Conflict(format!(
+                "job {} is {:?}; only Draft or terminal jobs can be edited",
+                job.id, job.status
+            )));
+        }
+    }
+    if let Some(v) = args.runner {
+        job.runner = v;
+    }
+    if let Some(v) = args.model {
+        job.model = if v.is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = args.permission_mode {
+        job.permission_mode = if v.is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = args.effort {
+        job.effort = if v.is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = args.cost_cap_cents {
+        job.cost_cap_cents = codeless_types::CostCents(v);
+    }
+    if let Some(v) = args.wall_clock_cap_ms {
+        job.wall_clock_cap_ms = v;
+    }
+    if let Some(v) = args.branch {
+        job.branch = v;
+    }
+    if !rpc.store.update_job(&job).await.map_err(super::db_err)? {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    Ok(job)
+}
+
+pub(super) async fn delete_job(
+    rpc: &InProcessRpc,
+    args: codeless_rpc::DeleteJobArgs,
+) -> RpcResult<()> {
+    let job = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+    if matches!(job.status, JobStatus::Running | JobStatus::Queued) {
+        return Err(RpcError::Conflict(format!(
+            "job {} is {:?}; stop it before deleting",
+            job.id, job.status
+        )));
+    }
+    if !rpc
+        .store
+        .delete_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+    {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    Ok(())
+}
+
 pub(super) async fn pause_job(rpc: &InProcessRpc, args: PauseJobArgs) -> RpcResult<()> {
-    let Some(mut job) = rpc.store.get_job(args.job_id).await.map_err(super::db_err)? else {
+    let Some(mut job) = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+    else {
         return Err(RpcError::NotFound(format!("job {}", args.job_id)));
     };
     if !matches!(job.status, JobStatus::Running | JobStatus::AwaitingReview) {
@@ -699,9 +790,8 @@ pub(super) async fn resync_template_from_disk(
     let Some(db_yaml) = job.template_yaml.clone() else {
         return Ok(());
     };
-    let prev = JobTemplate::parse_yaml(&db_yaml).map_err(|e| {
-        RpcError::Internal(format!("job {} stored template parse: {e}", job.id))
-    })?;
+    let prev = JobTemplate::parse_yaml(&db_yaml)
+        .map_err(|e| RpcError::Internal(format!("job {} stored template parse: {e}", job.id)))?;
 
     let repo = rpc
         .store

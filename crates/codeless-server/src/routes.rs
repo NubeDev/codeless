@@ -7,17 +7,17 @@ use axum::{
 };
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
-    ListJobFilesArgs,
-    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
+    ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -41,6 +41,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/start_job", post(start_job))
         .route("/rpc/resume_job", post(resume_job))
         .route("/rpc/rerun_job", post(rerun_job))
+        .route("/rpc/update_job", post(update_job))
+        .route("/rpc/delete_job", post(delete_job))
         .route("/rpc/gc_worktrees", post(gc_worktrees))
         .route("/rpc/job_diff", post(job_diff))
         .route("/rpc/list_reviews", post(list_reviews))
@@ -52,6 +54,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/fs_write_file", post(fs_write_file))
         .route("/rpc/fs_stat", post(fs_stat))
         .route("/rpc/fs_cwd", post(fs_cwd))
+        .route("/rpc/fs_create_file", post(fs_create_file))
+        .route("/rpc/fs_create_dir", post(fs_create_dir))
+        .route("/rpc/fs_move", post(fs_move))
+        .route("/rpc/fs_delete", post(fs_delete))
         .route("/rpc/list_job_files", post(list_job_files))
         .route("/rpc/read_job_file", post(read_job_file))
         .route("/rpc/write_job_file", post(write_job_file))
@@ -218,6 +224,24 @@ async fn rerun_job(
     st.rpc.rerun_job(args).await.map(Json).map_err(map_err)
 }
 
+async fn update_job(
+    State(st): State<AppState>,
+    Json(args): Json<UpdateJobArgs>,
+) -> HandlerResult<Job> {
+    st.rpc.update_job(args).await.map(Json).map_err(map_err)
+}
+
+async fn delete_job(
+    State(st): State<AppState>,
+    Json(args): Json<DeleteJobArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .delete_job(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
 async fn resume_job(
     State(st): State<AppState>,
     Json(args): Json<ResumeJobArgs>,
@@ -304,6 +328,47 @@ async fn fs_cwd(
     _body: Option<Json<Value>>,
 ) -> HandlerResult<FsCwdResult> {
     st.rpc.fs_cwd().await.map(Json).map_err(map_err)
+}
+
+async fn fs_create_file(
+    State(st): State<AppState>,
+    Json(args): Json<FsCreateFileArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .fs_create_file(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn fs_create_dir(
+    State(st): State<AppState>,
+    Json(args): Json<FsCreateDirArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .fs_create_dir(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn fs_move(State(st): State<AppState>, Json(args): Json<FsMoveArgs>) -> HandlerResult<Value> {
+    st.rpc
+        .fs_move(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn fs_delete(
+    State(st): State<AppState>,
+    Json(args): Json<FsDeleteArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .fs_delete(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
 }
 
 /// Unauthenticated snapshot of the server's configuration. The UI hits

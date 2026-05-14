@@ -4,16 +4,17 @@ use codeless_types::{Job, Repo, Review};
 use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
-    JobReportArgs, JobReportResult, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -41,6 +42,19 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job>;
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
+
+    /// Patch mutable fields on a job that is not currently running.
+    /// Only `Draft` and terminal states (`Stopped`, `Failed`,
+    /// `Completed`) are editable. Errors with `Conflict` if the job
+    /// is `Running`, `Queued`, `Paused`, or `AwaitingReview`.
+    async fn update_job(&self, args: UpdateJobArgs) -> RpcResult<Job>;
+
+    /// Hard-delete a job row and all associated events, stages, and
+    /// tasks. The on-disk job directory (under `.codeless/jobs/`) is
+    /// left intact so the user can recover files manually. Errors
+    /// with `Conflict` if the job is `Running` or `Queued` — stop
+    /// it first.
+    async fn delete_job(&self, args: DeleteJobArgs) -> RpcResult<()>;
 
     /// Pause a `Running` (or `AwaitingReview`) job so the user can
     /// resume it later from the captured `Stage.session_id`. The
@@ -148,6 +162,22 @@ pub trait RpcServer: Send + Sync + 'static {
     /// configured — same shape as the other `fs_*` methods when the
     /// runtime was built without `with_fs`.
     async fn fs_cwd(&self) -> RpcResult<FsCwdResult>;
+
+    /// Create a file. Empty content when `content` is null. Rejects
+    /// with `Conflict` when `overwrite` is false and the path exists.
+    async fn fs_create_file(&self, args: FsCreateFileArgs) -> RpcResult<()>;
+
+    /// Create a directory. When `recursive` is true, missing ancestors
+    /// are created.
+    async fn fs_create_dir(&self, args: FsCreateDirArgs) -> RpcResult<()>;
+
+    /// Move (rename) a path within the sandbox. Rejects with
+    /// `Conflict` when `overwrite` is false and the target exists.
+    async fn fs_move(&self, args: FsMoveArgs) -> RpcResult<()>;
+
+    /// Delete a file or directory. When `recursive` is true,
+    /// directories are removed with all contents.
+    async fn fs_delete(&self, args: FsDeleteArgs) -> RpcResult<()>;
 
     /// List the user-authored files under
     /// `<repo>/.codeless/jobs/<template.name>/`. The result also

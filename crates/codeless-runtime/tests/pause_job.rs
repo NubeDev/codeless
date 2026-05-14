@@ -69,7 +69,10 @@ async fn pause_job_moves_running_to_paused_with_user_reason() {
     let after = rpc.get_job(GetJobArgs { job_id: job.id }).await.unwrap();
     assert_eq!(after.status, JobStatus::Paused);
     assert_eq!(after.stop_reason, Some(StopReason::User));
-    assert!(after.ended_at.is_some(), "paused row should record ended_at");
+    assert!(
+        after.ended_at.is_some(),
+        "paused row should record ended_at"
+    );
     assert_eq!(after.branch, original_branch, "branch preserved");
     assert_eq!(
         after.cost_cap_cents.0, original_cost_cap,

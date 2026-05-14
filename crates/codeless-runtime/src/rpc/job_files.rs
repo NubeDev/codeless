@@ -1,4 +1,4 @@
-use codeless_adapters_host::{GitCommitError, GitDiffError, commit_paths, diff_against};
+use codeless_adapters_host::{commit_paths, diff_against, GitCommitError, GitDiffError};
 use codeless_rpc::{
     DeleteJobFileArgs, JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs,
     ListJobFilesResult, ReadJobFileArgs, ReadJobFileResult, RpcError, RpcResult,
@@ -9,8 +9,8 @@ use codeless_types::Event;
 
 use super::InProcessRpc;
 use crate::job_dir::{
-    self, FilenameError, JobLayout, directory_path, flat_yaml_path, sanitise_filename,
-    template_yaml_path,
+    self, directory_path, flat_yaml_path, sanitise_filename, template_yaml_path, FilenameError,
+    JobLayout,
 };
 use crate::template::JobTemplate;
 use crate::time::now_ms;
@@ -106,9 +106,7 @@ pub(super) async fn read_job_file(
     let filename = sanitise_filename(&args.filename).map_err(filename_err)?;
     let path = directory_path(&repo_path, &name).join(&filename);
     let content = std::fs::read_to_string(&path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            RpcError::NotFound(format!("job file {name}/{filename}"))
-        }
+        std::io::ErrorKind::NotFound => RpcError::NotFound(format!("job file {name}/{filename}")),
         _ => RpcError::Internal(format!("read {}: {e}", path.display())),
     })?;
     Ok(ReadJobFileResult { content })
@@ -156,10 +154,7 @@ pub(super) async fn write_job_file(
     Ok(WriteJobFileResult { name: filename })
 }
 
-pub(super) async fn delete_job_file(
-    rpc: &InProcessRpc,
-    args: DeleteJobFileArgs,
-) -> RpcResult<()> {
+pub(super) async fn delete_job_file(rpc: &InProcessRpc, args: DeleteJobFileArgs) -> RpcResult<()> {
     let (repo_path, name) = resolve_repo_and_template_name(rpc, args.job_id).await?;
     let filename = sanitise_filename(&args.filename).map_err(filename_err)?;
     let path = directory_path(&repo_path, &name).join(&filename);
@@ -232,9 +227,8 @@ pub(super) async fn update_job_template(
 
     let tpl_path = template_yaml_path(&repo_path, &parsed.name);
     if let Some(parent) = tpl_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            RpcError::Internal(format!("create job dir {}: {e}", parent.display()))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| RpcError::Internal(format!("create job dir {}: {e}", parent.display())))?;
     }
     std::fs::write(&tpl_path, &args.template_yaml)
         .map_err(|e| RpcError::Internal(format!("write {}: {e}", tpl_path.display())))?;
@@ -295,10 +289,20 @@ pub(super) async fn write_handover(
 }
 
 pub(super) async fn job_diff(rpc: &InProcessRpc, args: JobDiffArgs) -> RpcResult<JobDiffResult> {
-    let Some(job) = rpc.store.get_job(args.job_id).await.map_err(super::db_err)? else {
+    let Some(job) = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+    else {
         return Err(RpcError::NotFound(format!("job {}", args.job_id)));
     };
-    let Some(repo) = rpc.store.get_repo(job.repo_id).await.map_err(super::db_err)? else {
+    let Some(repo) = rpc
+        .store
+        .get_repo(job.repo_id)
+        .await
+        .map_err(super::db_err)?
+    else {
         return Err(RpcError::NotFound(format!("repo {}", job.repo_id)));
     };
     // `Job.branch` is the canonical branch name written back by the
@@ -338,9 +342,11 @@ pub(super) async fn job_diff(rpc: &InProcessRpc, args: JobDiffArgs) -> RpcResult
 /// a single commit. Called from `submit_job` so the spec exists on disk
 /// from the moment the row appears in the dashboard.
 ///
-/// Refuses (`Conflict`) if the directory already exists. `template.yaml`
-/// parse errors surface as `InvalidArgument` so the UI can show the
-/// line/column inline.
+/// When the directory already exists (a previous job used the same
+/// name), we reuse it: `template.yaml` is overwritten with the new
+/// template, but `SCOPE.md` and `WORKFLOW.md` are only written when
+/// they don't already exist — so stage docs, notes, and prior scope
+/// survive across re-submissions.
 pub(super) fn seed_job_directory(
     repo_local_path: &str,
     template_yaml: &str,
@@ -350,32 +356,40 @@ pub(super) fn seed_job_directory(
 
     let repo_path = std::path::PathBuf::from(repo_local_path);
     let dir = directory_path(&repo_path, &parsed.name);
-    if dir.exists() {
-        return Err(RpcError::Conflict(format!(
-            "a job named `{}` already exists at {}; pick a different name",
-            parsed.name,
-            dir.display(),
-        )));
+    let reuse = dir.exists();
+    if !reuse {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| RpcError::Internal(format!("create job dir {}: {e}", dir.display())))?;
     }
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| RpcError::Internal(format!("create job dir {}: {e}", dir.display())))?;
 
     let tpl_path = template_yaml_path(&repo_path, &parsed.name);
     std::fs::write(&tpl_path, template_yaml)
         .map_err(|e| RpcError::Internal(format!("write {}: {e}", tpl_path.display())))?;
 
+    let mut paths = vec![tpl_path];
+
     let scope_path = dir.join("SCOPE.md");
-    std::fs::write(&scope_path, SCOPE_PRESET)
-        .map_err(|e| RpcError::Internal(format!("write {}: {e}", scope_path.display())))?;
+    if !scope_path.exists() {
+        std::fs::write(&scope_path, SCOPE_PRESET)
+            .map_err(|e| RpcError::Internal(format!("write {}: {e}", scope_path.display())))?;
+        paths.push(scope_path);
+    }
 
     let workflow_path = dir.join("WORKFLOW.md");
-    std::fs::write(&workflow_path, WORKFLOW_PRESET)
-        .map_err(|e| RpcError::Internal(format!("write {}: {e}", workflow_path.display())))?;
+    if !workflow_path.exists() {
+        std::fs::write(&workflow_path, WORKFLOW_PRESET)
+            .map_err(|e| RpcError::Internal(format!("write {}: {e}", workflow_path.display())))?;
+        paths.push(workflow_path);
+    }
 
     commit_paths(
         &repo_path,
-        &format!("scaffold job: {}", parsed.name),
-        &[tpl_path, scope_path, workflow_path],
+        &format!(
+            "{} job: {}",
+            if reuse { "reuse" } else { "scaffold" },
+            parsed.name
+        ),
+        &paths,
     )
     .map_err(git_commit_err)?;
 
