@@ -14,11 +14,13 @@ pub mod git_diff;
 pub mod secrets;
 pub mod worktree;
 
-pub use ai_chat::{parse_cli_runner_id, probe_available_cli_runners, run_chat, AgentChatError};
+pub use ai_chat::{
+    AgentChatError, ChatRunCfg, parse_cli_runner_id, probe_available_cli_runners, run_chat,
+};
 pub use ai_runner_bridge::{forward_events, map_event};
 pub use claude::probe as probe_claude;
 pub use fs::{FsError, HostFs};
-pub use git_commit::{commit_paths, GitCommitError};
-pub use git_diff::{diff_against, DiffFile, GitDiffError};
+pub use git_commit::{GitCommitError, commit_paths};
+pub use git_diff::{DiffFile, GitDiffError, diff_against};
 pub use secrets::{SecretError, SecretStore};
 pub use worktree::{OnDiskWorktree, WorktreeError, WorktreeHandle, WorktreeManager};

@@ -34,19 +34,14 @@ pub enum JobStatus {
 }
 
 /// Where the agent's edits land. See SCOPE.md "Workspace mode".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkspaceMode {
     /// Edits land in the user's existing local clone on a fresh branch.
+    #[default]
     InRepo,
     /// Edits land in a separate `git worktree add` checkout.
     Worktree,
-}
-
-impl Default for WorkspaceMode {
-    fn default() -> Self {
-        Self::InRepo
-    }
 }
 
 /// Why a job left the running set early. `None` while running or after a

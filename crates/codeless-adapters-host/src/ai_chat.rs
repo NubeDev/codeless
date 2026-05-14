@@ -62,33 +62,32 @@ pub async fn probe_available_cli_runners(registry: &Registry) -> Vec<String> {
     out
 }
 
+/// Input to a single chat turn. Bundles the prompt-facing parameters
+/// that vary per call, leaving infrastructure (registry, task id,
+/// cancel token) at the call site.
+pub struct ChatRunCfg {
+    pub provider: Provider,
+    pub prompt: String,
+    pub cwd: PathBuf,
+    /// Comma-separated list of built-in tool names forwarded as `--tools`
+    /// to the claude binary. `None` leaves the full default tool set.
+    /// Spec mode sets this to restrict the agent to read + edit tools.
+    /// This is `--tools` (built-in tool restriction), not `--allowed-tools`
+    /// (MCP server permissions — distinct flag, different semantics).
+    pub tools: Option<String>,
+}
+
 /// Run one chat turn. Spawns the runner, drains its event stream
 /// through the bridge translator, hands each `Event` to `publish`.
-///
-/// `task_id` is the envelope task id under which every emitted event
-/// is tagged; the publisher closure carries whatever job-id / session-
-/// id correlation the caller wants on the wire (typically the chat
-/// `session_id` passed in `AgentChatArgs`).
-///
-/// `cwd` is the directory the runner is invoked in. The footer panel
-/// runs against the server's working directory by default, but the
-/// signature takes a `PathBuf` so a later "pick a directory" surface
-/// can land without churning the call site.
 ///
 /// Cancellation: when `cancel` fires, the spawned child is killed
 /// (CLI runners hold their `Child` with `kill_on_drop(true)`), the
 /// upstream `mpsc::Sender` drops, the bridge forwarder drains the
-/// remaining events, and this function returns `Ok(())`. The caller
-/// observes the cancelled outcome through the `Event::AiMessageComplete`
-/// (or absence thereof) on the event stream — no separate result
-/// signal is needed.
+/// remaining events, and this function returns `Ok(())`.
 pub async fn run_chat<F, Fut, E>(
     registry: Arc<Registry>,
-    provider: Provider,
-    prompt: String,
-    cwd: PathBuf,
+    cfg: ChatRunCfg,
     task_id: TaskId,
-    allowed_tools: Option<String>,
     publish: F,
     cancel: CancellationToken,
 ) -> Result<(), AgentChatError<E>>
@@ -98,7 +97,7 @@ where
     E: Send + 'static,
 {
     let runner = registry
-        .get(&provider)
+        .get(&cfg.provider)
         .ok_or(AgentChatError::RunnerNotRegistered)?;
 
     let (tx, rx) = mpsc::channel::<AiEvent>(CHANNEL_CAPACITY);
@@ -106,14 +105,18 @@ where
     let forwarder = tokio::spawn(async move { forward_events(rx, task_id, publish).await });
 
     let input = RunnerInput::Cli(CliCfg {
-        prompt,
-        work_dir: Some(cwd.to_string_lossy().into_owned()),
+        prompt: cfg.prompt,
+        work_dir: Some(cfg.cwd.to_string_lossy().into_owned()),
         // Same headless rationale as `ClaudeRunnerAdapter`: no TTY user
         // is available to approve mid-run tool calls, and the runner
         // executes in the server's cwd rather than a worktree, so any
         // approval prompt would deadlock the chat turn.
         permission_mode: Some(PermissionMode::Bypass),
-        allowed_tools,
+        // `CliCfg::tools` restricts which built-in tools (Bash, Read, …)
+        // the agent may call, forwarded as `--tools` to the claude binary.
+        // This is the right knob for spec mode's tool restriction — distinct
+        // from `allowed_tools` which gates MCP server permissions only.
+        tools: cfg.tools,
         ..Default::default()
     });
 
