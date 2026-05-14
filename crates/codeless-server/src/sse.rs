@@ -2,9 +2,10 @@ use std::convert::Infallible;
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::sse::{Event as SseEvent, KeepAlive, Sse},
 };
+use std::time::Duration;
 use codeless_rpc::{EventFilter, Since};
 use codeless_types::{EventCursor, JobId};
 use futures_util::stream::{Stream, StreamExt};
@@ -31,6 +32,7 @@ pub(crate) struct EventsQuery {
 
 pub(crate) async fn events_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<EventsQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, String)> {
     if let AuthMode::Required { token } = &state.auth {
@@ -53,7 +55,15 @@ pub(crate) async fn events_handler(
         }
     };
 
-    let since: Since = q.since.map(EventCursor);
+    // EventSource's automatic reconnect ships `Last-Event-ID` in the
+    // request header; a fresh client mint passes `?since=` in the query.
+    // The header takes precedence when both are present because it
+    // reflects the in-flight cursor the *browser* believes it last saw,
+    // which is strictly newer than a stale query value carried over
+    // from a closed tab.
+    let since: Since = parse_last_event_id(&headers)
+        .or(q.since)
+        .map(EventCursor);
 
     let stream = state
         .rpc
@@ -81,5 +91,27 @@ pub(crate) async fn events_handler(
         }
     });
 
-    Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
+    // Heartbeat every 20 s. Intermediaries (nginx default 60 s,
+    // cloudflare 100 s, most NAT-bound corporate proxies anywhere
+    // from 30-90 s) silently kill an idle TCP stream — the SSE
+    // comment frame keeps it alive and gives the client a
+    // "stream is healthy" liveness signal it can time out against
+    // when even comments stop arriving.
+    Ok(Sse::new(sse_stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(20))
+            .text("heartbeat"),
+    ))
+}
+
+/// Parse `Last-Event-ID` per the WHATWG EventSource spec — value is
+/// the most recent event id the browser saw. EventSource ships it
+/// automatically on auto-reconnect; a custom client may set it
+/// manually. Invalid / missing values fall through to the `?since=`
+/// query param.
+fn parse_last_event_id(headers: &HeaderMap) -> Option<i64> {
+    headers
+        .get("Last-Event-ID")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<i64>().ok())
 }

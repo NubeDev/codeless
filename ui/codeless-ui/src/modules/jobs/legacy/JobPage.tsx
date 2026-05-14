@@ -5,13 +5,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import {
-  useEventStream,
+  useEventStreamWithState,
   useJob,
   useRepos,
   useRpc,
   type Job,
   type JobId,
   type Repo,
+  type SseConnectionStatus,
 } from "@/lib/rpc";
 
 import { ConversationPane } from "./ConversationPane";
@@ -144,13 +145,20 @@ export function JobPage({
     setSelectedStageId(null);
   }, [jobId]);
 
-  // Live-refetch the job row whenever the runtime emits a
-  // status-changing event for it. Without this, clicking `[run]`
-  // would flip status server-side but the header badge would stay
-  // `draft` until reload — and a second click would 409. The cost is
-  // one `get_job` per emitted lifecycle event for the focused job;
-  // the dashboard already does the same calculus per row.
-  useEventStream(
+  // Live-refetch the job row on events that mutate the row itself.
+  //
+  // Lifecycle events (`job-promoted`, `job-started`, ...) flip
+  // `status` — without the refetch the header badge stays `draft`
+  // after clicking `[run]` and a second click would 409.
+  //
+  // `task-completed` carries the per-task cost delta that the
+  // runtime has already written into `jobs.cost_cents`. Without the
+  // refetch the cost / cap bars look frozen for minutes at a time
+  // even while the agent is visibly burning tokens, which was the
+  // most prominent complaint in the 2026-05-13 dogfood session.
+  // One `get_job` per `task-completed` is cheap (a couple per
+  // minute, tops, for a CLI runner).
+  const sseStatus = useEventStreamWithState(
     { scope: "job", job_id: jobId },
     useCallback(
       (env) => {
@@ -160,7 +168,8 @@ export function JobPage({
           t === "job-started" ||
           t === "job-completed" ||
           t === "job-failed" ||
-          t === "job-stopped"
+          t === "job-stopped" ||
+          t === "task-completed"
         ) {
           refetchJob();
         }
@@ -168,6 +177,23 @@ export function JobPage({
       [refetchJob],
     ),
   );
+
+  // Tick `now` once a second while the job is non-terminal so the
+  // wall-clock cell in the header advances without a server round-
+  // trip. Pure client-side; cleans up on terminal status or unmount.
+  // Anything that needs "live elapsed" reads off this (today only
+  // the header `WallClockCell`).
+  const isLive =
+    job?.status === "running" ||
+    job?.status === "queued" ||
+    job?.status === "awaiting-review";
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!isLive) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isLive]);
 
   // Keep the URL in sync with the active job tab so a reload or
   // shareable link lands the user back on the same view. Only the
@@ -226,6 +252,8 @@ export function JobPage({
       <JobHeader
         job={job}
         repo={repo}
+        now={now}
+        sseStatus={sseStatus}
         onOpenJobTab={onOpenJobTab}
         refetchJob={refetchJob}
       />
@@ -313,11 +341,15 @@ const TERMINAL_STATUSES: Set<Job["status"]> = new Set([
 function JobHeader({
   job,
   repo,
+  now,
+  sseStatus,
   onOpenJobTab,
   refetchJob,
 }: {
   job: Job;
   repo: Repo | null;
+  now: number;
+  sseStatus: SseConnectionStatus;
   onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
   refetchJob: () => void;
 }) {
@@ -362,6 +394,7 @@ function JobHeader({
     <div className="border-border/50 shrink-0 border-b">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
         <StatusBadge status={job.status} />
+        <SseStatusDot status={sseStatus} />
         <h2 className="min-w-0 truncate text-sm font-semibold">{title}</h2>
         {repo && (
           <span className="text-muted-foreground text-xs">
@@ -379,7 +412,7 @@ function JobHeader({
             startedAt={job.started_at}
             endedAt={job.ended_at}
             capMs={job.wall_clock_cap_ms}
-            now={Date.now()}
+            now={now}
           />
           <CostCell cost={job.cost_cents} cap={job.cost_cap_cents} />
           {isRunning && (
@@ -518,6 +551,46 @@ function WorktreeSection({ job, repo }: { job: Job; repo: Repo | null }) {
       </div>
     </ScrollArea>
   );
+}
+
+// Small liveness dot beside the status badge. Always visible (even
+// when `live`, so its absence vs. presence isn't a signal — that
+// would be too easy to miss). Coloured by state, with a title that
+// gives the user enough to decide whether to wait or refresh.
+function SseStatusDot({ status }: { status: SseConnectionStatus }) {
+  const { tone, label } = sseStatusVisual(status);
+  return (
+    <span
+      className={cn(
+        "inline-block h-2 w-2 shrink-0 rounded-full",
+        tone,
+        status.state === "reconnecting" && "animate-pulse",
+      )}
+      title={label}
+      aria-label={label}
+    />
+  );
+}
+
+function sseStatusVisual(status: SseConnectionStatus): {
+  tone: string;
+  label: string;
+} {
+  switch (status.state) {
+    case "connecting":
+      return { tone: "bg-muted-foreground/60", label: "connecting…" };
+    case "live":
+      return { tone: "bg-emerald-500", label: "live" };
+    case "reconnecting": {
+      const s = Math.round(status.since_ms / 1000);
+      return {
+        tone: "bg-amber-500",
+        label: s > 0 ? `reconnecting for ${s}s` : "reconnecting…",
+      };
+    }
+    case "disconnected":
+      return { tone: "bg-destructive", label: "disconnected" };
+  }
 }
 
 function FactRow({

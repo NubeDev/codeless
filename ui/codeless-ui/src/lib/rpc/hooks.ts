@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useRpc } from "./provider";
-import type { RpcClient } from "./client";
+import type { RpcClient, SseConnectionStatus } from "./client";
 import type { EventFilter, ListJobsArgs, ListReviewsArgs } from "./methods";
 import type { EventEnvelope, Job, JobId, Repo, Review } from "./wire";
 
@@ -230,6 +230,8 @@ interface SharedSubscription {
    *  show "waiting for events…" in any panel that mounts after the
    *  initial EventSource replay finishes. */
   buffer: EventEnvelope[];
+  stateListeners: Set<(s: SseConnectionStatus) => void>;
+  lastStatus: SseConnectionStatus;
   cancel: () => void;
 }
 const SHARED_SUBSCRIPTIONS = new WeakMap<
@@ -243,6 +245,7 @@ function joinSubscription(
   filter: EventFilter,
   since: number,
   listener: (env: EventEnvelope) => void,
+  stateListener?: (s: SseConnectionStatus) => void,
 ): () => void {
   let perRpc = SHARED_SUBSCRIPTIONS.get(rpc);
   if (!perRpc) {
@@ -253,41 +256,91 @@ function joinSubscription(
   if (!shared) {
     const listeners = new Set<(env: EventEnvelope) => void>();
     const buffer: EventEnvelope[] = [];
-    const stream = rpc.subscribe(filter, since);
-    const iter = stream[Symbol.asyncIterator]();
-    let cancelled = false;
-    shared = {
+    const stateListeners = new Set<(s: SseConnectionStatus) => void>();
+    const initialStatus: SseConnectionStatus = {
+      state: "connecting",
+      since_ms: 0,
+      last_cursor: null,
+    };
+    const sharedRef: SharedSubscription = {
       listeners,
       buffer,
-      cancel: () => {
-        cancelled = true;
-        iter.return?.();
-      },
+      stateListeners,
+      lastStatus: initialStatus,
+      cancel: () => {},
     };
-    perRpc.set(key, shared);
-    (async () => {
-      try {
-        while (true) {
-          const r = await iter.next();
-          if (r.done || cancelled) return;
-          buffer.push(r.value);
-          for (const cb of listeners) {
-            try {
-              cb(r.value);
-            } catch {
-              // Listener errors must not break the shared pump.
-            }
-          }
-        }
-      } catch {
-        // Stream errors end iteration; consumers that re-mount will
-        // recreate the shared subscription on next listener join.
-      } finally {
-        if (perRpc?.get(key) === shared) {
-          perRpc.delete(key);
+    perRpc.set(key, sharedRef);
+
+    const onEvent = (env: EventEnvelope) => {
+      buffer.push(env);
+      for (const cb of listeners) {
+        try {
+          cb(env);
+        } catch {
+          // Listener errors must not break the shared pump.
         }
       }
-    })();
+    };
+    const onState = (s: SseConnectionStatus) => {
+      sharedRef.lastStatus = s;
+      for (const cb of stateListeners) {
+        try {
+          cb(s);
+        } catch {
+          // State-listener errors must not break the shared pump.
+        }
+      }
+      // A clean `disconnected` (only emitted on cancel) is the
+      // teardown signal — drop the shared entry so the next listener
+      // join recreates the subscription instead of attaching to a
+      // dead one. Reconnecting is *not* terminal; the managed SSE
+      // core will recover on its own.
+      if (s.state === "disconnected" && perRpc?.get(key) === sharedRef) {
+        perRpc.delete(key);
+      }
+    };
+
+    // Prefer the liveness-observable variant when the transport
+    // implements it (HttpSseClient does; mock and Tauri do not). The
+    // iterable form still works but state stays `connecting` forever
+    // because those transports have no real connection failure mode.
+    if (rpc.subscribeWithState) {
+      const cancel = rpc.subscribeWithState(filter, since, onEvent, onState);
+      sharedRef.cancel = cancel;
+    } else {
+      const stream = rpc.subscribe(filter, since);
+      const iter = stream[Symbol.asyncIterator]();
+      let cancelled = false;
+      sharedRef.cancel = () => {
+        cancelled = true;
+        iter.return?.();
+        onState({ state: "disconnected", since_ms: 0, last_cursor: null });
+      };
+      // Iterable transports have no real connection state — flip to
+      // `live` immediately so consumers don't render "connecting…"
+      // forever against the mock client.
+      onState({ state: "live", since_ms: 0, last_cursor: null });
+      (async () => {
+        try {
+          while (true) {
+            const r = await iter.next();
+            if (r.done || cancelled) return;
+            onEvent(r.value);
+          }
+        } catch {
+          // Stream errors end iteration.
+        } finally {
+          if (!cancelled) {
+            onState({
+              state: "disconnected",
+              since_ms: 0,
+              last_cursor: null,
+            });
+          }
+        }
+      })();
+    }
+    shared = sharedRef;
   }
   // Replay buffered events so late joiners see the full history.
   for (const env of shared.buffer) {
@@ -298,11 +351,23 @@ function joinSubscription(
     }
   }
   shared.listeners.add(listener);
+  if (stateListener) {
+    shared.stateListeners.add(stateListener);
+    // Replay the last-known state to the freshly-joined listener so
+    // it doesn't have to wait for the next transition to render the
+    // right badge.
+    try {
+      stateListener(shared.lastStatus);
+    } catch {
+      // Initial-state listener errors are non-fatal.
+    }
+  }
+  const capturedShared = shared;
   return () => {
-    if (!shared) return;
-    shared.listeners.delete(listener);
-    if (shared.listeners.size === 0) {
-      shared.cancel();
+    capturedShared.listeners.delete(listener);
+    if (stateListener) capturedShared.stateListeners.delete(stateListener);
+    if (capturedShared.listeners.size === 0) {
+      capturedShared.cancel();
       perRpc?.delete(key);
     }
   };
@@ -333,4 +398,45 @@ export function useEventStream(
     return leave;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, rpc]);
+}
+
+// Liveness-observable variant. Returns the current SSE connection
+// status alongside subscribing to the event stream — the JobPage and
+// dashboard use this for the "live / reconnecting / disconnected"
+// badge. Identity of the returned status object is stable per state
+// transition (not per render) so it's safe to put in a useEffect
+// dep array.
+export function useEventStreamWithState(
+  filter: EventFilter,
+  onEvent: (env: EventEnvelope) => void,
+  since: number = 0,
+): SseConnectionStatus {
+  const rpc = useRpc();
+  const cbRef = useRef(onEvent);
+  cbRef.current = onEvent;
+  const [status, setStatus] = useState<SseConnectionStatus>({
+    state: "connecting",
+    since_ms: 0,
+    last_cursor: null,
+  });
+
+  const key = JSON.stringify({ filter, since });
+  useEffect(() => {
+    const leave = joinSubscription(
+      rpc,
+      key,
+      filter,
+      since,
+      (env) => {
+        cbRef.current(env);
+      },
+      (s) => {
+        setStatus(s);
+      },
+    );
+    return leave;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, rpc]);
+
+  return status;
 }
