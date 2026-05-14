@@ -131,6 +131,62 @@ fn stage_session_captured_round_trips() {
 }
 
 #[test]
+fn verify_step_event_labels_and_payloads_round_trip() {
+    let stage = StageId::new();
+
+    let started = Event::VerifyStepStarted {
+        stage_id: stage,
+        step_index: 0,
+        name: "cargo check".into(),
+    };
+    let v = serde_json::to_value(&started).unwrap();
+    assert_eq!(v["type"], "verify-step-started");
+    assert_eq!(v["stage_id"], stage.to_string());
+    assert_eq!(v["step_index"], 0);
+    assert_eq!(v["name"], "cargo check");
+    let back: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(back, started);
+
+    let passed = Event::VerifyStepPassed {
+        stage_id: stage,
+        step_index: 1,
+        name: "cargo test".into(),
+        duration_ms: 4321,
+    };
+    let v = serde_json::to_value(&passed).unwrap();
+    assert_eq!(v["type"], "verify-step-passed");
+    assert_eq!(v["duration_ms"], 4321);
+    let back: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(back, passed);
+
+    let failed = Event::VerifyStepFailed {
+        stage_id: stage,
+        step_index: 2,
+        name: "cargo clippy".into(),
+        exit_code: 101,
+        tail: "error: lints failed\n".into(),
+    };
+    let v = serde_json::to_value(&failed).unwrap();
+    assert_eq!(v["type"], "verify-step-failed");
+    assert_eq!(v["exit_code"], 101);
+    assert_eq!(v["tail"], "error: lints failed\n");
+    let back: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(back, failed);
+
+    let skipped = Event::VerifyStepSkipped {
+        stage_id: stage,
+        step_index: 3,
+        name: "cargo fmt".into(),
+        reason: "prior-gate-red".into(),
+    };
+    let v = serde_json::to_value(&skipped).unwrap();
+    assert_eq!(v["type"], "verify-step-skipped");
+    assert_eq!(v["reason"], "prior-gate-red");
+    let back: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(back, skipped);
+}
+
+#[test]
 fn repo_added_event_label() {
     let ev = Event::RepoAdded {
         repo_id: RepoId::new(),

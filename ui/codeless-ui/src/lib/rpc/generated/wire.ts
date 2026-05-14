@@ -287,7 +287,47 @@ ordinal?: number;
  *  `REVIEW ` prefix preserved). Same source of truth the UI
  *  already uses; persisted on the `Stage` row.
  */
-name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | 
+name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } |
+/**
+ *  One layered verify gate started running. Paired with
+ *  `verify-step-passed`, `verify-step-failed`, or
+ *  `verify-step-skipped`. The outer `verify-started` /
+ *  `verify-passed` / `verify-failed` envelopes still bracket the
+ *  stage's whole verify run; the per-step events let the UI render
+ *  a glyph per gate (`○ → ● → ✓` or `!`) instead of a single bit.
+ */
+{ type: "verify-step-started"; stage_id: StageId;
+/**
+ *  0-based index into the stage's `verify:` list. The
+ *  list ordering is the contract; the recorder pins
+ *  per-step rows by `(stage_id, step_index)`.
+ */
+step_index: number; name: string } | { type: "verify-step-passed"; stage_id: StageId; step_index: number; name: string;
+/**
+ *  Wall-clock duration of the step's shell invocation, in
+ *  milliseconds. Surfaced in the UI's per-gate row so a slow
+ *  gate is visible without opening the log.
+ */
+duration_ms: number } | { type: "verify-step-failed"; stage_id: StageId; step_index: number; name: string; exit_code: number;
+/**
+ *  Last ~16 lines of merged stdout+stderr from the step. Kept
+ *  short on the wire so the UI doesn't have to fetch a separate
+ *  log blob to render the failure preview.
+ */
+tail: string } |
+/**
+ *  A verify step that did not run because a prior step in the same
+ *  stage already failed. Emitted (rather than silently omitted) so
+ *  the UI can render a `-` or grey-out glyph instead of leaving the
+ *  row blank, per SCOPE.md operator-visibility hard rule.
+ */
+{ type: "verify-step-skipped"; stage_id: StageId; step_index: number; name: string;
+/**
+ *  Today the only reason is `"prior-gate-red"`; carried as a
+ *  string so future reasons (e.g. timeout, cancelled) can land
+ *  without a wire-format change.
+ */
+reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } |
 /**
  *  First-and-only-time capture of the runner-supplied session id
  *  for this stage. Emitted by `StageRecorder` the first time a

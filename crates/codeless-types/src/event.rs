@@ -111,6 +111,56 @@ pub enum Event {
     VerifyPassed { stage_id: StageId },
     #[serde(rename = "verify-failed")]
     VerifyFailed { stage_id: StageId, exit_code: i32 },
+    /// One layered verify gate started running. Paired with
+    /// `verify-step-passed`, `verify-step-failed`, or
+    /// `verify-step-skipped`. The outer `verify-started` /
+    /// `verify-passed` / `verify-failed` envelopes still bracket the
+    /// stage's whole verify run; the per-step events let the UI render
+    /// a glyph per gate (`○ → ● → ✓` or `!`) instead of a single bit.
+    #[serde(rename = "verify-step-started")]
+    VerifyStepStarted {
+        stage_id: StageId,
+        /// 0-based index into the stage's `verify:` list. The
+        /// list ordering is the contract; the recorder pins
+        /// per-step rows by `(stage_id, step_index)`.
+        step_index: u32,
+        name: String,
+    },
+    #[serde(rename = "verify-step-passed")]
+    VerifyStepPassed {
+        stage_id: StageId,
+        step_index: u32,
+        name: String,
+        /// Wall-clock duration of the step's shell invocation, in
+        /// milliseconds. Surfaced in the UI's per-gate row so a slow
+        /// gate is visible without opening the log.
+        duration_ms: u64,
+    },
+    #[serde(rename = "verify-step-failed")]
+    VerifyStepFailed {
+        stage_id: StageId,
+        step_index: u32,
+        name: String,
+        exit_code: i32,
+        /// Last ~16 lines of merged stdout+stderr from the step. Kept
+        /// short on the wire so the UI doesn't have to fetch a separate
+        /// log blob to render the failure preview.
+        tail: String,
+    },
+    /// A verify step that did not run because a prior step in the same
+    /// stage already failed. Emitted (rather than silently omitted) so
+    /// the UI can render a `-` or grey-out glyph instead of leaving the
+    /// row blank, per SCOPE.md operator-visibility hard rule.
+    #[serde(rename = "verify-step-skipped")]
+    VerifyStepSkipped {
+        stage_id: StageId,
+        step_index: u32,
+        name: String,
+        /// Today the only reason is `"prior-gate-red"`; carried as a
+        /// string so future reasons (e.g. timeout, cancelled) can land
+        /// without a wire-format change.
+        reason: String,
+    },
     #[serde(rename = "stage-completed")]
     StageCompleted {
         stage_id: StageId,
