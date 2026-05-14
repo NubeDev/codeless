@@ -1,0 +1,14 @@
+name: simple-python-file
+goal: Write a simple Python script (hello.py) and attempt to run it once, reporting any failure.
+
+stages:
+  - id: stage-1
+    title: Write the Python file
+    file: stage-1-write.md
+    size: S
+
+  - id: stage-2
+    title: Run the Python file
+    file: stage-2-run.md
+    size: S
+    depends_on: [stage-1]
