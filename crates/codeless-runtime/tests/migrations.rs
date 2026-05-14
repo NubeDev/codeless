@@ -183,3 +183,15 @@ async fn expected_indexes_are_present() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stages_table_includes_goal_and_acceptance() {
+    let pool = fresh_db().await;
+    let cols = columns(&pool, "stages").await;
+    for required in ["goal", "acceptance"] {
+        assert!(
+            cols.contains(&required.to_string()),
+            "stages table missing {required}; got {cols:?}"
+        );
+    }
+}

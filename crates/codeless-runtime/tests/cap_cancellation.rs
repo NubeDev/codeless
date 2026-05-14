@@ -130,6 +130,8 @@ async fn cost_cap_pauses_when_stage_has_captured_session() {
         started_at: Some(codeless_types::UnixMillis(0)),
         ended_at: None,
         session_id: Some("sess-captured".into()),
+        goal: None,
+        acceptance: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
 

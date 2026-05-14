@@ -162,15 +162,62 @@ impl SqliteStore {
         Ok(res.rows_affected() > 0)
     }
 
+    /// Hard-delete a job row and all associated events, stages, and
+    /// tasks. Caller is responsible for checking the job is not
+    /// running before calling.
+    pub async fn delete_job(&self, id: JobId) -> sqlx::Result<bool> {
+        let id_s = id.to_string();
+        // Delete child rows first (events, tasks via stages, stages).
+        sqlx::query("DELETE FROM events WHERE job_id = ?")
+            .bind(&id_s)
+            .execute(&self.pool)
+            .await?;
+        // Tasks reference stages, so delete tasks for this job's stages.
+        sqlx::query(
+            "DELETE FROM tasks WHERE stage_id IN \
+             (SELECT id FROM stages WHERE job_id = ?)",
+        )
+        .bind(&id_s)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("DELETE FROM stages WHERE job_id = ?")
+            .bind(&id_s)
+            .execute(&self.pool)
+            .await?;
+        // Reviews reference stages that reference jobs — already
+        // cleaned up above via the cascade on stages.
+        sqlx::query(
+            "DELETE FROM reviews WHERE stage_id NOT IN \
+             (SELECT id FROM stages)",
+        )
+        .execute(&self.pool)
+        .await?;
+        let res = sqlx::query("DELETE FROM jobs WHERE id = ?")
+            .bind(&id_s)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     pub async fn insert_stage(&self, stage: &Stage) -> sqlx::Result<()> {
         // `INSERT OR REPLACE`: the StageRecorder runs as a backlog
         // replay + a live tail, so two StageStarted envelopes for the
         // same `StageId` are normal at startup. Idempotent upsert is
         // simpler than a conditional update + insert dance.
+        // `acceptance` is JSON-encoded so the column stays a single
+        // nullable TEXT. `None` writes SQL NULL — distinct from
+        // `Some(vec![])`, which round-trips as `"[]"` and means "the
+        // author explicitly listed no acceptance criteria yet".
+        let acceptance_json = stage
+            .acceptance
+            .as_ref()
+            .map(|a| serde_json::to_string(a).map_err(serde_err))
+            .transpose()?;
         sqlx::query(
             "INSERT OR REPLACE INTO stages \
-             (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at, session_id) \
-             VALUES (?,?,?,?,?,?,?,?,?)",
+             (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at, session_id, \
+              goal, acceptance) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(stage.id.to_string())
         .bind(stage.job_id.to_string())
@@ -181,6 +228,8 @@ impl SqliteStore {
         .bind(stage.started_at.map(|t| t.0))
         .bind(stage.ended_at.map(|t| t.0))
         .bind(&stage.session_id)
+        .bind(&stage.goal)
+        .bind(&acceptance_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -306,7 +355,7 @@ impl SqliteStore {
         use sqlx::Row;
         let rows = sqlx::query(
             "SELECT s.id, s.ordinal, s.name, s.status, s.verify_cmd, \
-                    s.started_at, s.ended_at, s.session_id, \
+                    s.started_at, s.ended_at, s.session_id, s.goal, s.acceptance, \
                     COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
                     COUNT(t.id) AS task_count \
              FROM stages s \
@@ -346,6 +395,8 @@ impl SqliteStore {
                         // `RunResult.session_id`; once set, never
                         // cleared.
                         session_id: row.try_get("session_id")?,
+                        goal: row.try_get("goal")?,
+                        acceptance: parse_acceptance(row.try_get("acceptance")?)?,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,
@@ -366,7 +417,7 @@ impl SqliteStore {
         use sqlx::Row;
         let row = sqlx::query(
             "SELECT id, job_id, ordinal, name, status, verify_cmd, \
-                    started_at, ended_at, session_id \
+                    started_at, ended_at, session_id, goal, acceptance \
              FROM stages WHERE id = ?",
         )
         .bind(id.to_string())
@@ -392,6 +443,8 @@ impl SqliteStore {
                 .try_get::<Option<i64>, _>("ended_at")?
                 .map(codeless_types::UnixMillis),
             session_id: row.try_get("session_id")?,
+            goal: row.try_get("goal")?,
+            acceptance: parse_acceptance(row.try_get("acceptance")?)?,
         }))
     }
 
@@ -798,6 +851,17 @@ fn stage_status_label(s: StageStatus) -> &'static str {
         StageStatus::Passed => "passed",
         StageStatus::Failed => "failed",
     }
+}
+
+/// Decode the JSON-encoded `stages.acceptance` column. `None` (SQL
+/// NULL) and `Some` (a JSON array literal) are kept distinct so the
+/// wire round-trip preserves "field omitted" vs. "field set to empty
+/// list" — the UI overview reads the empty-list case as "stage has no
+/// acceptance criteria yet", which is different from "this stage
+/// predates the field".
+fn parse_acceptance(raw: Option<String>) -> sqlx::Result<Option<Vec<String>>> {
+    raw.map(|s| serde_json::from_str::<Vec<String>>(&s).map_err(serde_err))
+        .transpose()
 }
 
 fn parse_stage_status(s: &str) -> StageStatus {

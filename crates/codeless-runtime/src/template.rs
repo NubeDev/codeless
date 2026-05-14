@@ -32,6 +32,9 @@
 //! flat strings and structured maps. The runtime always sees the
 //! structured form after `parse_yaml`.
 
+use std::time::Duration;
+
+use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
 /// Parsed shape of the per-job YAML.
@@ -55,6 +58,13 @@ pub struct JobTemplate {
     /// title strings (`- "do thing"`) deserialize the same way as
     /// `{ title: "do thing" }` so existing YAML keeps working.
     pub stages: Vec<StageSpec>,
+    /// How long a warm runner session is held open for interactive
+    /// resumption after the last activity, before it is archived and
+    /// future input opens a fresh session. `None` ⇒ runtime default
+    /// (30 minutes). YAML accepts either a humantime string (`"30m"`,
+    /// `"1h"`, `"45s"`) or a bare integer interpreted as seconds.
+    #[serde(default, deserialize_with = "deserialize_optional_duration")]
+    pub session_idle_timeout: Option<Duration>,
 }
 
 /// One stage's authored content. The wire form is permissive — a
@@ -77,6 +87,32 @@ pub struct StageSpec {
     /// "no extras"; we keep `Option` so the YAML round-trip can omit
     /// the key entirely when the user has not opted in.
     pub docs: Option<Vec<String>>,
+    /// One-sentence statement of what success for this stage looks
+    /// like. Persisted on the `Stage` row and surfaced in the UI
+    /// overview. `None` when the YAML omitted the key.
+    pub goal: Option<String>,
+    /// Acceptance criteria bullets in author order. The UI renders
+    /// each as a tickable line; `None` ≠ `Some(vec![])` is preserved
+    /// so the round-trip can tell "key omitted" from "explicitly
+    /// empty list".
+    pub acceptance: Option<Vec<String>>,
+    /// Layered verify gates, run in order on stage completion. The
+    /// bare `verify_cmd: "<shell>"` legacy form parses as a single
+    /// step named `"verify"`; the structured form is a list of
+    /// `{name, run}` pairs. The vec is empty (not absent) when the
+    /// YAML omits both keys, so `verify.is_empty()` is the wire
+    /// signal for "no verify gate".
+    pub verify: Vec<VerifyStep>,
+}
+
+/// One layer of a stage's verify gate. Named so the UI can render a
+/// per-step row (e.g. `cargo check`, `cargo test`, `cargo clippy`)
+/// with its own pass/fail state, rather than collapsing the whole
+/// stage's verify into a single bit.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct VerifyStep {
+    pub name: String,
+    pub run: String,
 }
 
 impl StageSpec {
@@ -87,18 +123,27 @@ impl StageSpec {
                 title: rest.trim().to_string(),
                 review: true,
                 docs: None,
+                goal: None,
+                acceptance: None,
+                verify: Vec::new(),
             }
         } else if trimmed == "REVIEW" {
             Self {
                 title: String::new(),
                 review: true,
                 docs: None,
+                goal: None,
+                acceptance: None,
+                verify: Vec::new(),
             }
         } else {
             Self {
                 title: trimmed.to_string(),
                 review: false,
                 docs: None,
+                goal: None,
+                acceptance: None,
+                verify: Vec::new(),
             }
         }
     }
@@ -128,15 +173,44 @@ impl<'de> Deserialize<'de> for StageSpec {
             review: bool,
             #[serde(default)]
             docs: Option<Vec<String>>,
+            #[serde(default)]
+            goal: Option<String>,
+            #[serde(default)]
+            acceptance: Option<Vec<String>>,
+            // Sugar: a bare string under `verify_cmd:` wraps into a
+            // single-step list named "verify". This keeps the existing
+            // `verify_cmd: "cargo test"` shape working unchanged.
+            #[serde(default)]
+            verify_cmd: Option<String>,
+            #[serde(default)]
+            verify: Option<Vec<VerifyStep>>,
         }
 
         match Raw::deserialize(d)? {
             Raw::Bare(s) => Ok(StageSpec::from_title(&s)),
-            Raw::Structured(s) => Ok(StageSpec {
-                title: s.title,
-                review: s.review,
-                docs: s.docs,
-            }),
+            Raw::Structured(s) => {
+                let verify = match (s.verify, s.verify_cmd) {
+                    (Some(_), Some(_)) => {
+                        return Err(D::Error::custom(
+                            "stage may set either `verify:` or `verify_cmd:`, not both",
+                        ));
+                    }
+                    (Some(v), None) => v,
+                    (None, Some(cmd)) => vec![VerifyStep {
+                        name: "verify".to_string(),
+                        run: cmd,
+                    }],
+                    (None, None) => Vec::new(),
+                };
+                Ok(StageSpec {
+                    title: s.title,
+                    review: s.review,
+                    docs: s.docs,
+                    goal: s.goal,
+                    acceptance: s.acceptance,
+                    verify,
+                })
+            }
         }
     }
 }
@@ -203,6 +277,53 @@ impl std::fmt::Display for TemplateError {
 }
 
 impl std::error::Error for TemplateError {}
+
+/// Permissive duration parser for YAML: accepts a bare integer
+/// (seconds), or a suffixed string with one of `s` / `m` / `h` / `d`.
+/// Kept in this module rather than pulled from a crate because the
+/// runtime already declines on adding `humantime` and the surface we
+/// need is small. Rejects fractional values — the use sites are
+/// human-authored caps, not measurement intervals.
+fn deserialize_optional_duration<'de, D>(d: D) -> Result<Option<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Seconds(u64),
+        Text(String),
+    }
+
+    match Option::<Raw>::deserialize(d)? {
+        None => Ok(None),
+        Some(Raw::Seconds(s)) => Ok(Some(Duration::from_secs(s))),
+        Some(Raw::Text(s)) => parse_duration_str(s.trim())
+            .map(Some)
+            .map_err(D::Error::custom),
+    }
+}
+
+fn parse_duration_str(s: &str) -> Result<Duration, String> {
+    if s.is_empty() {
+        return Err("empty duration".to_string());
+    }
+    let (num_part, unit) = s.split_at(
+        s.find(|c: char| !c.is_ascii_digit())
+            .ok_or_else(|| format!("duration `{s}` missing unit (expected s/m/h/d)"))?,
+    );
+    let n: u64 = num_part
+        .parse()
+        .map_err(|e| format!("duration `{s}` has non-numeric magnitude: {e}"))?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 60 * 60,
+        "d" => n * 60 * 60 * 24,
+        other => return Err(format!("duration `{s}` has unknown unit `{other}`")),
+    };
+    Ok(Duration::from_secs(secs))
+}
 
 #[cfg(test)]
 mod tests {
@@ -318,6 +439,124 @@ stages:
             Err(TemplateError::EmptyField("stages")) => {}
             other => panic!("expected EmptyField(stages), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_structured_stage_with_goal_and_acceptance() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - title: scaffold
+    goal: render the empty form
+    acceptance:
+      - form mounts without runtime errors
+      - submit button is disabled while pristine
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert_eq!(t.stages[0].goal.as_deref(), Some("render the empty form"));
+        assert_eq!(
+            t.stages[0].acceptance.as_deref().unwrap(),
+            &[
+                "form mounts without runtime errors".to_string(),
+                "submit button is disabled while pristine".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn verify_cmd_string_sugar_wraps_into_single_step_list() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - title: build
+    verify_cmd: cargo test
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert_eq!(t.stages[0].verify.len(), 1);
+        assert_eq!(t.stages[0].verify[0].name, "verify");
+        assert_eq!(t.stages[0].verify[0].run, "cargo test");
+    }
+
+    #[test]
+    fn structured_verify_list_round_trips() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - title: build
+    verify:
+      - name: check
+        run: cargo check
+      - name: test
+        run: cargo test
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert_eq!(t.stages[0].verify.len(), 2);
+        assert_eq!(t.stages[0].verify[0].name, "check");
+        assert_eq!(t.stages[0].verify[0].run, "cargo check");
+        assert_eq!(t.stages[0].verify[1].name, "test");
+        assert_eq!(t.stages[0].verify[1].run, "cargo test");
+    }
+
+    #[test]
+    fn omitted_new_fields_default_to_none_or_empty() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - title: bare
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert!(t.stages[0].goal.is_none());
+        assert!(t.stages[0].acceptance.is_none());
+        assert!(t.stages[0].verify.is_empty());
+        assert!(t.session_idle_timeout.is_none());
+    }
+
+    #[test]
+    fn session_idle_timeout_parses_humantime_strings() {
+        let src = r#"
+name: x
+goal: y
+session_idle_timeout: 30m
+stages:
+  - one
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert_eq!(t.session_idle_timeout, Some(Duration::from_secs(30 * 60)));
+    }
+
+    #[test]
+    fn session_idle_timeout_parses_bare_seconds_integer() {
+        let src = r#"
+name: x
+goal: y
+session_idle_timeout: 90
+stages:
+  - one
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert_eq!(t.session_idle_timeout, Some(Duration::from_secs(90)));
+    }
+
+    #[test]
+    fn verify_cmd_and_verify_together_rejected() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - title: build
+    verify_cmd: cargo test
+    verify:
+      - name: check
+        run: cargo check
+"#;
+        assert!(matches!(
+            JobTemplate::parse_yaml(src),
+            Err(TemplateError::Yaml(_))
+        ));
     }
 
     #[test]

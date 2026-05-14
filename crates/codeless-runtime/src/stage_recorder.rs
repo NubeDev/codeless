@@ -80,6 +80,11 @@ async fn handle_event(
                     // below — the runner does not know its session id
                     // when the stage opens.
                     session_id: None,
+                    // Set lazily from the template via a separate
+                    // write path; the bare `StageStarted` event does
+                    // not carry the authored docs fields.
+                    goal: None,
+                    acceptance: None,
                 })
                 .await?;
         }

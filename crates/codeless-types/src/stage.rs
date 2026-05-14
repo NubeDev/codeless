@@ -38,4 +38,18 @@ pub struct Stage {
     /// a continuous Claude Code conversation rather than a fresh
     /// codebase-exploration every time.
     pub session_id: Option<String>,
+    /// One-sentence statement of what success for this stage means.
+    /// Authored in the per-stage docs; surfaced in the UI overview so
+    /// the reader doesn't have to open the stage doc to remember the
+    /// intent. `None` for stages authored before the field existed.
+    #[serde(default)]
+    pub goal: Option<String>,
+    /// Acceptance criteria bullets, in author order. The UI renders
+    /// each as a tickable line so the human reviewer can match output
+    /// against the contract the stage was written to. `None` (not
+    /// `Some(vec![])`) for stages authored before the field existed
+    /// so a missing list and a deliberately empty list stay
+    /// distinguishable.
+    #[serde(default)]
+    pub acceptance: Option<Vec<String>>,
 }

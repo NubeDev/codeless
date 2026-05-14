@@ -77,6 +77,8 @@ async fn new_stage(rpc: &InProcessRpc) -> StageId {
         started_at: None,
         ended_at: None,
         session_id: None,
+        goal: None,
+        acceptance: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
     stage.id
