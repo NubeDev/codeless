@@ -1340,7 +1340,11 @@ export function JobChat({
       </ul>
 
       {refetchJob && (
-        <JobActionRow job={job} refetchJob={refetchJob} />
+        <JobActionRow
+          job={job}
+          refetchJob={refetchJob}
+          chatBusy={busy}
+        />
       )}
 
       {(attachments.length > 0 || uploading > 0) && (
@@ -1583,9 +1587,14 @@ const COST_BUMP_PRESETS_CENTS = [500, 1000, 2500, 5000];
 function JobActionRow({
   job,
   refetchJob,
+  chatBusy,
 }: {
   job: Job;
   refetchJob: () => void;
+  // `true` when an in-flight `agent_chat` turn is streaming for this
+  // job. Drives the liveness dot so a chat-over-completed-job still
+  // signals "something is running" in the header.
+  chatBusy: boolean;
 }) {
   const rpc = useRpc();
   const [busy, setBusy] = useState<
@@ -1662,6 +1671,11 @@ function JobActionRow({
   // running with no contextual help). For `completed` jobs the
   // re-run button is the only useful action and it lives here.
   const disabled = busy !== null;
+  // Header dot lights up whenever there is *something* to stop: a
+  // running job driver, an awaiting-review pause, or an in-flight
+  // chat turn over a terminal job.
+  const isLive =
+    status === "running" || status === "awaiting-review" || chatBusy;
   const buttons = (() => {
     if (status === "draft") {
       return (
@@ -1794,7 +1808,20 @@ function JobActionRow({
         </div>
       )}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-muted-foreground text-[10px] uppercase tracking-wide">
+        <span className="text-muted-foreground flex items-center gap-1.5 text-[10px] uppercase tracking-wide">
+          {isLive && (
+            <span
+              className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"
+              title={
+                chatBusy && (status === "running" || status === "awaiting-review")
+                  ? "chat turn streaming · job driver running"
+                  : chatBusy
+                    ? "chat turn streaming"
+                    : "job driver running"
+              }
+              aria-label="live"
+            />
+          )}
           {actionRowLabel(job)}
         </span>
         {buttons}
