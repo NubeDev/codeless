@@ -114,3 +114,25 @@ This worktree's CSV is only 6 readings of one meter (PM-001), so the prior "5 me
 **Energy used** = end − start of `energy_kwh` = **15234.32 − 15234.21 = 0.11 kWh** over the 6-minute window.
 
 Averages: V=239.93, I=4.202 A, P=1008.10 W, PF=0.978.
+
+## user @ 2026-05-14T00:35:05Z
+
+sum the data
+
+sum the data
+
+## assistant @ 2026-05-14T00:35:13Z
+
+Same numbers as just above — this worktree's CSV is 6 rows of PM-001:
+
+| Column | Sum |
+|---|---|
+| voltage_v | 1439.60 |
+| current_a | 25.21 |
+| power_w | 6048.60 |
+| power_factor | 5.87 |
+| energy_kwh (cumulative, sum not meaningful) | 91405.53 |
+
+**Energy used** (end − start of `energy_kwh`): **0.11 kWh** over the 6-minute window.
+
+Is there a different aggregation you want — a specific column, a different file, or the larger 1,440-row CSV from the other worktree?
