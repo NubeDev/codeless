@@ -7,7 +7,8 @@ use crate::methods::{
     CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
-    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    JobReportArgs, JobReportResult, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
     ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs,
     StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
@@ -72,6 +73,14 @@ pub trait RpcServer: Send + Sync + 'static {
     /// (pre-recorder jobs, mock jobs without a template). The UI
     /// renders an event-derived fallback view in that case.
     async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult>;
+
+    /// Structured cost / session / activity report for one job.
+    /// Aggregates stage rows + `ai-message-complete` and `tool-call`
+    /// events into a single response so the UI's Summary tab can
+    /// render the full picture in one round trip. Works mid-run
+    /// (snapshot of state-so-far) and post-run. Returns `NotFound`
+    /// for an unknown job id.
+    async fn job_report(&self, args: JobReportArgs) -> RpcResult<JobReportResult>;
 
     /// Mint a new job that clones the prompt/runner/caps/repo of an
     /// existing one. Returns the newly-queued job. The original job

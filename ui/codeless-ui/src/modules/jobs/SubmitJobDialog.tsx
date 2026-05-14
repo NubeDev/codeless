@@ -141,6 +141,17 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
   // edits the user's actual local clone; worktree creates a separate
   // git worktree checkout for isolation.
   const [workspaceMode, setWorkspaceMode] = useState<"in-repo" | "worktree">("in-repo");
+  // Cost + wall-clock caps. The driver stops a job the moment either
+  // cap is breached, so a too-low default has surfaced as "conflict:
+  // job is Stopped" the user has to resume past. We expose them in
+  // user units (dollars, minutes) and convert at submit so the wire
+  // shape (cents, milliseconds) is unchanged.
+  const [costCapUsd, setCostCapUsd] = useState<string>("5");
+  const [wallClockMin, setWallClockMin] = useState<string>("30");
+  const costCapCents = Math.max(1, Math.round(parseFloat(costCapUsd || "0") * 100));
+  const wallClockMs = Math.max(1, Math.round(parseFloat(wallClockMin || "0") * 60_000));
+  const costCapValid = Number.isFinite(parseFloat(costCapUsd)) && parseFloat(costCapUsd) > 0;
+  const wallClockValid = Number.isFinite(parseFloat(wallClockMin)) && parseFloat(wallClockMin) > 0;
 
   const caps = RUNNER_CAPS[runner];
   const nameSlug = slugifyName(name);
@@ -246,8 +257,8 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
         runner,
         branch,
         workspace_mode: workspaceMode,
-        cost_cap_cents: 500,
-        wall_clock_cap_ms: 30 * 60 * 1000,
+        cost_cap_cents: costCapCents,
+        wall_clock_cap_ms: wallClockMs,
         // `SERVER_PICK` means "no override" — send null so the
         // adapter's default applies. Fields the runner doesn't
         // support stay null even if their state has a stale value.
@@ -416,6 +427,39 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
               )}
             </div>
           )}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="cost-cap">Cost cap (USD)</Label>
+              <input
+                id="cost-cap"
+                type="number"
+                min="0.01"
+                step="0.5"
+                value={costCapUsd}
+                onChange={(e) => setCostCapUsd(e.target.value)}
+                className="border-input bg-background h-8 rounded-md border px-2 text-sm"
+              />
+              <span className="text-muted-foreground text-[10px]">
+                Driver stops the job when spend exceeds this. Resume to
+                bump it from the job page.
+              </span>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="wall-clock">Wall-clock cap (minutes)</Label>
+              <input
+                id="wall-clock"
+                type="number"
+                min="1"
+                step="5"
+                value={wallClockMin}
+                onChange={(e) => setWallClockMin(e.target.value)}
+                className="border-input bg-background h-8 rounded-md border px-2 text-sm"
+              />
+              <span className="text-muted-foreground text-[10px]">
+                Driver stops the job after this many minutes of run time.
+              </span>
+            </div>
+          </div>
           {error && <div className="text-destructive text-xs">{error}</div>}
           <div className="grid gap-1.5">
             <Label>Workspace mode</Label>
@@ -469,7 +513,11 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
           <Button
             onClick={submit}
             disabled={
-              submitting || nameSlug.length === 0 || branchClashesDefault
+              submitting ||
+              nameSlug.length === 0 ||
+              branchClashesDefault ||
+              !costCapValid ||
+              !wallClockValid
             }
           >
             {submitting

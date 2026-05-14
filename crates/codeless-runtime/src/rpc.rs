@@ -10,7 +10,9 @@ use codeless_rpc::{
     CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs,
     FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
     GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile,
-    JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs,
+    JobDiffResult, JobFileEntry, JobReportArgs, JobReportEventTally, JobReportResult,
+    JobReportStage, JobReportToolCall, JobReportTurn, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs,
     ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
     ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
     RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs,
@@ -582,6 +584,193 @@ impl RpcServer for InProcessRpc {
             })
             .collect();
         Ok(ListStagesResult { stages })
+    }
+
+    async fn job_report(&self, args: JobReportArgs) -> RpcResult<JobReportResult> {
+        use sqlx::Row;
+        let job = self
+            .store
+            .get_job(args.job_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+        let job_id_s = args.job_id.to_string();
+        let pool = self.store.pool();
+
+        // Stage rows in chronological order so a stage that was retried
+        // (cost-cap → resume) shows two entries with `attempt` 0 and 1
+        // for the same ordinal. The recorder writes a fresh row per
+        // attempt, so ordering by `started_at` is enough.
+        let stage_rows = sqlx::query(
+            "SELECT ordinal, name, status, session_id, started_at, ended_at \
+             FROM stages WHERE job_id = ? ORDER BY COALESCE(started_at, 0)",
+        )
+        .bind(&job_id_s)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut attempt_seen: HashMap<u32, u32> = HashMap::new();
+        let mut stages: Vec<JobReportStage> = Vec::with_capacity(stage_rows.len());
+        for r in stage_rows {
+            let ordinal = r.try_get::<i64, _>("ordinal").map_err(db_err)? as u32;
+            let attempt = attempt_seen.entry(ordinal).or_insert(0);
+            let started_at: Option<i64> = r.try_get("started_at").map_err(db_err)?;
+            let ended_at: Option<i64> = r.try_get("ended_at").map_err(db_err)?;
+            stages.push(JobReportStage {
+                ordinal,
+                attempt: *attempt,
+                title: r.try_get("name").map_err(db_err)?,
+                status: r.try_get("status").map_err(db_err)?,
+                session_id: r.try_get("session_id").map_err(db_err)?,
+                // Filled in below from the turn buckets so a stage that
+                // didn't persist a task row still gets the right number.
+                cost_cents: 0,
+                duration_ms: match (started_at, ended_at) {
+                    (Some(s), Some(e)) => Some(e - s),
+                    _ => None,
+                },
+                started_at,
+                ended_at,
+            });
+            *attempt += 1;
+        }
+
+        // ai-message-complete = one Claude reply. Cost lives in the
+        // payload; the row's `task_id` is the per-turn correlation id
+        // and `stage_id` is null in this dataset, so we bucket turns
+        // into stages by timestamp window below.
+        let turn_rows = sqlx::query(
+            "SELECT task_id, payload, created_at FROM events \
+             WHERE job_id = ? AND type = 'ai-message-complete' \
+             ORDER BY created_at",
+        )
+        .bind(&job_id_s)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)?;
+
+        let mut turns: Vec<JobReportTurn> = Vec::with_capacity(turn_rows.len());
+        for r in turn_rows {
+            let task_id: Option<String> = r.try_get("task_id").map_err(db_err)?;
+            let payload: String = r.try_get("payload").map_err(db_err)?;
+            let at: i64 = r.try_get("created_at").map_err(db_err)?;
+            let v: serde_json::Value =
+                serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
+            let cost_cents = v
+                .get("cost_cents")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(0);
+            let input_tokens = v
+                .get("input_tokens")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(0);
+            let output_tokens = v
+                .get("output_tokens")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(0);
+            // Find the stage whose window contains `at`. Stages may
+            // overlap with their own retried attempt, so the *latest*
+            // matching window wins (a turn after a resume belongs to
+            // the resumed attempt, not the failed one).
+            let stage_ordinal = stages
+                .iter()
+                .rev()
+                .find(|s| match (s.started_at, s.ended_at) {
+                    (Some(start), Some(end)) => at >= start && at <= end,
+                    (Some(start), None) => at >= start,
+                    _ => false,
+                })
+                .map(|s| s.ordinal);
+            turns.push(JobReportTurn {
+                task_id: task_id.unwrap_or_default(),
+                stage_ordinal,
+                cost_cents,
+                input_tokens,
+                output_tokens,
+                at,
+            });
+        }
+
+        // Fold per-turn cost back into the matching stage attempt so
+        // the report has accurate per-stage spend even when the tasks
+        // table is empty.
+        for turn in &turns {
+            if let Some(ord) = turn.stage_ordinal {
+                if let Some(target) = stages.iter_mut().rev().find(|s| {
+                    s.ordinal == ord
+                        && match (s.started_at, s.ended_at) {
+                            (Some(start), Some(end)) => turn.at >= start && turn.at <= end,
+                            (Some(start), None) => turn.at >= start,
+                            _ => false,
+                        }
+                }) {
+                    target.cost_cents += turn.cost_cents;
+                }
+            }
+        }
+
+        let tool_rows = sqlx::query(
+            "SELECT COALESCE(json_extract(payload, '$.tool'), '<unknown>') AS tool, \
+                    COUNT(*) AS n \
+             FROM events WHERE job_id = ? AND type = 'tool-call' \
+             GROUP BY tool ORDER BY n DESC",
+        )
+        .bind(&job_id_s)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)?;
+        let tool_calls: Vec<JobReportToolCall> = tool_rows
+            .into_iter()
+            .map(|r| {
+                Ok::<_, sqlx::Error>(JobReportToolCall {
+                    tool: r.try_get("tool")?,
+                    count: r.try_get::<i64, _>("n")? as u32,
+                })
+            })
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+
+        let tally_rows = sqlx::query(
+            "SELECT type AS kind, COUNT(*) AS n FROM events WHERE job_id = ? \
+             GROUP BY type ORDER BY n DESC",
+        )
+        .bind(&job_id_s)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)?;
+        let event_tally: Vec<JobReportEventTally> = tally_rows
+            .into_iter()
+            .map(|r| {
+                Ok::<_, sqlx::Error>(JobReportEventTally {
+                    kind: r.try_get("kind")?,
+                    count: r.try_get::<i64, _>("n")? as u32,
+                })
+            })
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+
+        let started_at = job.started_at.map(|t| t.0);
+        let ended_at = job.ended_at.map(|t| t.0);
+        let wall_clock_ms = match (started_at, ended_at) {
+            (Some(s), Some(e)) => Some(e - s),
+            _ => None,
+        };
+
+        Ok(JobReportResult {
+            job_id: args.job_id,
+            status: format!("{:?}", job.status).to_lowercase(),
+            stop_reason: job.stop_reason.map(|r| format!("{:?}", r).to_lowercase()),
+            cost_cents: job.cost_cents.0,
+            cost_cap_cents: job.cost_cap_cents.0,
+            started_at,
+            ended_at,
+            wall_clock_ms,
+            stages,
+            turns,
+            tool_calls,
+            event_tally,
+        })
     }
 
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()> {
@@ -1209,7 +1398,16 @@ impl RpcServer for InProcessRpc {
         let task_id = codeless_types::TaskId::new();
         let bus = Arc::clone(&self.bus);
         let registry = Arc::clone(registry);
-        let prompt = build_chat_prompt(args.context.as_ref(), &args.prompt);
+        // When the chat session_id maps to a real job, fold that job's
+        // template.yaml + SCOPE.md + WORKFLOW.md into the preamble so
+        // the agent answers grounded in the job's spec instead of
+        // reverse-engineering it from filesystem clues. The lookup is
+        // best-effort: footer-panel turns pass a fresh correlation id
+        // that does not resolve to a job, and a job in the directory
+        // layout might lack one of the supporting files. Both cases
+        // skip the block silently rather than failing the turn.
+        let job_spec_block = self.load_chat_job_spec(session_id).await;
+        let prompt = build_chat_prompt(args.context.as_ref(), job_spec_block.as_deref(), &args.prompt);
 
         // Register the cancel token before the spawn so a racing
         // `cancel_chat_task` issued between `agent_chat` returning and
@@ -1397,20 +1595,36 @@ static ATTACHMENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// The preamble is only emitted when at least one context field is
 /// populated; otherwise the prompt passes through unchanged so
 /// short-prompt fidelity (e.g. "what time is it") is preserved.
-fn build_chat_prompt(ctx: Option<&codeless_rpc::ChatContext>, prompt: &str) -> String {
-    let Some(ctx) = ctx else {
-        return prompt.to_owned();
-    };
-    let has_any = ctx.ui_location.is_some()
-        || ctx.selection.is_some()
-        || !ctx.attachments.is_empty()
-        || !ctx.user_prompts.is_empty();
-    if !has_any {
+fn build_chat_prompt(
+    ctx: Option<&codeless_rpc::ChatContext>,
+    job_spec_block: Option<&str>,
+    prompt: &str,
+) -> String {
+    let ctx_has_any = ctx.is_some_and(|c| {
+        c.ui_location.is_some()
+            || c.selection.is_some()
+            || !c.attachments.is_empty()
+            || !c.user_prompts.is_empty()
+    });
+    let job_has_any = job_spec_block.is_some_and(|s| !s.is_empty());
+    if !ctx_has_any && !job_has_any {
         return prompt.to_owned();
     }
 
     let mut out = String::new();
     out.push_str("# Context\n\n");
+    if let Some(block) = job_spec_block.filter(|s| !s.is_empty()) {
+        out.push_str(block);
+        if !block.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    let Some(ctx) = ctx else {
+        out.push_str("# Request\n\n");
+        out.push_str(prompt);
+        return out;
+    };
     if let Some(loc) = ctx.ui_location.as_deref() {
         out.push_str(&format!("User is viewing: {loc}\n\n"));
     }
@@ -1472,6 +1686,74 @@ impl InProcessRpc {
             .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
         Ok((std::path::PathBuf::from(repo.local_path), name))
     }
+
+    /// Best-effort fetch of the job's spec for the chat preamble.
+    /// Returns `None` when the session id is not a real job (e.g.
+    /// footer-panel correlation ids), when the job lacks a parseable
+    /// template, or when none of the spec files are present. Reads
+    /// stay bounded by `MAX_CHAT_SPEC_BYTES` per file so a runaway
+    /// SCOPE.md cannot blow out the model's context budget — large
+    /// files are truncated with a marker rather than dropped, because
+    /// even a partial spec is more useful than the agent fumbling
+    /// from filesystem clues.
+    async fn load_chat_job_spec(&self, session_id: codeless_types::JobId) -> Option<String> {
+        let job = self.store.get_job(session_id).await.ok().flatten()?;
+        let template_yaml = job.template_yaml.as_ref()?;
+        let template = JobTemplate::parse_yaml(template_yaml).ok()?;
+        let repo = self.store.get_repo(job.repo_id).await.ok().flatten()?;
+        let job_dir = std::path::Path::new(&repo.local_path)
+            .join(".codeless")
+            .join("jobs")
+            .join(&template.name);
+
+        let mut out = String::new();
+        out.push_str(&format!(
+            "Active job: {} (id `{}`, status `{:?}`).\n\
+             Spec lives at `.codeless/jobs/{}/` in the repo. The files \
+             reproduced below are the source of truth for this job; \
+             prefer them over anything else when answering.\n\n",
+            template.name, session_id, job.status, template.name,
+        ));
+        out.push_str("## template.yaml\n\n```yaml\n");
+        out.push_str(&truncate_for_chat(template_yaml));
+        if !template_yaml.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("```\n\n");
+
+        for (label, filename) in [("SCOPE.md", "SCOPE.md"), ("WORKFLOW.md", "WORKFLOW.md")] {
+            let path = job_dir.join(filename);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                out.push_str(&format!("## {label}\n\n"));
+                out.push_str(&truncate_for_chat(&content));
+                if !content.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push('\n');
+            }
+        }
+        Some(out)
+    }
+}
+
+/// Per-file byte budget when folding job spec files into the chat
+/// preamble. Sized to leave room for two large files plus the user's
+/// transcript without crowding the model's input window. Files larger
+/// than this are truncated with a trailing marker.
+const MAX_CHAT_SPEC_BYTES: usize = 8 * 1024;
+
+fn truncate_for_chat(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.len() <= MAX_CHAT_SPEC_BYTES {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut cut = MAX_CHAT_SPEC_BYTES;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = String::with_capacity(cut + 64);
+    out.push_str(&s[..cut]);
+    out.push_str("\n\n[…truncated for chat preamble; read the full file from disk if needed…]\n");
+    std::borrow::Cow::Owned(out)
 }
 
 /// Promote a legacy flat `<name>.yaml` to the directory layout. Two

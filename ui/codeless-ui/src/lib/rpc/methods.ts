@@ -118,6 +118,56 @@ export interface ListStagesResult {
   stages: StageRollup[];
 }
 
+export interface JobReportArgs {
+  job_id: JobId;
+}
+
+export interface JobReportStage {
+  ordinal: number;
+  attempt: number;
+  title: string;
+  status: string;
+  session_id: string | null;
+  cost_cents: number;
+  duration_ms: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
+export interface JobReportTurn {
+  task_id: string;
+  stage_ordinal: number | null;
+  cost_cents: number;
+  input_tokens: number;
+  output_tokens: number;
+  at: number;
+}
+
+export interface JobReportToolCall {
+  tool: string;
+  count: number;
+}
+
+export interface JobReportEventTally {
+  kind: string;
+  count: number;
+}
+
+export interface JobReportResult {
+  job_id: JobId;
+  status: string;
+  stop_reason: string | null;
+  cost_cents: number;
+  cost_cap_cents: number;
+  started_at: number | null;
+  ended_at: number | null;
+  wall_clock_ms: number | null;
+  stages: JobReportStage[];
+  turns: JobReportTurn[];
+  tool_calls: JobReportToolCall[];
+  event_tally: JobReportEventTally[];
+}
+
 export interface StopJobArgs {
   job_id: JobId;
 }
@@ -364,6 +414,7 @@ export interface RpcMethodMap {
   get_job: { args: GetJobArgs; result: Job };
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   list_stages: { args: ListStagesArgs; result: ListStagesResult };
+  job_report: { args: JobReportArgs; result: JobReportResult };
   stop_job: { args: StopJobArgs; result: null };
   stop_active: { args: StopActiveArgs; result: StopActiveResult };
   pause_job: { args: PauseJobArgs; result: null };

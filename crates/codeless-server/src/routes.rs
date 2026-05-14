@@ -9,7 +9,8 @@ use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
     CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
+    ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
     ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
@@ -34,6 +35,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/get_job", post(get_job))
         .route("/rpc/list_jobs", post(list_jobs))
         .route("/rpc/list_stages", post(list_stages))
+        .route("/rpc/job_report", post(job_report))
         .route("/rpc/stop_job", post(stop_job))
         .route("/rpc/pause_job", post(pause_job))
         .route("/rpc/start_job", post(start_job))
@@ -171,6 +173,13 @@ async fn list_stages(
     Json(args): Json<ListStagesArgs>,
 ) -> HandlerResult<ListStagesResult> {
     st.rpc.list_stages(args).await.map(Json).map_err(map_err)
+}
+
+async fn job_report(
+    State(st): State<AppState>,
+    Json(args): Json<JobReportArgs>,
+) -> HandlerResult<JobReportResult> {
+    st.rpc.job_report(args).await.map(Json).map_err(map_err)
 }
 
 async fn stop_job(

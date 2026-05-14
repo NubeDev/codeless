@@ -137,16 +137,24 @@ export default function App() {
   tabsRef.current = tabs;
 
   // Deep-link: when the initial URL is /jobs or /jobs/:id (e.g.
-  // bookmark, page reload, browser back), open the Jobs tab. The
-  // dashboard itself reads the URL for the selected job id. We do
-  // this once on mount; tab focus afterwards stays user-driven so
-  // a click elsewhere doesn't get fought by the route.
+  // bookmark, page reload, browser back), restore the matching tab.
+  // `/jobs` opens the dashboard; `/jobs/<id>` opens a job-detail tab
+  // keyed by that id so a refresh keeps the user on the job they were
+  // viewing rather than dumping them back on the list. Runs once on
+  // mount; tab focus afterwards stays user-driven.
   const initialPathRef = useRef<string | null>(null);
   if (initialPathRef.current === null && typeof window !== "undefined") {
     initialPathRef.current = window.location.pathname;
   }
   useEffect(() => {
-    if (initialPathRef.current?.startsWith("/jobs")) {
+    const path = initialPathRef.current ?? "";
+    const detailMatch = /^\/jobs\/([^/]+)\/?$/.exec(path);
+    if (detailMatch) {
+      const jobId = detailMatch[1];
+      newJobDetailTab(jobId, `Job ${jobId.slice(0, 6)}`);
+      return;
+    }
+    if (path.startsWith("/jobs")) {
       newJobsTab();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -280,6 +288,30 @@ export default function App() {
   }, [hydrateSessions]);
 
   const activeTab = tabs.find((t) => t.id === activeId);
+
+  // Mirror the active tab into the URL so a refresh re-opens the same
+  // surface. Only jobs-family tabs own a route; switching to a terminal
+  // or editor tab clears the path back to `/` so the URL doesn't lie
+  // about what's visible. `replace` avoids polluting history on every
+  // tab click — only an explicit user action like opening a job row
+  // through `navigate()` should push.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let target = "/";
+    if (activeTab?.kind === "job-detail") {
+      target = `/jobs/${activeTab.jobId}`;
+    } else if (activeTab?.kind === "jobs") {
+      target = "/jobs";
+    }
+    const current = window.location.pathname + window.location.search;
+    if (current === target) return;
+    if (activeTab?.kind === "job-detail" || activeTab?.kind === "jobs") {
+      navigate(target, { replace: true });
+    } else if (current.startsWith("/jobs")) {
+      navigate(target, { replace: true });
+    }
+  }, [activeTab]);
+
   const isTerminalTab = activeTab?.kind === "terminal";
   const isEditorTab = activeTab?.kind === "editor";
   const isPreviewTab = activeTab?.kind === "preview";

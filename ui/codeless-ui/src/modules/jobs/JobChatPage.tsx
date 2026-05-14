@@ -15,6 +15,7 @@ import { FilesChanged } from "./FilesChanged";
 import { HandoverPanel } from "./HandoverPanel";
 import { CostCell, WallClockCell } from "./JobRow";
 import { JobTimeline } from "./JobTimeline";
+import { JobReport } from "./JobReport";
 import { ReviewPanel } from "./ReviewPanel";
 import { JobChat, RunStrip } from "./RunPane";
 import { SpecPane } from "./spec/SpecPane";
@@ -255,7 +256,12 @@ function SidebarContent({
         </SidebarTabButton>
       </nav>
       <div className="flex-1 overflow-y-auto p-4">
-        {tab === "summary" && <ReviewPanel jobId={jobId} />}
+        {tab === "summary" && (
+          <>
+            <ReviewPanel jobId={jobId} />
+            <JobReport jobId={jobId} />
+          </>
+        )}
         {tab === "files" && <FilesChanged jobId={jobId} />}
         {tab === "timeline" && <JobTimeline jobId={jobId} />}
         {tab === "handover" && <HandoverPanel job={job} />}

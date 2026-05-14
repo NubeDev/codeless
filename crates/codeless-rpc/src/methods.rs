@@ -145,6 +145,74 @@ pub struct ListStagesResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobReportArgs {
+    pub job_id: JobId,
+}
+
+/// One stage entry in the report. `attempt` distinguishes a re-run of
+/// the same `ordinal` (e.g. a cost-capped stage 0 that was resumed —
+/// the resume row carries a fresh `session_id` and a separate row
+/// here so callers can see both the failure and the recovery).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobReportStage {
+    pub ordinal: u32,
+    pub attempt: u32,
+    pub title: String,
+    pub status: String,
+    pub session_id: Option<String>,
+    pub cost_cents: i64,
+    pub duration_ms: Option<i64>,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+}
+
+/// One ai-message-complete event, i.e. one Claude reply. The cost is
+/// the marginal cost the runner reported for that reply; sum across
+/// turns to recover the job total.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobReportTurn {
+    pub task_id: String,
+    pub stage_ordinal: Option<u32>,
+    pub cost_cents: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobReportToolCall {
+    pub tool: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobReportEventTally {
+    pub kind: String,
+    pub count: u32,
+}
+
+/// Structured report for one job. The UI's Summary tab renders this;
+/// scripts can also curl it for cron-style digests. Counts are exact
+/// (full table scans over the events table for one job_id); costs are
+/// summed from the persisted `ai-message-complete` payloads, which
+/// is the same source the dashboard's `cost_cents` rollup uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobReportResult {
+    pub job_id: JobId,
+    pub status: String,
+    pub stop_reason: Option<String>,
+    pub cost_cents: i64,
+    pub cost_cap_cents: i64,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub wall_clock_ms: Option<i64>,
+    pub stages: Vec<JobReportStage>,
+    pub turns: Vec<JobReportTurn>,
+    pub tool_calls: Vec<JobReportToolCall>,
+    pub event_tally: Vec<JobReportEventTally>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct StopJobArgs {
     pub job_id: JobId,
 }
