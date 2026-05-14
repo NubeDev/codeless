@@ -13,9 +13,10 @@ use codeless_rpc::{
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
     ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
-    StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -58,6 +59,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/agent_chat", post(agent_chat))
         .route("/rpc/upload_chat_attachment", post(upload_chat_attachment))
         .route("/rpc/cancel_chat_task", post(cancel_chat_task))
+        .route("/rpc/stop_active", post(stop_active))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -380,4 +382,11 @@ async fn cancel_chat_task(
         .await
         .map(|()| Json(Value::Null))
         .map_err(map_err)
+}
+
+async fn stop_active(
+    State(st): State<AppState>,
+    Json(args): Json<StopActiveArgs>,
+) -> HandlerResult<StopActiveResult> {
+    st.rpc.stop_active(args).await.map(Json).map_err(map_err)
 }

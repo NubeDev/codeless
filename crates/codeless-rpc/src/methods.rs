@@ -715,3 +715,30 @@ pub struct UploadChatAttachmentResult {
 pub struct CancelChatTaskArgs {
     pub task_id: TaskId,
 }
+
+/// Stop *whatever* is currently running for `job_id`: the job runner
+/// (when the row is `Running` / `AwaitingReview` / `Queued`), every
+/// in-flight chat turn whose `session_id` is this job, or both. The
+/// umbrella around `stop_job` + `cancel_chat_task` so the UI's stop
+/// button has a single endpoint to call regardless of which spawn
+/// path is alive. Idempotent — neither path firing is `Ok(())` with
+/// `stopped_job: false` and an empty `cancelled_chat_task_ids`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct StopActiveArgs {
+    pub job_id: JobId,
+}
+
+/// What `stop_active` actually did. The UI uses this to surface a
+/// "stopped the chat turn" / "stopped the job" / "stopped both" /
+/// "nothing was running" status without a second round-trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct StopActiveResult {
+    /// `true` when the umbrella issued `stop_job` against a row in
+    /// `Running` / `AwaitingReview` / `Queued`. `false` when the row
+    /// was already terminal (or paused), so only the chat side could
+    /// possibly have fired.
+    pub stopped_job: bool,
+    /// Per-turn `TaskId`s whose cancel tokens were fired. Empty when
+    /// no chat turn was scoped to this job at call time.
+    pub cancelled_chat_task_ids: Vec<TaskId>,
+}

@@ -23,9 +23,10 @@ pub use methods::{
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
     RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RunnerInfo, ServerInfo, StageRollup, StartJobArgs,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UserPromptSnippet, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UserPromptSnippet, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

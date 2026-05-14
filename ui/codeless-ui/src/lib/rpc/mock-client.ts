@@ -291,6 +291,33 @@ export class MockRpcClient implements RpcClient {
         return null as RpcResultOf<M>;
       }
 
+      case "stop_active": {
+        // Mirror the runtime's umbrella semantics. The browser mock
+        // never spawns chat turns of its own, so the chat side is
+        // always empty; the job side fires only when the row is in a
+        // pre-terminal status. Idempotent — a terminal-or-paused row
+        // returns ok with both fields zeroed.
+        const a = args as RpcArgs<"stop_active">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        let stoppedJob = false;
+        if (
+          job.status === "running" ||
+          job.status === "awaiting-review" ||
+          job.status === "queued"
+        ) {
+          job.status = "stopped";
+          job.stop_reason = "user";
+          job.ended_at = Date.now();
+          this.emit({ type: "job-stopped", job_id: job.id, reason: "user" });
+          stoppedJob = true;
+        }
+        return {
+          stopped_job: stoppedJob,
+          cancelled_chat_task_ids: [],
+        } as RpcResultOf<M>;
+      }
+
       case "gc_worktrees": {
         // The browser mock has no on-disk worktrees to model; report
         // an empty sweep so the GC UI renders its "nothing to

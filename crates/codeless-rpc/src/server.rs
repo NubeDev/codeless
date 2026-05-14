@@ -9,10 +9,10 @@ use crate::methods::{
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -219,4 +219,15 @@ pub trait RpcServer: Send + Sync + 'static {
     /// task returns `Ok(())` rather than `NotFound`. The UI relies on
     /// that idempotence to race the natural end of the stream.
     async fn cancel_chat_task(&self, args: CancelChatTaskArgs) -> RpcResult<()>;
+
+    /// Stop *whatever* is running for `job_id`. Composes `stop_job`
+    /// (when the row is `Running` / `AwaitingReview` / `Queued`) with
+    /// `cancel_chat_task` against every in-flight chat turn whose
+    /// `session_id` is this job, returning a structured summary so
+    /// the UI can show "stopped the chat", "stopped the job", or
+    /// both. Idempotent — neither path firing is `Ok(())` with both
+    /// fields zeroed. The UI's unified stop button calls this
+    /// instead of `stop_job` so it works on chat-turns over a
+    /// terminal job too.
+    async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult>;
 }

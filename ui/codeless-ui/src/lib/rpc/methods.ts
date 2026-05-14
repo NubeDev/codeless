@@ -26,6 +26,8 @@ import type {
   ShellBgEntry,
   ShellBgLogChunk,
   ShellCommandOutput,
+  StopActiveArgs,
+  StopActiveResult,
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
   ShellSessionRunOutput,
@@ -360,6 +362,7 @@ export interface RpcMethodMap {
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   list_stages: { args: ListStagesArgs; result: ListStagesResult };
   stop_job: { args: StopJobArgs; result: null };
+  stop_active: { args: StopActiveArgs; result: StopActiveResult };
   pause_job: { args: PauseJobArgs; result: null };
   start_job: { args: StartJobArgs; result: Job };
   resume_job: { args: ResumeJobArgs; result: Job };
@@ -420,6 +423,8 @@ export type {
   AgentChatArgs,
   AgentChatResult,
   CancelChatTaskArgs,
+  StopActiveArgs,
+  StopActiveResult,
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
 };

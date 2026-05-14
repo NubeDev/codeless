@@ -27,8 +27,8 @@ use codeless_rpc::methods::{
     FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
     GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult,
     ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo,
-    StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UserPromptSnippet,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
@@ -108,7 +108,9 @@ fn collect() -> TypeCollection {
         .register_mut::<UserPromptSnippet>()
         .register_mut::<UploadChatAttachmentArgs>()
         .register_mut::<UploadChatAttachmentResult>()
-        .register_mut::<CancelChatTaskArgs>();
+        .register_mut::<CancelChatTaskArgs>()
+        .register_mut::<StopActiveArgs>()
+        .register_mut::<StopActiveResult>();
     types
 }
 

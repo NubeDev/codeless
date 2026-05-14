@@ -42,6 +42,7 @@ pub use notifier::{
 };
 pub use queue_config::QueueConfig;
 pub use rpc::InProcessRpc;
+pub use rpc::{ChatCancelEntry, ChatCancels};
 pub use runner::{Runner, RunnerContext, RunnerOutcome};
 pub use stage_recorder::spawn_stage_recorder;
 pub use state_machine::{

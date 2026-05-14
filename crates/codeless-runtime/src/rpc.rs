@@ -13,10 +13,11 @@ use codeless_rpc::{
     JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs,
     ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
     ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
-    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{
     CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason, TaskId,
@@ -67,20 +68,29 @@ pub struct InProcessRpc {
     /// folder" UI surface lands here.
     agent_chat_cwd: Option<std::path::PathBuf>,
     /// Cancellation tokens for in-flight `agent_chat` turns, keyed by
-    /// the per-turn `TaskId`. The `agent_chat` spawn inserts the token
+    /// the per-turn `TaskId`. The `agent_chat` spawn inserts the entry
     /// before launching the runner; a drop-guard removes it when the
     /// task completes (success, error, or panic). `cancel_chat_task`
-    /// looks up the entry and fires the token, which surfaces inside
-    /// `run_chat` as a normal cancellation at the next `await`. Held
-    /// behind a `parking_lot::Mutex` because every access is a
-    /// brief map operation — never crosses an `await`.
+    /// looks up the entry and fires the token; `stop_active` walks the
+    /// map and fires every token whose `job_id` matches. Held behind a
+    /// `parking_lot::Mutex` because every access is a brief map
+    /// operation — never crosses an `await`.
     chat_cancels: ChatCancels,
+}
+
+/// One entry in the chat-cancel registry. `job_id` is the
+/// `agent_chat` `session_id` the caller passed in; for the per-job
+/// chat panel the UI uses the live `JobId` as the session, which is
+/// what makes `stop_active(job_id)` able to fan out to the chat
+/// turn(s) scoped to that job.
+pub struct ChatCancelEntry {
+    pub job_id: JobId,
+    pub token: tokio_util::sync::CancellationToken,
 }
 
 /// In-memory, single-tenant registry of cancellation tokens for
 /// in-flight `agent_chat` turns. See `InProcessRpc::chat_cancels`.
-pub(crate) type ChatCancels =
-    Arc<parking_lot::Mutex<HashMap<TaskId, tokio_util::sync::CancellationToken>>>;
+pub type ChatCancels = Arc<parking_lot::Mutex<HashMap<TaskId, ChatCancelEntry>>>;
 
 /// Default event-broadcast lag tolerance per subscriber. See
 /// `EventBus::new` for the trade-off; 1024 is the starting point and
@@ -1175,7 +1185,13 @@ impl RpcServer for InProcessRpc {
         // any exit (success / error / panic), so the registry never
         // leaks even if the runner crashes mid-turn.
         let cancel = tokio_util::sync::CancellationToken::new();
-        self.chat_cancels.lock().insert(task_id, cancel.clone());
+        self.chat_cancels.lock().insert(
+            task_id,
+            ChatCancelEntry {
+                job_id: session_id,
+                token: cancel.clone(),
+            },
+        );
         let cancels = Arc::clone(&self.chat_cancels);
 
         // Detached: the call returns once the runner has been spawned;
@@ -1279,10 +1295,55 @@ impl RpcServer for InProcessRpc {
         // cancelled by a previous call. Returning `Ok(())` lets the UI
         // race the natural end of the stream without distinguishing
         // "stopped" from "already over".
-        if let Some(token) = self.chat_cancels.lock().get(&args.task_id).cloned() {
-            token.cancel();
+        if let Some(entry) = self.chat_cancels.lock().get(&args.task_id) {
+            entry.token.cancel();
         }
         Ok(())
+    }
+
+    async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult> {
+        // Job side: only call `stop_job` when the row is in a state
+        // it accepts; checking up front avoids a misleading
+        // `Conflict` error for the common "stop a chat over a
+        // completed job" path. The match must mirror the guard in
+        // `stop_job`, hence the same set of variants here.
+        let stopped_job = match self.store.get_job(args.job_id).await.map_err(db_err)? {
+            Some(job)
+                if matches!(
+                    job.status,
+                    JobStatus::Running | JobStatus::AwaitingReview | JobStatus::Queued
+                ) =>
+            {
+                self.stop_job(StopJobArgs {
+                    job_id: args.job_id,
+                })
+                .await?;
+                true
+            }
+            Some(_) => false,
+            None => return Err(RpcError::NotFound(format!("job {}", args.job_id))),
+        };
+
+        // Chat side: snapshot the matching entries under the lock so
+        // we can fire the tokens outside it. The drop-guards on the
+        // spawned tasks evict the entries themselves; we deliberately
+        // leave them in place so a racing second `stop_active` is a
+        // no-op fire rather than a spurious "nothing was running".
+        let cancelled_chat_task_ids: Vec<TaskId> = {
+            let map = self.chat_cancels.lock();
+            map.iter()
+                .filter(|(_, entry)| entry.job_id == args.job_id)
+                .map(|(task_id, entry)| {
+                    entry.token.cancel();
+                    *task_id
+                })
+                .collect()
+        };
+
+        Ok(StopActiveResult {
+            stopped_job,
+            cancelled_chat_task_ids,
+        })
     }
 }
 

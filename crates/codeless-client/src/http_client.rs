@@ -7,9 +7,10 @@ use codeless_rpc::{
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
     ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
-    Since, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -310,6 +311,10 @@ impl RpcServer for HttpRpcClient {
 
     async fn cancel_chat_task(&self, args: CancelChatTaskArgs) -> RpcResult<()> {
         self.call_void("cancel_chat_task", &args).await
+    }
+
+    async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult> {
+        self.call("stop_active", &args).await
     }
 }
 
