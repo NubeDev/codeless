@@ -117,6 +117,7 @@ async fn submit(args: SubmitArgs, db: Option<PathBuf>) -> Result<ExitCode> {
             template_yaml: Some(yaml),
             runner: template.runner.clone(),
             branch: template.branch.clone(),
+            workspace_mode: None,
             cost_cap_cents: template.caps.cost_cents,
             wall_clock_cap_ms: template.caps.wall_clock_ms,
             model: None,

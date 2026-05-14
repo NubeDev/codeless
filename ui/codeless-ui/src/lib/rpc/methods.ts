@@ -57,6 +57,9 @@ export interface SubmitJobArgs {
   template_yaml: string | null;
   runner: string;
   branch: string;
+  /** `in-repo` (default) edits the user's local clone; `worktree`
+   * creates a separate `git worktree add` checkout. */
+  workspace_mode?: "in-repo" | "worktree" | null;
   cost_cap_cents: number;
   wall_clock_cap_ms: number;
   /** Optional per-job model id. Adapters that don't understand it

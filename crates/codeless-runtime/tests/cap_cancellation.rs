@@ -34,6 +34,7 @@ async fn fresh_job(rpc: &InProcessRpc, cost_cap: i64, wall_clock_ms: i64) -> cod
         template_yaml: None,
         runner: "mock".into(),
         branch: "codeless/job-cap".into(),
+            workspace_mode: None,
         cost_cap_cents: cost_cap,
         wall_clock_cap_ms: wall_clock_ms,
         model: None,

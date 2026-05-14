@@ -437,6 +437,9 @@ export type Job = {
 	// Runner kind chosen at submit time (e.g. `"claude"`, `"anthropic"`).
 	runner: string,
 	branch: string,
+	// `in_repo` (default): agent edits the user's local clone.
+	// `worktree`: agent edits a separate `git worktree add` checkout.
+	workspace_mode: WorkspaceMode,
 	/**
 	 *  `None` until the worktree has been provisioned. Preserved across
 	 *  crashes so a reaper can clean up after a dead leaseholder.
@@ -544,6 +547,9 @@ export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "co
  *  runner session is continuous).
  */
 "paused";
+
+// Where the agent's edits land. See SCOPE.md "Workspace mode".
+export type WorkspaceMode = "in-repo" | "worktree";
 
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
@@ -754,6 +760,9 @@ export type SubmitJobArgs = {
 	template_yaml: string | null,
 	runner: string,
 	branch: string,
+	// `in_repo` (default) edits the user's local clone; `worktree`
+	// creates a separate `git worktree add` checkout.
+	workspace_mode?: WorkspaceMode | null,
 	cost_cap_cents: number,
 	wall_clock_cap_ms: number,
 	/**

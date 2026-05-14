@@ -192,7 +192,7 @@ fn epoch_secs_to_utc(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codeless_types::{CostCents, Job, JobStatus, RepoId, UnixMillis};
+    use codeless_types::{CostCents, Job, JobStatus, RepoId, UnixMillis, WorkspaceMode};
 
     fn sample_job(prompt: &str) -> Job {
         Job {
@@ -204,6 +204,7 @@ mod tests {
             prompt: Some(prompt.into()),
             runner: "mock".into(),
             branch: "codeless/test".into(),
+            workspace_mode: WorkspaceMode::default(),
             worktree_path: None,
             cost_cap_cents: CostCents(0),
             wall_clock_cap_ms: 0,

@@ -1,6 +1,6 @@
 use codeless_types::{
     FsEntry, FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
-    StageId, TaskId, UnixMillis,
+    StageId, TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +45,11 @@ pub struct SubmitJobArgs {
     pub template_yaml: Option<String>,
     pub runner: String,
     pub branch: String,
+    /// `in_repo` (default) edits the user's local clone; `worktree`
+    /// creates a separate `git worktree add` checkout. Omit or `null`
+    /// to get the default (`in_repo`).
+    #[serde(default)]
+    pub workspace_mode: Option<WorkspaceMode>,
     pub cost_cap_cents: i64,
     pub wall_clock_cap_ms: i64,
     /// Per-job runner overrides. All three are optional and round-trip

@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use codeless_types::{
     CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
-    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
+    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis, WorkspaceMode,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -90,10 +90,10 @@ impl SqliteStore {
         sqlx::query(
             "INSERT INTO jobs \
              (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
-              worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
+              workspace_mode, worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
               model, permission_mode, effort, \
               started_at, ended_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(job.id.to_string())
         .bind(job.repo_id.to_string())
@@ -103,6 +103,7 @@ impl SqliteStore {
         .bind(&job.prompt)
         .bind(&job.runner)
         .bind(&job.branch)
+        .bind(workspace_mode_label(job.workspace_mode))
         .bind(&job.worktree_path)
         .bind(job.cost_cap_cents.0)
         .bind(job.wall_clock_cap_ms)
@@ -132,7 +133,7 @@ impl SqliteStore {
         let res = sqlx::query(
             "UPDATE jobs SET \
                 repo_id=?, status=?, stop_reason=?, template_yaml=?, prompt=?, runner=?, \
-                branch=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
+                branch=?, workspace_mode=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
                 cost_cents=?, model=?, permission_mode=?, effort=?, \
                 started_at=?, ended_at=?, created_at=? \
              WHERE id=?",
@@ -144,6 +145,7 @@ impl SqliteStore {
         .bind(&job.prompt)
         .bind(&job.runner)
         .bind(&job.branch)
+        .bind(workspace_mode_label(job.workspace_mode))
         .bind(&job.worktree_path)
         .bind(job.cost_cap_cents.0)
         .bind(job.wall_clock_cap_ms)
@@ -617,6 +619,26 @@ impl SqliteStore {
         rows.into_iter().map(job_from_row).collect()
     }
 
+    /// Returns `Some(job)` if there is already an `in_repo` job for
+    /// `repo_id` in a non-terminal state. Used by `submit_job` to
+    /// enforce the one-in_repo-per-repo invariant.
+    pub async fn active_in_repo_job(
+        &self,
+        repo_id: RepoId,
+    ) -> sqlx::Result<Option<Job>> {
+        let row = sqlx::query(
+            "SELECT * FROM jobs \
+             WHERE repo_id = ? \
+               AND workspace_mode = 'in-repo' \
+               AND status NOT IN ('completed', 'failed', 'stopped') \
+             LIMIT 1",
+        )
+        .bind(repo_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(job_from_row).transpose()
+    }
+
     pub async fn insert_review(&self, review: &Review) -> sqlx::Result<()> {
         sqlx::query(
             "INSERT INTO reviews (id, stage_id, status, comment, requested_at, resolved_at) \
@@ -709,6 +731,7 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
     let repo_id: String = row.try_get("repo_id")?;
     let status: String = row.try_get("status")?;
     let stop_reason: Option<String> = row.try_get("stop_reason")?;
+    let workspace_mode: String = row.try_get("workspace_mode")?;
     let started_at: Option<i64> = row.try_get("started_at")?;
     let ended_at: Option<i64> = row.try_get("ended_at")?;
     Ok(Job {
@@ -720,6 +743,7 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
         prompt: row.try_get("prompt")?,
         runner: row.try_get("runner")?,
         branch: row.try_get("branch")?,
+        workspace_mode: parse_workspace_mode(&workspace_mode)?,
         worktree_path: row.try_get("worktree_path")?,
         cost_cap_cents: CostCents(row.try_get("cost_cap_cents")?),
         wall_clock_cap_ms: row.try_get("wall_clock_cap_ms")?,
@@ -859,6 +883,25 @@ fn stop_reason_label(s: StopReason) -> &'static str {
         StopReason::WallClock => "wall-clock",
         StopReason::RunnerCrash => "runner-crash",
     }
+}
+
+fn workspace_mode_label(m: WorkspaceMode) -> &'static str {
+    match m {
+        WorkspaceMode::InRepo => "in-repo",
+        WorkspaceMode::Worktree => "worktree",
+    }
+}
+
+fn parse_workspace_mode(s: &str) -> sqlx::Result<WorkspaceMode> {
+    Ok(match s {
+        "in-repo" => WorkspaceMode::InRepo,
+        "worktree" => WorkspaceMode::Worktree,
+        other => {
+            return Err(sqlx::Error::Decode(
+                format!("unknown workspace_mode: {other}").into(),
+            ))
+        }
+    })
 }
 
 fn review_status_label(s: ReviewStatus) -> &'static str {

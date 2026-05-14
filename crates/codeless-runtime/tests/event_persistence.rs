@@ -76,6 +76,7 @@ async fn cursors_are_strictly_monotonic_across_publish_calls() {
             template_yaml: None,
             runner: "mock".into(),
             branch: "codeless/job-x".into(),
+            workspace_mode: None,
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
             model: None,

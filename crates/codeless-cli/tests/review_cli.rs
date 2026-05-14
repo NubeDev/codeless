@@ -36,6 +36,7 @@ async fn seed(db_path: &std::path::Path) -> ReviewId {
             template_yaml: None,
             runner: "mock".into(),
             branch: "codeless/job-review-cli".into(),
+            workspace_mode: None,
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
             model: None,

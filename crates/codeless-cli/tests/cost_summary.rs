@@ -44,6 +44,7 @@ async fn seed_three_jobs(db: &Path) {
             template_yaml: None,
             runner: runner.into(),
             branch: format!("feat/{runner}"),
+            workspace_mode: Some(codeless_types::WorkspaceMode::Worktree),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
             model: None,

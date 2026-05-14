@@ -211,7 +211,7 @@ async fn update_task_completed(
 mod tests {
     use super::*;
     use crate::rpc::InProcessRpc;
-    use codeless_types::{Event, StageId};
+    use codeless_types::{Event, StageId, WorkspaceMode};
 
     #[tokio::test]
     async fn records_stage_start_then_complete() {
@@ -244,6 +244,7 @@ mod tests {
             prompt: Some("p".into()),
             runner: "mock".into(),
             branch: "".into(),
+            workspace_mode: WorkspaceMode::default(),
             worktree_path: None,
             cost_cap_cents: CostCents::ZERO,
             wall_clock_cap_ms: 0,
@@ -334,6 +335,7 @@ mod tests {
             prompt: Some("p".into()),
             runner: "mock".into(),
             branch: "".into(),
+            workspace_mode: WorkspaceMode::default(),
             worktree_path: None,
             cost_cap_cents: CostCents::ZERO,
             wall_clock_cap_ms: 0,

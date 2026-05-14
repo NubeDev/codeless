@@ -38,6 +38,7 @@ async fn seed_stopped_job(rpc: &InProcessRpc, reason: StopReason) -> codeless_ty
             template_yaml: None,
             runner: "mock".into(),
             branch: "codeless/resume-me".into(),
+            workspace_mode: None,
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
             model: None,

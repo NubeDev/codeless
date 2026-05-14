@@ -357,6 +357,24 @@ impl RpcServer for InProcessRpc {
             .ok_or_else(|| RpcError::NotFound(format!("repo {}", args.repo_id)))?;
         let now = now_ms();
 
+        // Enforce the one-in_repo-per-repo invariant. A second in_repo
+        // job against the same repo would fight over the working copy.
+        let mode = args.workspace_mode.unwrap_or_default();
+        if mode == codeless_types::WorkspaceMode::InRepo {
+            if let Some(existing) = self
+                .store
+                .active_in_repo_job(args.repo_id)
+                .await
+                .map_err(db_err)?
+            {
+                return Err(RpcError::Conflict(format!(
+                    "repo {} is already in use by job {} in in_repo mode; \
+                     stop it or submit as worktree",
+                    args.repo_id, existing.id,
+                )));
+            }
+        }
+
         // If the submit carries a template that parses into the
         // canonical `JobTemplate` shape, scaffold the on-disk job
         // directory *before* the Job row lands. The user never has
@@ -395,6 +413,7 @@ impl RpcServer for InProcessRpc {
             prompt: args.prompt,
             runner: args.runner,
             branch: args.branch,
+            workspace_mode: args.workspace_mode.unwrap_or_default(),
             worktree_path: None,
             cost_cap_cents: CostCents(args.cost_cap_cents),
             wall_clock_cap_ms: args.wall_clock_cap_ms,
@@ -664,6 +683,7 @@ impl RpcServer for InProcessRpc {
             prompt: source.prompt,
             runner: source.runner,
             branch: String::new(),
+            workspace_mode: source.workspace_mode,
             worktree_path: None,
             cost_cap_cents: source.cost_cap_cents,
             wall_clock_cap_ms: source.wall_clock_cap_ms,

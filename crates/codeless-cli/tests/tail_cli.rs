@@ -37,6 +37,7 @@ async fn seed_completed_job(db_path: &std::path::Path) -> JobId {
             template_yaml: None,
             runner: "mock".into(),
             branch: "codeless/job-tail-test".into(),
+            workspace_mode: None,
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
             model: None,

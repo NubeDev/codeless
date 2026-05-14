@@ -34,6 +34,7 @@ async fn rerun_job_clones_source_and_queues_fresh() {
             template_yaml: None,
             runner: "mock".into(),
             branch: "feature/wizard-typed".into(),
+            workspace_mode: None,
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
             model: None,

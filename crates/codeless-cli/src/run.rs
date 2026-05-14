@@ -75,6 +75,7 @@ async fn run_once(args: RunArgs, repo_path: PathBuf, db: Option<PathBuf>) -> Res
             template_yaml: None,
             runner: wire_runner.to_string(),
             branch: "codeless/job-once".into(),
+            workspace_mode: None,
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
             model: None,

@@ -128,6 +128,7 @@ async fn bootstrap(args: BootstrapArgs, db: Option<PathBuf>) -> Result<ExitCode>
             template_yaml: None,
             runner: "mock".into(),
             branch: format!("codeless/{}-demo", args.name),
+            workspace_mode: None,
             cost_cap_cents: 0,
             wall_clock_cap_ms: 0,
             model: None,

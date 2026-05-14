@@ -137,6 +137,10 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
   // WORKFLOW.md / per-stage docs before the driver picks the job up.
   // Power users who want the legacy submit-and-run can flip this on.
   const [runImmediately, setRunImmediately] = useState(false);
+  // Workspace mode: where the agent's edits land. in-repo (default)
+  // edits the user's actual local clone; worktree creates a separate
+  // git worktree checkout for isolation.
+  const [workspaceMode, setWorkspaceMode] = useState<"in-repo" | "worktree">("in-repo");
 
   const caps = RUNNER_CAPS[runner];
   const nameSlug = slugifyName(name);
@@ -241,6 +245,7 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
         template_yaml: templateYaml,
         runner,
         branch,
+        workspace_mode: workspaceMode,
         cost_cap_cents: 500,
         wall_clock_cap_ms: 30 * 60 * 1000,
         // `SERVER_PICK` means "no override" — send null so the
@@ -412,6 +417,34 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
             </div>
           )}
           {error && <div className="text-destructive text-xs">{error}</div>}
+          <div className="grid gap-1.5">
+            <Label>Workspace mode</Label>
+            <div className="flex gap-4">
+              <label className="flex cursor-pointer items-center gap-1.5 text-xs">
+                <input
+                  type="radio"
+                  name="workspace_mode"
+                  checked={workspaceMode === "in-repo"}
+                  onChange={() => setWorkspaceMode("in-repo")}
+                />
+                <span className="font-medium">In-repo</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-1.5 text-xs">
+                <input
+                  type="radio"
+                  name="workspace_mode"
+                  checked={workspaceMode === "worktree"}
+                  onChange={() => setWorkspaceMode("worktree")}
+                />
+                <span className="font-medium">Worktree</span>
+              </label>
+            </div>
+            <span className="text-muted-foreground text-[10px]">
+              {workspaceMode === "in-repo"
+                ? "Agent edits your local clone directly — git log, IDE, dev server all see changes live."
+                : "Agent edits a separate worktree checkout — isolates concurrent jobs but edits live in /tmp."}
+            </span>
+          </div>
           <label className="hover:bg-accent/40 flex cursor-pointer items-start gap-2 rounded p-2 text-xs">
             <input
               type="checkbox"

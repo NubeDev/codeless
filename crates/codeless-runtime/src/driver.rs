@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{RpcError, RpcResult};
-use codeless_types::{Event, JobId, JobStatus, StopReason};
+use codeless_types::{Event, JobId, JobStatus, StopReason, WorkspaceMode};
 use futures_core::Stream;
 use tokio_util::sync::CancellationToken;
 
@@ -77,9 +77,23 @@ pub async fn drive_job(
     transition_job(job.status, JobStatus::Running)
         .map_err(|e| RpcError::Conflict(e.to_string()))?;
 
-    let provisioned = match worktrees.as_ref() {
-        Some(mgr) => Some(provision_worktree(mgr, store, &mut job).await?),
-        None => None,
+    let provisioned = match job.workspace_mode {
+        WorkspaceMode::InRepo => {
+            // In-repo mode: edits land in the user's existing clone.
+            // Create the branch but skip `git worktree add`.
+            let repo = store
+                .get_repo(job.repo_id)
+                .await
+                .map_err(db_err)?
+                .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
+            let repo_path = PathBuf::from(&repo.local_path);
+            provision_in_repo(&repo_path, store, &mut job).await?;
+            None
+        }
+        WorkspaceMode::Worktree => match worktrees.as_ref() {
+            Some(mgr) => Some(provision_worktree(mgr, store, &mut job).await?),
+            None => None,
+        },
     };
 
     let started = now_ms();
@@ -114,7 +128,17 @@ pub async fn drive_job(
             job_id,
             stage_id: None,
             bus: Arc::clone(bus),
-            worktree_path: provisioned.as_ref().map(|p| p.worktree.clone()),
+            worktree_path: match job.workspace_mode {
+                WorkspaceMode::InRepo => {
+                    // In in_repo mode the repo's local_path *is* the
+                    // working directory. We already stored it on the job
+                    // row during provision_in_repo.
+                    job.worktree_path.as_ref().map(PathBuf::from)
+                }
+                WorkspaceMode::Worktree => {
+                    provisioned.as_ref().map(|p| p.worktree.clone())
+                }
+            },
             cancel: cancel.clone(),
         })
         .await;
@@ -236,6 +260,40 @@ async fn provision_worktree(
         repo_path,
         worktree: handle.path,
     })
+}
+
+/// In-repo mode: create a branch in the user's local clone and record
+/// the repo path as the working directory. No `git worktree add`.
+async fn provision_in_repo(
+    repo_path: &PathBuf,
+    store: &Arc<SqliteStore>,
+    job: &mut codeless_types::Job,
+) -> RpcResult<()> {
+    // Only attempt `git checkout -B` when the repo path is a real git
+    // checkout. Test repos and placeholder paths skip the branch
+    // creation — the mock runner doesn't need a working git tree.
+    if repo_path.join(".git").exists() {
+        let branch = &job.branch;
+        let output = std::process::Command::new("git")
+            .args(["checkout", "-B", branch])
+            .current_dir(repo_path)
+            .output()
+            .map_err(|e| RpcError::Internal(format!("git checkout -B: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(RpcError::Internal(format!(
+                "git checkout -B {branch}: {stderr}"
+            )));
+        }
+    } else {
+        tracing::warn!(
+            repo = %repo_path.display(),
+            "in_repo mode: path is not a git repo, skipping branch creation",
+        );
+    }
+    job.worktree_path = Some(repo_path.to_string_lossy().into_owned());
+    store.update_job(job).await.map_err(db_err)?;
+    Ok(())
 }
 
 // Kept for the upcoming user-driven `gc_worktrees` RPC. The driver no

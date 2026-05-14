@@ -56,6 +56,7 @@ async fn fresh_queued_job(rpc: &InProcessRpc) -> codeless_types::JobId {
         template_yaml: None,
         runner: "mock".into(),
         branch: "codeless/job-1".into(),
+        workspace_mode: None,
         cost_cap_cents: 500,
         wall_clock_cap_ms: 60_000,
         model: None,
