@@ -94,3 +94,23 @@ a
 ## assistant @ 2026-05-13T23:59:09Z
 
 Did you mean to send something? Let me know what you need — happy to slice the CSV, re-run the analyser, or compute a different aggregate.
+
+## user @ 2026-05-13T23:59:37Z
+
+sum the data
+
+## assistant @ 2026-05-14T00:00:06Z
+
+This worktree's CSV is only 6 readings of one meter (PM-001), so the prior "5 meters × 24h" answers don't apply here. Sums for this file:
+
+| Column | Sum (6 rows) |
+|---|---|
+| voltage_v | 1439.60 |
+| current_a | 25.21 |
+| power_w | 6048.60 |
+| energy_kwh (cumulative — sum isn't meaningful) | 91405.53 |
+| power_factor | 5.87 |
+
+**Energy used** = end − start of `energy_kwh` = **15234.32 − 15234.21 = 0.11 kWh** over the 6-minute window.
+
+Averages: V=239.93, I=4.202 A, P=1008.10 W, PF=0.978.
