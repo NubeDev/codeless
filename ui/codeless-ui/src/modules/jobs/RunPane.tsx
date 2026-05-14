@@ -1100,6 +1100,18 @@ export function JobChat({
     sinceCursor.current,
   );
 
+  // Umbrella stop wired into the chat send button while busy. The
+  // backend cancels both the in-flight chat turn and the job driver
+  // (if any) keyed by job_id, so the UI doesn't need to track which
+  // task_id is live — `stop_active` is the single source of truth.
+  const stopActive = async () => {
+    try {
+      await rpc.call("stop_active", { job_id: job.id });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const send = async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || busy) return;
@@ -1419,20 +1431,27 @@ export function JobChat({
         </Button>
         <Button
           size="sm"
-          onClick={send}
+          onClick={busy ? () => void stopActive() : send}
           disabled={
-            busy ||
-            (!input.trim() && attachments.length === 0) ||
-            worktreeMissing === true
+            busy
+              ? false
+              : (!input.trim() && attachments.length === 0) ||
+                worktreeMissing === true
           }
-          className="bg-blue-600 text-white hover:bg-blue-700"
+          className={
+            busy
+              ? "bg-rose-600 text-white hover:bg-rose-700"
+              : "bg-blue-600 text-white hover:bg-blue-700"
+          }
           title={
-            worktreeMissing === true
-              ? "this job's worktree no longer exists — chat needs a worktree to run in"
-              : undefined
+            busy
+              ? "stop the in-flight chat turn (and the running job, if any)"
+              : worktreeMissing === true
+                ? "this job's worktree no longer exists — chat needs a worktree to run in"
+                : undefined
           }
         >
-          {busy ? "thinking…" : "send ▶"}
+          {busy ? "stop ■" : "send ▶"}
         </Button>
         <span className="text-muted-foreground text-[10px]">
           persisted to <code className="bg-muted/40 rounded px-1">{CHAT_FILE}</code>
