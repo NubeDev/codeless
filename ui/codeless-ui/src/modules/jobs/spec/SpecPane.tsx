@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  useEventStream,
   useJob,
   useRpc,
   type JobId,
@@ -70,6 +71,28 @@ export function SpecPane({ jobId, onOpenFile }: Props) {
     setLoading(true);
     void refresh();
   }, [refresh]);
+
+  // Refetch the file list and job row whenever the spec changes
+  // out-of-band — `update_job_template` from this pane already
+  // updates via `afterSave`, but the same events fire when the chat
+  // agent edits `.codeless/jobs/<name>/template.yaml` from a chat
+  // turn (caught by `resync_template_from_disk` at the next
+  // `start_job` / `resume_job`) or when another tab calls
+  // `write_job_file` / `delete_job_file`. Without this hook the user
+  // would see the agent's edits only after switching panes.
+  useEventStream(
+    { scope: "job", job_id: jobId },
+    (env) => {
+      if (
+        env.event.type === "job-template-updated" ||
+        env.event.type === "job-file-updated"
+      ) {
+        setLoading(true);
+        void refresh();
+        refetchJob();
+      }
+    },
+  );
 
   // Common post-save callback for every editable surface in the
   // pane. Re-fetches the file list (so add/remove shows up) AND the

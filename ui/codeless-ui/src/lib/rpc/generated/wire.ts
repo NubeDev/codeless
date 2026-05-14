@@ -268,7 +268,29 @@ name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verif
  *  `stages.session_id` in SQLite so the observation survives
  *  session boundaries.
  */
-{ type: "stage-session-captured"; stage_id: StageId; session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId };
+{ type: "stage-session-captured"; stage_id: StageId; session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
+/**
+ *  `template.yaml` for the job changed in SQLite. Emitted by
+ *  `update_job_template` (user edits from the Spec pane) and by
+ *  `resync_template_from_disk` at the head of `start_job` /
+ *  `resume_job` when a chat-driven filesystem edit lands in the
+ *  DB. Subscribers — the Spec pane, the chat's footer banner —
+ *  use this as a refetch signal; the new YAML is not on the
+ *  wire because the Spec pane already fetches it through
+ *  `read_job_file` / `get_job`.
+ */
+{ type: "job-template-updated"; job_id: JobId } | 
+/**
+ *  A supporting file under `.codeless/jobs/<name>/` was written
+ *  or deleted. `filename` is the basename (e.g. `SCOPE.md`),
+ *  not a full path, so subscribers don't have to know about
+ *  repo layout. Emitted by `write_job_file` and `delete_job_file`.
+ *  Chat-driven raw-`Edit`/`Write` edits do not emit this — the
+ *  agent is told disk is the source of truth and the Spec pane
+ *  refreshes on the next `JobTemplateUpdated` (run-time resync)
+ *  or on user navigation.
+ */
+{ type: "job-file-updated"; job_id: JobId; filename: string };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -437,12 +459,15 @@ export type Job = {
 	// Runner kind chosen at submit time (e.g. `"claude"`, `"anthropic"`).
 	runner: string,
 	branch: string,
-	// `in_repo` (default): agent edits the user's local clone.
-	// `worktree`: agent edits a separate `git worktree add` checkout.
+	/**
+	 *  `in_repo` (default): agent edits the user's local clone.
+	 *  `worktree`: agent edits a separate `git worktree add` checkout.
+	 */
 	workspace_mode: WorkspaceMode,
 	/**
 	 *  `None` until the worktree has been provisioned. Preserved across
 	 *  crashes so a reaper can clean up after a dead leaseholder.
+	 *  Always `None` in `in_repo` mode (edits land in the repo itself).
 	 */
 	worktree_path: string | null,
 	cost_cap_cents: CostCents,
@@ -547,9 +572,6 @@ export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "co
  *  runner session is continuous).
  */
 "paused";
-
-// Where the agent's edits land. See SCOPE.md "Workspace mode".
-export type WorkspaceMode = "in-repo" | "worktree";
 
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
@@ -760,8 +782,11 @@ export type SubmitJobArgs = {
 	template_yaml: string | null,
 	runner: string,
 	branch: string,
-	// `in_repo` (default) edits the user's local clone; `worktree`
-	// creates a separate `git worktree add` checkout.
+	/**
+	 *  `in_repo` (default) edits the user's local clone; `worktree`
+	 *  creates a separate `git worktree add` checkout. Omit or `null`
+	 *  to get the default (`in_repo`).
+	 */
 	workspace_mode?: WorkspaceMode | null,
 	cost_cap_cents: number,
 	wall_clock_cap_ms: number,
@@ -876,3 +901,10 @@ export type UserPromptSnippet = {
 	// Snippet body. Markdown is allowed; the runtime emits it as-is.
 	body: string,
 };
+
+// Where the agent's edits land. See SCOPE.md "Workspace mode".
+export type WorkspaceMode = 
+// Edits land in the user's existing local clone on a fresh branch.
+"in-repo" | 
+// Edits land in a separate `git worktree add` checkout.
+"worktree";

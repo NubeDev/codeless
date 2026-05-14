@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeless_adapters_host::{
-    commit_paths, diff_against, FsError, GitCommitError, GitDiffError, HostFs, WorktreeManager,
+    FsError, GitCommitError, GitDiffError, HostFs, WorktreeManager, commit_paths, diff_against,
 };
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
@@ -12,11 +12,10 @@ use codeless_rpc::{
     GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile,
     JobDiffResult, JobFileEntry, JobReportArgs, JobReportEventTally, JobReportResult,
     JobReportStage, JobReportToolCall, JobReportTurn, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs,
-    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
-    ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
-    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
+    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
     UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
@@ -28,8 +27,8 @@ use sqlx::SqlitePool;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
 use crate::job_dir::{
-    self, directory_path, flat_yaml_path, sanitise_filename, template_yaml_path, FilenameError,
-    JobLayout,
+    self, FilenameError, JobLayout, directory_path, flat_yaml_path, sanitise_filename,
+    template_yaml_path,
 };
 use crate::migrations::MIGRATOR;
 use crate::store::SqliteStore;
@@ -457,6 +456,7 @@ impl RpcServer for InProcessRpc {
                 job.id, job.status
             )));
         }
+        self.resync_template_from_disk(&mut job).await?;
         crate::state_machine::transition_job(job.status, JobStatus::Queued).map_err(|e| {
             RpcError::Conflict(format!(
                 "illegal job transition from {:?} to Queued: {e}",
@@ -501,6 +501,7 @@ impl RpcServer for InProcessRpc {
                 job.id, job.status
             )));
         }
+        self.resync_template_from_disk(&mut job).await?;
         crate::state_machine::transition_job(job.status, JobStatus::Queued).map_err(|e| {
             RpcError::Conflict(format!(
                 "illegal job transition from {:?} to Queued: {e}",
@@ -657,18 +658,9 @@ impl RpcServer for InProcessRpc {
             let at: i64 = r.try_get("created_at").map_err(db_err)?;
             let v: serde_json::Value =
                 serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
-            let cost_cents = v
-                .get("cost_cents")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(0);
-            let input_tokens = v
-                .get("input_tokens")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(0);
-            let output_tokens = v
-                .get("output_tokens")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(0);
+            let cost_cents = v.get("cost_cents").and_then(|x| x.as_i64()).unwrap_or(0);
+            let input_tokens = v.get("input_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+            let output_tokens = v.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
             // Find the stage whose window contains `at`. Stages may
             // overlap with their own retried attempt, so the *latest*
             // matching window wins (a turn after a resume belongs to
@@ -1230,6 +1222,20 @@ impl RpcServer for InProcessRpc {
         )
         .map_err(git_commit_err)?;
 
+        self.bus
+            .publish(
+                Some(args.job_id),
+                None,
+                None,
+                Event::JobFileUpdated {
+                    job_id: args.job_id,
+                    filename: filename.clone(),
+                },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
+
         Ok(WriteJobFileResult { name: filename })
     }
 
@@ -1248,6 +1254,19 @@ impl RpcServer for InProcessRpc {
             &[path],
         )
         .map_err(git_commit_err)?;
+        self.bus
+            .publish(
+                Some(args.job_id),
+                None,
+                None,
+                Event::JobFileUpdated {
+                    job_id: args.job_id,
+                    filename,
+                },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -1310,6 +1329,19 @@ impl RpcServer for InProcessRpc {
         if !self.store.update_job(&job).await.map_err(db_err)? {
             return Err(RpcError::NotFound(format!("job {}", args.job_id)));
         }
+
+        self.bus
+            .publish(
+                Some(args.job_id),
+                None,
+                None,
+                Event::JobTemplateUpdated {
+                    job_id: args.job_id,
+                },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
 
         Ok(UpdateJobTemplateResult { name: parsed.name })
     }
@@ -1407,7 +1439,11 @@ impl RpcServer for InProcessRpc {
         // layout might lack one of the supporting files. Both cases
         // skip the block silently rather than failing the turn.
         let job_spec_block = self.load_chat_job_spec(session_id).await;
-        let prompt = build_chat_prompt(args.context.as_ref(), job_spec_block.as_deref(), &args.prompt);
+        let prompt = build_chat_prompt(
+            args.context.as_ref(),
+            job_spec_block.as_deref(),
+            &args.prompt,
+        );
 
         // Register the cancel token before the spawn so a racing
         // `cancel_chat_task` issued between `agent_chat` returning and
@@ -1687,6 +1723,90 @@ impl InProcessRpc {
         Ok((std::path::PathBuf::from(repo.local_path), name))
     }
 
+    /// Re-read `template.yaml` from disk and refresh the job's
+    /// `template_yaml` DB column when it differs. Called from
+    /// `start_job` and `resume_job` so chat-driven filesystem edits
+    /// (made by the AI agent through its ambient `Edit`/`Write`
+    /// tools) land in SQLite before the driver reads the template.
+    ///
+    /// No-op when the job has no on-disk `template.yaml` (e.g. a
+    /// prompt-only job or one whose dir was never seeded), when the
+    /// DB and disk contents match, or when the job has no
+    /// `template_yaml` mirror in the DB yet — promotion of a fresh
+    /// prompt-only job into a templated job is not the resync's job.
+    ///
+    /// A parse failure surfaces as `InvalidArgument` so the user
+    /// sees the line/column from the YAML parser when they click
+    /// **run** on a broken spec. A `name:` field that no longer
+    /// matches the job's recorded name is `Conflict` — renames are
+    /// rejected by `update_job_template` too, so chat edits must
+    /// not be able to bypass that rule by writing to disk.
+    async fn resync_template_from_disk(&self, job: &mut codeless_types::Job) -> RpcResult<()> {
+        let Some(db_yaml) = job.template_yaml.clone() else {
+            return Ok(());
+        };
+        let prev = JobTemplate::parse_yaml(&db_yaml).map_err(|e| {
+            RpcError::Internal(format!("job {} stored template parse: {e}", job.id))
+        })?;
+
+        let repo = self
+            .store
+            .get_repo(job.repo_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
+        let repo_path = std::path::PathBuf::from(&repo.local_path);
+        let tpl_path = template_yaml_path(&repo_path, &prev.name);
+
+        let disk_yaml = match std::fs::read_to_string(&tpl_path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(RpcError::Internal(format!(
+                    "read {}: {e}",
+                    tpl_path.display()
+                )));
+            }
+        };
+        if disk_yaml == db_yaml {
+            return Ok(());
+        }
+
+        let parsed = JobTemplate::parse_yaml(&disk_yaml).map_err(|e| {
+            RpcError::InvalidArgument(format!(
+                "{} on disk does not parse: {e}",
+                tpl_path.display()
+            ))
+        })?;
+        if parsed.name != prev.name {
+            return Err(RpcError::Conflict(format!(
+                "rename refused: spec name is `{}`, cannot become `{}`. \
+                 Restore `name:` in template.yaml or submit a fresh job to rename.",
+                prev.name, parsed.name,
+            )));
+        }
+
+        commit_paths(
+            &repo_path,
+            &format!("update template: {} (chat)", parsed.name),
+            std::slice::from_ref(&tpl_path),
+        )
+        .map_err(git_commit_err)?;
+
+        job.template_yaml = Some(disk_yaml);
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobTemplateUpdated { job_id: job.id },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Best-effort fetch of the job's spec for the chat preamble.
     /// Returns `None` when the session id is not a real job (e.g.
     /// footer-panel correlation ids), when the job lacks a parseable
@@ -1732,9 +1852,36 @@ impl InProcessRpc {
                 out.push('\n');
             }
         }
+
+        out.push_str(CHAT_JOB_SPEC_AUTHORING_PRIMER);
         Some(out)
     }
 }
+
+/// Tells the chat agent it owns the job's spec files and how to edit
+/// them safely. Appended after the spec fold so the agent has the
+/// current contents in mind before it reads the rules.
+///
+/// Disk is the source of truth at run-time: `start_job` / `resume_job`
+/// re-parse `template.yaml` from disk and refresh the DB row before
+/// transitioning to Queued, so direct filesystem edits land without a
+/// separate "save" gesture. The agent must not touch `CHAT.md` — the
+/// runtime appends to it on every turn.
+const CHAT_JOB_SPEC_AUTHORING_PRIMER: &str = "## Job-spec authoring\n\n\
+You may edit this job's spec directly using your ambient `Edit`, `Write`, \
+and `Read` tools on files under `.codeless/jobs/<name>/`:\n\n\
+- `template.yaml` — name, goal, `stages[]`. The `name:` field is \
+immutable; changing it will cause the next `start_job` to fail. Other \
+edits land on the next run.\n\
+- `SCOPE.md` — load-bearing scope, folded into every stage prompt.\n\
+- `WORKFLOW.md` — per-stage protocol, end-of-stage gate, drift rules.\n\
+- Per-stage `*.md` — referenced from `stages[i].docs:` and folded into \
+that stage's prompt only.\n\n\
+Do NOT touch `CHAT.md`; the runtime appends to it on every turn.\n\n\
+When the user clicks **run**, the runtime re-parses `template.yaml` \
+from disk into SQLite, so your edits take effect without any explicit \
+save. A malformed `template.yaml` will surface as an `InvalidArgument` \
+on `start_job` — keep YAML valid before handing back.\n";
 
 /// Per-file byte budget when folding job spec files into the chat
 /// preamble. Sized to leave room for two large files plus the user's

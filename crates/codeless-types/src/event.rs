@@ -175,6 +175,27 @@ pub enum Event {
     },
     #[serde(rename = "review-stopped")]
     ReviewStopped { review_id: ReviewId },
+
+    /// `template.yaml` for the job changed in SQLite. Emitted by
+    /// `update_job_template` (user edits from the Spec pane) and by
+    /// `resync_template_from_disk` at the head of `start_job` /
+    /// `resume_job` when a chat-driven filesystem edit lands in the
+    /// DB. Subscribers — the Spec pane, the chat's footer banner —
+    /// use this as a refetch signal; the new YAML is not on the
+    /// wire because the Spec pane already fetches it through
+    /// `read_job_file` / `get_job`.
+    #[serde(rename = "job-template-updated")]
+    JobTemplateUpdated { job_id: JobId },
+    /// A supporting file under `.codeless/jobs/<name>/` was written
+    /// or deleted. `filename` is the basename (e.g. `SCOPE.md`),
+    /// not a full path, so subscribers don't have to know about
+    /// repo layout. Emitted by `write_job_file` and `delete_job_file`.
+    /// Chat-driven raw-`Edit`/`Write` edits do not emit this — the
+    /// agent is told disk is the source of truth and the Spec pane
+    /// refreshes on the next `JobTemplateUpdated` (run-time resync)
+    /// or on user navigation.
+    #[serde(rename = "job-file-updated")]
+    JobFileUpdated { job_id: JobId, filename: String },
 }
 
 /// Envelope written to the `events` table. The `cursor`, `created_at`,
