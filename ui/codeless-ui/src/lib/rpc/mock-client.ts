@@ -115,6 +115,11 @@ export class MockRpcClient implements RpcClient {
   // touch because the UI's flow always opens the Spec pane against a
   // known `JobId`.
   private jobFiles: Map<string, Map<string, string>> = new Map();
+  /// Last `agent_chat` request the mock observed. Public so UI tests
+  /// that exercise the composer can assert on threaded fields
+  /// (`context.job_refs`, `mode`, etc.) without the mock having to
+  /// stream a fake reply. `null` until a turn lands.
+  public lastAgentChatArgs: RpcArgs<"agent_chat"> | null = null;
 
   async call<M extends RpcMethod>(
     method: M,
@@ -684,6 +689,7 @@ export class MockRpcClient implements RpcClient {
         // error chunk on the event stream keeps the UI's contract
         // honest: real hosts stream tokens, the mock declines politely.
         const a = args as RpcArgs<"agent_chat">;
+        this.lastAgentChatArgs = a;
         return {
           session_id: a.session_id,
           task_id: a.session_id,

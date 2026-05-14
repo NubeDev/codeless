@@ -53,7 +53,7 @@ Format: `[ ] N. [S|M|L] title` — complexity tag mandatory.
        two toggles (`spec`, `history`). Chips persist for the conversation,
        not just the next turn — mirror the existing attachments behaviour.
        Thread `job_refs` into the `rpc.call("agent_chat", ...)` payload.
-- [ ] 5. [S] UI: mock-client parity — `MockRpcClient` accepts `job_refs` and
+- [x] 5. [S] UI: mock-client parity — `MockRpcClient` accepts `job_refs` and
        round-trips it in the recorded request shape.
 
 ## Constraints
