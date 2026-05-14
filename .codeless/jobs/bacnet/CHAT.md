@@ -155,3 +155,11 @@ Same result — this worktree's `examples/power-meter.csv` has 6 rows (PM-001 on
 Energy used (end − start of cumulative `energy_kwh`): **0.11 kWh**.
 
 If you want something different, tell me which column or which file.
+
+## user @ 2026-05-14T00:43:07Z
+
+ss
+
+## assistant @ 2026-05-14T00:43:11Z
+
+Did you mean to send something? Let me know what you'd like — a different aggregation, a different file, or something else entirely.
