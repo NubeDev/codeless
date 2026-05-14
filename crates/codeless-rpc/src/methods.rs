@@ -191,6 +191,21 @@ pub struct JobReportEventTally {
     pub count: u32,
 }
 
+/// One bucket in the "spec changes" rollup. `kind` is `"template"`
+/// (a `JobTemplateUpdated` event, from `update_job_template` or the
+/// `start_job` / `resume_job` resync of a chat-driven on-disk edit)
+/// or `"file"` (a `JobFileUpdated` event, from `write_job_file` /
+/// `delete_job_file`). `filename` is set only for `"file"` rows so
+/// the UI can render "SCOPE.md ×3, WORKFLOW.md ×1" without joining
+/// against the raw events table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct JobReportSpecChange {
+    pub kind: String,
+    pub filename: Option<String>,
+    pub count: u32,
+    pub last_at: i64,
+}
+
 /// Structured report for one job. The UI's Summary tab renders this;
 /// scripts can also curl it for cron-style digests. Counts are exact
 /// (full table scans over the events table for one job_id); costs are
@@ -210,6 +225,7 @@ pub struct JobReportResult {
     pub turns: Vec<JobReportTurn>,
     pub tool_calls: Vec<JobReportToolCall>,
     pub event_tally: Vec<JobReportEventTally>,
+    pub spec_changes: Vec<JobReportSpecChange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]

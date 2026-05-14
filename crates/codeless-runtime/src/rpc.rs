@@ -11,12 +11,12 @@ use codeless_rpc::{
     FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
     GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile,
     JobDiffResult, JobFileEntry, JobReportArgs, JobReportEventTally, JobReportResult,
-    JobReportStage, JobReportToolCall, JobReportTurn, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    JobReportSpecChange, JobReportStage, JobReportToolCall, JobReportTurn, ListJobFilesArgs,
+    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
+    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
 };
@@ -742,6 +742,46 @@ impl RpcServer for InProcessRpc {
             .collect::<Result<_, _>>()
             .map_err(db_err)?;
 
+        // Bucket spec-edit events by file. `JobTemplateUpdated` has no
+        // filename in the payload (the file is implicit — there is one
+        // `template.yaml` per job) and lands under `kind: "template"`;
+        // `JobFileUpdated` carries a `filename` field and lands under
+        // `kind: "file"` so the UI can render two distinct rows for the
+        // same `SCOPE.md` if the user both edited it and ran a chat
+        // turn that triggered a resync.
+        let spec_rows = sqlx::query(
+            "SELECT type AS kind, \
+                    json_extract(payload, '$.filename') AS filename, \
+                    COUNT(*) AS n, \
+                    MAX(created_at) AS last_at \
+             FROM events \
+             WHERE job_id = ? AND type IN ('job-template-updated', 'job-file-updated') \
+             GROUP BY type, filename \
+             ORDER BY last_at DESC",
+        )
+        .bind(&job_id_s)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)?;
+        let spec_changes: Vec<JobReportSpecChange> = spec_rows
+            .into_iter()
+            .map(|r| {
+                let raw_kind: String = r.try_get("kind")?;
+                let kind = match raw_kind.as_str() {
+                    "job-template-updated" => "template".to_owned(),
+                    "job-file-updated" => "file".to_owned(),
+                    other => other.to_owned(),
+                };
+                Ok::<_, sqlx::Error>(JobReportSpecChange {
+                    kind,
+                    filename: r.try_get("filename")?,
+                    count: r.try_get::<i64, _>("n")? as u32,
+                    last_at: r.try_get("last_at")?,
+                })
+            })
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+
         let started_at = job.started_at.map(|t| t.0);
         let ended_at = job.ended_at.map(|t| t.0);
         let wall_clock_ms = match (started_at, ended_at) {
@@ -762,6 +802,7 @@ impl RpcServer for InProcessRpc {
             turns,
             tool_calls,
             event_tally,
+            spec_changes,
         })
     }
 

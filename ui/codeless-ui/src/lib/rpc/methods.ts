@@ -153,6 +153,13 @@ export interface JobReportEventTally {
   count: number;
 }
 
+export interface JobReportSpecChange {
+  kind: string;
+  filename: string | null;
+  count: number;
+  last_at: number;
+}
+
 export interface JobReportResult {
   job_id: JobId;
   status: string;
@@ -166,6 +173,7 @@ export interface JobReportResult {
   turns: JobReportTurn[];
   tool_calls: JobReportToolCall[];
   event_tally: JobReportEventTally[];
+  spec_changes: JobReportSpecChange[];
 }
 
 export interface StopJobArgs {

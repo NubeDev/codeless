@@ -72,6 +72,7 @@ export function JobReport({ jobId }: Props) {
       <StagesTable r={report} />
       <TurnsTable r={report} />
       <ToolCalls r={report} />
+      <SpecChanges r={report} />
       <EventTally r={report} />
       <CopyMarkdownButton r={report} />
     </div>
@@ -198,6 +199,31 @@ function ToolCalls({ r }: { r: JobReportResult }) {
   );
 }
 
+function SpecChanges({ r }: { r: JobReportResult }) {
+  if (r.spec_changes.length === 0) return null;
+  const total = r.spec_changes.reduce((s, c) => s + c.count, 0);
+  return (
+    <div className="space-y-1">
+      <div className="text-muted-foreground text-[11px] uppercase tracking-wide">
+        Spec changes ({total})
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px]">
+        {r.spec_changes.map((c, i) => {
+          const label =
+            c.kind === "template"
+              ? "template.yaml"
+              : (c.filename ?? "<unknown>");
+          return (
+            <span key={`${c.kind}:${c.filename ?? ""}:${i}`}>
+              {label}: {c.count}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function EventTally({ r }: { r: JobReportResult }) {
   if (r.event_tally.length === 0) return null;
   return (
@@ -297,6 +323,17 @@ function toMarkdown(r: JobReportResult): string {
     lines.push("");
     for (const t of r.tool_calls) {
       lines.push(`- \`${t.tool || "<unknown>"}\`: ${t.count}`);
+    }
+    lines.push("");
+  }
+  if (r.spec_changes.length > 0) {
+    const total = r.spec_changes.reduce((s, c) => s + c.count, 0);
+    lines.push(`## Spec changes (${total})`);
+    lines.push("");
+    for (const c of r.spec_changes) {
+      const label =
+        c.kind === "template" ? "template.yaml" : (c.filename ?? "<unknown>");
+      lines.push(`- \`${label}\`: ${c.count}`);
     }
     lines.push("");
   }

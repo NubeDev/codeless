@@ -20,15 +20,14 @@ pub use methods::{
     FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
     FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, JobReportArgs, JobReportEventTally,
-    JobReportResult, JobReportStage, JobReportToolCall, JobReportTurn, ListJobFilesArgs,
-    ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RunnerInfo, ServerInfo, StageRollup, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UserPromptSnippet, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    JobReportResult, JobReportSpecChange, JobReportStage, JobReportToolCall, JobReportTurn,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RunnerInfo,
+    ServerInfo, StageRollup, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UserPromptSnippet, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};
