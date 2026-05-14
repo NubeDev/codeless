@@ -705,3 +705,13 @@ pub struct UploadChatAttachmentResult {
     /// may show it in a tooltip.
     pub absolute_path: String,
 }
+
+/// Fire the cancellation token registered for a chat turn so the
+/// in-flight CLI runner exits at its next `await` boundary. Idempotent
+/// — a missing entry (the turn already completed) is `Ok(())`, not a
+/// failure, so the UI can call this even when racing the natural end
+/// of the stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct CancelChatTaskArgs {
+    pub task_id: TaskId,
+}

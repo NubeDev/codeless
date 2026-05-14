@@ -1,16 +1,15 @@
 use async_trait::async_trait;
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
-    DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    PauseJobArgs, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
-    Since, StartJobArgs, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
+    Since, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;
@@ -307,6 +306,10 @@ impl RpcServer for HttpRpcClient {
         args: UploadChatAttachmentArgs,
     ) -> RpcResult<UploadChatAttachmentResult> {
         self.call("upload_chat_attachment", &args).await
+    }
+
+    async fn cancel_chat_task(&self, args: CancelChatTaskArgs) -> RpcResult<()> {
+        self.call_void("cancel_chat_task", &args).await
     }
 }
 

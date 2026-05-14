@@ -3,17 +3,16 @@ use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
-    DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    PauseJobArgs, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -211,4 +210,13 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: UploadChatAttachmentArgs,
     ) -> RpcResult<UploadChatAttachmentResult>;
+
+    /// Fire the cancellation token for an in-flight `agent_chat` turn
+    /// so the underlying CLI runner exits at its next `await`. The
+    /// chat-cancel registry is in-memory, single-tenant, and lives on
+    /// the runtime; entries are removed automatically when the spawned
+    /// task completes, so calling this against an already-finished
+    /// task returns `Ok(())` rather than `NotFound`. The UI relies on
+    /// that idempotence to race the natural end of the stream.
+    async fn cancel_chat_task(&self, args: CancelChatTaskArgs) -> RpcResult<()>;
 }

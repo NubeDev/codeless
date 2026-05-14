@@ -22,12 +22,12 @@
 use std::path::{Path, PathBuf};
 
 use codeless_rpc::methods::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, ChatAttachmentRef,
-    ChatContext, ClaudeStatus, CommentReviewArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
-    JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo, StartJobArgs,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadChatAttachmentArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    ChatAttachmentRef, ChatContext, ClaudeStatus, CommentReviewArgs, FsCwdResult, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo,
+    StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
@@ -107,7 +107,8 @@ fn collect() -> TypeCollection {
         .register_mut::<ChatAttachmentRef>()
         .register_mut::<UserPromptSnippet>()
         .register_mut::<UploadChatAttachmentArgs>()
-        .register_mut::<UploadChatAttachmentResult>();
+        .register_mut::<UploadChatAttachmentResult>()
+        .register_mut::<CancelChatTaskArgs>();
     types
 }
 

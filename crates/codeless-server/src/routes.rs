@@ -6,17 +6,16 @@ use axum::{
     Json, Router,
 };
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
-    DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    PauseJobArgs, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
-    StartJobArgs, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
+    StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -57,10 +56,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/update_job_template", post(update_job_template))
         .route("/rpc/write_handover", post(write_handover))
         .route("/rpc/agent_chat", post(agent_chat))
-        .route(
-            "/rpc/upload_chat_attachment",
-            post(upload_chat_attachment),
-        )
+        .route("/rpc/upload_chat_attachment", post(upload_chat_attachment))
+        .route("/rpc/cancel_chat_task", post(cancel_chat_task))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -371,5 +368,16 @@ async fn upload_chat_attachment(
         .upload_chat_attachment(args)
         .await
         .map(Json)
+        .map_err(map_err)
+}
+
+async fn cancel_chat_task(
+    State(st): State<AppState>,
+    Json(args): Json<CancelChatTaskArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .cancel_chat_task(args)
+        .await
+        .map(|()| Json(Value::Null))
         .map_err(map_err)
 }

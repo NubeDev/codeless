@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -5,21 +6,20 @@ use codeless_adapters_host::{
     commit_paths, diff_against, FsError, GitCommitError, GitDiffError, HostFs, WorktreeManager,
 };
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
-    DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreeEntry,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
-    JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
-    RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile,
+    JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs,
+    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
+    ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{
-    CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
+    CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason, TaskId,
 };
 use sqlx::SqlitePool;
 
@@ -66,7 +66,21 @@ pub struct InProcessRpc {
     /// operator launched `codeless serve` from. A future "select
     /// folder" UI surface lands here.
     agent_chat_cwd: Option<std::path::PathBuf>,
+    /// Cancellation tokens for in-flight `agent_chat` turns, keyed by
+    /// the per-turn `TaskId`. The `agent_chat` spawn inserts the token
+    /// before launching the runner; a drop-guard removes it when the
+    /// task completes (success, error, or panic). `cancel_chat_task`
+    /// looks up the entry and fires the token, which surfaces inside
+    /// `run_chat` as a normal cancellation at the next `await`. Held
+    /// behind a `parking_lot::Mutex` because every access is a
+    /// brief map operation — never crosses an `await`.
+    chat_cancels: ChatCancels,
 }
+
+/// In-memory, single-tenant registry of cancellation tokens for
+/// in-flight `agent_chat` turns. See `InProcessRpc::chat_cancels`.
+pub(crate) type ChatCancels =
+    Arc<parking_lot::Mutex<HashMap<TaskId, tokio_util::sync::CancellationToken>>>;
 
 /// Default event-broadcast lag tolerance per subscriber. See
 /// `EventBus::new` for the trade-off; 1024 is the starting point and
@@ -127,6 +141,7 @@ impl InProcessRpc {
             worktrees: None,
             agent_chat_registry: None,
             agent_chat_cwd: None,
+            chat_cancels: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         })
     }
 
@@ -178,6 +193,14 @@ impl InProcessRpc {
         self.store.pool()
     }
 
+    /// Direct access to the chat-cancel registry. Exposed for tests
+    /// that drive `cancel_chat_task` against a synthetic token without
+    /// having to spawn a real CLI runner; production callers reach the
+    /// registry through `agent_chat` / `cancel_chat_task` only.
+    pub fn chat_cancels(&self) -> &ChatCancels {
+        &self.chat_cancels
+    }
+
     /// Remove one worktree referenced by a GC entry. Resolves the
     /// source repo path via the job row when the entry's directory
     /// name parses as a `JobId`; falls back to a plain directory
@@ -219,6 +242,21 @@ impl InProcessRpc {
 
 fn db_err(e: sqlx::Error) -> RpcError {
     RpcError::Internal(format!("db: {e}"))
+}
+
+/// RAII guard that removes a chat-cancel entry when the spawned chat
+/// task ends. Held across the `run_chat` future so success, error,
+/// and panic all evict the token; without this the registry would
+/// leak entries every time a turn completes naturally.
+struct ChatCancelGuard {
+    cancels: ChatCancels,
+    task_id: TaskId,
+}
+
+impl Drop for ChatCancelGuard {
+    fn drop(&mut self) {
+        self.cancels.lock().remove(&self.task_id);
+    }
 }
 
 /// Shared "resolve a Pending review to a terminal status" helper for
@@ -555,10 +593,7 @@ impl RpcServer for InProcessRpc {
         let Some(mut job) = self.store.get_job(args.job_id).await.map_err(db_err)? else {
             return Err(RpcError::NotFound(format!("job {}", args.job_id)));
         };
-        if !matches!(
-            job.status,
-            JobStatus::Running | JobStatus::AwaitingReview
-        ) {
+        if !matches!(job.status, JobStatus::Running | JobStatus::AwaitingReview) {
             return Err(RpcError::Conflict(format!(
                 "job {} is {:?}; only Running or AwaitingReview jobs can be paused. \
                  Use start_job to promote a Draft, or resume_job to restart a paused/stopped row.",
@@ -1133,12 +1168,23 @@ impl RpcServer for InProcessRpc {
         let registry = Arc::clone(registry);
         let prompt = build_chat_prompt(args.context.as_ref(), &args.prompt);
 
+        // Register the cancel token before the spawn so a racing
+        // `cancel_chat_task` issued between `agent_chat` returning and
+        // the spawned task being scheduled still finds an entry to
+        // fire. The drop-guard inside the task removes the entry on
+        // any exit (success / error / panic), so the registry never
+        // leaks even if the runner crashes mid-turn.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.chat_cancels.lock().insert(task_id, cancel.clone());
+        let cancels = Arc::clone(&self.chat_cancels);
+
         // Detached: the call returns once the runner has been spawned;
         // its tokens / tool-calls / completion event flow back through
         // the bus, keyed by `session_id` so the caller's subscribe
         // filter matches them. A panicked task only kills the chat
         // turn — log it and let other turns continue.
         tokio::spawn(async move {
+            let _guard = ChatCancelGuard { cancels, task_id };
             let publish = move |event: codeless_types::Event| {
                 let bus = Arc::clone(&bus);
                 async move {
@@ -1147,7 +1193,6 @@ impl RpcServer for InProcessRpc {
                         .map(|_| ())
                 }
             };
-            let cancel = tokio_util::sync::CancellationToken::new();
             if let Err(e) = codeless_adapters_host::run_chat(
                 registry, provider, prompt, cwd, task_id, publish, cancel,
             )
@@ -1196,8 +1241,7 @@ impl RpcServer for InProcessRpc {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(args.content_b64.as_bytes())
             .or_else(|_| {
-                base64::engine::general_purpose::STANDARD_NO_PAD
-                    .decode(args.content_b64.as_bytes())
+                base64::engine::general_purpose::STANDARD_NO_PAD.decode(args.content_b64.as_bytes())
             })
             .map_err(|e| RpcError::InvalidArgument(format!("content_b64: {e}")))?;
 
@@ -1227,6 +1271,18 @@ impl RpcServer for InProcessRpc {
             relative_path,
             absolute_path: abs.to_string_lossy().into_owned(),
         })
+    }
+
+    async fn cancel_chat_task(&self, args: CancelChatTaskArgs) -> RpcResult<()> {
+        // Idempotent by design: a missing entry means the chat turn
+        // either already completed (the drop-guard removed it) or was
+        // cancelled by a previous call. Returning `Ok(())` lets the UI
+        // race the natural end of the stream without distinguishing
+        // "stopped" from "already over".
+        if let Some(token) = self.chat_cancels.lock().get(&args.task_id).cloned() {
+            token.cancel();
+        }
+        Ok(())
     }
 }
 

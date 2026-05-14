@@ -661,6 +661,13 @@ export class MockRpcClient implements RpcClient {
         } as RpcResultOf<M>;
       }
 
+      case "cancel_chat_task": {
+        // Idempotent on the host (a missing entry returns Ok); the
+        // mock client never spawned anything to cancel, so the
+        // matching no-op preserves caller semantics.
+        return null as RpcResultOf<M>;
+      }
+
       case "write_handover": {
         const a = args as RpcArgs<"write_handover">;
         const job = this.jobs.find((j) => j.id === a.job_id);

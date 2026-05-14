@@ -6,6 +6,7 @@
 import type {
   AgentChatArgs,
   AgentChatResult,
+  CancelChatTaskArgs,
   EventCursor,
   FsEntry,
   FsGlobHit,
@@ -412,11 +413,13 @@ export interface RpcMethodMap {
     args: UploadChatAttachmentArgs;
     result: UploadChatAttachmentResult;
   };
+  cancel_chat_task: { args: CancelChatTaskArgs; result: null };
 }
 
 export type {
   AgentChatArgs,
   AgentChatResult,
+  CancelChatTaskArgs,
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
 };
