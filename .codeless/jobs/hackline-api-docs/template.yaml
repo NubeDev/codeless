@@ -1,0 +1,18 @@
+name: hackline-api-docs
+goal: "generate a complete OpenAPI 3.1 spec and a rendered HTML doc site for the hackline gateway REST API, in three reviewable stages"
+
+docs:
+  - WORKFLOW.md
+  - SCOPE.md
+  - FEEDBACK.md
+  - CHAT.md
+stages:
+  - title: "write docs/openapi.yaml — full OpenAPI 3.1 spec covering every endpoint in the gateway router"
+    docs:
+      - SCOPE.md
+  - title: "add docs/api-examples.sh — runnable curl examples for every endpoint, with comments"
+    docs:
+      - SCOPE.md
+  - title: "add docs/API.md — human-readable API reference with request/response tables, auth notes, and error codes"
+    docs:
+      - SCOPE.md
