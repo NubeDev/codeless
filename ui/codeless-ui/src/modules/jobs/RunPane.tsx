@@ -1104,11 +1104,19 @@ export function JobChat({
   // backend cancels both the in-flight chat turn and the job driver
   // (if any) keyed by job_id, so the UI doesn't need to track which
   // task_id is live — `stop_active` is the single source of truth.
+  // The cancelled runner does not emit `ai-message-complete`, so the
+  // outstanding `waitForCompletion` promise would hang forever and
+  // freeze the composer in `busy=true`. Forcing `busy`/`streaming`
+  // clear here unblocks the UI; the orphaned promise resolves to
+  // garbage on the next event and is dropped.
   const stopActive = async () => {
     try {
       await rpc.call("stop_active", { job_id: job.id });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStreaming(null);
+      setBusy(false);
     }
   };
 
