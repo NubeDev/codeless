@@ -93,10 +93,14 @@ export function StageDetail({ jobId, stageId, onBack }: Props) {
           </div>
         )}
 
-        <Pending
-          label="Claude session id"
-          source="captured from RunResult.session_id in claude_runner.rs; needs a stage row column + new event"
-        />
+        {rollup?.stage.session_id ? (
+          <Captured label="Claude session id" value={rollup.stage.session_id} />
+        ) : (
+          <Pending
+            label="Claude session id"
+            source="captured from RunResult.session_id; mock-runner stages never emit one"
+          />
+        )}
         <Pending
           label="Commits made in this stage"
           source="git log <branch> joined to stage timestamps"
@@ -143,6 +147,20 @@ function Stat({ label, value }: { label: string; value: string }) {
 // that a future agent picking up the wishlist work has a concrete
 // home for the data and can swap the placeholder for real content
 // without reshaping the page.
+// Sibling to Pending for wishlist items that now have data. Keeps
+// the same outer card shape so the layout doesn't shift when a stage
+// transitions from no-session to has-session.
+function Captured({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border-border/40 bg-muted/20 rounded border p-3">
+      <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
+        {label}
+      </div>
+      <div className="mt-1 font-mono text-xs break-all">{value}</div>
+    </div>
+  );
+}
+
 function Pending({ label, source }: { label: string; source: string }) {
   return (
     <div className="border-border/40 bg-muted/20 rounded border border-dashed p-3">

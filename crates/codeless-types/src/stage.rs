@@ -26,4 +26,16 @@ pub struct Stage {
     pub verify_cmd: Option<String>,
     pub started_at: Option<UnixMillis>,
     pub ended_at: Option<UnixMillis>,
+    /// Runner-supplied session identifier, captured the first time a
+    /// task on this stage reports a non-empty `RunResult.session_id`.
+    /// Free-form on the wire — Claude emits `sess-<ulid>`, other
+    /// runners may use a different shape. `None` until a task
+    /// reports one; never cleared once set, and never reused by a
+    /// later stage (per SCOPE.md hard rule #1, the stage is the
+    /// session boundary). Subsequent tasks within the **same** stage
+    /// resume this session via `--continue <session_id>` — that is
+    /// what makes pause / resume / cap-bump inside a stage feel like
+    /// a continuous Claude Code conversation rather than a fresh
+    /// codebase-exploration every time.
+    pub session_id: Option<String>,
 }

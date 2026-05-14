@@ -3,16 +3,16 @@ use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
-    DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -41,12 +41,30 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
 
+    /// Pause a `Running` (or `AwaitingReview`) job so the user can
+    /// resume it later from the captured `Stage.session_id`. The
+    /// runner is cancelled at the next `await` boundary; the row
+    /// transitions to `Paused`, not `Stopped`. Distinct from
+    /// `stop_job` because the *intent* differs — pause is
+    /// "I'll come back," stop is "I'm done." See SCOPE.md hard
+    /// rule #1.
+    async fn pause_job(&self, args: PauseJobArgs) -> RpcResult<()>;
+
     /// Promote a `Draft` job to `Queued` so the background driver
     /// picks it up. The user calls this once they have edited the
     /// spec / docs / handover and are happy for the job to run.
     /// Errors with `Conflict` if the job is not currently in `Draft`,
     /// and `NotFound` for an unknown id.
     async fn start_job(&self, args: StartJobArgs) -> RpcResult<Job>;
+
+    /// Re-queue a terminal-but-recoverable job, reusing its
+    /// per-stage `Stage.session_id` so the next claude invocation
+    /// resumes the same conversation via `--continue`. See SCOPE.md
+    /// hard rule #1 (the stage is the session boundary) and
+    /// `ResumeJobArgs` for the cap-bump semantics. Errors with
+    /// `Conflict` if the job is not in a resumable state (`Stopped`
+    /// or `Failed`), `NotFound` for an unknown id.
+    async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job>;
 
     /// List the stages of a job, each enriched with rolled-up
     /// `cost_cents` (sum over the stage's tasks) and a `task_count`.
@@ -192,4 +210,24 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: UploadChatAttachmentArgs,
     ) -> RpcResult<UploadChatAttachmentResult>;
+
+    /// Fire the cancellation token for an in-flight `agent_chat` turn
+    /// so the underlying CLI runner exits at its next `await`. The
+    /// chat-cancel registry is in-memory, single-tenant, and lives on
+    /// the runtime; entries are removed automatically when the spawned
+    /// task completes, so calling this against an already-finished
+    /// task returns `Ok(())` rather than `NotFound`. The UI relies on
+    /// that idempotence to race the natural end of the stream.
+    async fn cancel_chat_task(&self, args: CancelChatTaskArgs) -> RpcResult<()>;
+
+    /// Stop *whatever* is running for `job_id`. Composes `stop_job`
+    /// (when the row is `Running` / `AwaitingReview` / `Queued`) with
+    /// `cancel_chat_task` against every in-flight chat turn whose
+    /// `session_id` is this job, returning a structured summary so
+    /// the UI can show "stopped the chat", "stopped the job", or
+    /// both. Idempotent — neither path firing is `Ok(())` with both
+    /// fields zeroed. The UI's unified stop button calls this
+    /// instead of `stop_job` so it works on chat-turns over a
+    /// terminal job too.
+    async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult>;
 }

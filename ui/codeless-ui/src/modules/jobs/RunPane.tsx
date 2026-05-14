@@ -17,6 +17,8 @@ import {
   type StageRollup,
 } from "@/lib/rpc";
 
+import { navigate } from "@/lib/route";
+
 import { setGlobalDocs } from "./spec/mutateTemplate";
 
 type JobDiffFile = JobDiffResult["files"][number];
@@ -57,6 +59,10 @@ function phaseOf(status: JobStatus): Phase {
       return "queued";
     case "running":
     case "awaiting-review":
+    case "paused":
+      // Paused tracks alongside running in the phase strip: a
+      // paused job is still mid-lifecycle (recoverable, not
+      // terminal), just temporarily idle.
       return "running";
     case "completed":
     case "failed":
@@ -792,9 +798,163 @@ interface ChatMessage {
   ts: string;
 }
 
+// Additional rows the chat feed renders alongside user/assistant
+// bubbles. Sourced from the job's event stream so the user sees
+// what the agent is *doing* (Read foo.rs, Edit bar.rs) and the
+// inflection points (stage started, verify passed, job stopped,
+// resumed) without having to leave the chat for the right-pane
+// Timeline tab.
+//
+// Each item carries its event cursor for dedupe (events can replay
+// on SSE reconnect) and the source `created_at` so the chronological
+// merge with `ChatMessage.ts` stays correct.
+type LiveFeedItem =
+  | {
+      kind: "tool_call";
+      cursor: number;
+      created_at: number;
+      tool: string;
+      args_json: string;
+    }
+  | {
+      kind: "lifecycle";
+      cursor: number;
+      created_at: number;
+      label: string;
+      tone: "neutral" | "good" | "bad" | "warn";
+    };
+
+// Translate one event envelope into a feed item (or `null` if the
+// event has no chat-feed representation). The streaming-token and
+// task-state events are handled separately by the chat surface;
+// only signal that's interesting to the *user* belongs here.
+function liveItemFromEvent(
+  env: import("@/lib/rpc/wire").EventEnvelope,
+): LiveFeedItem | null {
+  const e = env.event;
+  const created_at = env.created_at;
+  const cursor = env.cursor;
+  switch (e.type) {
+    case "tool-call":
+    case "tool-approval-requested":
+      return {
+        kind: "tool_call",
+        cursor,
+        created_at,
+        tool: e.tool,
+        args_json: e.args_json,
+      };
+    case "stage-started":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label:
+          typeof e.ordinal === "number"
+            ? `stage ${e.ordinal + 1} started: ${e.name}`
+            : `stage started: ${e.name}`,
+        tone: "neutral",
+      };
+    case "stage-completed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: `stage ${e.status}`,
+        tone: e.status === "passed" ? "good" : "bad",
+      };
+    case "verify-started":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "verify started",
+        tone: "neutral",
+      };
+    case "verify-passed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "verify passed",
+        tone: "good",
+      };
+    case "verify-failed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: `verify failed (exit ${e.exit_code})`,
+        tone: "bad",
+      };
+    case "job-started":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "job started",
+        tone: "good",
+      };
+    case "job-completed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "job completed",
+        tone: "good",
+      };
+    case "job-stopped":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: `stopped: ${e.reason}`,
+        tone: e.reason === "user" ? "neutral" : "warn",
+      };
+    case "job-paused":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label:
+          e.reason === "user" ? "paused" : `paused: ${e.reason}`,
+        tone: "warn",
+      };
+    case "job-failed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "job failed",
+        tone: "bad",
+      };
+    case "job-resumed":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: e.previous_reason
+          ? `resumed (was ${e.previous_reason})`
+          : "resumed",
+        tone: "good",
+      };
+    case "review-requested":
+      return {
+        kind: "lifecycle",
+        cursor,
+        created_at,
+        label: "review requested",
+        tone: "warn",
+      };
+    default:
+      return null;
+  }
+}
+
 export function JobChat({
   job,
   uiLocation,
+  refetchJob,
   onOpenJobTab: _onOpenJobTab,
 }: {
   job: Job;
@@ -805,6 +965,15 @@ export function JobChat({
    * omit on call sites where the location is already implicit.
    */
   uiLocation?: string;
+  /**
+   * Re-fetch the job row after an action (run / stop / resume /
+   * re-run). The parent owns the `useJob()` query; this is a pure
+   * passthrough so the action row inside the chat can refresh the
+   * row without duplicating the query. Optional — the action row
+   * hides itself when missing so test harnesses don't have to
+   * wire a stub.
+   */
+  refetchJob?: () => void;
   onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
 }) {
   const rpc = useRpc();
@@ -818,6 +987,13 @@ export function JobChat({
     text: string;
   } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Tool calls + lifecycle moments from the job's event stream,
+  // interleaved into the chat feed below the user/assistant
+  // bubbles. We keep them in a separate state so the existing
+  // streaming-token accumulator and CHAT.md persistence stay
+  // untouched — these are *additional* signal, not a rewrite of
+  // the chat surface.
+  const [liveItems, setLiveItems] = useState<LiveFeedItem[]>([]);
   const sinceCursor = useRef<number>(0);
   // Attachments staged for the next send. Each entry is the result
   // of an `upload_chat_attachment` RPC: the bytes already live in
@@ -830,6 +1006,15 @@ export function JobChat({
   const [uploading, setUploading] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // `null` while the existence check is in flight or has not run
+  // (e.g. the job never had a worktree to begin with — a draft).
+  // `true` when the job *did* have a worktree but the path on
+  // disk no longer resolves (gc'd, /tmp cleared, manual removal).
+  // The chat surface uses this to render a banner and disable
+  // send: `agent_chat` runs the runner inside the worktree, and
+  // the daemon rejects calls whose cwd doesn't exist with an
+  // `InvalidArgument`.
+  const [worktreeMissing, setWorktreeMissing] = useState<boolean | null>(null);
 
   // Load prior chat on mount / job change.
   useEffect(() => {
@@ -851,6 +1036,36 @@ export function JobChat({
     };
   }, [rpc, job.id]);
 
+  // Probe the worktree's existence so the chat can surface a
+  // gc'd-worktree state up front rather than letting the user hit
+  // send and see an `InvalidArgument` from the daemon. The probe
+  // only runs when the job already claims a worktree_path; jobs
+  // that never had one are not in an *error* state.
+  // `fs_stat` is non-throwing: it returns `kind: null` when the
+  // path doesn't exist. Any network/error is treated as "unknown"
+  // (false) — better to let the user try and fail loudly than to
+  // wrongly hide the chat over a transient probe failure.
+  useEffect(() => {
+    if (!job.worktree_path) {
+      setWorktreeMissing(null);
+      return;
+    }
+    let cancelled = false;
+    setWorktreeMissing(null);
+    rpc
+      .call("fs_stat", { path: job.worktree_path })
+      .then((r) => {
+        if (cancelled) return;
+        setWorktreeMissing(r.kind === null);
+      })
+      .catch(() => {
+        if (!cancelled) setWorktreeMissing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, job.id, job.worktree_path]);
+
   // Subscribe to the chat session's event stream. We use the job's
   // own id as session_id so every chat turn for this job shares the
   // same filter; the streaming-text accumulator distinguishes turns
@@ -859,12 +1074,24 @@ export function JobChat({
     { scope: "job", job_id: job.id },
     useCallback(
       (env) => {
+        // Streaming-token accumulator for the in-flight assistant
+        // bubble (unchanged behaviour). Distinguished by task_id so
+        // a stray event for an earlier turn cannot pollute the
+        // current bubble.
         const e = env.event;
-        if (!streaming) return;
-        if (env.task_id !== streaming.taskId) return;
-        if (e.type === "ai-token") {
+        if (streaming && env.task_id === streaming.taskId && e.type === "ai-token") {
           setStreaming((s) =>
             s && s.taskId === env.task_id ? { ...s, text: s.text + e.delta } : s,
+          );
+        }
+        // Tool calls and lifecycle moments fold into the feed as
+        // their own items, interleaved chronologically with the
+        // user/assistant bubbles. Cheap append; the render derives
+        // the merged list from `history` + `liveItems` + `streaming`.
+        const item = liveItemFromEvent(env);
+        if (item) {
+          setLiveItems((prev) =>
+            prev.some((p) => p.cursor === item.cursor) ? prev : [...prev, item],
           );
         }
       },
@@ -872,6 +1099,26 @@ export function JobChat({
     ),
     sinceCursor.current,
   );
+
+  // Umbrella stop wired into the chat send button while busy. The
+  // backend cancels both the in-flight chat turn and the job driver
+  // (if any) keyed by job_id, so the UI doesn't need to track which
+  // task_id is live — `stop_active` is the single source of truth.
+  // The cancelled runner does not emit `ai-message-complete`, so the
+  // outstanding `waitForCompletion` promise would hang forever and
+  // freeze the composer in `busy=true`. Forcing `busy`/`streaming`
+  // clear here unblocks the UI; the orphaned promise resolves to
+  // garbage on the next event and is dropped.
+  const stopActive = async () => {
+    try {
+      await rpc.call("stop_active", { job_id: job.id });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStreaming(null);
+      setBusy(false);
+    }
+  };
 
   const send = async () => {
     const text = input.trim();
@@ -1060,10 +1307,34 @@ export function JobChat({
         </p>
       )}
 
+      {worktreeMissing === true && (
+        <WorktreeMissingBanner worktreePath={job.worktree_path ?? ""} />
+      )}
+
       <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-        {history.map((m, i) => (
-          <ChatBubble key={i} message={m} />
-        ))}
+        {mergeChatFeed(history, liveItems).map((row, i) => {
+          if (row.kind === "message") {
+            return <ChatBubble key={`m-${i}`} message={row.message} />;
+          }
+          if (row.kind === "tool_call") {
+            return (
+              <ToolCallCard
+                key={`t-${row.cursor}`}
+                tool={row.tool}
+                argsJson={row.args_json}
+                ts={row.created_at}
+              />
+            );
+          }
+          return (
+            <LifecycleDivider
+              key={`l-${row.cursor}`}
+              label={row.label}
+              tone={row.tone}
+              ts={row.created_at}
+            />
+          );
+        })}
         {streaming && (
           <ChatBubble
             message={{
@@ -1075,6 +1346,14 @@ export function JobChat({
           />
         )}
       </ul>
+
+      {refetchJob && (
+        <JobActionRow
+          job={job}
+          refetchJob={refetchJob}
+          chatBusy={busy}
+        />
+      )}
 
       {(attachments.length > 0 || uploading > 0) && (
         <div className="flex shrink-0 flex-wrap gap-1">
@@ -1151,22 +1430,40 @@ export function JobChat({
           size="sm"
           variant="outline"
           onClick={() => fileInputRef.current?.click()}
-          disabled={busy || !job.worktree_path}
+          disabled={busy || !job.worktree_path || worktreeMissing === true}
           title={
-            job.worktree_path
-              ? "attach files (also: drop or paste)"
-              : "no worktree yet — submit/run the job first"
+            worktreeMissing === true
+              ? "worktree has been reaped — re-run to recreate"
+              : job.worktree_path
+                ? "attach files (also: drop or paste)"
+                : "no worktree yet — submit/run the job first"
           }
         >
           attach
         </Button>
         <Button
           size="sm"
-          onClick={send}
-          disabled={busy || (!input.trim() && attachments.length === 0)}
-          className="bg-blue-600 text-white hover:bg-blue-700"
+          onClick={busy ? () => void stopActive() : send}
+          disabled={
+            busy
+              ? false
+              : (!input.trim() && attachments.length === 0) ||
+                worktreeMissing === true
+          }
+          className={
+            busy
+              ? "bg-rose-600 text-white hover:bg-rose-700"
+              : "bg-blue-600 text-white hover:bg-blue-700"
+          }
+          title={
+            busy
+              ? "stop the in-flight chat turn (and the running job, if any)"
+              : worktreeMissing === true
+                ? "this job's worktree no longer exists — chat needs a worktree to run in"
+                : undefined
+          }
         >
-          {busy ? "thinking…" : "send ▶"}
+          {busy ? "stop ■" : "send ▶"}
         </Button>
         <span className="text-muted-foreground text-[10px]">
           persisted to <code className="bg-muted/40 rounded px-1">{CHAT_FILE}</code>
@@ -1211,6 +1508,491 @@ function ChatBubble({
       </div>
     </li>
   );
+}
+
+// Merge chat history (user/assistant bubbles persisted to CHAT.md)
+// with live feed items (tool calls, lifecycle dividers from the
+// event stream) into one chronologically-ordered list. The chat
+// surface renders this directly; the in-flight `streaming` bubble
+// is appended separately at the tail.
+//
+// Sort is stable on equal timestamps: history first, then live
+// items. This keeps a conversation that opens with a user message
+// from accidentally rendering a `job-started` divider above it.
+type ChatFeedRow =
+  | { kind: "message"; message: ChatMessage; ts: number }
+  | (LiveFeedItem & { ts: number });
+function mergeChatFeed(
+  history: ChatMessage[],
+  live: LiveFeedItem[],
+): ChatFeedRow[] {
+  const rows: ChatFeedRow[] = [];
+  for (const m of history) {
+    rows.push({ kind: "message", message: m, ts: chatTsToMs(m.ts) });
+  }
+  for (const item of live) {
+    rows.push({ ...item, ts: item.created_at });
+  }
+  rows.sort((a, b) => a.ts - b.ts);
+  return rows;
+}
+
+// `ChatMessage.ts` is an ISO string (or empty for the in-flight
+// streaming bubble). Translate to ms-since-epoch for the merge
+// sort; an unparseable / empty value sorts as 0 which puts it at
+// the top — the right place for the very first user message of a
+// freshly-opened conversation.
+function chatTsToMs(iso: string): number {
+  if (!iso) return 0;
+  const n = Date.parse(iso);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Surfaced when the job's `worktree_path` no longer resolves on
+// disk. The chat runs claude inside the worktree, so a missing
+// dir means send is going to fail with `InvalidArgument` from the
+// daemon. Telling the user up front (and disabling send / attach)
+// is more honest than letting the click fail.
+//
+// Re-running the job recreates a fresh worktree at a new path;
+// the action row in this same chat already exposes [re-run], so
+// the recovery path is one click away from the banner.
+function WorktreeMissingBanner({ worktreePath }: { worktreePath: string }) {
+  return (
+    <div className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 shrink-0 rounded border px-2.5 py-1.5 text-[11px]">
+      <div className="font-medium">worktree no longer exists</div>
+      <div className="text-muted-foreground mt-0.5">
+        Chat runs inside the job's worktree, which has been reaped from
+        disk:
+        {worktreePath && (
+          <>
+            {" "}
+            <code className="bg-background/60 rounded px-1 font-mono">
+              {worktreePath}
+            </code>
+            .
+          </>
+        )}{" "}
+        Use the <span className="font-medium">re-run</span> button below
+        to create a fresh worktree and continue.
+      </div>
+    </div>
+  );
+}
+
+// State-driven action row above the textarea. The primary button
+// changes with job status — run / stop / resume / re-run — so the
+// user reaches for a single fixed-position button rather than
+// hunting in the header. Send + attach stay where they are below
+// the textarea; this row sits above it.
+//
+// Resume is the A0 path: a cost-cap or wall-clock-cap stop is
+// recoverable via the captured `Stage.session_id` and a cap bump.
+// The presets cover the dominant "give it $5/$10/$25/$50 more"
+// case; an arbitrary custom amount is a follow-up if real usage
+// shows people reaching for it.
+const COST_BUMP_PRESETS_CENTS = [500, 1000, 2500, 5000];
+function JobActionRow({
+  job,
+  refetchJob,
+  chatBusy,
+}: {
+  job: Job;
+  refetchJob: () => void;
+  // `true` when an in-flight `agent_chat` turn is streaming for this
+  // job. Drives the liveness dot so a chat-over-completed-job still
+  // signals "something is running" in the header.
+  chatBusy: boolean;
+}) {
+  const rpc = useRpc();
+  const [busy, setBusy] = useState<
+    "start" | "stop" | "pause" | "resume" | "rerun" | null
+  >(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [showResumeForm, setShowResumeForm] = useState(false);
+  const status = job.status;
+  const stopReason = job.stop_reason;
+  const isCostCapped = stopReason === "cost-cap";
+  const isWallClockCapped = stopReason === "wall-clock";
+  // `paused` is resumable by design (the whole point of pause vs
+  // stop). `stopped` / `failed` are also resumable when a session
+  // id was captured — resume_job decides at runtime, the UI just
+  // offers the button.
+  const isResumable =
+    status === "stopped" || status === "failed" || status === "paused";
+
+  const run = async (
+    kind: "start" | "stop" | "pause" | "resume" | "rerun",
+    fn: () => Promise<unknown>,
+  ) => {
+    setBusy(kind);
+    setErr(null);
+    try {
+      await fn();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onStart = () =>
+    run("start", async () => {
+      await rpc.call("start_job", { job_id: job.id });
+      refetchJob();
+    });
+
+  // The umbrella covers both job-driver and chat-turn cancellation
+  // in a single round-trip. Replaces the old direct `stop_job` so the
+  // user can stop a chat turn that's running over an already-completed
+  // job (where there is no driver to stop).
+  const onStop = () =>
+    run("stop", async () => {
+      await rpc.call("stop_active", { job_id: job.id });
+      refetchJob();
+    });
+
+  const onPause = () =>
+    run("pause", async () => {
+      await rpc.call("pause_job", { job_id: job.id });
+      refetchJob();
+    });
+
+  const onResume = (costBump: number | null) =>
+    run("resume", async () => {
+      await rpc.call("resume_job", {
+        job_id: job.id,
+        additional_cost_cap_cents: costBump,
+        additional_wall_clock_cap_ms: null,
+      });
+      setShowResumeForm(false);
+      refetchJob();
+    });
+
+  const onRerun = () =>
+    run("rerun", async () => {
+      const fresh = await rpc.call("rerun_job", { source_job_id: job.id });
+      navigate(`/jobs/${fresh.id}`);
+    });
+
+  // Hidden when the row would render nothing meaningful (e.g.
+  // running with no contextual help). For `completed` jobs the
+  // re-run button is the only useful action and it lives here.
+  const disabled = busy !== null;
+  // Header dot lights up whenever there is *something* to stop: a
+  // running job driver, an awaiting-review pause, or an in-flight
+  // chat turn over a terminal job.
+  const isLive =
+    status === "running" || status === "awaiting-review" || chatBusy;
+  const buttons = (() => {
+    if (status === "draft") {
+      return (
+        <Button
+          size="sm"
+          onClick={onStart}
+          disabled={disabled}
+          className="bg-blue-600 hover:bg-blue-700 text-white"
+        >
+          {busy === "start" ? "starting…" : "run ▶"}
+        </Button>
+      );
+    }
+    if (status === "queued") {
+      return (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onStop}
+          disabled={disabled}
+        >
+          {busy === "stop" ? "cancelling…" : "cancel"}
+        </Button>
+      );
+    }
+    if (status === "running" || status === "awaiting-review") {
+      return (
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onPause}
+            disabled={disabled}
+            title="Pause the agent; resume later from the captured session id. Keeps the worktree and branch."
+          >
+            {busy === "pause" ? "pausing…" : "pause ⏸"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onStop}
+            disabled={disabled}
+            title="Terminate the job. Resumable later only if a session id was captured; otherwise re-run starts fresh."
+          >
+            {busy === "stop" ? "stopping…" : "stop ■"}
+          </Button>
+        </div>
+      );
+    }
+    // Terminal — stopped / failed / completed.
+    return (
+      <div className="flex items-center gap-2">
+        {isResumable && (isCostCapped || isWallClockCapped) && (
+          <Button
+            size="sm"
+            onClick={() => setShowResumeForm(true)}
+            disabled={disabled}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            title={
+              isCostCapped
+                ? "Resume from the captured session id, with a higher cost cap."
+                : "Resume from the captured session id, with a higher wall-clock budget."
+            }
+          >
+            {busy === "resume" ? "resuming…" : "resume ▶ …"}
+          </Button>
+        )}
+        {isResumable && !(isCostCapped || isWallClockCapped) && (
+          <Button
+            size="sm"
+            onClick={() => onResume(null)}
+            disabled={disabled}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            title="Resume with the same caps; the captured session id continues the same claude conversation."
+          >
+            {busy === "resume" ? "resuming…" : "resume ▶"}
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onRerun}
+          disabled={disabled}
+          title="Clone the spec into a fresh job. Doesn't continue the previous session."
+        >
+          {busy === "rerun" ? "queuing…" : "re-run"}
+        </Button>
+      </div>
+    );
+  })();
+
+  return (
+    <div className="border-border/40 bg-muted/10 shrink-0 rounded border px-2 py-1.5">
+      {showResumeForm && isCostCapped && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground">
+            spent {fmtCents(job.cost_cents)} of {fmtCents(job.cost_cap_cents)} cap. Add:
+          </span>
+          {COST_BUMP_PRESETS_CENTS.map((cents) => (
+            <Button
+              key={cents}
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => onResume(cents)}
+              className="h-6 px-2 text-[11px]"
+            >
+              +{fmtCents(cents)}
+            </Button>
+          ))}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => onResume(null)}
+            className="h-6 px-2 text-[11px]"
+            title="Resume without raising the cap; the job will trip the same cap again unless something changed."
+          >
+            resume unchanged
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => setShowResumeForm(false)}
+            className="h-6 px-2 text-[11px]"
+          >
+            cancel
+          </Button>
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground flex items-center gap-1.5 text-[10px] uppercase tracking-wide">
+          {isLive && (
+            <span
+              className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"
+              title={
+                chatBusy && (status === "running" || status === "awaiting-review")
+                  ? "chat turn streaming · job driver running"
+                  : chatBusy
+                    ? "chat turn streaming"
+                    : "job driver running"
+              }
+              aria-label="live"
+            />
+          )}
+          {actionRowLabel(job)}
+        </span>
+        {buttons}
+      </div>
+      {err && (
+        <div className="text-destructive mt-1 text-[11px]">{err}</div>
+      )}
+    </div>
+  );
+}
+
+function actionRowLabel(job: Job): string {
+  switch (job.status) {
+    case "draft":
+      return "draft — edit the spec, then run";
+    case "queued":
+      return "queued — waiting for a driver slot";
+    case "running":
+      return "running";
+    case "awaiting-review":
+      return "awaiting review";
+    case "stopped":
+      return job.stop_reason ? `stopped: ${job.stop_reason}` : "stopped";
+    case "paused":
+      return job.stop_reason && job.stop_reason !== "user"
+        ? `paused: ${job.stop_reason}`
+        : "paused";
+    case "failed":
+      return "failed";
+    case "completed":
+      return "completed";
+  }
+}
+
+function fmtCents(c: number): string {
+  return `$${(c / 100).toFixed(2)}`;
+}
+
+// One tool call, collapsed by default. Shows tool name + a
+// one-line argument summary (`Edit …/stage.rs`, `Bash <cmd>`) so
+// the user can scan a long run without expanding every card.
+// Click to reveal the pretty-printed args JSON.
+function ToolCallCard({
+  tool,
+  argsJson,
+  ts,
+}: {
+  tool: string;
+  argsJson: string;
+  ts: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const summary = toolCallSummary(tool, argsJson);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="border-border/40 bg-muted/20 hover:bg-muted/40 flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left text-[11px] transition-colors"
+      >
+        <span className="min-w-0 flex-1 truncate">
+          <span className="text-muted-foreground mr-1.5">tool</span>
+          <span className="font-mono font-medium">{tool}</span>
+          {summary && (
+            <span className="text-muted-foreground ml-2 truncate">
+              {summary}
+            </span>
+          )}
+        </span>
+        <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
+          {wallClockTime(ts)}
+        </span>
+      </button>
+      {expanded && (
+        <pre className="border-border/40 bg-background/60 mt-1 max-h-72 overflow-auto rounded border px-2 py-1.5 font-mono text-[10px] whitespace-pre-wrap break-all">
+          {prettyJson(argsJson)}
+        </pre>
+      )}
+    </li>
+  );
+}
+
+// Centred divider for lifecycle moments. Tone colours the rule
+// and label so the user's eye lands on bad/warn moments without
+// having to read every divider.
+function LifecycleDivider({
+  label,
+  tone,
+  ts,
+}: {
+  label: string;
+  tone: "neutral" | "good" | "bad" | "warn";
+  ts: number;
+}) {
+  const colour =
+    tone === "good"
+      ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+      : tone === "bad"
+        ? "text-destructive border-destructive/30"
+        : tone === "warn"
+          ? "text-amber-600 dark:text-amber-400 border-amber-500/40"
+          : "text-muted-foreground border-border/50";
+  return (
+    <li
+      className={`flex items-center gap-2 py-1 font-mono text-[10px] uppercase tracking-wide ${colour}`}
+    >
+      <span className={`h-px flex-1 border-t ${colour}`} />
+      <span>{label}</span>
+      <span className="text-muted-foreground normal-case tracking-normal">
+        {wallClockTime(ts)}
+      </span>
+      <span className={`h-px flex-1 border-t ${colour}`} />
+    </li>
+  );
+}
+
+// First non-empty match from common arg keys. Enough to make a
+// collapsed tool card useful at a glance; the full args sit one
+// click away. Returns "" when the args have no recognisable
+// shape — the card still renders, just without the trailing
+// summary line.
+function toolCallSummary(tool: string, argsJson: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argsJson);
+  } catch {
+    return "";
+  }
+  if (parsed == null || typeof parsed !== "object") return "";
+  const obj = parsed as Record<string, unknown>;
+  const path =
+    (typeof obj.file_path === "string" && obj.file_path) ||
+    (typeof obj.path === "string" && obj.path) ||
+    "";
+  if (path) {
+    // Trim the worktree prefix; keep the last two segments so
+    // `mod.rs` files stay disambiguated by their parent dir.
+    const idx = path.lastIndexOf("/");
+    if (idx < 0) return path;
+    const parentIdx = path.lastIndexOf("/", idx - 1);
+    return parentIdx < 0 ? path.slice(idx + 1) : `…${path.slice(parentIdx)}`;
+  }
+  if (tool.toLowerCase() === "bash" && typeof obj.command === "string") {
+    const cmd = obj.command.trim().split("\n")[0];
+    return cmd.length > 60 ? `${cmd.slice(0, 60)}…` : cmd;
+  }
+  if (typeof obj.pattern === "string") return obj.pattern;
+  if (typeof obj.query === "string") return obj.query;
+  return "";
+}
+
+function prettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function wallClockTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function shortTime(iso: string): string {

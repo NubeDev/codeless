@@ -32,6 +32,7 @@ async fn ai_message_complete_accumulates_cost_on_task_and_job() {
             template_yaml: None,
             runner: "mock".into(),
             branch: "codeless/job-cost".into(),
+            workspace_mode: None,
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
             model: None,
@@ -52,6 +53,7 @@ async fn ai_message_complete_accumulates_cost_on_task_and_job() {
         verify_cmd: None,
         started_at: None,
         ended_at: None,
+        session_id: None,
     };
     store.insert_stage(&stage).await.unwrap();
     let task = Task {

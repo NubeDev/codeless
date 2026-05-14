@@ -58,6 +58,37 @@ pub enum Event {
     JobStopped { job_id: JobId, reason: StopReason },
     #[serde(rename = "job-failed")]
     JobFailed { job_id: JobId },
+    /// Job moved from `Running` (or `AwaitingReview`) to `Paused`.
+    /// Distinct from `JobStopped`: a paused row is *expected* to
+    /// be resumed via `resume_job`; the captured per-stage
+    /// `Stage.session_id` is the resume handle. Emitted by the
+    /// cap-watcher when a cost/wall-clock cap trips on a stage
+    /// that has a captured session id (resumable) and by the
+    /// `pause_job` RPC. The `reason` distinguishes user intent
+    /// from cap-tripped pauses so dashboards and chat dividers
+    /// can render the right copy.
+    #[serde(rename = "job-paused")]
+    JobPaused { job_id: JobId, reason: StopReason },
+    /// User-initiated re-queue of a terminal-but-recoverable job
+    /// (A0 — intra-stage session continuation). The job's branch,
+    /// worktree, and captured per-stage `Stage.session_id` survive;
+    /// the next claude task passes the session id as
+    /// `CliCfg::resume_id` so the agent continues the same
+    /// conversation rather than re-deriving. Distinct from
+    /// `JobPromoted` (which is for `Draft -> Queued`) and `JobQueued`
+    /// (which is for fresh submit) so the dashboard and chat can
+    /// render a "resumed" divider rather than treating it as a new
+    /// run.
+    #[serde(rename = "job-resumed")]
+    JobResumed {
+        job_id: JobId,
+        /// The reason the job had stopped before the resume. `None`
+        /// when the row had no `stop_reason` recorded (a fresh
+        /// resume of a never-stopped row is a programming error;
+        /// the RPC enforces it).
+        #[serde(default)]
+        previous_reason: Option<StopReason>,
+    },
 
     #[serde(rename = "stage-started")]
     StageStarted {
@@ -84,6 +115,18 @@ pub enum Event {
     StageCompleted {
         stage_id: StageId,
         status: StageStatus,
+    },
+    /// First-and-only-time capture of the runner-supplied session id
+    /// for this stage. Emitted by `StageRecorder` the first time a
+    /// task on the stage reports a non-empty `RunResult.session_id`;
+    /// subsequent tasks with a session id on the same stage do not
+    /// re-emit. The recorder pins the same value onto
+    /// `stages.session_id` in SQLite so the observation survives
+    /// session boundaries.
+    #[serde(rename = "stage-session-captured")]
+    StageSessionCaptured {
+        stage_id: StageId,
+        session_id: String,
     },
 
     #[serde(rename = "task-enqueued")]

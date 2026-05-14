@@ -45,6 +45,7 @@ async fn seed_repo_job(rpc: &InProcessRpc, name: &str, runner: &str) -> (RepoId,
             template_yaml: None,
             runner: runner.into(),
             branch: "codeless/job-1".into(),
+            workspace_mode: None,
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
             model: None,
@@ -67,6 +68,7 @@ async fn seed_stage_with_tasks(store: &SqliteStore, job_id: JobId, n: usize) -> 
         verify_cmd: None,
         started_at: None,
         ended_at: None,
+        session_id: None,
     };
     store.insert_stage(&stage).await.unwrap();
     let mut ids = Vec::with_capacity(n);

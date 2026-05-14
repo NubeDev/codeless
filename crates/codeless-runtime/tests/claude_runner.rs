@@ -93,6 +93,7 @@ async fn claude_runner_streams_events_via_bridge() {
             template_yaml: None,
             runner: "claude".into(),
             branch: "codeless/job-claude".into(),
+            workspace_mode: None,
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
             model: None,

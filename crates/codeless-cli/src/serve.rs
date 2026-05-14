@@ -353,6 +353,7 @@ async fn run_server(
             enable_anthropic: args.enable_anthropic,
             anthropic_api_key,
             claude_system_prompt,
+            store: rpc.store().clone(),
         });
         Some(
             spawn_job_driver_loop(rpc.clone(), factory, worktrees, args.driver_concurrency)
@@ -479,6 +480,12 @@ struct DefaultRunnerFactory {
     /// the built-in default in `ClaudeRunnerAdapter::DEFAULT_SYSTEM_PROMPT`.
     /// An empty string disables the prompt entirely.
     claude_system_prompt: Option<String>,
+    /// Store handle for resume-aware stage execution. The
+    /// `TemplateRunner` looks up each stage's captured `session_id`
+    /// before invoking the inner Claude adapter so an interrupted
+    /// stage resumes the same conversation via `--continue`. A0
+    /// per SCOPE.md hard rule #1.
+    store: Arc<codeless_runtime::store::SqliteStore>,
 }
 
 /// Build a `MockRunner` script that emits enough events to be visibly
@@ -550,7 +557,8 @@ impl RunnerFactory for DefaultRunnerFactory {
         if let Some(template_src) = job.template_yaml.as_ref() {
             match JobTemplate::parse_yaml(template_src) {
                 Ok(template) if self.enable_claude => {
-                    let mut runner = TemplateRunner::new(template);
+                    let mut runner =
+                        TemplateRunner::new(template).with_store(self.store.clone());
                     if let Some(sp) = &self.claude_system_prompt {
                         runner = runner.with_system_prompt(sp.clone());
                     }

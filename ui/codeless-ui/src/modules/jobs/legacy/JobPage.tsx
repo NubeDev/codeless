@@ -14,6 +14,7 @@ import {
   type Repo,
 } from "@/lib/rpc";
 
+import { ConversationPane } from "./ConversationPane";
 import { FilesChanged } from "./FilesChanged";
 import { HandoverPanel } from "./HandoverPanel";
 import { SpecPane } from "./spec/SpecPane";
@@ -48,6 +49,7 @@ type Section =
   | "stages"
   | "spec"
   | "status"
+  | "conversation"
   | "timeline"
   | "files"
   | "handover"
@@ -78,8 +80,9 @@ const RAIL: RailGroup[] = [
     hint: "",
     items: [
       { id: "status", label: "Overview" },
+      { id: "conversation", label: "Conversation" },
       { id: "stages", label: "Stages" },
-      { id: "timeline", label: "Timeline" },
+      { id: "timeline", label: "Timeline (raw)" },
       { id: "files", label: "Files changed" },
       { id: "handover", label: "Handover" },
       { id: "worktree", label: "Worktree" },
@@ -250,6 +253,14 @@ export function JobPage({
                   refetchJob={refetchJob}
                   onOpenJobTab={onOpenJobTab}
                   onEditSpec={() => onSelectSection("spec")}
+                />
+              )}
+              {section === "conversation" && (
+                <ConversationPane
+                  jobId={jobId}
+                  job={job}
+                  refetchJob={refetchJob}
+                  onOpenJobTab={onOpenJobTab}
                 />
               )}
               {section === "timeline" && <JobTimeline jobId={jobId} />}

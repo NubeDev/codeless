@@ -1,6 +1,6 @@
 use codeless_types::{
     FsEntry, FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
-    StageId, TaskId, UnixMillis,
+    StageId, TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +45,11 @@ pub struct SubmitJobArgs {
     pub template_yaml: Option<String>,
     pub runner: String,
     pub branch: String,
+    /// `in_repo` (default) edits the user's local clone; `worktree`
+    /// creates a separate `git worktree add` checkout. Omit or `null`
+    /// to get the default (`in_repo`).
+    #[serde(default)]
+    pub workspace_mode: Option<WorkspaceMode>,
     pub cost_cap_cents: i64,
     pub wall_clock_cap_ms: i64,
     /// Per-job runner overrides. All three are optional and round-trip
@@ -70,6 +75,33 @@ pub struct SubmitJobArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct StartJobArgs {
     pub job_id: JobId,
+}
+
+/// Re-queue a terminal-but-recoverable job so the driver picks it up
+/// again, optionally bumping the caps that ended it. The job's branch,
+/// worktree, and captured per-stage `Stage.session_id` are reused —
+/// the next claude invocation passes the session id as
+/// `CliCfg::resume_id`, which the claude-wrapper renders to
+/// `--continue <id>`. The agent picks up the same conversation rather
+/// than re-deriving the codebase from scratch. See SCOPE.md hard
+/// rule #1: the stage is the session boundary; within a stage the
+/// runner session is continuous, and a cost/wall-clock cap is a
+/// pause, not a reset.
+///
+/// Both bumps are *additive* on the existing caps; `None` leaves the
+/// cap as-is. A resume that does not raise the cap will simply trip
+/// it again — the RPC accepts this, the user is expected to know
+/// what they want.
+///
+/// Errors `Conflict` if the source job is not in a resumable state
+/// (`Stopped` or `Failed`), `NotFound` for an unknown id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ResumeJobArgs {
+    pub job_id: JobId,
+    #[serde(default)]
+    pub additional_cost_cap_cents: Option<i64>,
+    #[serde(default)]
+    pub additional_wall_clock_cap_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -114,6 +146,22 @@ pub struct ListStagesResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct StopJobArgs {
+    pub job_id: JobId,
+}
+
+/// Move a `Running` (or `AwaitingReview`) job to `Paused`. The
+/// captured per-stage `Stage.session_id` becomes the resume handle
+/// for the next `resume_job` call; the in-flight runner is cancelled
+/// (cleanly, at the next `await` boundary — any tool call currently
+/// running on disk will finish before the runner exits). Distinct
+/// from `stop_job` because the *intent* differs: pause is "I'll come
+/// back," stop is "I'm done."
+///
+/// Errors `Conflict` when the job is not in a pausable state
+/// (anything but Running / AwaitingReview), `NotFound` for an
+/// unknown id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct PauseJobArgs {
     pub job_id: JobId,
 }
 
@@ -661,4 +709,41 @@ pub struct UploadChatAttachmentResult {
     /// `write_handover`; UI does not need it for the chat flow but
     /// may show it in a tooltip.
     pub absolute_path: String,
+}
+
+/// Fire the cancellation token registered for a chat turn so the
+/// in-flight CLI runner exits at its next `await` boundary. Idempotent
+/// — a missing entry (the turn already completed) is `Ok(())`, not a
+/// failure, so the UI can call this even when racing the natural end
+/// of the stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct CancelChatTaskArgs {
+    pub task_id: TaskId,
+}
+
+/// Stop *whatever* is currently running for `job_id`: the job runner
+/// (when the row is `Running` / `AwaitingReview` / `Queued`), every
+/// in-flight chat turn whose `session_id` is this job, or both. The
+/// umbrella around `stop_job` + `cancel_chat_task` so the UI's stop
+/// button has a single endpoint to call regardless of which spawn
+/// path is alive. Idempotent — neither path firing is `Ok(())` with
+/// `stopped_job: false` and an empty `cancelled_chat_task_ids`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct StopActiveArgs {
+    pub job_id: JobId,
+}
+
+/// What `stop_active` actually did. The UI uses this to surface a
+/// "stopped the chat turn" / "stopped the job" / "stopped both" /
+/// "nothing was running" status without a second round-trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct StopActiveResult {
+    /// `true` when the umbrella issued `stop_job` against a row in
+    /// `Running` / `AwaitingReview` / `Queued`. `false` when the row
+    /// was already terminal (or paused), so only the chat side could
+    /// possibly have fired.
+    pub stopped_job: bool,
+    /// Per-turn `TaskId`s whose cancel tokens were fired. Empty when
+    /// no chat turn was scoped to this job at call time.
+    pub cancelled_chat_task_ids: Vec<TaskId>,
 }

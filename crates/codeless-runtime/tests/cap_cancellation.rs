@@ -34,6 +34,7 @@ async fn fresh_job(rpc: &InProcessRpc, cost_cap: i64, wall_clock_ms: i64) -> cod
         template_yaml: None,
         runner: "mock".into(),
         branch: "codeless/job-cap".into(),
+            workspace_mode: None,
         cost_cap_cents: cost_cap,
         wall_clock_cap_ms: wall_clock_ms,
         model: None,
@@ -100,6 +101,62 @@ async fn wall_clock_cap_fires_job_stopped_with_wall_clock_reason() {
         .unwrap();
     assert_eq!(job.status, JobStatus::Stopped);
     assert_eq!(job.stop_reason, Some(StopReason::WallClock));
+}
+
+// Cap trip on a job whose stage already captured a runner session
+// id is *resumable* — the watcher writes `Paused`, not `Stopped`,
+// and publishes `JobPaused`. `resume_job` (A0) accepts the row
+// and re-fires the stage with `--continue <session_id>`.
+//
+// This is the behaviour difference between a job that ran far
+// enough to capture a session and one that didn't: only the
+// former can be resumed without re-deriving the codebase from
+// scratch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cost_cap_pauses_when_stage_has_captured_session() {
+    let rpc = InProcessRpc::new().await.unwrap();
+    let job_id = fresh_job(&rpc, 50, 60_000).await;
+
+    // Plant a stage row with a captured session id BEFORE the
+    // runner starts, so the watcher's `has_captured_session`
+    // check sees it when the cost-cap fires.
+    let stage = codeless_types::Stage {
+        id: codeless_types::StageId::new(),
+        job_id,
+        ordinal: 0,
+        name: "s".into(),
+        status: codeless_types::StageStatus::Running,
+        verify_cmd: None,
+        started_at: Some(codeless_types::UnixMillis(0)),
+        ended_at: None,
+        session_id: Some("sess-captured".into()),
+    };
+    rpc.store().insert_stage(&stage).await.unwrap();
+
+    let task_id = TaskId::new();
+    let runner = Arc::new(MockRunner::new(vec![
+        MockStep::Emit(Event::AiMessageComplete {
+            task_id,
+            input_tokens: 100,
+            output_tokens: 200,
+            cost_cents: CostCents(100),
+        }),
+        MockStep::Sleep(Duration::from_millis(200)),
+        MockStep::Finish(RunnerOutcome::Completed),
+    ]));
+
+    drive_job(&rpc, job_id, runner, None).await.unwrap();
+
+    let job = rpc
+        .get_job(codeless_rpc::GetJobArgs { job_id })
+        .await
+        .unwrap();
+    assert_eq!(
+        job.status,
+        JobStatus::Paused,
+        "cap on a stage with a captured session_id must pause, not stop"
+    );
+    assert_eq!(job.stop_reason, Some(StopReason::CostCap));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

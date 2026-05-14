@@ -23,6 +23,30 @@ pub enum JobStatus {
     Completed,
     Failed,
     Stopped,
+    /// User has paused, or a cap tripped on a resumable stage —
+    /// the agent's captured `Stage.session_id` is the resume
+    /// handle. Distinct from `Stopped`: a paused row is *expected*
+    /// to be resumed; a stopped row is the user saying "I'm done."
+    /// `resume_job` accepts both. See SCOPE.md hard rule #1
+    /// (the stage is the session boundary; within a stage the
+    /// runner session is continuous).
+    Paused,
+}
+
+/// Where the agent's edits land. See SCOPE.md "Workspace mode".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceMode {
+    /// Edits land in the user's existing local clone on a fresh branch.
+    InRepo,
+    /// Edits land in a separate `git worktree add` checkout.
+    Worktree,
+}
+
+impl Default for WorkspaceMode {
+    fn default() -> Self {
+        Self::InRepo
+    }
 }
 
 /// Why a job left the running set early. `None` while running or after a
@@ -48,8 +72,12 @@ pub struct Job {
     /// Runner kind chosen at submit time (e.g. `"claude"`, `"anthropic"`).
     pub runner: String,
     pub branch: String,
+    /// `in_repo` (default): agent edits the user's local clone.
+    /// `worktree`: agent edits a separate `git worktree add` checkout.
+    pub workspace_mode: WorkspaceMode,
     /// `None` until the worktree has been provisioned. Preserved across
     /// crashes so a reaper can clean up after a dead leaseholder.
+    /// Always `None` in `in_repo` mode (edits land in the repo itself).
     pub worktree_path: Option<String>,
     pub cost_cap_cents: CostCents,
     pub wall_clock_cap_ms: i64,

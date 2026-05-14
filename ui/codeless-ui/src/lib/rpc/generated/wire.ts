@@ -98,6 +98,17 @@ export type ApproveReviewArgs = {
 	review_id: ReviewId,
 };
 
+/**
+ *  Fire the cancellation token registered for a chat turn so the
+ *  in-flight CLI runner exits at its next `await` boundary. Idempotent
+ *  — a missing entry (the turn already completed) is `Ok(())`, not a
+ *  failure, so the UI can call this even when racing the natural end
+ *  of the stream.
+ */
+export type CancelChatTaskArgs = {
+	task_id: TaskId,
+};
+
 export type ChatAttachmentRef = {
 	/**
 	 *  Path relative to the job worktree root, as returned by
@@ -203,7 +214,39 @@ export type CostCents = number;
  *  linearly, so the wire format does not need a breaking change when
  *  topological scheduling lands later.
  */
-export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-removed"; repo_id: RepoId } | { type: "repo-updated"; repo_id: RepoId } | { type: "job-queued"; job_id: JobId; repo_id: RepoId } | { type: "job-promoted"; job_id: JobId } | { type: "job-started"; job_id: JobId } | { type: "job-completed"; job_id: JobId } | { type: "job-stopped"; job_id: JobId; reason: StopReason } | { type: "job-failed"; job_id: JobId } | { type: "stage-started"; stage_id: StageId; job_id: JobId; 
+export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-removed"; repo_id: RepoId } | { type: "repo-updated"; repo_id: RepoId } | { type: "job-queued"; job_id: JobId; repo_id: RepoId } | { type: "job-promoted"; job_id: JobId } | { type: "job-started"; job_id: JobId } | { type: "job-completed"; job_id: JobId } | { type: "job-stopped"; job_id: JobId; reason: StopReason } | { type: "job-failed"; job_id: JobId } | 
+/**
+ *  Job moved from `Running` (or `AwaitingReview`) to `Paused`.
+ *  Distinct from `JobStopped`: a paused row is *expected* to
+ *  be resumed via `resume_job`; the captured per-stage
+ *  `Stage.session_id` is the resume handle. Emitted by the
+ *  cap-watcher when a cost/wall-clock cap trips on a stage
+ *  that has a captured session id (resumable) and by the
+ *  `pause_job` RPC. The `reason` distinguishes user intent
+ *  from cap-tripped pauses so dashboards and chat dividers
+ *  can render the right copy.
+ */
+{ type: "job-paused"; job_id: JobId; reason: StopReason } | 
+/**
+ *  User-initiated re-queue of a terminal-but-recoverable job
+ *  (A0 — intra-stage session continuation). The job's branch,
+ *  worktree, and captured per-stage `Stage.session_id` survive;
+ *  the next claude task passes the session id as
+ *  `CliCfg::resume_id` so the agent continues the same
+ *  conversation rather than re-deriving. Distinct from
+ *  `JobPromoted` (which is for `Draft -> Queued`) and `JobQueued`
+ *  (which is for fresh submit) so the dashboard and chat can
+ *  render a "resumed" divider rather than treating it as a new
+ *  run.
+ */
+{ type: "job-resumed"; job_id: JobId; 
+/**
+ *  The reason the job had stopped before the resume. `None`
+ *  when the row had no `stop_reason` recorded (a fresh
+ *  resume of a never-stopped row is a programming error;
+ *  the RPC enforces it).
+ */
+previous_reason?: StopReason | null } | { type: "stage-started"; stage_id: StageId; job_id: JobId; 
 /**
  *  0-based position of this stage in the template's `stages:`
  *  list. Carried on the wire so subscribers can persist
@@ -215,7 +258,17 @@ ordinal?: number;
  *  `REVIEW ` prefix preserved). Same source of truth the UI
  *  already uses; persisted on the `Stage` row.
  */
-name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId };
+name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | 
+/**
+ *  First-and-only-time capture of the runner-supplied session id
+ *  for this stage. Emitted by `StageRecorder` the first time a
+ *  task on the stage reports a non-empty `RunResult.session_id`;
+ *  subsequent tasks with a session id on the same stage do not
+ *  re-emit. The recorder pins the same value onto
+ *  `stages.session_id` in SQLite so the observation survives
+ *  session boundaries.
+ */
+{ type: "stage-session-captured"; stage_id: StageId; session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -384,6 +437,9 @@ export type Job = {
 	// Runner kind chosen at submit time (e.g. `"claude"`, `"anthropic"`).
 	runner: string,
 	branch: string,
+	// `in_repo` (default): agent edits the user's local clone.
+	// `worktree`: agent edits a separate `git worktree add` checkout.
+	workspace_mode: WorkspaceMode,
 	/**
 	 *  `None` until the worktree has been provisioned. Preserved across
 	 *  crashes so a reaper can clean up after a dead leaseholder.
@@ -480,7 +536,20 @@ export type JobId = string;
  *  `start_immediately = true`) to promote `Draft → Queued`. From
  *  there the lifecycle is unchanged.
  */
-export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped";
+export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "completed" | "failed" | "stopped" | 
+/**
+ *  User has paused, or a cap tripped on a resumable stage —
+ *  the agent's captured `Stage.session_id` is the resume
+ *  handle. Distinct from `Stopped`: a paused row is *expected*
+ *  to be resumed; a stopped row is the user saying "I'm done."
+ *  `resume_job` accepts both. See SCOPE.md hard rule #1
+ *  (the stage is the session boundary; within a stage the
+ *  runner session is continuous).
+ */
+"paused";
+
+// Where the agent's edits land. See SCOPE.md "Workspace mode".
+export type WorkspaceMode = "in-repo" | "worktree";
 
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
@@ -612,6 +681,20 @@ export type Stage = {
 	verify_cmd: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
+	/**
+	 *  Runner-supplied session identifier, captured the first time a
+	 *  task on this stage reports a non-empty `RunResult.session_id`.
+	 *  Free-form on the wire — Claude emits `sess-<ulid>`, other
+	 *  runners may use a different shape. `None` until a task
+	 *  reports one; never cleared once set, and never reused by a
+	 *  later stage (per SCOPE.md hard rule #1, the stage is the
+	 *  session boundary). Subsequent tasks within the **same** stage
+	 *  resume this session via `--continue <session_id>` — that is
+	 *  what makes pause / resume / cap-bump inside a stage feel like
+	 *  a continuous Claude Code conversation rather than a fresh
+	 *  codebase-exploration every time.
+	 */
+	session_id: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.
@@ -622,6 +705,39 @@ export type StageStatus = "pending" | "running" | "awaiting-review" | "passed" |
 
 export type StartJobArgs = {
 	job_id: JobId,
+};
+
+/**
+ *  Stop *whatever* is currently running for `job_id`: the job runner
+ *  (when the row is `Running` / `AwaitingReview` / `Queued`), every
+ *  in-flight chat turn whose `session_id` is this job, or both. The
+ *  umbrella around `stop_job` + `cancel_chat_task` so the UI's stop
+ *  button has a single endpoint to call regardless of which spawn
+ *  path is alive. Idempotent — neither path firing is `Ok(())` with
+ *  `stopped_job: false` and an empty `cancelled_chat_task_ids`.
+ */
+export type StopActiveArgs = {
+	job_id: JobId,
+};
+
+/**
+ *  What `stop_active` actually did. The UI uses this to surface a
+ *  "stopped the chat turn" / "stopped the job" / "stopped both" /
+ *  "nothing was running" status without a second round-trip.
+ */
+export type StopActiveResult = {
+	/**
+	 *  `true` when the umbrella issued `stop_job` against a row in
+	 *  `Running` / `AwaitingReview` / `Queued`. `false` when the row
+	 *  was already terminal (or paused), so only the chat side could
+	 *  possibly have fired.
+	 */
+	stopped_job: boolean,
+	/**
+	 *  Per-turn `TaskId`s whose cancel tokens were fired. Empty when
+	 *  no chat turn was scoped to this job at call time.
+	 */
+	cancelled_chat_task_ids: TaskId[],
 };
 
 export type StopJobArgs = {
@@ -644,6 +760,9 @@ export type SubmitJobArgs = {
 	template_yaml: string | null,
 	runner: string,
 	branch: string,
+	// `in_repo` (default) edits the user's local clone; `worktree`
+	// creates a separate `git worktree add` checkout.
+	workspace_mode?: WorkspaceMode | null,
 	cost_cap_cents: number,
 	wall_clock_cap_ms: number,
 	/**

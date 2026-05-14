@@ -22,7 +22,7 @@ pub use fs::{FsEntry, FsEntryKind};
 pub use git_auth::GitAuth;
 pub use handover::{Handover, HandoverParseError};
 pub use id::{JobId, RepoId, ReviewId, StageId, TaskId};
-pub use job::{Job, JobStatus, StopReason};
+pub use job::{Job, JobStatus, StopReason, WorkspaceMode};
 pub use money::CostCents;
 pub use repo::Repo;
 pub use review::{Review, ReviewStatus};

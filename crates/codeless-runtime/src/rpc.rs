@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -5,20 +6,21 @@ use codeless_adapters_host::{
     commit_paths, diff_against, FsError, GitCommitError, GitDiffError, HostFs, WorktreeManager,
 };
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
-    DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreeEntry,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
-    JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, RpcError, RpcResult,
-    RpcServer, Since, StartJobArgs, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCwdResult, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffFile,
+    JobDiffResult, JobFileEntry, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs,
+    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
+    ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
     UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
 };
 use codeless_types::{
-    CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason,
+    CostCents, Event, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewStatus, StopReason, TaskId,
 };
 use sqlx::SqlitePool;
 
@@ -65,7 +67,30 @@ pub struct InProcessRpc {
     /// operator launched `codeless serve` from. A future "select
     /// folder" UI surface lands here.
     agent_chat_cwd: Option<std::path::PathBuf>,
+    /// Cancellation tokens for in-flight `agent_chat` turns, keyed by
+    /// the per-turn `TaskId`. The `agent_chat` spawn inserts the entry
+    /// before launching the runner; a drop-guard removes it when the
+    /// task completes (success, error, or panic). `cancel_chat_task`
+    /// looks up the entry and fires the token; `stop_active` walks the
+    /// map and fires every token whose `job_id` matches. Held behind a
+    /// `parking_lot::Mutex` because every access is a brief map
+    /// operation — never crosses an `await`.
+    chat_cancels: ChatCancels,
 }
+
+/// One entry in the chat-cancel registry. `job_id` is the
+/// `agent_chat` `session_id` the caller passed in; for the per-job
+/// chat panel the UI uses the live `JobId` as the session, which is
+/// what makes `stop_active(job_id)` able to fan out to the chat
+/// turn(s) scoped to that job.
+pub struct ChatCancelEntry {
+    pub job_id: JobId,
+    pub token: tokio_util::sync::CancellationToken,
+}
+
+/// In-memory, single-tenant registry of cancellation tokens for
+/// in-flight `agent_chat` turns. See `InProcessRpc::chat_cancels`.
+pub type ChatCancels = Arc<parking_lot::Mutex<HashMap<TaskId, ChatCancelEntry>>>;
 
 /// Default event-broadcast lag tolerance per subscriber. See
 /// `EventBus::new` for the trade-off; 1024 is the starting point and
@@ -126,6 +151,7 @@ impl InProcessRpc {
             worktrees: None,
             agent_chat_registry: None,
             agent_chat_cwd: None,
+            chat_cancels: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         })
     }
 
@@ -177,6 +203,14 @@ impl InProcessRpc {
         self.store.pool()
     }
 
+    /// Direct access to the chat-cancel registry. Exposed for tests
+    /// that drive `cancel_chat_task` against a synthetic token without
+    /// having to spawn a real CLI runner; production callers reach the
+    /// registry through `agent_chat` / `cancel_chat_task` only.
+    pub fn chat_cancels(&self) -> &ChatCancels {
+        &self.chat_cancels
+    }
+
     /// Remove one worktree referenced by a GC entry. Resolves the
     /// source repo path via the job row when the entry's directory
     /// name parses as a `JobId`; falls back to a plain directory
@@ -218,6 +252,21 @@ impl InProcessRpc {
 
 fn db_err(e: sqlx::Error) -> RpcError {
     RpcError::Internal(format!("db: {e}"))
+}
+
+/// RAII guard that removes a chat-cancel entry when the spawned chat
+/// task ends. Held across the `run_chat` future so success, error,
+/// and panic all evict the token; without this the registry would
+/// leak entries every time a turn completes naturally.
+struct ChatCancelGuard {
+    cancels: ChatCancels,
+    task_id: TaskId,
+}
+
+impl Drop for ChatCancelGuard {
+    fn drop(&mut self) {
+        self.cancels.lock().remove(&self.task_id);
+    }
 }
 
 /// Shared "resolve a Pending review to a terminal status" helper for
@@ -308,6 +357,24 @@ impl RpcServer for InProcessRpc {
             .ok_or_else(|| RpcError::NotFound(format!("repo {}", args.repo_id)))?;
         let now = now_ms();
 
+        // Enforce the one-in_repo-per-repo invariant. A second in_repo
+        // job against the same repo would fight over the working copy.
+        let mode = args.workspace_mode.unwrap_or_default();
+        if mode == codeless_types::WorkspaceMode::InRepo {
+            if let Some(existing) = self
+                .store
+                .active_in_repo_job(args.repo_id)
+                .await
+                .map_err(db_err)?
+            {
+                return Err(RpcError::Conflict(format!(
+                    "repo {} is already in use by job {} in in_repo mode; \
+                     stop it or submit as worktree",
+                    args.repo_id, existing.id,
+                )));
+            }
+        }
+
         // If the submit carries a template that parses into the
         // canonical `JobTemplate` shape, scaffold the on-disk job
         // directory *before* the Job row lands. The user never has
@@ -346,6 +413,7 @@ impl RpcServer for InProcessRpc {
             prompt: args.prompt,
             runner: args.runner,
             branch: args.branch,
+            workspace_mode: args.workspace_mode.unwrap_or_default(),
             worktree_path: None,
             cost_cap_cents: CostCents(args.cost_cap_cents),
             wall_clock_cap_ms: args.wall_clock_cap_ms,
@@ -407,6 +475,77 @@ impl RpcServer for InProcessRpc {
                 None,
                 None,
                 Event::JobPromoted { job_id: job.id },
+                now_ms(),
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(job)
+    }
+
+    async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job> {
+        let mut job = self
+            .store
+            .get_job(args.job_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+        if !matches!(
+            job.status,
+            JobStatus::Stopped | JobStatus::Failed | JobStatus::Paused
+        ) {
+            return Err(RpcError::Conflict(format!(
+                "job {} is {:?}; only Stopped, Failed, or Paused jobs are \
+                 resumable. Use stop_job or pause_job to interrupt a running job.",
+                job.id, job.status
+            )));
+        }
+        crate::state_machine::transition_job(job.status, JobStatus::Queued).map_err(|e| {
+            RpcError::Conflict(format!(
+                "illegal job transition from {:?} to Queued: {e}",
+                job.status
+            ))
+        })?;
+        // Cap bumps are additive on the previous values. Saturating
+        // add so a user who passes a huge number doesn't overflow the
+        // SQLite-side i64 and produce a negative cap that the watcher
+        // would trip immediately.
+        let previous_reason = job.stop_reason;
+        if let Some(bump) = args.additional_cost_cap_cents {
+            if bump > 0 {
+                job.cost_cap_cents = CostCents(job.cost_cap_cents.0.saturating_add(bump));
+            }
+        }
+        if let Some(bump) = args.additional_wall_clock_cap_ms {
+            if bump > 0 {
+                job.wall_clock_cap_ms = job.wall_clock_cap_ms.saturating_add(bump);
+            }
+        }
+        job.status = JobStatus::Queued;
+        // Clearing `stop_reason` here would erase the original
+        // outcome from the row, which is the only place future
+        // history (re-run-with-feedback, audit, dashboards) can read
+        // why the job ended. `previous_reason` rides on the
+        // `JobResumed` event for now; once A1's handover synthesiser
+        // runs at stage boundaries, the `stop_reason` will be
+        // captured into the handover and *then* cleared.
+        job.stop_reason = None;
+        // `ended_at` likewise clears — the job is live again. The
+        // captured worktree path, branch, and per-stage `session_id`
+        // values are untouched; the driver picks them up exactly as
+        // they are.
+        job.ended_at = None;
+        if !self.store.update_job(&job).await.map_err(db_err)? {
+            return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+        }
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobResumed {
+                    job_id: job.id,
+                    previous_reason,
+                },
                 now_ms(),
             )
             .await
@@ -479,6 +618,49 @@ impl RpcServer for InProcessRpc {
         Ok(())
     }
 
+    async fn pause_job(&self, args: PauseJobArgs) -> RpcResult<()> {
+        let Some(mut job) = self.store.get_job(args.job_id).await.map_err(db_err)? else {
+            return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+        };
+        if !matches!(job.status, JobStatus::Running | JobStatus::AwaitingReview) {
+            return Err(RpcError::Conflict(format!(
+                "job {} is {:?}; only Running or AwaitingReview jobs can be paused. \
+                 Use start_job to promote a Draft, or resume_job to restart a paused/stopped row.",
+                job.id, job.status
+            )));
+        }
+        crate::state_machine::transition_job(job.status, JobStatus::Paused).map_err(|e| {
+            RpcError::Conflict(format!(
+                "illegal job transition from {:?} to Paused: {e}",
+                job.status
+            ))
+        })?;
+        let now = now_ms();
+        job.status = JobStatus::Paused;
+        job.stop_reason = Some(StopReason::User);
+        job.ended_at = Some(now);
+        self.store.update_job(&job).await.map_err(db_err)?;
+        // The cap-watcher subscribes to the bus and fires the
+        // runner's cancellation token when it sees a `JobPaused`
+        // (or `JobStopped` / `JobFailed`) it didn't author. That's
+        // how the in-flight runner finds out the row has moved
+        // out from under it.
+        self.bus
+            .publish(
+                Some(job.id),
+                None,
+                None,
+                Event::JobPaused {
+                    job_id: job.id,
+                    reason: StopReason::User,
+                },
+                now,
+            )
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     async fn rerun_job(&self, args: RerunJobArgs) -> RpcResult<Job> {
         let Some(source) = self
             .store
@@ -495,12 +677,13 @@ impl RpcServer for InProcessRpc {
         let job = Job {
             id: JobId::new(),
             repo_id: source.repo_id,
-            status: JobStatus::Queued,
+            status: JobStatus::Draft,
             stop_reason: None,
             template_yaml: source.template_yaml,
             prompt: source.prompt,
             runner: source.runner,
             branch: String::new(),
+            workspace_mode: source.workspace_mode,
             worktree_path: None,
             cost_cap_cents: source.cost_cap_cents,
             wall_clock_cap_ms: source.wall_clock_cap_ms,
@@ -990,12 +1173,25 @@ impl RpcServer for InProcessRpc {
                         "agent_chat cwd is not a directory: {p}"
                     )));
                 }
-                let allowed = self
+                let fs_allowed = self
                     .fs
                     .as_ref()
                     .map(|fs| fs.is_path_allowed(&canon))
                     .unwrap_or(false);
-                if !allowed {
+                // Also allow cwd under any registered repo's local_path
+                // so the per-job chat panel can target repos that sit
+                // outside the primary --fs-root.
+                let repo_allowed = if !fs_allowed {
+                    let repos = self.store.list_repos().await.map_err(db_err)?;
+                    repos.iter().any(|r| {
+                        std::fs::canonicalize(&r.local_path)
+                            .map(|rp| canon.starts_with(&rp))
+                            .unwrap_or(false)
+                    })
+                } else {
+                    false
+                };
+                if !fs_allowed && !repo_allowed {
                     return Err(RpcError::InvalidArgument(format!(
                         "agent_chat cwd is outside the configured fs roots: {p}"
                     )));
@@ -1015,12 +1211,29 @@ impl RpcServer for InProcessRpc {
         let registry = Arc::clone(registry);
         let prompt = build_chat_prompt(args.context.as_ref(), &args.prompt);
 
+        // Register the cancel token before the spawn so a racing
+        // `cancel_chat_task` issued between `agent_chat` returning and
+        // the spawned task being scheduled still finds an entry to
+        // fire. The drop-guard inside the task removes the entry on
+        // any exit (success / error / panic), so the registry never
+        // leaks even if the runner crashes mid-turn.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.chat_cancels.lock().insert(
+            task_id,
+            ChatCancelEntry {
+                job_id: session_id,
+                token: cancel.clone(),
+            },
+        );
+        let cancels = Arc::clone(&self.chat_cancels);
+
         // Detached: the call returns once the runner has been spawned;
         // its tokens / tool-calls / completion event flow back through
         // the bus, keyed by `session_id` so the caller's subscribe
         // filter matches them. A panicked task only kills the chat
         // turn — log it and let other turns continue.
         tokio::spawn(async move {
+            let _guard = ChatCancelGuard { cancels, task_id };
             let publish = move |event: codeless_types::Event| {
                 let bus = Arc::clone(&bus);
                 async move {
@@ -1029,7 +1242,6 @@ impl RpcServer for InProcessRpc {
                         .map(|_| ())
                 }
             };
-            let cancel = tokio_util::sync::CancellationToken::new();
             if let Err(e) = codeless_adapters_host::run_chat(
                 registry, provider, prompt, cwd, task_id, publish, cancel,
             )
@@ -1078,8 +1290,7 @@ impl RpcServer for InProcessRpc {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(args.content_b64.as_bytes())
             .or_else(|_| {
-                base64::engine::general_purpose::STANDARD_NO_PAD
-                    .decode(args.content_b64.as_bytes())
+                base64::engine::general_purpose::STANDARD_NO_PAD.decode(args.content_b64.as_bytes())
             })
             .map_err(|e| RpcError::InvalidArgument(format!("content_b64: {e}")))?;
 
@@ -1108,6 +1319,67 @@ impl RpcServer for InProcessRpc {
         Ok(UploadChatAttachmentResult {
             relative_path,
             absolute_path: abs.to_string_lossy().into_owned(),
+        })
+    }
+
+    async fn cancel_chat_task(&self, args: CancelChatTaskArgs) -> RpcResult<()> {
+        // Idempotent by design: a missing entry means the chat turn
+        // either already completed (the drop-guard removed it) or was
+        // cancelled by a previous call. Returning `Ok(())` lets the UI
+        // race the natural end of the stream without distinguishing
+        // "stopped" from "already over".
+        if let Some(entry) = self.chat_cancels.lock().get(&args.task_id) {
+            entry.token.cancel();
+        }
+        Ok(())
+    }
+
+    async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult> {
+        // Job side: only call `stop_job` when the row is in a state
+        // it accepts; checking up front avoids a misleading
+        // `Conflict` error for the common "stop a chat over a
+        // completed job" path. The match must mirror the guard in
+        // `stop_job`, hence the same set of variants here.
+        let stopped_job = match self.store.get_job(args.job_id).await.map_err(db_err)? {
+            Some(job)
+                if matches!(
+                    job.status,
+                    JobStatus::Running
+                        | JobStatus::AwaitingReview
+                        | JobStatus::Queued
+                        | JobStatus::Paused
+                        | JobStatus::Draft
+                ) =>
+            {
+                self.stop_job(StopJobArgs {
+                    job_id: args.job_id,
+                })
+                .await?;
+                true
+            }
+            Some(_) => false,
+            None => return Err(RpcError::NotFound(format!("job {}", args.job_id))),
+        };
+
+        // Chat side: snapshot the matching entries under the lock so
+        // we can fire the tokens outside it. The drop-guards on the
+        // spawned tasks evict the entries themselves; we deliberately
+        // leave them in place so a racing second `stop_active` is a
+        // no-op fire rather than a spurious "nothing was running".
+        let cancelled_chat_task_ids: Vec<TaskId> = {
+            let map = self.chat_cancels.lock();
+            map.iter()
+                .filter(|(_, entry)| entry.job_id == args.job_id)
+                .map(|(task_id, entry)| {
+                    entry.token.cancel();
+                    *task_id
+                })
+                .collect()
+        };
+
+        Ok(StopActiveResult {
+            stopped_job,
+            cancelled_chat_task_ids,
         })
     }
 }
@@ -1170,10 +1442,9 @@ fn build_chat_prompt(ctx: Option<&codeless_rpc::ChatContext>, prompt: &str) -> S
 
 impl InProcessRpc {
     /// Resolve a `job_id` to the repo's on-disk path and the job's
-    /// `template.name`. The job-file surface is template-only: a raw
-    /// `prompt`-only job has no directory to read from, so it gets
-    /// `InvalidArgument` rather than an empty list. `NotFound` covers
-    /// unknown job or repo ids.
+    /// directory name. Template jobs use the template's `name` field;
+    /// prompt-only jobs fall back to `job-<id>` so the file surface
+    /// (chat.md, supporting docs) works even without a template.
     async fn resolve_repo_and_template_name(
         &self,
         job_id: codeless_types::JobId,
@@ -1184,20 +1455,22 @@ impl InProcessRpc {
             .await
             .map_err(db_err)?
             .ok_or_else(|| RpcError::NotFound(format!("job {job_id}")))?;
-        let yaml = job.template_yaml.as_ref().ok_or_else(|| {
-            RpcError::InvalidArgument(format!(
-                "job {job_id} has no template; file surface is template-only"
-            ))
-        })?;
-        let template = JobTemplate::parse_yaml(yaml)
-            .map_err(|e| RpcError::InvalidArgument(format!("job {job_id} template parse: {e}")))?;
+        let name = match job.template_yaml.as_ref() {
+            Some(yaml) => {
+                let template = JobTemplate::parse_yaml(yaml).map_err(|e| {
+                    RpcError::InvalidArgument(format!("job {job_id} template parse: {e}"))
+                })?;
+                template.name
+            }
+            None => format!("job-{job_id}"),
+        };
         let repo = self
             .store
             .get_repo(job.repo_id)
             .await
             .map_err(db_err)?
             .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
-        Ok((std::path::PathBuf::from(repo.local_path), template.name))
+        Ok((std::path::PathBuf::from(repo.local_path), name))
     }
 }
 

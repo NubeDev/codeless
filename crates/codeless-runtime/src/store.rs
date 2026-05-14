@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use codeless_types::{
     CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
-    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
+    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis, WorkspaceMode,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -90,10 +90,10 @@ impl SqliteStore {
         sqlx::query(
             "INSERT INTO jobs \
              (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
-              worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
+              workspace_mode, worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
               model, permission_mode, effort, \
               started_at, ended_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(job.id.to_string())
         .bind(job.repo_id.to_string())
@@ -103,6 +103,7 @@ impl SqliteStore {
         .bind(&job.prompt)
         .bind(&job.runner)
         .bind(&job.branch)
+        .bind(workspace_mode_label(job.workspace_mode))
         .bind(&job.worktree_path)
         .bind(job.cost_cap_cents.0)
         .bind(job.wall_clock_cap_ms)
@@ -132,7 +133,7 @@ impl SqliteStore {
         let res = sqlx::query(
             "UPDATE jobs SET \
                 repo_id=?, status=?, stop_reason=?, template_yaml=?, prompt=?, runner=?, \
-                branch=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
+                branch=?, workspace_mode=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
                 cost_cents=?, model=?, permission_mode=?, effort=?, \
                 started_at=?, ended_at=?, created_at=? \
              WHERE id=?",
@@ -144,6 +145,7 @@ impl SqliteStore {
         .bind(&job.prompt)
         .bind(&job.runner)
         .bind(&job.branch)
+        .bind(workspace_mode_label(job.workspace_mode))
         .bind(&job.worktree_path)
         .bind(job.cost_cap_cents.0)
         .bind(job.wall_clock_cap_ms)
@@ -167,8 +169,8 @@ impl SqliteStore {
         // simpler than a conditional update + insert dance.
         sqlx::query(
             "INSERT OR REPLACE INTO stages \
-             (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at) \
-             VALUES (?,?,?,?,?,?,?,?)",
+             (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at, session_id) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
         )
         .bind(stage.id.to_string())
         .bind(stage.job_id.to_string())
@@ -178,9 +180,31 @@ impl SqliteStore {
         .bind(&stage.verify_cmd)
         .bind(stage.started_at.map(|t| t.0))
         .bind(stage.ended_at.map(|t| t.0))
+        .bind(&stage.session_id)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// First-wins write of a runner-supplied session id onto an existing
+    /// stage row. `WHERE session_id IS NULL` guards against a second
+    /// runner task on the same stage clobbering the first capture, so
+    /// the recorder can call this unconditionally and rely on the SQL
+    /// for dedupe. Returns `true` only when the column actually
+    /// transitioned NULL → `session_id`; the recorder uses that signal
+    /// to know whether to emit `Event::StageSessionCaptured`.
+    pub async fn update_stage_session_id(
+        &self,
+        id: codeless_types::StageId,
+        session_id: &str,
+    ) -> sqlx::Result<bool> {
+        let res =
+            sqlx::query("UPDATE stages SET session_id = ? WHERE id = ? AND session_id IS NULL")
+                .bind(session_id)
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// Set `status` and `ended_at` for a stage on `StageCompleted`.
@@ -282,7 +306,7 @@ impl SqliteStore {
         use sqlx::Row;
         let rows = sqlx::query(
             "SELECT s.id, s.ordinal, s.name, s.status, s.verify_cmd, \
-                    s.started_at, s.ended_at, \
+                    s.started_at, s.ended_at, s.session_id, \
                     COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
                     COUNT(t.id) AS task_count \
              FROM stages s \
@@ -315,12 +339,60 @@ impl SqliteStore {
                         ended_at: row
                             .try_get::<Option<i64>, _>("ended_at")?
                             .map(codeless_types::UnixMillis),
+                        // Captured by the recorder on the first
+                        // `Event::StageSessionCaptured` for this stage
+                        // (see `update_stage_session_id`). NULL until a
+                        // task on the stage reports a non-empty
+                        // `RunResult.session_id`; once set, never
+                        // cleared.
+                        session_id: row.try_get("session_id")?,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,
                 })
             })
             .collect()
+    }
+
+    /// Focused single-stage read, used by `TemplateRunner` to pick
+    /// up the captured `session_id` for resume-aware execution
+    /// (A0 — intra-stage session continuation). Returns `None` for
+    /// an unknown stage id rather than erroring so the caller can
+    /// fall through to a fresh-session path.
+    pub async fn get_stage(
+        &self,
+        id: codeless_types::StageId,
+    ) -> sqlx::Result<Option<Stage>> {
+        use sqlx::Row;
+        let row = sqlx::query(
+            "SELECT id, job_id, ordinal, name, status, verify_cmd, \
+                    started_at, ended_at, session_id \
+             FROM stages WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let job_id_str: String = row.try_get("job_id")?;
+        let job_id: JobId = job_id_str
+            .parse()
+            .map_err(|e| sqlx::Error::Decode(format!("stage.job_id: {e:?}").into()))?;
+        let status: String = row.try_get("status")?;
+        Ok(Some(Stage {
+            id,
+            job_id,
+            ordinal: row.try_get::<i64, _>("ordinal")? as u32,
+            name: row.try_get("name")?,
+            status: parse_stage_status(&status),
+            verify_cmd: row.try_get("verify_cmd")?,
+            started_at: row
+                .try_get::<Option<i64>, _>("started_at")?
+                .map(codeless_types::UnixMillis),
+            ended_at: row
+                .try_get::<Option<i64>, _>("ended_at")?
+                .map(codeless_types::UnixMillis),
+            session_id: row.try_get("session_id")?,
+        }))
     }
 
     /// Enqueue a task in `enqueued` state. `lease_holder` /
@@ -547,6 +619,26 @@ impl SqliteStore {
         rows.into_iter().map(job_from_row).collect()
     }
 
+    /// Returns `Some(job)` if there is already an `in_repo` job for
+    /// `repo_id` in a non-terminal state. Used by `submit_job` to
+    /// enforce the one-in_repo-per-repo invariant.
+    pub async fn active_in_repo_job(
+        &self,
+        repo_id: RepoId,
+    ) -> sqlx::Result<Option<Job>> {
+        let row = sqlx::query(
+            "SELECT * FROM jobs \
+             WHERE repo_id = ? \
+               AND workspace_mode = 'in-repo' \
+               AND status NOT IN ('completed', 'failed', 'stopped') \
+             LIMIT 1",
+        )
+        .bind(repo_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(job_from_row).transpose()
+    }
+
     pub async fn insert_review(&self, review: &Review) -> sqlx::Result<()> {
         sqlx::query(
             "INSERT INTO reviews (id, stage_id, status, comment, requested_at, resolved_at) \
@@ -639,6 +731,7 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
     let repo_id: String = row.try_get("repo_id")?;
     let status: String = row.try_get("status")?;
     let stop_reason: Option<String> = row.try_get("stop_reason")?;
+    let workspace_mode: String = row.try_get("workspace_mode")?;
     let started_at: Option<i64> = row.try_get("started_at")?;
     let ended_at: Option<i64> = row.try_get("ended_at")?;
     Ok(Job {
@@ -650,6 +743,7 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
         prompt: row.try_get("prompt")?,
         runner: row.try_get("runner")?,
         branch: row.try_get("branch")?,
+        workspace_mode: parse_workspace_mode(&workspace_mode)?,
         worktree_path: row.try_get("worktree_path")?,
         cost_cap_cents: CostCents(row.try_get("cost_cap_cents")?),
         wall_clock_cap_ms: row.try_get("wall_clock_cap_ms")?,
@@ -760,6 +854,7 @@ fn job_status_label(s: JobStatus) -> &'static str {
         JobStatus::Completed => "completed",
         JobStatus::Failed => "failed",
         JobStatus::Stopped => "stopped",
+        JobStatus::Paused => "paused",
     }
 }
 
@@ -772,6 +867,7 @@ fn parse_job_status(s: &str) -> sqlx::Result<JobStatus> {
         "completed" => JobStatus::Completed,
         "failed" => JobStatus::Failed,
         "stopped" => JobStatus::Stopped,
+        "paused" => JobStatus::Paused,
         other => {
             return Err(sqlx::Error::Decode(
                 format!("unknown job status: {other}").into(),
@@ -787,6 +883,25 @@ fn stop_reason_label(s: StopReason) -> &'static str {
         StopReason::WallClock => "wall-clock",
         StopReason::RunnerCrash => "runner-crash",
     }
+}
+
+fn workspace_mode_label(m: WorkspaceMode) -> &'static str {
+    match m {
+        WorkspaceMode::InRepo => "in-repo",
+        WorkspaceMode::Worktree => "worktree",
+    }
+}
+
+fn parse_workspace_mode(s: &str) -> sqlx::Result<WorkspaceMode> {
+    Ok(match s {
+        "in-repo" => WorkspaceMode::InRepo,
+        "worktree" => WorkspaceMode::Worktree,
+        other => {
+            return Err(sqlx::Error::Decode(
+                format!("unknown workspace_mode: {other}").into(),
+            ))
+        }
+    })
 }
 
 fn review_status_label(s: ReviewStatus) -> &'static str {

@@ -451,6 +451,7 @@ async fn driver_provisions_worktree_when_root_set() {
             "template_yaml": null,
             "runner": "mock",
             "branch": "",
+            "workspace_mode": "worktree",
             "cost_cap_cents": 0,
             "wall_clock_cap_ms": 60000,
             "start_immediately": true,

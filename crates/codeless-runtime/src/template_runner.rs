@@ -32,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::claude_runner::ClaudeRunnerAdapter;
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
+use crate::store::SqliteStore;
 use crate::template::{JobTemplate, PlannedStage};
 use crate::time::now_ms;
 
@@ -55,6 +56,14 @@ pub struct TemplateRunner {
     /// per stage, so the StageRecorder records timing + cost (cost is
     /// 0 because mock doesn't bill anything).
     pub use_mock_runner: bool,
+    /// Store handle for resume-aware stage execution. When a stage
+    /// row already has `session_id: Some(...)` (because a previous
+    /// run captured it before being interrupted by a cost-cap /
+    /// user-stop / crash), the inner `ClaudeRunnerAdapter` receives
+    /// it as `resume_id` and the claude wrapper passes `--continue`
+    /// so the agent picks up the same conversation. `None` (test
+    /// harness path) opts out: every stage runs fresh.
+    pub store: Option<Arc<SqliteStore>>,
 }
 
 impl TemplateRunner {
@@ -63,7 +72,17 @@ impl TemplateRunner {
             template,
             system_prompt: None,
             use_mock_runner: false,
+            store: None,
         }
+    }
+
+    /// Inject the store handle so the runner can look up each
+    /// stage's captured `session_id` before invoking the inner
+    /// adapter. Required for A0 (intra-stage session continuation);
+    /// the test harnesses leave it unset and stages run fresh.
+    pub fn with_store(mut self, store: Arc<SqliteStore>) -> Self {
+        self.store = Some(store);
+        self
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
@@ -199,6 +218,11 @@ impl Runner for TemplateRunner {
                 let prompt = self.stage_prompt(*stage, total, ctx.worktree_path.as_deref());
                 let sub_ctx = RunnerContext {
                     job_id: ctx.job_id,
+                    // Tag the per-stage child context with the stage id
+                    // so the inner adapter can publish stage-scoped
+                    // events (e.g. `StageSessionCaptured`) against the
+                    // row TemplateRunner just opened.
+                    stage_id: Some(stage_id),
                     bus: Arc::clone(&ctx.bus),
                     worktree_path: ctx.worktree_path.clone(),
                     cancel: derive_cancel(&ctx.cancel),
@@ -257,6 +281,21 @@ impl Runner for TemplateRunner {
                     let mut adapter = ClaudeRunnerAdapter::new(prompt, task_id);
                     if let Some(sp) = &self.system_prompt {
                         adapter = adapter.with_system_prompt(sp.clone());
+                    }
+                    // If the stage row already carries a captured
+                    // session id from a previous (interrupted) run,
+                    // pass it through so the upstream wrapper resumes
+                    // the same claude conversation rather than starting
+                    // fresh. A0 — intra-stage session continuation
+                    // per SCOPE.md hard rule #1.
+                    if let Some(store) = self.store.as_ref() {
+                        if let Ok(Some(stage)) = store.get_stage(stage_id).await {
+                            if let Some(session_id) = stage.session_id {
+                                if !session_id.is_empty() {
+                                    adapter = adapter.with_resume_id(session_id);
+                                }
+                            }
+                        }
                     }
                     adapter.run(sub_ctx).await
                 };

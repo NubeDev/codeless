@@ -46,6 +46,7 @@ async fn seed(db: &Path) -> JobId {
             template_yaml: None,
             runner: "mock".into(),
             branch: "feat/x".into(),
+            workspace_mode: None,
             cost_cap_cents: 100,
             wall_clock_cap_ms: 60_000,
             model: None,

@@ -83,6 +83,7 @@ async fn fixture_with_job(
             template_yaml: template_yaml.map(|s| s.to_string()),
             runner: "mock".into(),
             branch: "codeless/job-x".into(),
+            workspace_mode: None,
             cost_cap_cents: 0,
             wall_clock_cap_ms: 0,
             model: None,

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{RpcError, RpcResult};
-use codeless_types::{Event, JobId, JobStatus, StopReason};
+use codeless_types::{Event, JobId, JobStatus, StopReason, WorkspaceMode};
 use futures_core::Stream;
 use tokio_util::sync::CancellationToken;
 
@@ -77,9 +77,23 @@ pub async fn drive_job(
     transition_job(job.status, JobStatus::Running)
         .map_err(|e| RpcError::Conflict(e.to_string()))?;
 
-    let provisioned = match worktrees.as_ref() {
-        Some(mgr) => Some(provision_worktree(mgr, store, &mut job).await?),
-        None => None,
+    let provisioned = match job.workspace_mode {
+        WorkspaceMode::InRepo => {
+            // In-repo mode: edits land in the user's existing clone.
+            // Create the branch but skip `git worktree add`.
+            let repo = store
+                .get_repo(job.repo_id)
+                .await
+                .map_err(db_err)?
+                .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
+            let repo_path = PathBuf::from(&repo.local_path);
+            provision_in_repo(&repo_path, store, &mut job).await?;
+            None
+        }
+        WorkspaceMode::Worktree => match worktrees.as_ref() {
+            Some(mgr) => Some(provision_worktree(mgr, store, &mut job).await?),
+            None => None,
+        },
     };
 
     let started = now_ms();
@@ -112,8 +126,19 @@ pub async fn drive_job(
     let outcome = runner
         .run(RunnerContext {
             job_id,
+            stage_id: None,
             bus: Arc::clone(bus),
-            worktree_path: provisioned.as_ref().map(|p| p.worktree.clone()),
+            worktree_path: match job.workspace_mode {
+                WorkspaceMode::InRepo => {
+                    // In in_repo mode the repo's local_path *is* the
+                    // working directory. We already stored it on the job
+                    // row during provision_in_repo.
+                    job.worktree_path.as_ref().map(PathBuf::from)
+                }
+                WorkspaceMode::Worktree => {
+                    provisioned.as_ref().map(|p| p.worktree.clone())
+                }
+            },
             cancel: cancel.clone(),
         })
         .await;
@@ -122,8 +147,8 @@ pub async fn drive_job(
     let Some(current) = store.get_job(job_id).await.map_err(db_err)? else {
         return Err(RpcError::NotFound(format!("job {job_id}")));
     };
-    if is_terminal_job(current.status) {
-        tracing::info!(status = ?current.status, "runner returned after stop");
+    if is_terminal_job(current.status) || current.status == JobStatus::Paused {
+        tracing::info!(status = ?current.status, "runner returned after stop or pause");
         // Worktree is intentionally left on disk. SCOPE.md "Crash
         // recovery": "Worktrees: a job whose task crashed leaves its
         // worktree on disk. The reaper either preserves it (default —
@@ -132,6 +157,11 @@ pub async fn drive_job(
         // work." The user-driven cleanup path (a future
         // `gc_worktrees` RPC + UI button) reaps; the driver never
         // does. `worktree_path` on the job row still points at it.
+        //
+        // `Paused` lands here when the cap-watcher paused the job
+        // mid-stage (resumable via `resume_job`); the row + branch +
+        // captured `Stage.session_id` all survive for the resume
+        // path.
         return Ok(());
     }
 
@@ -232,6 +262,45 @@ async fn provision_worktree(
     })
 }
 
+/// In-repo mode: create a branch in the user's local clone and record
+/// the repo path as the working directory. No `git worktree add`.
+async fn provision_in_repo(
+    repo_path: &PathBuf,
+    store: &Arc<SqliteStore>,
+    job: &mut codeless_types::Job,
+) -> RpcResult<()> {
+    // Only attempt `git checkout -B` when the repo path is a real git
+    // checkout. Test repos and placeholder paths skip the branch
+    // creation — the mock runner doesn't need a working git tree.
+    if repo_path.join(".git").exists() {
+        // An empty branch (set by rerun_job) gets a canonical name so
+        // `git checkout -B ""` never runs.
+        if job.branch.is_empty() {
+            job.branch = format!("codeless/job-{}", job.id);
+        }
+        let branch = &job.branch;
+        let output = std::process::Command::new("git")
+            .args(["checkout", "-B", branch])
+            .current_dir(repo_path)
+            .output()
+            .map_err(|e| RpcError::Internal(format!("git checkout -B: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(RpcError::Internal(format!(
+                "git checkout -B {branch}: {stderr}"
+            )));
+        }
+    } else {
+        tracing::warn!(
+            repo = %repo_path.display(),
+            "in_repo mode: path is not a git repo, skipping branch creation",
+        );
+    }
+    job.worktree_path = Some(repo_path.to_string_lossy().into_owned());
+    store.update_job(job).await.map_err(db_err)?;
+    Ok(())
+}
+
 // Kept for the upcoming user-driven `gc_worktrees` RPC. The driver no
 // longer auto-reaps on terminal status (SCOPE.md "Crash recovery"
 // makes preservation the default); cleanup will land as an explicit
@@ -303,37 +372,88 @@ async fn watch_caps(
     };
     tokio::pin!(wall_clock_sleep);
 
+    // The select! body distinguishes two outcomes per loop turn:
+    //
+    //   - WatcherAction::FireCap(reason): a cap WE detected. The
+    //     watcher owns writing the row + publishing the event +
+    //     firing cancel via `fire_pause_or_stop`. This is the cost
+    //     / wall-clock path.
+    //
+    //   - WatcherAction::ExternalTerminal: an external path (the
+    //     `stop_job` / `pause_job` RPC) already wrote a terminal /
+    //     paused row and published its event. The watcher just
+    //     fires cancel so the in-flight runner exits, then returns.
+    //     This is the load-bearing fix that makes mid-stage stop /
+    //     pause actually interrupt the runner; without it `stop_job`
+    //     was advisory until the next cap or natural completion.
+    enum WatcherAction {
+        FireCap(StopReason),
+        ExternalTerminal,
+    }
     loop {
         let next_item: futures_core::future::BoxFuture<'_, _> = Box::pin(stream.next());
-        let stop_reason = tokio::select! {
+        let action = tokio::select! {
             biased;
             _ = async {
                 match wall_clock_sleep.as_mut().as_pin_mut() {
                     Some(s) => s.await,
                     None => std::future::pending::<()>().await,
                 }
-            } => Some(StopReason::WallClock),
+            } => Some(WatcherAction::FireCap(StopReason::WallClock)),
             item = next_item => {
                 match item {
-                    Some(Ok(env)) if matches!(env.event, Event::AiMessageComplete { .. }) && cost_cap > 0 => {
-                        match store.get_job(job_id).await {
-                            Ok(Some(j)) if j.cost_cents.0 >= cost_cap => Some(StopReason::CostCap),
-                            _ => None,
+                    Some(Ok(env)) => match &env.event {
+                        Event::AiMessageComplete { .. } if cost_cap > 0 => {
+                            match store.get_job(job_id).await {
+                                Ok(Some(j)) if j.cost_cents.0 >= cost_cap => {
+                                    Some(WatcherAction::FireCap(StopReason::CostCap))
+                                }
+                                _ => None,
+                            }
                         }
-                    }
-                    Some(_) => None,
+                        Event::JobStopped { .. }
+                        | Event::JobPaused { .. }
+                        | Event::JobFailed { .. } => {
+                            Some(WatcherAction::ExternalTerminal)
+                        }
+                        _ => None,
+                    },
+                    Some(Err(_)) => None,
                     None => return,
                 }
             }
         };
-        if let Some(reason) = stop_reason {
-            fire_stop(&store, &bus, job_id, reason, &cancel).await;
-            return;
+        match action {
+            Some(WatcherAction::FireCap(reason)) => {
+                fire_pause_or_stop(&store, &bus, job_id, reason, &cancel).await;
+                return;
+            }
+            Some(WatcherAction::ExternalTerminal) => {
+                cancel.cancel();
+                return;
+            }
+            None => {}
         }
     }
 }
 
-async fn fire_stop(
+/// When a cap trips mid-stage, decide whether the job is resumable
+/// (any stage on this job has a captured `Stage.session_id` — the
+/// claude wrapper can `--continue` from it) or terminal (no session
+/// captured anywhere, so a fresh session would be the only path
+/// forward, which is what `Stopped` semantics already mean).
+///
+/// Resumable -> `Paused` + `JobPaused` event. The row stays
+/// non-terminal; `resume_job` accepts it. The user's recovery is
+/// "raise the cap and click resume."
+///
+/// Non-resumable -> today's behaviour: `Stopped` + `JobStopped`.
+/// The user's recovery is "re-run from scratch."
+///
+/// `is_terminal_job` and the cancellation token semantics are
+/// unchanged for both paths — the runner sees a cancellation and
+/// exits regardless.
+async fn fire_pause_or_stop(
     store: &Arc<SqliteStore>,
     bus: &Arc<EventBus>,
     job_id: JobId,
@@ -344,28 +464,52 @@ async fn fire_stop(
         cancel.cancel();
         return;
     };
-    if is_terminal_job(job.status) {
+    if is_terminal_job(job.status) || job.status == JobStatus::Paused {
         cancel.cancel();
         return;
     }
+    let resumable = has_captured_session(store, job_id).await;
     let ended = now_ms();
-    job.status = JobStatus::Stopped;
     job.stop_reason = Some(reason);
     job.ended_at = Some(ended);
+    if resumable {
+        job.status = JobStatus::Paused;
+    } else {
+        job.status = JobStatus::Stopped;
+    }
     if let Err(e) = store.update_job(&job).await {
         tracing::warn!(error = %e, "cap watcher: update_job failed");
     }
+    let event = if resumable {
+        Event::JobPaused { job_id, reason }
+    } else {
+        Event::JobStopped { job_id, reason }
+    };
     if let Err(e) = bus
-        .publish(
-            Some(job_id),
-            None,
-            None,
-            Event::JobStopped { job_id, reason },
-            ended,
-        )
+        .publish(Some(job_id), None, None, event, ended)
         .await
     {
-        tracing::warn!(error = %e, "cap watcher: publish JobStopped failed");
+        tracing::warn!(
+            error = %e,
+            resumable,
+            "cap watcher: publish JobPaused/JobStopped failed"
+        );
     }
     cancel.cancel();
+}
+
+/// True when any stage on this job has captured a runner session
+/// id — `Stage.session_id IS NOT NULL`. The list query is cheap
+/// (a single SELECT scoped to one job's stages); avoiding a
+/// targeted `WHERE session_id IS NOT NULL` keeps the SqliteStore
+/// surface area smaller without hurting the cap-watcher's hot path
+/// (the watcher only fires once per cap trip).
+async fn has_captured_session(store: &Arc<SqliteStore>, job_id: JobId) -> bool {
+    match store.list_stages_for_job(job_id).await {
+        Ok(stages) => stages.iter().any(|s| s.stage.session_id.is_some()),
+        Err(e) => {
+            tracing::warn!(error = %e, "cap watcher: list_stages_for_job failed; falling back to stop");
+            false
+        }
+    }
 }

@@ -150,7 +150,7 @@ fn status_label(status: &JobStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codeless_types::{CostCents, JobId, RepoId, UnixMillis};
+    use codeless_types::{CostCents, JobId, RepoId, UnixMillis, WorkspaceMode};
 
     fn mkjob(status: JobStatus, runner: &str, cents: i64) -> Job {
         Job {
@@ -162,6 +162,7 @@ mod tests {
             prompt: Some("hi".into()),
             runner: runner.into(),
             branch: "main".into(),
+            workspace_mode: WorkspaceMode::default(),
             worktree_path: None,
             cost_cap_cents: CostCents::ZERO,
             wall_clock_cap_ms: 0,

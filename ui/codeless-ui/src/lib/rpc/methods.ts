@@ -6,11 +6,14 @@
 import type {
   AgentChatArgs,
   AgentChatResult,
+  CancelChatTaskArgs,
   EventCursor,
   FsEntry,
   FsGlobHit,
   FsGrepHit,
   FsReadResult,
+  FsStatArgs,
+  FsStatResult,
   GitAuth,
   Handover,
   Job,
@@ -23,6 +26,8 @@ import type {
   ShellBgEntry,
   ShellBgLogChunk,
   ShellCommandOutput,
+  StopActiveArgs,
+  StopActiveResult,
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
   ShellSessionRunOutput,
@@ -52,6 +57,9 @@ export interface SubmitJobArgs {
   template_yaml: string | null;
   runner: string;
   branch: string;
+  /** `in-repo` (default) edits the user's local clone; `worktree`
+   * creates a separate `git worktree add` checkout. */
+  workspace_mode?: "in-repo" | "worktree" | null;
   cost_cap_cents: number;
   wall_clock_cap_ms: number;
   /** Optional per-job model id. Adapters that don't understand it
@@ -96,6 +104,7 @@ export interface StageRollup {
     verify_cmd: string | null;
     started_at: number | null;
     ended_at: number | null;
+    session_id: string | null;
   };
   cost_cents: number;
   task_count: number;
@@ -113,8 +122,27 @@ export interface StopJobArgs {
   job_id: JobId;
 }
 
+// Move a Running / AwaitingReview job to Paused. The runner is
+// cancelled at the next await boundary; the captured per-stage
+// Stage.session_id is the resume handle for the next resume_job
+// call. Distinct from stop_job: pause is "I'll come back."
+export interface PauseJobArgs {
+  job_id: JobId;
+}
+
 export interface StartJobArgs {
   job_id: JobId;
+}
+
+// A0 — intra-stage session continuation. Re-queues a terminal-but-
+// recoverable job (Stopped or Failed) so the driver picks it up
+// again, reusing the captured per-stage session id so the next
+// claude task passes `--continue` instead of starting fresh. Both
+// caps are additive on the existing job; null leaves them as-is.
+export interface ResumeJobArgs {
+  job_id: JobId;
+  additional_cost_cap_cents?: number | null;
+  additional_wall_clock_cap_ms?: number | null;
 }
 
 export interface RerunJobArgs {
@@ -337,7 +365,10 @@ export interface RpcMethodMap {
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   list_stages: { args: ListStagesArgs; result: ListStagesResult };
   stop_job: { args: StopJobArgs; result: null };
+  stop_active: { args: StopActiveArgs; result: StopActiveResult };
+  pause_job: { args: PauseJobArgs; result: null };
   start_job: { args: StartJobArgs; result: Job };
+  resume_job: { args: ResumeJobArgs; result: Job };
   rerun_job: { args: RerunJobArgs; result: Job };
   gc_worktrees: { args: GcWorktreesArgs; result: GcWorktreesResult };
   job_diff: { args: JobDiffArgs; result: JobDiffResult };
@@ -351,6 +382,7 @@ export interface RpcMethodMap {
   fs_glob: { args: FsGlobArgs; result: FsGlobResult };
   fs_move: { args: FsMoveArgs; result: null };
   fs_delete: { args: FsDeleteArgs; result: null };
+  fs_stat: { args: FsStatArgs; result: FsStatResult };
   fs_cwd: { args: Record<string, never>; result: FsCwdResult };
 
   list_job_files: { args: ListJobFilesArgs; result: ListJobFilesResult };
@@ -387,11 +419,15 @@ export interface RpcMethodMap {
     args: UploadChatAttachmentArgs;
     result: UploadChatAttachmentResult;
   };
+  cancel_chat_task: { args: CancelChatTaskArgs; result: null };
 }
 
 export type {
   AgentChatArgs,
   AgentChatResult,
+  CancelChatTaskArgs,
+  StopActiveArgs,
+  StopActiveResult,
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
 };

@@ -1,6 +1,6 @@
 //! `rerun_job` clones a previously-submitted job's row with a fresh
-//! `JobId`, leaves the source untouched, and emits `JobQueued` so the
-//! driver picks it up via the same path as `submit_job`.
+//! `JobId`, leaves the source untouched, and lands in `Draft` so the
+//! user can review before starting.
 
 use codeless_rpc::{AddRepoArgs, RerunJobArgs, RpcServer, SubmitJobArgs};
 use codeless_runtime::InProcessRpc;
@@ -34,6 +34,7 @@ async fn rerun_job_clones_source_and_queues_fresh() {
             template_yaml: None,
             runner: "mock".into(),
             branch: "feature/wizard-typed".into(),
+            workspace_mode: None,
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
             model: None,
@@ -58,7 +59,7 @@ async fn rerun_job_clones_source_and_queues_fresh() {
     assert_eq!(rerun.runner, source.runner);
     assert_eq!(rerun.cost_cap_cents, source.cost_cap_cents);
     assert_eq!(rerun.wall_clock_cap_ms, source.wall_clock_cap_ms);
-    assert_eq!(rerun.status, JobStatus::Queued);
+    assert_eq!(rerun.status, JobStatus::Draft);
     assert_eq!(
         rerun.branch, "",
         "rerun starts with an empty branch so WorktreeManager picks the canonical fallback",

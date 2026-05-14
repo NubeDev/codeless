@@ -190,6 +190,7 @@ export class MockRpcClient implements RpcClient {
           prompt: a.prompt,
           runner: a.runner,
           branch: a.branch,
+          workspace_mode: a.workspace_mode ?? "in-repo",
           worktree_path: null,
           cost_cap_cents: a.cost_cap_cents,
           wall_clock_cap_ms: a.wall_clock_cap_ms,
@@ -225,6 +226,54 @@ export class MockRpcClient implements RpcClient {
         return job as RpcResultOf<M>;
       }
 
+      case "resume_job": {
+        const a = args as RpcArgs<"resume_job">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        if (job.status !== "stopped" && job.status !== "failed") {
+          throw new RpcError(
+            "conflict",
+            `job ${a.job_id} is ${job.status}; only stopped or failed jobs are resumable`,
+          );
+        }
+        const costBump = a.additional_cost_cap_cents ?? null;
+        if (costBump != null && costBump > 0) {
+          job.cost_cap_cents = job.cost_cap_cents + costBump;
+        }
+        const wallBump = a.additional_wall_clock_cap_ms ?? null;
+        if (wallBump != null && wallBump > 0) {
+          job.wall_clock_cap_ms = job.wall_clock_cap_ms + wallBump;
+        }
+        const previousReason = job.stop_reason;
+        job.status = "queued";
+        job.stop_reason = null;
+        job.ended_at = null;
+        this.emit({
+          type: "job-resumed",
+          job_id: job.id,
+          previous_reason: previousReason,
+        });
+        this.synthesiseLifecycle(job);
+        return job as RpcResultOf<M>;
+      }
+
+      case "pause_job": {
+        const a = args as RpcArgs<"pause_job">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        if (job.status !== "running" && job.status !== "awaiting-review") {
+          throw new RpcError(
+            "conflict",
+            `job ${a.job_id} is ${job.status}; only running or awaiting-review jobs can be paused`,
+          );
+        }
+        job.status = "paused";
+        job.stop_reason = "user";
+        job.ended_at = Date.now();
+        this.emit({ type: "job-paused", job_id: job.id, reason: "user" });
+        return null as RpcResultOf<M>;
+      }
+
       case "stop_job": {
         const a = args as RpcArgs<"stop_job">;
         const job = this.jobs.find((j) => j.id === a.job_id);
@@ -241,6 +290,33 @@ export class MockRpcClient implements RpcClient {
         job.ended_at = Date.now();
         this.emit({ type: "job-stopped", job_id: job.id, reason: "user" });
         return null as RpcResultOf<M>;
+      }
+
+      case "stop_active": {
+        // Mirror the runtime's umbrella semantics. The browser mock
+        // never spawns chat turns of its own, so the chat side is
+        // always empty; the job side fires only when the row is in a
+        // pre-terminal status. Idempotent — a terminal-or-paused row
+        // returns ok with both fields zeroed.
+        const a = args as RpcArgs<"stop_active">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        let stoppedJob = false;
+        if (
+          job.status === "running" ||
+          job.status === "awaiting-review" ||
+          job.status === "queued"
+        ) {
+          job.status = "stopped";
+          job.stop_reason = "user";
+          job.ended_at = Date.now();
+          this.emit({ type: "job-stopped", job_id: job.id, reason: "user" });
+          stoppedJob = true;
+        }
+        return {
+          stopped_job: stoppedJob,
+          cancelled_chat_task_ids: [],
+        } as RpcResultOf<M>;
       }
 
       case "gc_worktrees": {
@@ -269,6 +345,7 @@ export class MockRpcClient implements RpcClient {
           prompt: src.prompt,
           runner: src.runner,
           branch: "",
+          workspace_mode: src.workspace_mode,
           worktree_path: null,
           cost_cap_cents: src.cost_cap_cents,
           wall_clock_cap_ms: src.wall_clock_cap_ms,
@@ -611,6 +688,13 @@ export class MockRpcClient implements RpcClient {
           session_id: a.session_id,
           task_id: a.session_id,
         } as RpcResultOf<M>;
+      }
+
+      case "cancel_chat_task": {
+        // Idempotent on the host (a missing entry returns Ok); the
+        // mock client never spawned anything to cancel, so the
+        // matching no-op preserves caller semantics.
+        return null as RpcResultOf<M>;
       }
 
       case "write_handover": {

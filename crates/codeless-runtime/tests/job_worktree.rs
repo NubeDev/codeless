@@ -109,6 +109,7 @@ async fn submit(rpc: &InProcessRpc, repo_path: &Path) -> codeless_types::JobId {
         template_yaml: None,
         runner: "mock".into(),
         branch: "codeless/job-wt".into(),
+        workspace_mode: None,
         cost_cap_cents: 500,
         wall_clock_cap_ms: 60_000,
         model: None,

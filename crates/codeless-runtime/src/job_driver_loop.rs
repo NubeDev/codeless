@@ -118,7 +118,13 @@ pub async fn spawn_job_driver_loop<F: RunnerFactory>(
                             }
                             None => break,
                         };
-                        if let Event::JobQueued { job_id, .. } = env.event {
+                        let job_id = match env.event {
+                            Event::JobQueued { job_id, .. }
+                            | Event::JobPromoted { job_id }
+                            | Event::JobResumed { job_id, .. } => Some(job_id),
+                            _ => None,
+                        };
+                        if let Some(job_id) = job_id {
                             dispatch(
                                 rpc.clone(),
                                 factory.clone(),

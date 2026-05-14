@@ -6,14 +6,15 @@ use axum::{
     Json, Router,
 };
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CommentReviewArgs,
-    DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
+    CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, RpcError, ServerInfo, StartJobArgs, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
 };
@@ -34,7 +35,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/list_jobs", post(list_jobs))
         .route("/rpc/list_stages", post(list_stages))
         .route("/rpc/stop_job", post(stop_job))
+        .route("/rpc/pause_job", post(pause_job))
         .route("/rpc/start_job", post(start_job))
+        .route("/rpc/resume_job", post(resume_job))
         .route("/rpc/rerun_job", post(rerun_job))
         .route("/rpc/gc_worktrees", post(gc_worktrees))
         .route("/rpc/job_diff", post(job_diff))
@@ -54,10 +57,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/update_job_template", post(update_job_template))
         .route("/rpc/write_handover", post(write_handover))
         .route("/rpc/agent_chat", post(agent_chat))
-        .route(
-            "/rpc/upload_chat_attachment",
-            post(upload_chat_attachment),
-        )
+        .route("/rpc/upload_chat_attachment", post(upload_chat_attachment))
+        .route("/rpc/cancel_chat_task", post(cancel_chat_task))
+        .route("/rpc/stop_active", post(stop_active))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -182,6 +184,17 @@ async fn stop_job(
         .map_err(map_err)
 }
 
+async fn pause_job(
+    State(st): State<AppState>,
+    Json(args): Json<PauseJobArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .pause_job(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
 async fn start_job(
     State(st): State<AppState>,
     Json(args): Json<StartJobArgs>,
@@ -194,6 +207,13 @@ async fn rerun_job(
     Json(args): Json<RerunJobArgs>,
 ) -> HandlerResult<Job> {
     st.rpc.rerun_job(args).await.map(Json).map_err(map_err)
+}
+
+async fn resume_job(
+    State(st): State<AppState>,
+    Json(args): Json<ResumeJobArgs>,
+) -> HandlerResult<Job> {
+    st.rpc.resume_job(args).await.map(Json).map_err(map_err)
 }
 
 async fn gc_worktrees(
@@ -351,4 +371,22 @@ async fn upload_chat_attachment(
         .await
         .map(Json)
         .map_err(map_err)
+}
+
+async fn cancel_chat_task(
+    State(st): State<AppState>,
+    Json(args): Json<CancelChatTaskArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .cancel_chat_task(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn stop_active(
+    State(st): State<AppState>,
+    Json(args): Json<StopActiveArgs>,
+) -> HandlerResult<StopActiveResult> {
+    st.rpc.stop_active(args).await.map(Json).map_err(map_err)
 }
