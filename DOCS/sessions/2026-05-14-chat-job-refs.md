@@ -29,10 +29,10 @@ the composer.
 
 Format: `[ ] N. [S|M|L] title` — complexity tag mandatory.
 
-- [ ] 1. [S] Wire: extend `ChatContext` with `job_refs: Vec<JobContextRef>` where
+- [x] 1. [S] Wire: extend `ChatContext` with `job_refs: Vec<JobContextRef>` where
        `JobContextRef { job_id: JobId, include_spec: bool, include_history: bool, history_turn_limit: Option<u32> }`.
        Regenerate `wire.ts` via `cargo run -p codeless-rpc --example wire_ts`.
-- [ ] 2. [M] Server: in `chat.rs`, after the active job's spec fold, iterate
+- [x] 2. [M] Server: in `chat.rs`, after the active job's spec fold, iterate
        `args.context.job_refs`. For each:
        (a) load the referenced job + repo, reject with `InvalidArgument` if
            the repo differs from the active job's;

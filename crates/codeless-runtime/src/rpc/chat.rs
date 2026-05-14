@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use codeless_rpc::{
-    AgentChatArgs, AgentChatResult, CancelChatTaskArgs, ChatMode, RpcError, RpcResult,
-    StopActiveArgs, StopActiveResult, StopJobArgs, UploadChatAttachmentArgs,
+    AgentChatArgs, AgentChatResult, CancelChatTaskArgs, ChatMode, JobContextRef, JobReportArgs,
+    RpcError, RpcResult, StopActiveArgs, StopActiveResult, StopJobArgs, UploadChatAttachmentArgs,
     UploadChatAttachmentResult,
 };
-use codeless_types::TaskId;
+use codeless_types::{RepoId, TaskId};
 
 use super::{ChatCancelEntry, ChatCancels, InProcessRpc};
 use crate::template::JobTemplate;
@@ -93,10 +93,24 @@ pub(super) async fn agent_chat(
     // correlation id that does not resolve to a job — both cases skip
     // the block silently.
     let mode = args.mode.unwrap_or_default();
-    let job_spec_block = load_chat_job_spec(rpc, session_id).await;
+    let active_job = rpc.store.get_job(session_id).await.ok().flatten();
+    let job_spec_block = match &active_job {
+        Some(job) => load_chat_job_spec_for(rpc, job).await,
+        None => None,
+    };
+    let job_refs_block = load_chat_job_refs(
+        rpc,
+        active_job.as_ref().map(|j| j.repo_id),
+        args.context
+            .as_ref()
+            .map(|c| c.job_refs.as_slice())
+            .unwrap_or(&[]),
+    )
+    .await?;
     let prompt = build_chat_prompt(
         args.context.as_ref(),
         job_spec_block.as_deref(),
+        job_refs_block.as_deref(),
         mode,
         &args.prompt,
     );
@@ -285,33 +299,131 @@ pub(super) async fn stop_active(
     })
 }
 
-/// Best-effort fetch of the job's spec for the chat preamble. Returns
-/// `None` when the session id is not a real job, when the job lacks a
-/// parseable template, or when none of the spec files are present.
-/// Files are bounded by `MAX_CHAT_SPEC_BYTES` per file so a runaway
-/// SCOPE.md cannot blow out the model's context budget.
-pub(super) async fn load_chat_job_spec(
+/// Best-effort fetch of the active job's spec for the chat preamble.
+/// Returns `None` when the job lacks a parseable template or when none
+/// of the spec files are present. Files are bounded by
+/// `MAX_CHAT_SPEC_BYTES` per file so a runaway SCOPE.md cannot blow
+/// out the model's context budget.
+pub(super) async fn load_chat_job_spec_for(
     rpc: &InProcessRpc,
-    session_id: codeless_types::JobId,
+    job: &codeless_types::Job,
 ) -> Option<String> {
-    let job = rpc.store.get_job(session_id).await.ok().flatten()?;
     let template_yaml = job.template_yaml.as_ref()?;
     let template = JobTemplate::parse_yaml(template_yaml).ok()?;
     let repo = rpc.store.get_repo(job.repo_id).await.ok().flatten()?;
-    let job_dir = std::path::Path::new(&repo.local_path)
+    let mut out = render_job_spec_section(job, &template, template_yaml, &repo.local_path, true);
+    out.push_str(CHAT_JOB_SPEC_AUTHORING_PRIMER);
+    Some(out)
+}
+
+/// Render the per-ref preamble fold listing every referenced job the
+/// caller opted into. Returns `Ok(None)` for the trivial empty-refs
+/// case so the preamble shape stays unchanged when nothing is attached.
+///
+/// Cross-repo refs and footer-panel chats (no active job → no repo to
+/// gate against) are rejected with `InvalidArgument` rather than
+/// silently skipped: the UI restricts the picker to same-repo jobs and
+/// raw-prompt callers should not be sending `job_refs` at all.
+pub(super) async fn load_chat_job_refs(
+    rpc: &InProcessRpc,
+    active_repo_id: Option<RepoId>,
+    refs: &[JobContextRef],
+) -> RpcResult<Option<String>> {
+    if refs.is_empty() {
+        return Ok(None);
+    }
+    let active_repo_id = active_repo_id.ok_or_else(|| {
+        RpcError::InvalidArgument(
+            "job_refs require chat to be scoped to a real job".to_owned(),
+        )
+    })?;
+
+    let mut out = String::from("## Referenced jobs\n\n");
+    for r in refs {
+        let job = rpc
+            .store
+            .get_job(r.job_id)
+            .await
+            .map_err(super::db_err)?
+            .ok_or_else(|| RpcError::InvalidArgument(format!("referenced job {} not found", r.job_id)))?;
+        if job.repo_id != active_repo_id {
+            return Err(RpcError::InvalidArgument(format!(
+                "referenced job {} is in a different repo from the active job",
+                r.job_id
+            )));
+        }
+        let template_yaml = job.template_yaml.as_deref().unwrap_or("");
+        let template_name = JobTemplate::parse_yaml(template_yaml)
+            .ok()
+            .map(|t| t.name)
+            .unwrap_or_else(|| format!("job-{}", r.job_id));
+
+        out.push_str(&format!(
+            "### {} (id `{}`, status `{:?}`)\n\n",
+            template_name, r.job_id, job.status,
+        ));
+
+        if r.include_spec {
+            if let Some(repo) = rpc.store.get_repo(job.repo_id).await.ok().flatten() {
+                if let Ok(template) = JobTemplate::parse_yaml(template_yaml) {
+                    let section =
+                        render_job_spec_section(&job, &template, template_yaml, &repo.local_path, false);
+                    out.push_str(&section);
+                } else {
+                    out.push_str("_(spec unavailable: job has no parseable template)_\n\n");
+                }
+            }
+        }
+
+        if r.include_history {
+            let report = super::jobs::job_report(rpc, JobReportArgs { job_id: r.job_id }).await?;
+            let limit = r
+                .history_turn_limit
+                .unwrap_or(DEFAULT_REF_HISTORY_TURN_LIMIT) as usize;
+            let history = render_ref_history(&report, limit);
+            out.push_str(&truncate_with_cap(&history, MAX_CHAT_HISTORY_BYTES));
+            if !history.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Render the spec-files section (template.yaml + SCOPE + WORKFLOW)
+/// for one job. Shared between the active-job fold and per-ref folds.
+/// `is_active` flips the framing line ("Active job…" vs "Spec for
+/// reference…") and otherwise the layout is identical so the model
+/// sees a familiar shape regardless of which fold sourced it.
+fn render_job_spec_section(
+    job: &codeless_types::Job,
+    template: &JobTemplate,
+    template_yaml: &str,
+    repo_local_path: &str,
+    is_active: bool,
+) -> String {
+    let job_dir = std::path::Path::new(repo_local_path)
         .join(".codeless")
         .join("jobs")
         .join(&template.name);
 
     let mut out = String::new();
-    out.push_str(&format!(
-        "Active job: {} (id `{}`, status `{:?}`).\n\
-         Spec lives at `.codeless/jobs/{}/` in the repo. The files \
-         reproduced below are the source of truth for this job; \
-         prefer them over anything else when answering.\n\n",
-        template.name, session_id, job.status, template.name,
-    ));
-    out.push_str("## template.yaml\n\n```yaml\n");
+    if is_active {
+        out.push_str(&format!(
+            "Active job: {} (id `{}`, status `{:?}`).\n\
+             Spec lives at `.codeless/jobs/{}/` in the repo. The files \
+             reproduced below are the source of truth for this job; \
+             prefer them over anything else when answering.\n\n",
+            template.name, job.id, job.status, template.name,
+        ));
+    } else {
+        out.push_str(&format!(
+            "Spec lives at `.codeless/jobs/{}/` in the same repo.\n\n",
+            template.name,
+        ));
+    }
+    out.push_str("#### template.yaml\n\n```yaml\n");
     out.push_str(&truncate_for_chat(template_yaml));
     if !template_yaml.ends_with('\n') {
         out.push('\n');
@@ -321,7 +433,7 @@ pub(super) async fn load_chat_job_spec(
     for (label, filename) in [("SCOPE.md", "SCOPE.md"), ("WORKFLOW.md", "WORKFLOW.md")] {
         let path = job_dir.join(filename);
         if let Ok(content) = std::fs::read_to_string(&path) {
-            out.push_str(&format!("## {label}\n\n"));
+            out.push_str(&format!("#### {label}\n\n"));
             out.push_str(&truncate_for_chat(&content));
             if !content.ends_with('\n') {
                 out.push('\n');
@@ -329,9 +441,71 @@ pub(super) async fn load_chat_job_spec(
             out.push('\n');
         }
     }
+    out
+}
 
-    out.push_str(CHAT_JOB_SPEC_AUTHORING_PRIMER);
-    Some(out)
+/// Render a snapshot of one referenced job's recent activity from a
+/// `job_report` result. Bounded by the caller through
+/// `truncate_with_cap`; the limit on turn count is applied here so we
+/// don't waste budget formatting rows that will be cut.
+fn render_ref_history(report: &codeless_rpc::JobReportResult, turn_limit: usize) -> String {
+    let mut out = String::from("#### Recent activity\n\n");
+    out.push_str(&format!(
+        "status `{}`, cost {}c of {}c cap.\n\n",
+        report.status, report.cost_cents, report.cost_cap_cents,
+    ));
+
+    if !report.stages.is_empty() {
+        out.push_str("Stages:\n");
+        for s in &report.stages {
+            out.push_str(&format!(
+                "- #{}.{} `{}` — {} (cost {}c{})\n",
+                s.ordinal,
+                s.attempt,
+                s.title,
+                s.status,
+                s.cost_cents,
+                match s.duration_ms {
+                    Some(ms) => format!(", {}ms", ms),
+                    None => String::new(),
+                },
+            ));
+        }
+        out.push('\n');
+    }
+
+    let turn_count = report.turns.len();
+    let start = turn_count.saturating_sub(turn_limit);
+    if turn_count > 0 {
+        out.push_str(&format!(
+            "Last {} of {} turns:\n",
+            turn_count - start,
+            turn_count,
+        ));
+        for t in &report.turns[start..] {
+            out.push_str(&format!(
+                "- task `{}`{} — cost {}c, {} in / {} out tokens\n",
+                t.task_id,
+                match t.stage_ordinal {
+                    Some(o) => format!(" (stage {})", o),
+                    None => String::new(),
+                },
+                t.cost_cents,
+                t.input_tokens,
+                t.output_tokens,
+            ));
+        }
+        out.push('\n');
+    }
+
+    if !report.tool_calls.is_empty() {
+        out.push_str("Tool calls:\n");
+        for tc in &report.tool_calls {
+            out.push_str(&format!("- {} ×{}\n", tc.tool, tc.count));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Render the optional `ChatContext` into a deterministic preamble
@@ -345,6 +519,7 @@ pub(super) async fn load_chat_job_spec(
 pub(super) fn build_chat_prompt(
     ctx: Option<&codeless_rpc::ChatContext>,
     job_spec_block: Option<&str>,
+    job_refs_block: Option<&str>,
     mode: ChatMode,
     prompt: &str,
 ) -> String {
@@ -355,8 +530,9 @@ pub(super) fn build_chat_prompt(
             || !c.user_prompts.is_empty()
     });
     let job_has_any = job_spec_block.is_some_and(|s| !s.is_empty());
+    let refs_has_any = job_refs_block.is_some_and(|s| !s.is_empty());
     let spec_mode = mode == ChatMode::Spec;
-    if !ctx_has_any && !job_has_any && !spec_mode {
+    if !ctx_has_any && !job_has_any && !refs_has_any && !spec_mode {
         return prompt.to_owned();
     }
 
@@ -367,6 +543,13 @@ pub(super) fn build_chat_prompt(
     }
     out.push_str("# Context\n\n");
     if let Some(block) = job_spec_block.filter(|s| !s.is_empty()) {
+        out.push_str(block);
+        if !block.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if let Some(block) = job_refs_block.filter(|s| !s.is_empty()) {
         out.push_str(block);
         if !block.ends_with('\n') {
             out.push('\n');
@@ -408,10 +591,14 @@ pub(super) fn build_chat_prompt(
 }
 
 fn truncate_for_chat(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.len() <= MAX_CHAT_SPEC_BYTES {
+    truncate_with_cap(s, MAX_CHAT_SPEC_BYTES)
+}
+
+fn truncate_with_cap(s: &str, cap: usize) -> std::borrow::Cow<'_, str> {
+    if s.len() <= cap {
         return std::borrow::Cow::Borrowed(s);
     }
-    let mut cut = MAX_CHAT_SPEC_BYTES;
+    let mut cut = cap;
     while cut > 0 && !s.is_char_boundary(cut) {
         cut -= 1;
     }
@@ -472,3 +659,16 @@ on `start_job` — keep YAML valid before handing back.\n";
 /// preamble. Sized to leave room for two large files plus the user's
 /// transcript without crowding the model's input window.
 const MAX_CHAT_SPEC_BYTES: usize = 8 * 1024;
+
+/// Independent byte cap for one referenced job's recent-activity fold.
+/// Sized smaller than the spec cap because a `job_report` rendering is
+/// dense (stage list + tool-call counts + per-turn rows) and several
+/// refs can stack on a single turn — a smaller per-ref budget keeps
+/// the combined section bounded without coordinating across refs.
+const MAX_CHAT_HISTORY_BYTES: usize = 4 * 1024;
+
+/// Default cap on how many recent turns one referenced job contributes
+/// to the preamble when the caller does not override it. Five turns is
+/// usually enough to characterise "what is this job up to" without
+/// pulling in the entire conversation.
+const DEFAULT_REF_HISTORY_TURN_LIMIT: u32 = 5;
