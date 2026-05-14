@@ -170,6 +170,15 @@ export type ChatContext = {
 	 *  UI is responsible for ordering.
 	 */
 	user_prompts?: UserPromptSnippet[],
+	/**
+	 *  Other jobs the user wants folded into this turn's preamble.
+	 *  Each entry opts into the referenced job's spec files and/or
+	 *  recent history snapshot. Restricted server-side to refs whose
+	 *  repo matches the active job's — cross-repo refs return
+	 *  `InvalidArgument`. Additive: an empty vec preserves the
+	 *  pre-`job_refs` preamble shape exactly.
+	 */
+	job_refs?: JobContextRef[],
 };
 
 /**
@@ -518,6 +527,22 @@ export type Job = {
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
+};
+
+/**
+ *  One referenced job folded into the chat preamble. Toggles let the
+ *  caller pick a spec-only attach (cheap, useful for "what is job B
+ *  trying to do"), a history-only attach (cheap-ish, useful for "what
+ *  has job B actually done lately"), or both. `history_turn_limit`
+ *  bounds the walk before rendering so a long-running job doesn't
+ *  silently blow the per-section byte budget on the runtime side.
+ *  `None` means "use the runtime default".
+ */
+export type JobContextRef = {
+	job_id: JobId,
+	include_spec: boolean,
+	include_history: boolean,
+	history_turn_limit?: number | null,
 };
 
 export type JobDiffArgs = {

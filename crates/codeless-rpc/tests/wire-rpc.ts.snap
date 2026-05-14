@@ -77,6 +77,18 @@ export type AgentChatArgs = {
 	 *  preamble prepended to `prompt` before the runner is spawned.
 	 */
 	context?: ChatContext | null,
+	/**
+	 *  What the user means this turn to do. `Work` (default) is the
+	 *  existing behaviour: full ambient tools, agent edits whatever
+	 *  it needs in the worktree. `Spec` narrows the agent to editing
+	 *  `.codeless/jobs/<name>/*` (template.yaml, SCOPE.md, etc.) —
+	 *  the runtime swaps in a stricter preamble and passes
+	 *  `allowed_tools` to the CLI runner so the agent literally
+	 *  cannot Bash / commit / touch repo source. Mirrors the
+	 *  claude-code plan-mode mental model: an explicit intent
+	 *  signal so the user isn't relying on the agent inferring it.
+	 */
+	mode?: ChatMode | null,
 };
 
 export type AgentChatResult = {
@@ -154,7 +166,24 @@ export type ChatContext = {
 	 *  UI is responsible for ordering.
 	 */
 	user_prompts?: UserPromptSnippet[],
+	/**
+	 *  Other jobs the user wants folded into this turn's preamble.
+	 *  Each entry opts into the referenced job's spec files and/or
+	 *  recent history snapshot. Restricted server-side to refs whose
+	 *  repo matches the active job's — cross-repo refs return
+	 *  `InvalidArgument`. Additive: an empty vec preserves the
+	 *  pre-`job_refs` preamble shape exactly.
+	 */
+	job_refs?: JobContextRef[],
 };
+
+/**
+ *  Mode the chat composer is in for a given turn. Default `Work`
+ *  keeps the existing footer/job chat behaviour; `Spec` flips the
+ *  preamble to "you are authoring the job spec" and clamps tool
+ *  access so the agent cannot accidentally edit repo source.
+ */
+export type ChatMode = "work" | "spec";
 
 /**
  *  Best-effort probe result for Claude Code on the host. The host
@@ -379,6 +408,22 @@ export type Job = {
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
+};
+
+/**
+ *  One referenced job folded into the chat preamble. Toggles let the
+ *  caller pick a spec-only attach (cheap, useful for "what is job B
+ *  trying to do"), a history-only attach (cheap-ish, useful for "what
+ *  has job B actually done lately"), or both. `history_turn_limit`
+ *  bounds the walk before rendering so a long-running job doesn't
+ *  silently blow the per-section byte budget on the runtime side.
+ *  `None` means "use the runtime default".
+ */
+export type JobContextRef = {
+	job_id: JobId,
+	include_spec: boolean,
+	include_history: boolean,
+	history_turn_limit?: number | null,
 };
 
 export type JobDiffArgs = {
