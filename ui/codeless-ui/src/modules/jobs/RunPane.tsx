@@ -1815,6 +1815,12 @@ function WorktreeMissingBanner({ worktreePath }: { worktreePath: string }) {
 // case; an arbitrary custom amount is a follow-up if real usage
 // shows people reaching for it.
 const COST_BUMP_PRESETS_CENTS = [500, 1000, 2500, 5000];
+const WALL_CLOCK_BUMP_PRESETS_MS = [
+  5 * 60 * 1000,
+  15 * 60 * 1000,
+  30 * 60 * 1000,
+  60 * 60 * 1000,
+];
 function JobActionRow({
   job,
   refetchJob,
@@ -1881,12 +1887,15 @@ function JobActionRow({
       refetchJob();
     });
 
-  const onResume = (costBump: number | null) =>
+  const onResume = (
+    costBump: number | null,
+    wallClockBumpMs: number | null = null,
+  ) =>
     run("resume", async () => {
       await rpc.call("resume_job", {
         job_id: job.id,
         additional_cost_cap_cents: costBump,
-        additional_wall_clock_cap_ms: null,
+        additional_wall_clock_cap_ms: wallClockBumpMs,
       });
       setShowResumeForm(false);
       refetchJob();
@@ -2015,6 +2024,44 @@ function JobActionRow({
               className="h-6 px-2 text-[11px]"
             >
               +{fmtCents(cents)}
+            </Button>
+          ))}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => onResume(null)}
+            className="h-6 px-2 text-[11px]"
+            title="Resume without raising the cap; the job will trip the same cap again unless something changed."
+          >
+            resume unchanged
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => setShowResumeForm(false)}
+            className="h-6 px-2 text-[11px]"
+          >
+            cancel
+          </Button>
+        </div>
+      )}
+      {showResumeForm && isWallClockCapped && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground">
+            cap {formatMs(job.wall_clock_cap_ms)} reached. Add:
+          </span>
+          {WALL_CLOCK_BUMP_PRESETS_MS.map((ms) => (
+            <Button
+              key={ms}
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => onResume(null, ms)}
+              className="h-6 px-2 text-[11px]"
+            >
+              +{formatMs(ms)}
             </Button>
           ))}
           <Button
