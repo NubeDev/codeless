@@ -1,0 +1,762 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use codeless_adapters_host::WorktreeManager;
+use codeless_rpc::{
+    GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobReportArgs,
+    JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage, JobReportToolCall,
+    JobReportTurn, ListJobsArgs, ListJobsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, StartJobArgs, StopJobArgs, SubmitJobArgs,
+};
+use codeless_types::{CostCents, Event, Job, JobId, JobStatus, StopReason};
+use sqlx::Row;
+
+use super::InProcessRpc;
+use crate::template::JobTemplate;
+use crate::time::now_ms;
+
+pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcResult<Job> {
+    let repo = rpc
+        .store
+        .get_repo(args.repo_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("repo {}", args.repo_id)))?;
+    let now = now_ms();
+
+    // Enforce the one-in_repo-per-repo invariant. A second in_repo
+    // job against the same repo would fight over the working copy.
+    let mode = args.workspace_mode.unwrap_or_default();
+    if mode == codeless_types::WorkspaceMode::InRepo {
+        if let Some(existing) = rpc
+            .store
+            .active_in_repo_job(args.repo_id)
+            .await
+            .map_err(super::db_err)?
+        {
+            return Err(RpcError::Conflict(format!(
+                "repo {} is already in use by job {} in in_repo mode; \
+                 stop it or submit as worktree",
+                args.repo_id, existing.id,
+            )));
+        }
+    }
+
+    // If the submit carries a template that parses into the canonical
+    // `JobTemplate` shape, scaffold the on-disk job directory before
+    // the Job row lands. CLI submits whose YAML is the wrapper format
+    // and prompt-only submits fall through unscaffolded.
+    if let Some(template_src) = args.template_yaml.as_deref() {
+        if JobTemplate::parse_yaml(template_src).is_ok() {
+            super::job_files::seed_job_directory(&repo.local_path, template_src)?;
+        }
+    }
+
+    // Default landing state is `Draft` so the user can edit spec/docs
+    // before the driver picks the job up. `start_immediately` is the
+    // legacy/power-user path that skips the draft and queues immediately.
+    let initial_status = if args.start_immediately {
+        JobStatus::Queued
+    } else {
+        JobStatus::Draft
+    };
+    let job = Job {
+        id: JobId::new(),
+        repo_id: args.repo_id,
+        status: initial_status,
+        stop_reason: None,
+        template_yaml: args.template_yaml,
+        prompt: args.prompt,
+        runner: args.runner,
+        branch: args.branch,
+        workspace_mode: args.workspace_mode.unwrap_or_default(),
+        worktree_path: None,
+        cost_cap_cents: CostCents(args.cost_cap_cents),
+        wall_clock_cap_ms: args.wall_clock_cap_ms,
+        cost_cents: CostCents::ZERO,
+        model: args.model,
+        permission_mode: args.permission_mode,
+        effort: args.effort,
+        started_at: None,
+        ended_at: None,
+        created_at: now,
+    };
+    rpc.store.insert_job(&job).await.map_err(super::db_err)?;
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            Event::JobQueued {
+                job_id: job.id,
+                repo_id: job.repo_id,
+            },
+            now,
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(job)
+}
+
+pub(super) async fn start_job(rpc: &InProcessRpc, args: StartJobArgs) -> RpcResult<Job> {
+    let mut job = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+    if job.status != JobStatus::Draft {
+        return Err(RpcError::Conflict(format!(
+            "job {} is {:?}, not Draft — only Draft jobs can be started",
+            job.id, job.status
+        )));
+    }
+    resync_template_from_disk(rpc, &mut job).await?;
+    crate::state_machine::transition_job(job.status, JobStatus::Queued).map_err(|e| {
+        RpcError::Conflict(format!(
+            "illegal job transition from {:?} to Queued: {e}",
+            job.status
+        ))
+    })?;
+    job.status = JobStatus::Queued;
+    if !rpc.store.update_job(&job).await.map_err(super::db_err)? {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    // Reuse the long-defined-but-never-emitted `JobPromoted` variant for
+    // Draft → Queued. The dashboard maps it to "running" optimistically.
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            Event::JobPromoted { job_id: job.id },
+            now_ms(),
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(job)
+}
+
+pub(super) async fn resume_job(rpc: &InProcessRpc, args: ResumeJobArgs) -> RpcResult<Job> {
+    let mut job = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+    if !matches!(
+        job.status,
+        JobStatus::Stopped | JobStatus::Failed | JobStatus::Paused
+    ) {
+        return Err(RpcError::Conflict(format!(
+            "job {} is {:?}; only Stopped, Failed, or Paused jobs are \
+             resumable. Use stop_job or pause_job to interrupt a running job.",
+            job.id, job.status
+        )));
+    }
+    resync_template_from_disk(rpc, &mut job).await?;
+    crate::state_machine::transition_job(job.status, JobStatus::Queued).map_err(|e| {
+        RpcError::Conflict(format!(
+            "illegal job transition from {:?} to Queued: {e}",
+            job.status
+        ))
+    })?;
+    // Cap bumps are additive. Saturating add so a huge number doesn't
+    // overflow the SQLite-side i64 into a negative cap the watcher trips.
+    let previous_reason = job.stop_reason;
+    if let Some(bump) = args.additional_cost_cap_cents {
+        if bump > 0 {
+            job.cost_cap_cents = CostCents(job.cost_cap_cents.0.saturating_add(bump));
+        }
+    }
+    if let Some(bump) = args.additional_wall_clock_cap_ms {
+        if bump > 0 {
+            job.wall_clock_cap_ms = job.wall_clock_cap_ms.saturating_add(bump);
+        }
+    }
+    job.status = JobStatus::Queued;
+    // Clearing `stop_reason` would erase the original outcome from the
+    // row; `previous_reason` rides on `JobResumed` for history instead.
+    job.stop_reason = None;
+    // `ended_at` clears — the job is live again. The captured worktree
+    // path, branch, and per-stage `session_id` values are untouched.
+    job.ended_at = None;
+    if !rpc.store.update_job(&job).await.map_err(super::db_err)? {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            Event::JobResumed {
+                job_id: job.id,
+                previous_reason,
+            },
+            now_ms(),
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(job)
+}
+
+pub(super) async fn get_job(rpc: &InProcessRpc, args: GetJobArgs) -> RpcResult<Job> {
+    rpc.store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))
+}
+
+pub(super) async fn list_jobs(rpc: &InProcessRpc, args: ListJobsArgs) -> RpcResult<ListJobsResult> {
+    Ok(ListJobsResult {
+        jobs: rpc
+            .store
+            .list_jobs(args.repo_id)
+            .await
+            .map_err(super::db_err)?,
+    })
+}
+
+pub(super) async fn list_stages(
+    rpc: &InProcessRpc,
+    args: ListStagesArgs,
+) -> RpcResult<ListStagesResult> {
+    let rows = rpc
+        .store
+        .list_stages_for_job(args.job_id)
+        .await
+        .map_err(super::db_err)?;
+    let stages = rows
+        .into_iter()
+        .map(|row| codeless_rpc::StageRollup {
+            stage: row.stage,
+            cost_cents: row.cost_cents,
+            task_count: row.task_count,
+        })
+        .collect();
+    Ok(ListStagesResult { stages })
+}
+
+pub(super) async fn job_report(
+    rpc: &InProcessRpc,
+    args: JobReportArgs,
+) -> RpcResult<JobReportResult> {
+    let job = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+    let job_id_s = args.job_id.to_string();
+    let pool = rpc.store.pool();
+
+    // Stage rows in chronological order so a stage that was retried
+    // (cost-cap → resume) shows two entries for the same ordinal.
+    let stage_rows = sqlx::query(
+        "SELECT ordinal, name, status, session_id, started_at, ended_at \
+         FROM stages WHERE job_id = ? ORDER BY COALESCE(started_at, 0)",
+    )
+    .bind(&job_id_s)
+    .fetch_all(pool)
+    .await
+    .map_err(super::db_err)?;
+
+    let mut attempt_seen: HashMap<u32, u32> = HashMap::new();
+    let mut stages: Vec<JobReportStage> = Vec::with_capacity(stage_rows.len());
+    for r in stage_rows {
+        let ordinal = r.try_get::<i64, _>("ordinal").map_err(super::db_err)? as u32;
+        let attempt = attempt_seen.entry(ordinal).or_insert(0);
+        let started_at: Option<i64> = r.try_get("started_at").map_err(super::db_err)?;
+        let ended_at: Option<i64> = r.try_get("ended_at").map_err(super::db_err)?;
+        stages.push(JobReportStage {
+            ordinal,
+            attempt: *attempt,
+            title: r.try_get("name").map_err(super::db_err)?,
+            status: r.try_get("status").map_err(super::db_err)?,
+            session_id: r.try_get("session_id").map_err(super::db_err)?,
+            // Filled below from turn buckets so a stage without a task row
+            // still gets the right number.
+            cost_cents: 0,
+            duration_ms: match (started_at, ended_at) {
+                (Some(s), Some(e)) => Some(e - s),
+                _ => None,
+            },
+            started_at,
+            ended_at,
+        });
+        *attempt += 1;
+    }
+
+    // ai-message-complete = one Claude reply. Cost lives in the payload;
+    // bucket turns into stages by timestamp window.
+    let turn_rows = sqlx::query(
+        "SELECT task_id, payload, created_at FROM events \
+         WHERE job_id = ? AND type = 'ai-message-complete' \
+         ORDER BY created_at",
+    )
+    .bind(&job_id_s)
+    .fetch_all(pool)
+    .await
+    .map_err(super::db_err)?;
+
+    let mut turns: Vec<JobReportTurn> = Vec::with_capacity(turn_rows.len());
+    for r in turn_rows {
+        let task_id: Option<String> = r.try_get("task_id").map_err(super::db_err)?;
+        let payload: String = r.try_get("payload").map_err(super::db_err)?;
+        let at: i64 = r.try_get("created_at").map_err(super::db_err)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
+        let cost_cents = v.get("cost_cents").and_then(|x| x.as_i64()).unwrap_or(0);
+        let input_tokens = v.get("input_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+        let output_tokens = v.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+        // The *latest* matching stage window wins for retried attempts.
+        let stage_ordinal = stages
+            .iter()
+            .rev()
+            .find(|s| match (s.started_at, s.ended_at) {
+                (Some(start), Some(end)) => at >= start && at <= end,
+                (Some(start), None) => at >= start,
+                _ => false,
+            })
+            .map(|s| s.ordinal);
+        turns.push(JobReportTurn {
+            task_id: task_id.unwrap_or_default(),
+            stage_ordinal,
+            cost_cents,
+            input_tokens,
+            output_tokens,
+            at,
+        });
+    }
+
+    // Fold per-turn cost back into the matching stage attempt.
+    for turn in &turns {
+        if let Some(ord) = turn.stage_ordinal {
+            if let Some(target) = stages.iter_mut().rev().find(|s| {
+                s.ordinal == ord
+                    && match (s.started_at, s.ended_at) {
+                        (Some(start), Some(end)) => turn.at >= start && turn.at <= end,
+                        (Some(start), None) => turn.at >= start,
+                        _ => false,
+                    }
+            }) {
+                target.cost_cents += turn.cost_cents;
+            }
+        }
+    }
+
+    let tool_rows = sqlx::query(
+        "SELECT COALESCE(json_extract(payload, '$.tool'), '<unknown>') AS tool, \
+                COUNT(*) AS n \
+         FROM events WHERE job_id = ? AND type = 'tool-call' \
+         GROUP BY tool ORDER BY n DESC",
+    )
+    .bind(&job_id_s)
+    .fetch_all(pool)
+    .await
+    .map_err(super::db_err)?;
+    let tool_calls: Vec<JobReportToolCall> = tool_rows
+        .into_iter()
+        .map(|r| {
+            Ok::<_, sqlx::Error>(JobReportToolCall {
+                tool: r.try_get("tool")?,
+                count: r.try_get::<i64, _>("n")? as u32,
+            })
+        })
+        .collect::<Result<_, _>>()
+        .map_err(super::db_err)?;
+
+    let tally_rows = sqlx::query(
+        "SELECT type AS kind, COUNT(*) AS n FROM events WHERE job_id = ? \
+         GROUP BY type ORDER BY n DESC",
+    )
+    .bind(&job_id_s)
+    .fetch_all(pool)
+    .await
+    .map_err(super::db_err)?;
+    let event_tally: Vec<JobReportEventTally> = tally_rows
+        .into_iter()
+        .map(|r| {
+            Ok::<_, sqlx::Error>(JobReportEventTally {
+                kind: r.try_get("kind")?,
+                count: r.try_get::<i64, _>("n")? as u32,
+            })
+        })
+        .collect::<Result<_, _>>()
+        .map_err(super::db_err)?;
+
+    // Bucket spec-edit events by file. `JobTemplateUpdated` lands under
+    // `kind: "template"`; `JobFileUpdated` lands under `kind: "file"`.
+    let spec_rows = sqlx::query(
+        "SELECT type AS kind, \
+                json_extract(payload, '$.filename') AS filename, \
+                COUNT(*) AS n, \
+                MAX(created_at) AS last_at \
+         FROM events \
+         WHERE job_id = ? AND type IN ('job-template-updated', 'job-file-updated') \
+         GROUP BY type, filename \
+         ORDER BY last_at DESC",
+    )
+    .bind(&job_id_s)
+    .fetch_all(pool)
+    .await
+    .map_err(super::db_err)?;
+    let spec_changes: Vec<JobReportSpecChange> = spec_rows
+        .into_iter()
+        .map(|r| {
+            let raw_kind: String = r.try_get("kind")?;
+            let kind = match raw_kind.as_str() {
+                "job-template-updated" => "template".to_owned(),
+                "job-file-updated" => "file".to_owned(),
+                other => other.to_owned(),
+            };
+            Ok::<_, sqlx::Error>(JobReportSpecChange {
+                kind,
+                filename: r.try_get("filename")?,
+                count: r.try_get::<i64, _>("n")? as u32,
+                last_at: r.try_get("last_at")?,
+            })
+        })
+        .collect::<Result<_, _>>()
+        .map_err(super::db_err)?;
+
+    let started_at = job.started_at.map(|t| t.0);
+    let ended_at = job.ended_at.map(|t| t.0);
+    let wall_clock_ms = match (started_at, ended_at) {
+        (Some(s), Some(e)) => Some(e - s),
+        _ => None,
+    };
+
+    Ok(JobReportResult {
+        job_id: args.job_id,
+        status: format!("{:?}", job.status).to_lowercase(),
+        stop_reason: job.stop_reason.map(|r| format!("{:?}", r).to_lowercase()),
+        cost_cents: job.cost_cents.0,
+        cost_cap_cents: job.cost_cap_cents.0,
+        started_at,
+        ended_at,
+        wall_clock_ms,
+        stages,
+        turns,
+        tool_calls,
+        event_tally,
+        spec_changes,
+    })
+}
+
+pub(super) async fn stop_job(rpc: &InProcessRpc, args: StopJobArgs) -> RpcResult<()> {
+    let Some(mut job) = rpc.store.get_job(args.job_id).await.map_err(super::db_err)? else {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    };
+    match job.status {
+        JobStatus::Completed | JobStatus::Failed | JobStatus::Stopped => {
+            return Err(RpcError::Conflict(format!(
+                "job {} is already terminal ({:?})",
+                job.id, job.status
+            )));
+        }
+        _ => {}
+    }
+    let now = now_ms();
+    job.status = JobStatus::Stopped;
+    job.stop_reason = Some(StopReason::User);
+    job.ended_at = Some(now);
+    rpc.store.update_job(&job).await.map_err(super::db_err)?;
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            Event::JobStopped {
+                job_id: job.id,
+                reason: StopReason::User,
+            },
+            now,
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(())
+}
+
+pub(super) async fn pause_job(rpc: &InProcessRpc, args: PauseJobArgs) -> RpcResult<()> {
+    let Some(mut job) = rpc.store.get_job(args.job_id).await.map_err(super::db_err)? else {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    };
+    if !matches!(job.status, JobStatus::Running | JobStatus::AwaitingReview) {
+        return Err(RpcError::Conflict(format!(
+            "job {} is {:?}; only Running or AwaitingReview jobs can be paused. \
+             Use start_job to promote a Draft, or resume_job to restart a paused/stopped row.",
+            job.id, job.status
+        )));
+    }
+    crate::state_machine::transition_job(job.status, JobStatus::Paused).map_err(|e| {
+        RpcError::Conflict(format!(
+            "illegal job transition from {:?} to Paused: {e}",
+            job.status
+        ))
+    })?;
+    let now = now_ms();
+    job.status = JobStatus::Paused;
+    job.stop_reason = Some(StopReason::User);
+    job.ended_at = Some(now);
+    rpc.store.update_job(&job).await.map_err(super::db_err)?;
+    // The cap-watcher subscribes to the bus and fires the runner's
+    // cancellation token when it sees `JobPaused` it didn't author.
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            Event::JobPaused {
+                job_id: job.id,
+                reason: StopReason::User,
+            },
+            now,
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(())
+}
+
+pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResult<Job> {
+    let Some(source) = rpc
+        .store
+        .get_job(args.source_job_id)
+        .await
+        .map_err(super::db_err)?
+    else {
+        return Err(RpcError::NotFound(format!("job {}", args.source_job_id)));
+    };
+    let now = now_ms();
+    // Empty branch makes `WorktreeManager` fall back to `codeless/job-<new_id>`
+    // so a rerun never collides with the source job's branch.
+    let job = Job {
+        id: JobId::new(),
+        repo_id: source.repo_id,
+        status: JobStatus::Draft,
+        stop_reason: None,
+        template_yaml: source.template_yaml,
+        prompt: source.prompt,
+        runner: source.runner,
+        branch: String::new(),
+        workspace_mode: source.workspace_mode,
+        worktree_path: None,
+        cost_cap_cents: source.cost_cap_cents,
+        wall_clock_cap_ms: source.wall_clock_cap_ms,
+        cost_cents: CostCents::ZERO,
+        model: source.model,
+        permission_mode: source.permission_mode,
+        effort: source.effort,
+        started_at: None,
+        ended_at: None,
+        created_at: now,
+    };
+    rpc.store.insert_job(&job).await.map_err(super::db_err)?;
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            Event::JobQueued {
+                job_id: job.id,
+                repo_id: job.repo_id,
+            },
+            now,
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(job)
+}
+
+pub(super) async fn gc_worktrees(
+    rpc: &InProcessRpc,
+    args: GcWorktreesArgs,
+) -> RpcResult<GcWorktreesResult> {
+    let Some(worktrees) = rpc.worktrees.clone() else {
+        return Err(RpcError::Internal(
+            "gc_worktrees: no worktree root configured on the server".into(),
+        ));
+    };
+    let manager = worktrees.clone();
+    let on_disk = tokio::task::spawn_blocking(move || manager.list_on_disk())
+        .await
+        .map_err(|e| RpcError::Internal(format!("gc list join: {e}")))?
+        .map_err(|e| RpcError::Internal(format!("gc list: {e}")))?;
+    let root = worktrees.base().to_string_lossy().into_owned();
+
+    let now_i64: i64 = now_ms().as_i64();
+    let cutoff = args.older_than_ms.map(|d| now_i64.saturating_sub(d.max(0)));
+    let id_filter: Option<std::collections::HashSet<String>> = args
+        .job_ids
+        .as_ref()
+        .map(|ids| ids.iter().map(|id| id.to_string()).collect());
+
+    let mut entries: Vec<GcWorktreeEntry> = Vec::with_capacity(on_disk.len());
+    let mut total: i64 = 0;
+    let mut removed: i64 = 0;
+
+    for entry in on_disk {
+        if let Some(set) = &id_filter {
+            if !set.contains(&entry.job_id) {
+                continue;
+            }
+        }
+        if let Some(c) = cutoff {
+            let mtime = entry.mtime_ms.unwrap_or(now_i64);
+            if mtime > c {
+                continue;
+            }
+        }
+        total = total.saturating_add(entry.size_bytes);
+
+        // Parse the directory's job_id back to a `JobId`. If parsing
+        // fails (stray `job-foo` dir) the entry still surfaces — just
+        // without a typed id and without an automatic remove.
+        let parsed_id: Option<codeless_types::JobId> = entry.job_id.parse().ok();
+
+        let mut gc_entry = GcWorktreeEntry {
+            job_id: parsed_id,
+            path: entry.path.to_string_lossy().into_owned(),
+            size_bytes: entry.size_bytes,
+            mtime_ms: entry.mtime_ms,
+            removed: false,
+            error: None,
+        };
+
+        if !args.dry_run {
+            match remove_one_worktree(rpc, &worktrees, &gc_entry, &entry.path).await {
+                Ok(()) => {
+                    gc_entry.removed = true;
+                    removed += 1;
+                }
+                Err(e) => {
+                    gc_entry.error = Some(e);
+                }
+            }
+        }
+
+        entries.push(gc_entry);
+    }
+
+    Ok(GcWorktreesResult {
+        entries,
+        total_size_bytes: total,
+        removed_count: removed,
+        root: Some(root),
+    })
+}
+
+/// Remove one worktree referenced by a GC entry. Resolves the source
+/// repo path via the job row when the entry's directory name parses as
+/// a `JobId`; falls back to a plain directory removal for stray entries.
+async fn remove_one_worktree(
+    rpc: &InProcessRpc,
+    manager: &Arc<WorktreeManager>,
+    entry: &GcWorktreeEntry,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let repo_path: Option<std::path::PathBuf> = if let Some(jid) = entry.job_id {
+        let job = rpc
+            .store
+            .get_job(jid)
+            .await
+            .map_err(|e| format!("db: {e}"))?;
+        let job = job.ok_or_else(|| format!("job {jid} not in store"))?;
+        let repo = rpc
+            .store
+            .get_repo(job.repo_id)
+            .await
+            .map_err(|e| format!("db: {e}"))?;
+        repo.map(|r| std::path::PathBuf::from(r.local_path))
+    } else {
+        None
+    };
+    let manager = Arc::clone(manager);
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || match repo_path {
+        Some(rp) => manager.remove(&rp, &path).map_err(|e| e.to_string()),
+        None => std::fs::remove_dir_all(&path).map_err(|e| e.to_string()),
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+/// Re-read `template.yaml` from disk and refresh the job's DB column
+/// when it differs. Called from `start_job` and `resume_job` so
+/// chat-driven filesystem edits land in SQLite before the driver reads
+/// the template.
+///
+/// No-op when the job has no on-disk `template.yaml`, when DB and disk
+/// match, or when the job has no `template_yaml` mirror yet. A `name:`
+/// field that no longer matches the recorded name is `Conflict` —
+/// renames are rejected by `update_job_template` too, so chat edits
+/// must not bypass that rule by writing to disk.
+pub(super) async fn resync_template_from_disk(
+    rpc: &InProcessRpc,
+    job: &mut codeless_types::Job,
+) -> RpcResult<()> {
+    let Some(db_yaml) = job.template_yaml.clone() else {
+        return Ok(());
+    };
+    let prev = JobTemplate::parse_yaml(&db_yaml).map_err(|e| {
+        RpcError::Internal(format!("job {} stored template parse: {e}", job.id))
+    })?;
+
+    let repo = rpc
+        .store
+        .get_repo(job.repo_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("repo {}", job.repo_id)))?;
+    let repo_path = std::path::PathBuf::from(&repo.local_path);
+    let tpl_path = crate::job_dir::template_yaml_path(&repo_path, &prev.name);
+
+    let disk_yaml = match std::fs::read_to_string(&tpl_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(RpcError::Internal(format!(
+                "read {}: {e}",
+                tpl_path.display()
+            )));
+        }
+    };
+    if disk_yaml == db_yaml {
+        return Ok(());
+    }
+
+    let parsed = JobTemplate::parse_yaml(&disk_yaml).map_err(|e| {
+        RpcError::InvalidArgument(format!(
+            "{} on disk does not parse: {e}",
+            tpl_path.display()
+        ))
+    })?;
+    if parsed.name != prev.name {
+        return Err(RpcError::Conflict(format!(
+            "rename refused: spec name is `{}`, cannot become `{}`. \
+             Restore `name:` in template.yaml or submit a fresh job to rename.",
+            prev.name, parsed.name,
+        )));
+    }
+
+    codeless_adapters_host::commit_paths(
+        &repo_path,
+        &format!("update template: {} (chat)", parsed.name),
+        std::slice::from_ref(&tpl_path),
+    )
+    .map_err(|e| RpcError::Internal(format!("git: {e}")))?;
+
+    job.template_yaml = Some(disk_yaml);
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            codeless_types::Event::JobTemplateUpdated { job_id: job.id },
+            now_ms(),
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(())
+}

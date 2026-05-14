@@ -1,6 +1,6 @@
 name: bacnet2
-goal: "TODO: describe what success looks like for this job."
+goal: "Generate a CSV file containing 10 BACnet data points with realistic building-automation values."
 docs:
   - CHAT.md
 stages:
-  - "TODO: rename me to the first stage's title"
+  - "generate bacnet_points.csv"
