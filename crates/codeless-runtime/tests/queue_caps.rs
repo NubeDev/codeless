@@ -51,6 +51,8 @@ async fn seed_repo_job(rpc: &InProcessRpc, name: &str, runner: &str) -> (RepoId,
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -73,6 +75,7 @@ async fn seed_stage_with_tasks(store: &SqliteStore, job_id: JobId, n: usize) -> 
         acceptance: None,
         last_activity_at: None,
         archived: false,
+        persona_id: None,
     };
     store.insert_stage(&stage).await.unwrap();
     let mut ids = Vec::with_capacity(n);

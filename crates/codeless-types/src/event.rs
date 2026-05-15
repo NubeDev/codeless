@@ -120,6 +120,14 @@ pub enum Event {
         /// already uses; persisted on the `Stage` row.
         #[serde(default)]
         name: String,
+        /// Per-stage persona override resolved at job-submit
+        /// (D1, D5). `None` means the stage inherits the job-level
+        /// persona; the StageRecorder writes this verbatim onto
+        /// `stages.persona_id` so a per-stage handover and a re-run
+        /// reproduce the same binding. Defaults to `None` so older
+        /// events from the persisted bus replay still decode.
+        #[serde(default)]
+        persona_id: Option<String>,
     },
     #[serde(rename = "verify-started")]
     VerifyStarted { stage_id: StageId },

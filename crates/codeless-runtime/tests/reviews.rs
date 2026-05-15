@@ -63,6 +63,8 @@ async fn new_stage(rpc: &InProcessRpc) -> StageId {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -81,6 +83,7 @@ async fn new_stage(rpc: &InProcessRpc) -> StageId {
         acceptance: None,
         last_activity_at: None,
         archived: false,
+        persona_id: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
     stage.id

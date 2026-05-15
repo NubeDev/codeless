@@ -2146,6 +2146,8 @@ mod tests {
                 model: None,
                 permission_mode: None,
                 effort: None,
+                system_prompt: None,
+                persona_id: None,
                 started_at: Some(now),
                 ended_at: None,
                 created_at: now,

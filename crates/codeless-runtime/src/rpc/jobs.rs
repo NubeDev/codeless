@@ -52,7 +52,33 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
     // the Job row lands. CLI submits whose YAML is the wrapper format
     // and prompt-only submits fall through unscaffolded.
     if let Some(template_src) = args.template_yaml.as_deref() {
-        if JobTemplate::parse_yaml(template_src).is_ok() {
+        if let Ok(template) = JobTemplate::parse_yaml(template_src) {
+            // Per-stage persona override (D1): every `stage.persona`
+            // id must resolve against the `personas` table before
+            // the job row lands. Failing here keeps the failure
+            // visible at the submit boundary — a missing id never
+            // reaches the runner, where it would silently degrade
+            // to the inherited persona. The lookup uses the same
+            // `id` column the chat panel quotes (`builtin:<slug>`
+            // for seeded rows, the user-minted id for user rows).
+            for (idx, stage) in template.stages.iter().enumerate() {
+                if let Some(persona_id) = stage.persona.as_deref() {
+                    let row = rpc
+                        .store
+                        .get_persona(persona_id)
+                        .await
+                        .map_err(super::db_err)?;
+                    if row.is_none() {
+                        return Err(RpcError::InvalidArgument(format!(
+                            "stage {} (`{}`) references persona `{}`, \
+                             which does not exist",
+                            idx + 1,
+                            stage.title,
+                            persona_id,
+                        )));
+                    }
+                }
+            }
             super::job_files::seed_job_directory(&repo.local_path, template_src)?;
         }
     }
@@ -82,6 +108,18 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
         model: args.model,
         permission_mode: args.permission_mode,
         effort: args.effort,
+        // The UI composes this from the selected persona's
+        // `instructions` and passes it through verbatim. Server-side
+        // persona resolution lands in a later stage; until then the
+        // composed text round-trips on the row so a resume reproduces
+        // the same agent posture the user picked at submit time.
+        system_prompt: args.system_prompt.filter(|s| !s.is_empty()),
+        // Persist the persona id even when the caller did not also
+        // send a composed `system_prompt`: a future stage will move
+        // composition server-side and the id is the durable handle.
+        // Empty strings collapse to `None` so the column stays a
+        // clean optional regardless of how the UI shaped the payload.
+        persona_id: args.persona_id.filter(|s| !s.is_empty()),
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -722,6 +760,8 @@ pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResu
         model: source.model,
         permission_mode: source.permission_mode,
         effort: source.effort,
+        system_prompt: source.system_prompt,
+        persona_id: source.persona_id,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -1063,6 +1103,11 @@ pub(super) async fn draft_job_from_conversation(
             model,
             permission_mode,
             effort,
+            // Chat-drafted jobs have no persona binding yet; the user
+            // can pick one from the dropdown on the submit form if they
+            // promote the draft from the job page.
+            system_prompt: None,
+            persona_id: None,
             start_immediately: false,
         },
     )

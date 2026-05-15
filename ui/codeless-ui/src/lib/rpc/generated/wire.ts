@@ -596,7 +596,16 @@ ordinal?: number;
  *  `REVIEW ` prefix preserved). Same source of truth the UI
  *  already uses; persisted on the `Stage` row.
  */
-name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | 
+name?: string; 
+/**
+ *  Per-stage persona override resolved at job-submit
+ *  (D1, D5). `None` means the stage inherits the job-level
+ *  persona; the StageRecorder writes this verbatim onto
+ *  `stages.persona_id` so a per-stage handover and a re-run
+ *  reproduce the same binding. Defaults to `None` so older
+ *  events from the persisted bus replay still decode.
+ */
+persona_id?: string | null } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | 
 /**
  *  One layered verify gate started running. Paired with
  *  `verify-step-passed`, `verify-step-failed`, or
@@ -905,6 +914,26 @@ export type Job = {
 	 *  "think" / "think hard" / "ultrathink" cues.
 	 */
 	effort: string | null,
+	/**
+	 *  Optional persona-derived system prompt composed at submit time.
+	 *  When set, the runner factory uses this as the agent's system
+	 *  prompt for every stage of the job, overriding the server's
+	 *  default. `None` keeps the server-configured default in place so
+	 *  jobs submitted without a persona run unchanged. Stored on the
+	 *  row so a reboot, resume, or rerun reproduces the same prompt;
+	 *  `rerun_job` carries the value forward verbatim.
+	 */
+	system_prompt: string | null,
+	/**
+	 *  Persona the user picked at submit time. The composed prompt
+	 *  rides on `system_prompt`; this column preserves the lookup key
+	 *  so a rerun can reproduce the same agent posture even if the
+	 *  persona's body is edited later. `None` means the user submitted
+	 *  without picking a persona — the server default applies and a
+	 *  rerun keeps that posture. Free TEXT until personas move to a
+	 *  server-side table; the FK lands in a later stage.
+	 */
+	persona_id: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
@@ -1233,6 +1262,16 @@ export type Stage = {
 	 *  audit / UI labelling of the archived turn.
 	 */
 	archived?: boolean,
+	/**
+	 *  Persona id this stage runs under. NULL means the stage
+	 *  inherits the job-level persona (`jobs.persona_id`); a populated
+	 *  value is the result of the per-stage `persona:` YAML override
+	 *  resolved at job-submit time (AGENT-DECISIONS.md D1). The column
+	 *  is recorded on the row so a re-run reproduces the same persona
+	 *  the stage originally ran under even if the user later edited
+	 *  the template or the persona row.
+	 */
+	persona_id?: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.
@@ -1315,6 +1354,27 @@ export type SubmitJobArgs = {
 	model?: string | null,
 	permission_mode?: string | null,
 	effort?: string | null,
+	/**
+	 *  Persona-derived system prompt composed by the caller (UI, CLI)
+	 *  and applied to every stage of the job. The UI fills this from
+	 *  the selected persona's `instructions` when the user picks one
+	 *  from the job-submit dropdown; `None` keeps the server's
+	 *  configured default. A future stage replaces this with a
+	 *  `persona_id` lookup against a server-side persona table; until
+	 *  then the composed text travels on the submit args and is
+	 *  persisted on the job row so reruns and resumes reproduce it.
+	 */
+	system_prompt?: string | null,
+	/**
+	 *  Persona the user picked at submit time. The composed prompt
+	 *  still travels on `system_prompt`; this is the lookup key that
+	 *  produced it. The runtime persists it verbatim onto the job row
+	 *  so a rerun can reproduce the same agent posture. `None` means
+	 *  the user submitted without picking a persona. Personas live in
+	 *  the UI KV store today, so the field is a free string; the FK
+	 *  against a server-side persona table lands in a later stage.
+	 */
+	persona_id?: string | null,
 	/**
 	 *  `false` (default) lands the job in `Draft` status — the row
 	 *  exists, the user can edit the spec / docs / handover, but the

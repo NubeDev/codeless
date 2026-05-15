@@ -42,6 +42,8 @@ async fn seed(db_path: &std::path::Path) -> ReviewId {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -60,6 +62,7 @@ async fn seed(db_path: &std::path::Path) -> ReviewId {
         acceptance: None,
         last_activity_at: None,
         archived: false,
+        persona_id: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
     let review = Review {

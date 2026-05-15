@@ -42,6 +42,8 @@ async fn seed_job(rpc: &InProcessRpc, status: JobStatus) -> codeless_types::Job 
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

@@ -127,6 +127,8 @@ async fn submit(args: SubmitArgs, db: Option<PathBuf>) -> Result<ExitCode> {
             // legacy "submit and run" semantics rather than landing
             // the job in Draft. UI submissions default to Draft so the
             // user can edit the spec first.
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

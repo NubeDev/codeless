@@ -7,6 +7,7 @@ import type { RpcClient } from "./client";
 import { RpcError } from "./error";
 import type {
   EventFilter,
+  Persona,
   RpcArgs,
   RpcMethod,
   RpcResultOf,
@@ -115,6 +116,11 @@ export class MockRpcClient implements RpcClient {
   // touch because the UI's flow always opens the Spec pane against a
   // known `JobId`.
   private jobFiles: Map<string, Map<string, string>> = new Map();
+  // Mirrors the SQLite `personas` table the runtime exposes. Seeded
+  // with the same built-ins as migration 0011 so the agent-personas
+  // surface renders against the mock with the same row identities as
+  // a real host.
+  private personas: Map<string, Persona> = seedPersonas();
   /// Last `agent_chat` request the mock observed. Public so UI tests
   /// that exercise the composer can assert on threaded fields
   /// (`context.job_refs`, `mode`, etc.) without the mock having to
@@ -203,6 +209,8 @@ export class MockRpcClient implements RpcClient {
           model: a.model ?? null,
           permission_mode: a.permission_mode ?? null,
           effort: a.effort ?? null,
+          system_prompt: a.system_prompt ?? null,
+          persona_id: a.persona_id ?? null,
           started_at: null,
           ended_at: null,
           created_at: now,
@@ -385,6 +393,8 @@ export class MockRpcClient implements RpcClient {
           model: src.model,
           permission_mode: src.permission_mode,
           effort: src.effort,
+          system_prompt: src.system_prompt,
+          persona_id: src.persona_id,
           started_at: null,
           ended_at: null,
           created_at: now,
@@ -901,6 +911,80 @@ export class MockRpcClient implements RpcClient {
         return r as RpcResultOf<M>;
       }
 
+      case "list_personas": {
+        // Same ORDER BY as the runtime: built-ins first (by id), then
+        // user rows by created_at ascending. The mock keeps the rail
+        // shape identical so the agent-personas UI render does not
+        // need a real host to look right.
+        const all = [...this.personas.values()];
+        const builtins = all
+          .filter((p) => p.built_in)
+          .sort((a, b) => a.id.localeCompare(b.id));
+        const userRows = all
+          .filter((p) => !p.built_in)
+          .sort((a, b) => a.created_at - b.created_at);
+        return { personas: [...builtins, ...userRows] } as RpcResultOf<M>;
+      }
+
+      case "get_persona": {
+        const a = args as RpcArgs<"get_persona">;
+        const p = this.personas.get(a.id);
+        if (!p) throw new RpcError("not_found", `persona ${a.id}`);
+        return p as RpcResultOf<M>;
+      }
+
+      case "upsert_persona": {
+        const a = args as RpcArgs<"upsert_persona">;
+        if (!a.id.trim()) {
+          throw new RpcError("invalid_argument", "persona id is empty");
+        }
+        if (!a.name.trim()) {
+          throw new RpcError("invalid_argument", "persona name is empty");
+        }
+        if (!a.instructions.trim()) {
+          throw new RpcError(
+            "invalid_argument",
+            "persona instructions are empty",
+          );
+        }
+        const now = Date.now();
+        const prev = this.personas.get(a.id);
+        const next: Persona = {
+          id: a.id,
+          name: a.name,
+          description: a.description,
+          icon: a.icon,
+          instructions: a.instructions,
+          use_for_jobs: a.use_for_jobs,
+          default_model: a.default_model ?? null,
+          allowed_subagents: a.allowed_subagents,
+          default_snippets: a.default_snippets ?? [],
+          // `built_in` is preserved across upsert so a user-edited
+          // built-in stays a built-in (and remains undeletable).
+          built_in: prev?.built_in ?? false,
+          created_at: prev?.created_at ?? now,
+          updated_at: now,
+        };
+        this.personas.set(a.id, next);
+        return next as RpcResultOf<M>;
+      }
+
+      case "delete_persona": {
+        const a = args as RpcArgs<"delete_persona">;
+        const existing = this.personas.get(a.id);
+        if (!existing) {
+          throw new RpcError("not_found", `persona ${a.id}`);
+        }
+        if (existing.built_in) {
+          throw new RpcError(
+            "conflict",
+            `persona ${a.id} is built-in and cannot be deleted`,
+          );
+        }
+        this.personas.delete(a.id);
+        return null as RpcResultOf<M>;
+      }
+
       default:
         throw new RpcError("internal", `mock: unhandled method ${method}`);
     }
@@ -1103,6 +1187,43 @@ export class MockRpcClient implements RpcClient {
     };
     for (const s of this.subscribers) s(env);
   }
+}
+
+// Built-in persona ids mirror migration 0011's seed. Instructions are
+// not duplicated here — the UI's fallback defaults live in
+// `modules/ai/lib/agents.ts`. The mock returns abbreviated text so a
+// test that asserts on field shape stays small; full prompts come
+// from the real runtime.
+const BUILTIN_PERSONA_IDS = [
+  "builtin:architect",
+  "builtin:coder",
+  "builtin:designer",
+  "builtin:reviewer",
+  "builtin:security",
+] as const;
+
+const ALL_MOCK_SUBAGENTS = ["explore", "code-review", "security", "general"];
+
+function seedPersonas(): Map<string, Persona> {
+  const m = new Map<string, Persona>();
+  for (const id of BUILTIN_PERSONA_IDS) {
+    const slug = id.slice("builtin:".length);
+    m.set(id, {
+      id,
+      name: slug.replace(/^./, (c) => c.toUpperCase()),
+      description: `${slug} built-in persona`,
+      icon: slug,
+      instructions: `mock instructions for ${slug}`,
+      use_for_jobs: false,
+      default_model: null,
+      allowed_subagents: [...ALL_MOCK_SUBAGENTS],
+      default_snippets: [],
+      built_in: true,
+      created_at: 0,
+      updated_at: 0,
+    });
+  }
+  return m;
 }
 
 function schedule(ms: number, fn: () => void) {

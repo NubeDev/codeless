@@ -38,6 +38,8 @@ async fn ai_message_complete_accumulates_cost_on_task_and_job() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -58,6 +60,7 @@ async fn ai_message_complete_accumulates_cost_on_task_and_job() {
         acceptance: None,
         last_activity_at: None,
         archived: false,
+        persona_id: None,
     };
     store.insert_stage(&stage).await.unwrap();
     let task = Task {

@@ -50,6 +50,8 @@ async fn seed_three_jobs(db: &Path) {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

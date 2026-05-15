@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use codeless_types::{
     AttachWorkspaceArgs, AttachWorkspaceResult, DetachWorkspaceArgs, Job, ListWorkspacesResult,
-    Repo, Review, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    Persona, Repo, Review, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
 };
 
 use crate::error::RpcResult;
@@ -10,18 +10,20 @@ use crate::methods::{
     AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
     CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
-    DeleteJobArgs, DeleteJobFileArgs, DraftJobFromConversationArgs, FsCreateDirArgs,
-    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
-    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
-    ResumeJobArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs, DraftJobFromConversationArgs,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult,
+    JobReportArgs, JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
     UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
+    WriteHandoverResult,
     WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
@@ -438,4 +440,30 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: DraftJobFromConversationArgs,
     ) -> RpcResult<codeless_types::Job>;
+
+    /// Snapshot the `personas` table. Built-in rows come first (ordered
+    /// by id), then user rows (ordered by `created_at` ascending). The
+    /// UI's `ai-agents` KV store mirrors this list — see the
+    /// agent-personas job's stage 7. Persona rows are not per-user
+    /// scoped (R5 single-tenant trust), so the call carries no filter.
+    async fn list_personas(&self, args: ListPersonasArgs) -> RpcResult<ListPersonasResult>;
+
+    /// Read one persona by id. `NotFound` for an unknown id. Used by
+    /// callers that already have a single id in hand (per-stage
+    /// override resolution, MCP prompt rendering); the cache-mirror
+    /// path uses `list_personas` instead.
+    async fn get_persona(&self, args: GetPersonaArgs) -> RpcResult<Persona>;
+
+    /// Insert or replace a persona row. `created_at` / `updated_at`
+    /// are stamped server-side; the runtime preserves the existing
+    /// `built_in` flag for rows already in the table so a user-edited
+    /// built-in stays a built-in (and remains undeletable). New rows
+    /// land with `built_in = 0`. `InvalidArgument` for an empty id or
+    /// for `name` / `instructions` that fail basic non-empty checks.
+    async fn upsert_persona(&self, args: UpsertPersonaArgs) -> RpcResult<Persona>;
+
+    /// Hard-delete a user-created persona. Built-in rows return
+    /// `Conflict` so the seeded `Coder` / `Architect` / … cannot be
+    /// removed by the user; `NotFound` for an unknown id.
+    async fn delete_persona(&self, args: DeletePersonaArgs) -> RpcResult<()>;
 }

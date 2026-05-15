@@ -62,6 +62,8 @@ async fn since_zero_replays_everything_then_attaches_live_tail() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -85,6 +87,8 @@ async fn since_zero_replays_everything_then_attaches_live_tail() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -141,6 +145,8 @@ async fn since_above_max_filters_strictly_by_cursor() {
         model: None,
         permission_mode: None,
         effort: None,
+        system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .await
@@ -187,6 +193,8 @@ async fn replay_dedupes_overlap_with_live_tail() {
         model: None,
         permission_mode: None,
         effort: None,
+        system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .await

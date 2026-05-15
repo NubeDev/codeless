@@ -8,12 +8,16 @@
 //! what Claude Code's `claude --mcp-config <file>` spawns when the
 //! config points at our binary.
 //!
-//! Args today: none. The first envar that matters is
-//! `CODELESS_WORKTREE_ROOT` (defaults to the current dir).
+//! Args today: none. Envars that matter:
+//! - `CODELESS_WORKTREE_ROOT` (defaults to the current dir).
+//! - `CODELESS_DB_PATH` (optional; when set, the MCP prompts surface
+//!   is backed by the runtime's SQLite store and any persona with
+//!   `use_for_jobs = 1` is published as an MCP prompt — stage 10).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codeless_mcp::personas::open_sqlite_persona_source;
 use codeless_mcp::{serve_stdio, ServerContext};
 use codeless_tools::tools::{BrowseFetchTool, HttpRequestTool};
 use codeless_tools::ToolRegistry;
@@ -43,12 +47,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     registry.register(Arc::new(BrowseFetchTool::new()));
     registry.register(Arc::new(HttpRequestTool::new()));
 
+    let mut ctx = ServerContext::new(Arc::new(registry), worktree_root.clone());
+
+    if let Some(db_path) = std::env::var_os("CODELESS_DB_PATH") {
+        let path = PathBuf::from(db_path);
+        match open_sqlite_persona_source(&path).await {
+            Ok(source) => {
+                tracing::info!(db = %path.display(), "MCP prompts surface backed by sqlite");
+                ctx = ctx.with_personas(source);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    db = %path.display(),
+                    error = %err,
+                    "failed to open CODELESS_DB_PATH; MCP prompts surface will be empty",
+                );
+            }
+        }
+    }
+
     tracing::info!(
         worktree = %worktree_root.display(),
-        tool_count = registry.len(),
+        tool_count = ctx.registry.len(),
         "codeless-mcp serving stdio"
     );
 
-    let ctx = ServerContext::new(Arc::new(registry), worktree_root);
     serve_stdio(ctx).await
 }

@@ -648,6 +648,24 @@ fn chunk_for_stream(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Merge the server's baseline system prompt with the per-job
+/// persona-derived prompt. The server baseline (from the secrets file)
+/// captures rules every job should obey — clean-env, headless cues,
+/// repo etiquette; the job-level prompt is the persona's
+/// `instructions`, picked at submit time. Both can be absent; when both
+/// are present we keep the baseline first so persona text can refine
+/// it without re-stating the universal rules.
+fn compose_system_prompt(server: Option<&str>, job: Option<&str>) -> Option<String> {
+    let server = server.map(str::trim).filter(|s| !s.is_empty());
+    let job = job.map(str::trim).filter(|s| !s.is_empty());
+    match (server, job) {
+        (Some(s), Some(j)) => Some(format!("{s}\n\n{j}")),
+        (Some(s), None) => Some(s.to_owned()),
+        (None, Some(j)) => Some(j.to_owned()),
+        (None, None) => None,
+    }
+}
+
 impl RunnerFactory for DefaultRunnerFactory {
     fn build(&self, job: &Job) -> Option<Arc<dyn Runner>> {
         // `prompt` is documented as Optional on `SubmitJobArgs`; a
@@ -662,8 +680,11 @@ impl RunnerFactory for DefaultRunnerFactory {
             match JobTemplate::parse_yaml(template_src) {
                 Ok(template) if self.enable_claude => {
                     let mut runner = TemplateRunner::new(template).with_store(self.store.clone());
-                    if let Some(sp) = &self.claude_system_prompt {
-                        runner = runner.with_system_prompt(sp.clone());
+                    if let Some(sp) = compose_system_prompt(
+                        self.claude_system_prompt.as_deref(),
+                        job.system_prompt.as_deref(),
+                    ) {
+                        runner = runner.with_system_prompt(sp);
                     }
                     return Some(Arc::new(runner));
                 }
@@ -702,7 +723,10 @@ impl RunnerFactory for DefaultRunnerFactory {
             }
             "claude" if self.enable_claude => {
                 let mut adapter = ClaudeRunnerAdapter::new(prompt, TaskId::new());
-                if let Some(sp) = &self.claude_system_prompt {
+                if let Some(sp) = compose_system_prompt(
+                    self.claude_system_prompt.as_deref(),
+                    job.system_prompt.as_deref(),
+                ) {
                     adapter = adapter.with_system_prompt(sp);
                 }
                 if let Some(m) = job.model.as_deref() {
@@ -807,4 +831,33 @@ fn random_hex_token(n_bytes: usize) -> String {
         out.push_str(&format!("{b:02x}"));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compose_system_prompt;
+
+    #[test]
+    fn compose_keeps_server_baseline_first() {
+        let out = compose_system_prompt(Some("base rules"), Some("persona body"));
+        assert_eq!(out.as_deref(), Some("base rules\n\npersona body"));
+    }
+
+    #[test]
+    fn compose_returns_either_alone_when_only_one_set() {
+        assert_eq!(
+            compose_system_prompt(Some("base"), None).as_deref(),
+            Some("base"),
+        );
+        assert_eq!(
+            compose_system_prompt(None, Some("persona")).as_deref(),
+            Some("persona"),
+        );
+    }
+
+    #[test]
+    fn compose_trims_whitespace_only_inputs_to_none() {
+        assert_eq!(compose_system_prompt(Some("   "), Some("")), None);
+        assert_eq!(compose_system_prompt(None, None), None);
+    }
 }

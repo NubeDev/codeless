@@ -16,6 +16,12 @@ type Args = {
   modelId: ModelId;
   toolContext: ToolContext;
   lmstudioBaseURL?: string;
+  // Persona-level whitelist. The registry already restricts each subagent's
+  // toolset to READ_ONLY_TOOLS; this is the outer gate that decides whether
+  // the active persona may spawn this type at all. Undefined means the
+  // caller chose not to narrow (legacy path) — allow everything. Empty
+  // array means "this persona is not permitted to spawn any subagent".
+  allowedSubagents?: readonly SubagentType[];
 };
 
 type RunResult = {
@@ -31,7 +37,15 @@ export async function runSubagent({
   modelId,
   toolContext,
   lmstudioBaseURL,
+  allowedSubagents,
 }: Args): Promise<RunResult> {
+  // Outer enforcement runs BEFORE the registry lookup so a persona that
+  // forbids this type can't even resolve the definition.
+  if (allowedSubagents !== undefined && !allowedSubagents.includes(type)) {
+    throw new Error(
+      `subagent '${type}' is not permitted by the active persona`,
+    );
+  }
   const def = SUBAGENTS[type];
   if (!def) throw new Error(`unknown subagent type: ${type}`);
 

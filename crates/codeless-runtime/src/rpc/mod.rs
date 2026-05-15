@@ -8,22 +8,22 @@ use codeless_rpc::{
     AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
     CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
-    DeleteJobFileArgs, DraftJobFromConversationArgs, EventFilter, EventStream, FsCreateDirArgs,
-    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
-    ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    DeleteJobFileArgs, DeletePersonaArgs, DraftJobFromConversationArgs, EventFilter, EventStream,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult,
+    JobReportArgs, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
+    RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
-use codeless_types::{AssistantThread, Job, Repo, Review, TaskId};
+use codeless_types::{AssistantThread, Job, Persona, Repo, Review, TaskId};
 use sqlx::SqlitePool;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
@@ -37,6 +37,7 @@ pub(crate) mod chat;
 pub(crate) mod fs;
 pub(crate) mod job_files;
 pub(crate) mod jobs;
+pub(crate) mod personas;
 pub(crate) mod repos;
 pub(crate) mod reviews;
 pub(crate) mod workspaces;
@@ -482,5 +483,21 @@ impl RpcServer for InProcessRpc {
         args: DraftJobFromConversationArgs,
     ) -> RpcResult<Job> {
         jobs::draft_job_from_conversation(self, args).await
+    }
+
+    async fn list_personas(&self, args: ListPersonasArgs) -> RpcResult<ListPersonasResult> {
+        personas::list_personas(self, args).await
+    }
+
+    async fn get_persona(&self, args: GetPersonaArgs) -> RpcResult<Persona> {
+        personas::get_persona(self, args).await
+    }
+
+    async fn upsert_persona(&self, args: UpsertPersonaArgs) -> RpcResult<Persona> {
+        personas::upsert_persona(self, args).await
+    }
+
+    async fn delete_persona(&self, args: DeletePersonaArgs) -> RpcResult<()> {
+        personas::delete_persona(self, args).await
     }
 }

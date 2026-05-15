@@ -110,6 +110,8 @@ async fn submit_then_stop_job_round_trip() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -147,6 +149,8 @@ async fn unknown_repo_surfaces_as_not_found() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
