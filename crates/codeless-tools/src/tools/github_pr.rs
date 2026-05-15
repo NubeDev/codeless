@@ -107,8 +107,8 @@ impl Tool for GithubPrTool {
     async fn call(&self, ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> {
         super::check_network_policy(ctx, "api.github.com", "https://api.github.com")?;
 
-        let token = std::env::var("GITHUB_TOKEN")
-            .map_err(|_| ToolError::denied("GITHUB_TOKEN not set"))?;
+        let token =
+            std::env::var("GITHUB_TOKEN").map_err(|_| ToolError::denied("GITHUB_TOKEN not set"))?;
 
         let action = args["action"]
             .as_str()
@@ -176,17 +176,19 @@ impl Tool for GithubPrTool {
                 let items: Vec<Value> = page
                     .items
                     .iter()
-                    .map(|p| json!({
-                        "number": p.number,
-                        "title": p.title,
-                        "state": p.state,
-                        "draft": p.draft,
-                        "user": p.user.as_ref().map(|u| u.login.as_str()),
-                        "head": p.head.ref_field,
-                        "base": p.base.ref_field,
-                        "created_at": p.created_at,
-                        "html_url": p.html_url,
-                    }))
+                    .map(|p| {
+                        json!({
+                            "number": p.number,
+                            "title": p.title,
+                            "state": p.state,
+                            "draft": p.draft,
+                            "user": p.user.as_ref().map(|u| u.login.as_str()),
+                            "head": p.head.ref_field,
+                            "base": p.base.ref_field,
+                            "created_at": p.created_at,
+                            "html_url": p.html_url,
+                        })
+                    })
                     .collect();
                 let count = items.len();
                 Ok(json!({ "pull_requests": items, "count": count }))
@@ -208,7 +210,11 @@ impl Tool for GithubPrTool {
                 let body = args["body"].as_str().unwrap_or("").to_string();
                 let draft = args["draft"].as_bool().unwrap_or(false);
                 let handler = gh.pulls(owner, repo);
-                let fut = handler.create(&title, &head, &base).body(&body).draft(draft).send();
+                let fut = handler
+                    .create(&title, &head, &base)
+                    .body(&body)
+                    .draft(draft)
+                    .send();
                 let pr = select! {
                     biased;
                     _ = ctx.cancel_token().cancelled() => return Err(ToolError::Cancelled),
