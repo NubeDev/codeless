@@ -52,8 +52,14 @@ pub(super) async fn fs_stat(rpc: &InProcessRpc, args: FsStatArgs) -> RpcResult<F
 
 pub(super) async fn fs_cwd(rpc: &InProcessRpc) -> RpcResult<FsCwdResult> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
+    // No attached workspace = no meaningful cwd. The UI's empty state
+    // branches on this; mapping to `Internal` would render as a vague
+    // crash so a typed `NotFound` is the cleaner shape.
+    let root = fs
+        .root()
+        .ok_or_else(|| RpcError::NotFound("no workspace attached".to_owned()))?;
     Ok(FsCwdResult {
-        path: fs.root().to_string_lossy().into_owned(),
+        path: root.to_string_lossy().into_owned(),
     })
 }
 
@@ -93,6 +99,13 @@ fn fs_not_configured() -> RpcError {
 pub(super) fn fs_err(e: FsError) -> RpcError {
     match e {
         FsError::Escape(p) => RpcError::InvalidArgument(format!("path escapes root: {p}")),
+        // No `RpcError::PermissionDenied` variant exists on the wire
+        // yet (adding one is a breaking enum change), so surface the
+        // refusal through `InvalidArgument` with the "permission
+        // denied" prefix that the UI's empty-state copy is keyed off.
+        FsError::PermissionDenied(p) => {
+            RpcError::InvalidArgument(format!("permission denied: {p}"))
+        }
         FsError::NotUtf8(p) => RpcError::InvalidArgument(format!("not a utf-8 text file: {p}")),
         FsError::BadRoot(p) => {
             RpcError::Internal(format!("fs root misconfigured: {}", p.display()))

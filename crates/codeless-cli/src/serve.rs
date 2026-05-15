@@ -217,15 +217,35 @@ async fn run_server(
                 root.display(),
             ),
         }
-        let mut host_fs = codeless_adapters_host::HostFs::new(root)
+        let host_fs = codeless_adapters_host::HostFs::new(root)
             .map_err(|e| anyhow!("fs root {}: {e}", root.display()))?;
+        // Rehydrate every other `attached_workspaces` row into the
+        // adapter so previously-attached workspaces remain reachable
+        // through `fs.*` across a restart without an explicit
+        // re-attach. The bootstrap `--fs-root` already lives in
+        // `host_fs.roots()` as the first entry; canonical equality is
+        // how `add_root` collapses duplicates.
+        match codeless_runtime::attached_workspaces::list_canonical_roots(runtime.pool()).await {
+            Ok(rows) => {
+                for canonical in rows {
+                    if let Err(e) = host_fs.add_root(std::path::PathBuf::from(&canonical)) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %canonical,
+                            "skipping stale attached_workspaces row at boot",
+                        );
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not rehydrate attached_workspaces"),
+        }
         if let Some(wt) = &worktree_root_effective {
             // The worktree root may not exist yet on first boot —
-            // create it so `HostFs::with_extra_root` finds a directory
-            // to canonicalize. Subsequent boots are no-ops.
+            // create it so `add_root` finds a directory to
+            // canonicalize. Subsequent boots are no-ops.
             std::fs::create_dir_all(wt).ok();
-            host_fs = host_fs
-                .with_extra_root(wt)
+            host_fs
+                .add_root(wt)
                 .map_err(|e| anyhow!("worktree fs root {}: {e}", wt.display()))?;
             eprintln!("codeless-server: fs extra root = {}", wt.display());
         }

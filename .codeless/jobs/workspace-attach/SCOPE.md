@@ -28,9 +28,15 @@ list. The UI is **not** touched in this job — that's a follow-up.
   `WorkspaceError`.
 - Four RPC methods implemented end-to-end with a round-trip integration
   test (`attach → list → detach`) using the in-memory SQLite harness.
-- Host adapter switch from `Option<PathBuf> fs_root` to a canonical
+- [x] Host adapter switch from `Option<PathBuf> fs_root` to a canonical
   allowed-roots list; existing `fs.*` calls continue to work and reject
-  paths outside the attached set with `PermissionDenied`.
+  paths outside the attached set with `PermissionDenied`. `HostFs` now
+  owns a `RwLock<Vec<PathBuf>>`; `add_root` / `remove_root` mutate it
+  through `Arc<HostFs>`; `FsError::PermissionDenied` is the new variant
+  the `fs.*` surface emits for "outside allowed roots" so detach
+  surfaces as the doc's typed refusal rather than `Internal`. Attach /
+  detach RPCs mirror their DB writes into the adapter; boot rehydrates
+  every `attached_workspaces` row.
 - 30s liveness sweep emitting `workspace_unhealthy` /
   `workspace_recovered` events.
 - `ServerInfo.fs_root` frozen to the boot-time `--fs-root` value (does

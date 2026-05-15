@@ -1,41 +1,46 @@
 use std::path::{Component, Path, PathBuf};
+use std::sync::RwLock;
 
 use codeless_types::{FsEntry, FsEntryKind, UnixMillis};
 use thiserror::Error;
 
-/// Host-side filesystem adapter. All paths in the public methods are
-/// interpreted relative to the configured `root`; any attempt to
-/// resolve a path that escapes the root (via absolute paths, parent
-/// segments, or symlinks pointing outside) is rejected with
-/// `Escape` *before* touching disk. This is the single trust gate
-/// for the `fs.*` RPC surface — every transport ultimately reaches
-/// `HostFs` and inherits that guarantee.
+/// Host-side filesystem adapter. The adapter owns a set of canonical
+/// allowed roots; any path the `fs.*` RPC surface receives must
+/// canonicalise to a descendant of *some* root in that set or the
+/// call is rejected with `PermissionDenied` before touching disk.
+/// The set is mutable through `add_root` / `remove_root` so the
+/// `attach_workspace` / `detach_workspace` RPCs can keep the adapter
+/// in sync with the `attached_workspaces` table without rebuilding
+/// the runtime — the host adapter is the single trust gate, and
+/// attach/detach is the verb that toggles a root in or out of it.
 ///
-/// `root` is canonicalised once in the constructor so containment
-/// checks compare canonical bytes rather than user-supplied prefixes.
-/// A non-existent root is an error: the caller is expected to point
-/// the adapter at an existing workspace directory.
+/// Every stored entry is canonical (symlinks resolved, no trailing
+/// slash, no `.` components) so containment checks compare canonical
+/// bytes rather than user-supplied prefixes. The order is preserved:
+/// `roots[0]` is whichever path was attached first and is the value
+/// `fs_cwd` returns to the UI, so an explorer opened against a freshly
+/// booted server lands at the bootstrap workspace.
 #[derive(Debug)]
 pub struct HostFs {
-    /// Primary root — what `fs_cwd` returns and the default join
-    /// target for relative paths.
-    root: PathBuf,
-    /// Additional roots paths are allowed to resolve under. The
-    /// worktree root (`--worktree-root`) lives here so the UI can
-    /// read per-job `handover.md` / `runs/*/notes/*.md` through
-    /// `fs_read_file` without the host adapter rejecting paths that
-    /// live outside the source tree. Each extra root is canonical;
-    /// the trust check accepts a path that's a descendant of *any*
-    /// listed root, including the primary one.
-    extra_roots: Vec<PathBuf>,
+    roots: RwLock<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Error)]
 pub enum FsError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// Lexical `..` in a relative path. Caught before touching the
+    /// disk because the segment itself is the refusal signal — no
+    /// allowed-roots check would let `..` through.
     #[error("path escapes root: {0}")]
     Escape(String),
+    /// The path canonicalised to somewhere outside every configured
+    /// allowed root. Distinct from `Escape` because the input was
+    /// well-formed; the adapter refused it on policy, not syntax.
+    /// `WORKSPACE-ATTACH.md` is explicit that detached workspaces
+    /// surface as `PermissionDenied`, not `Internal`.
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
     #[error("not a utf-8 text file: {0}")]
     NotUtf8(String),
     #[error("root does not exist or is not a directory: {0}")]
@@ -44,45 +49,97 @@ pub enum FsError {
 
 impl HostFs {
     /// Construct an adapter rooted at `root`. The path must exist and
-    /// be a directory; otherwise `BadRoot` is returned so the caller
-    /// can surface the misconfiguration at startup rather than at
-    /// first request.
+    /// be a directory; the canonicalised form becomes the first entry
+    /// in the allowed-roots list (and the value `fs_cwd` returns).
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, FsError> {
-        let root = root.into();
-        let canonical = std::fs::canonicalize(&root).map_err(|_| FsError::BadRoot(root.clone()))?;
-        if !canonical.is_dir() {
-            return Err(FsError::BadRoot(canonical));
-        }
+        let canonical = canonicalise_root(root.into())?;
         Ok(Self {
-            root: canonical,
-            extra_roots: Vec::new(),
+            roots: RwLock::new(vec![canonical]),
         })
     }
 
-    /// Register an extra root readable through the `fs_*` surface.
-    /// Use cases: the worktree root (per-job checkouts and their
-    /// `runs/*/handover.md` files), a tmp scratch dir for shared
-    /// uploads. The path must exist and be a directory — same
-    /// contract as the primary root.
-    pub fn with_extra_root(mut self, root: impl Into<PathBuf>) -> Result<Self, FsError> {
-        let raw = root.into();
-        let canonical = std::fs::canonicalize(&raw).map_err(|_| FsError::BadRoot(raw.clone()))?;
-        if !canonical.is_dir() {
-            return Err(FsError::BadRoot(canonical));
+    /// Construct an empty adapter — `fs.*` calls return
+    /// `PermissionDenied` for every path until a root is added. This
+    /// is the shape the runtime uses when boot finds no `--fs-root`
+    /// and no rows in `attached_workspaces`: the adapter exists but
+    /// has nothing to serve.
+    pub fn empty() -> Self {
+        Self {
+            roots: RwLock::new(Vec::new()),
         }
-        self.extra_roots.push(canonical);
+    }
+
+    /// Builder-style extra root. Kept as a convenience for callers
+    /// that compose the adapter at boot (`HostFs::new(repo)
+    /// .with_extra_root(worktree_root)`); equivalent to constructing
+    /// then calling `add_root` once.
+    pub fn with_extra_root(self, root: impl Into<PathBuf>) -> Result<Self, FsError> {
+        self.add_root(root)?;
         Ok(self)
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// Register an allowed root. The path is canonicalised first so
+    /// `/a/b`, `/a/b/`, and a symlink resolving to `/a/b` all collapse
+    /// to the same entry. Already-present canonical paths are a
+    /// no-op; the function returns the canonical form either way so
+    /// callers (the attach handler) can log what actually went in.
+    pub fn add_root(&self, root: impl Into<PathBuf>) -> Result<PathBuf, FsError> {
+        let canonical = canonicalise_root(root.into())?;
+        let mut roots = self.roots.write().expect("HostFs roots poisoned");
+        if !roots.iter().any(|r| r == &canonical) {
+            roots.push(canonical.clone());
+        }
+        Ok(canonical)
+    }
+
+    /// Drop an allowed root. Idempotent: removing a path that's not
+    /// in the set is fine, which lines up with the detach RPC's
+    /// "delete the row, then mirror into the adapter" sequencing —
+    /// double-detach must not error out the second time. Returns
+    /// whether the set actually changed.
+    pub fn remove_root(&self, root: impl AsRef<Path>) -> bool {
+        let target = std::fs::canonicalize(root.as_ref()).ok();
+        let mut roots = self.roots.write().expect("HostFs roots poisoned");
+        let before = roots.len();
+        // The stored set is canonical, so the match needs the
+        // canonical form of the input. When the path no longer
+        // resolves on disk (workspace folder vanished), fall back to
+        // a lexical compare so a `remove_root` against a stale path
+        // can still clean the entry up.
+        roots.retain(|r| {
+            if let Some(canon) = target.as_deref() {
+                r != canon
+            } else {
+                r.as_path() != root.as_ref()
+            }
+        });
+        roots.len() != before
+    }
+
+    /// Snapshot of the current canonical allowed roots in registration
+    /// order. The liveness sweep (stage 7) and tests use this to walk
+    /// what the adapter currently serves.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.roots.read().expect("HostFs roots poisoned").clone()
+    }
+
+    /// The first-registered root; what `fs_cwd` returns. `None` when
+    /// no workspace is attached — the runtime maps that to a typed
+    /// "no workspace" error so the UI can render the empty state.
+    pub fn root(&self) -> Option<PathBuf> {
+        self.roots
+            .read()
+            .expect("HostFs roots poisoned")
+            .first()
+            .cloned()
     }
 
     fn allowed_under_any_root(&self, path: &Path) -> bool {
-        if path.starts_with(&self.root) {
-            return true;
-        }
-        self.extra_roots.iter().any(|r| path.starts_with(r))
+        self.roots
+            .read()
+            .expect("HostFs roots poisoned")
+            .iter()
+            .any(|r| path.starts_with(r))
     }
 
     /// Public sandbox check for absolute paths handed in by callers
@@ -97,20 +154,20 @@ impl HostFs {
         }
     }
 
-    /// Resolve `path` against `root`, refusing anything that would
-    /// escape. Two input shapes are accepted:
+    /// Resolve `path` against the allowed roots, refusing anything
+    /// that would escape. Two input shapes are accepted:
     ///
-    /// - Relative paths (`"."`, `"src/lib.rs"`): joined onto `root`.
-    ///   `ParentDir` segments are rejected up front so an obvious
-    ///   traversal never touches disk.
+    /// - Relative paths (`"."`, `"src/lib.rs"`): joined onto the
+    ///   first root. `ParentDir` segments are rejected up front so an
+    ///   obvious traversal never touches disk.
     /// - Absolute paths (`"/home/user/proj/src/lib.rs"`): used
     ///   directly. The UI's explorer treats the result of `fs_cwd`
     ///   as the display root and ships absolute paths back over the
     ///   wire; accepting them is what makes the explorer round-trip.
     ///
-    /// Both shapes finish at the same `canonicalize + starts_with
-    /// (root)` check, so symlinks pointing out and absolute paths
-    /// outside the root are caught identically. Missing tail
+    /// Both shapes finish at the same `canonicalize + starts_with(any
+    /// root)` check, so symlinks pointing out and absolute paths
+    /// outside the allowed set are caught identically. Missing tail
     /// segments (a path to a file the caller is about to create)
     /// resolve via the parent so writes to new files work.
     fn resolve(&self, path: &str) -> Result<PathBuf, FsError> {
@@ -125,28 +182,35 @@ impl HostFs {
         let joined = if raw.is_absolute() {
             raw.to_path_buf()
         } else {
-            self.root.join(raw)
+            // Relative paths need *some* base; lean on the
+            // first-registered root so the bootstrap workspace stays
+            // the implicit cwd. With no roots, every relative path
+            // is denied — there's no plausible base.
+            let base = self.root().ok_or_else(|| {
+                FsError::PermissionDenied(format!("no workspaces attached: {path}"))
+            })?;
+            base.join(raw)
         };
         match std::fs::canonicalize(&joined) {
             Ok(canon) => {
                 if self.allowed_under_any_root(&canon) {
                     Ok(canon)
                 } else {
-                    Err(FsError::Escape(path.to_owned()))
+                    Err(FsError::PermissionDenied(path.to_owned()))
                 }
             }
             Err(_) => {
                 let parent = joined
                     .parent()
-                    .ok_or_else(|| FsError::Escape(path.to_owned()))?;
-                let parent_canon =
-                    std::fs::canonicalize(parent).map_err(|_| FsError::Escape(path.to_owned()))?;
+                    .ok_or_else(|| FsError::PermissionDenied(path.to_owned()))?;
+                let parent_canon = std::fs::canonicalize(parent)
+                    .map_err(|_| FsError::PermissionDenied(path.to_owned()))?;
                 if !self.allowed_under_any_root(&parent_canon) {
-                    return Err(FsError::Escape(path.to_owned()));
+                    return Err(FsError::PermissionDenied(path.to_owned()));
                 }
                 let tail = joined
                     .file_name()
-                    .ok_or_else(|| FsError::Escape(path.to_owned()))?;
+                    .ok_or_else(|| FsError::PermissionDenied(path.to_owned()))?;
                 Ok(parent_canon.join(tail))
             }
         }
@@ -208,11 +272,7 @@ impl HostFs {
         &self,
         rel: &str,
     ) -> Result<Option<(FsEntryKind, Option<i64>, Option<UnixMillis>)>, FsError> {
-        let abs = match self.resolve(rel) {
-            Ok(p) => p,
-            Err(FsError::Escape(_)) => return Err(FsError::Escape(rel.to_owned())),
-            Err(e) => return Err(e),
-        };
+        let abs = self.resolve(rel)?;
         let meta = match tokio::fs::symlink_metadata(&abs).await {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -306,6 +366,14 @@ impl HostFs {
     }
 }
 
+fn canonicalise_root(raw: PathBuf) -> Result<PathBuf, FsError> {
+    let canonical = std::fs::canonicalize(&raw).map_err(|_| FsError::BadRoot(raw.clone()))?;
+    if !canonical.is_dir() {
+        return Err(FsError::BadRoot(canonical));
+    }
+    Ok(canonical)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,17 +416,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parent_traversal_is_rejected() {
+    async fn parent_traversal_is_rejected_as_escape() {
         let (_tmp, fs_adapter) = setup();
         let err = fs_adapter.read_dir("../etc").await.unwrap_err();
         assert!(matches!(err, FsError::Escape(_)), "got {err:?}");
     }
 
     #[tokio::test]
-    async fn absolute_path_outside_root_is_rejected() {
+    async fn absolute_path_outside_roots_is_permission_denied() {
         let (_tmp, fs_adapter) = setup();
         let err = fs_adapter.read_file("/etc/passwd").await.unwrap_err();
-        assert!(matches!(err, FsError::Escape(_)), "got {err:?}");
+        assert!(matches!(err, FsError::PermissionDenied(_)), "got {err:?}");
     }
 
     #[tokio::test]
@@ -382,13 +450,13 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn symlink_pointing_outside_is_rejected() {
+    async fn symlink_pointing_outside_is_permission_denied() {
         let (tmp, fs_adapter) = setup();
         let outside = tempdir().unwrap();
         fs::write(outside.path().join("secret"), "shhh").unwrap();
         std::os::unix::fs::symlink(outside.path().join("secret"), tmp.path().join("leak")).unwrap();
         let err = fs_adapter.read_file("leak").await.unwrap_err();
-        assert!(matches!(err, FsError::Escape(_)), "got {err:?}");
+        assert!(matches!(err, FsError::PermissionDenied(_)), "got {err:?}");
     }
 
     #[tokio::test]
@@ -413,5 +481,89 @@ mod tests {
         let (kind, size, _) = stat.unwrap();
         assert_eq!(kind, FsEntryKind::File);
         assert_eq!(size, Some(7));
+    }
+
+    #[tokio::test]
+    async fn add_root_makes_outside_path_resolvable() {
+        let (_tmp, fs_adapter) = setup();
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("note.md"), "extra").unwrap();
+        let extra_abs = std::fs::canonicalize(outside.path())
+            .unwrap()
+            .join("note.md");
+        let err = fs_adapter
+            .read_file(extra_abs.to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied(_)));
+
+        fs_adapter.add_root(outside.path()).unwrap();
+        let got = fs_adapter
+            .read_file(extra_abs.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(got, "extra");
+    }
+
+    #[tokio::test]
+    async fn remove_root_revokes_access_to_that_subtree() {
+        let (tmp, fs_adapter) = setup();
+        let extra = tempdir().unwrap();
+        fs::write(extra.path().join("a.txt"), "1").unwrap();
+        fs_adapter.add_root(extra.path()).unwrap();
+        let extra_abs = std::fs::canonicalize(extra.path()).unwrap().join("a.txt");
+        fs_adapter
+            .read_file(extra_abs.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let changed = fs_adapter.remove_root(extra.path());
+        assert!(changed);
+        let err = fs_adapter
+            .read_file(extra_abs.to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied(_)), "got {err:?}");
+
+        // The original root keeps working — remove only revoked the
+        // one entry it matched.
+        fs_adapter.write_file("still.txt", "ok").await.unwrap();
+        let _ = tmp;
+    }
+
+    #[tokio::test]
+    async fn remove_root_is_idempotent() {
+        let (_tmp, fs_adapter) = setup();
+        let extra = tempdir().unwrap();
+        fs_adapter.add_root(extra.path()).unwrap();
+        assert!(fs_adapter.remove_root(extra.path()));
+        assert!(!fs_adapter.remove_root(extra.path()));
+    }
+
+    #[tokio::test]
+    async fn add_root_canonicalises_so_duplicates_collapse() {
+        let (_tmp, fs_adapter) = setup();
+        let extra = tempdir().unwrap();
+        let canon = std::fs::canonicalize(extra.path()).unwrap();
+        let with_trailing = {
+            let mut s = canon.to_string_lossy().into_owned();
+            s.push('/');
+            PathBuf::from(s)
+        };
+        fs_adapter.add_root(extra.path()).unwrap();
+        fs_adapter.add_root(&with_trailing).unwrap();
+        fs_adapter.add_root(extra.path().join(".")).unwrap();
+        // One bootstrap root + one extra (collapsed across forms).
+        assert_eq!(fs_adapter.roots().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn empty_adapter_denies_everything() {
+        let fs_adapter = HostFs::empty();
+        let err = fs_adapter.read_file("/etc/passwd").await.unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied(_)), "got {err:?}");
+        let err = fs_adapter.read_dir(".").await.unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied(_)), "got {err:?}");
+        assert!(fs_adapter.root().is_none());
     }
 }

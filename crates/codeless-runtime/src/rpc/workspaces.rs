@@ -99,6 +99,18 @@ pub(super) async fn attach_workspace(
     .await
     .map_err(super::db_err)?;
 
+    // Mirror the row into the host adapter's allowed-roots list so the
+    // `fs.*` surface accepts paths under this workspace immediately —
+    // without this, an attach would persist but the UI's first
+    // `fs_read_dir` would `PermissionDenied`. The adapter is optional
+    // (tests + headless modes skip `with_fs`); when absent the DB row
+    // is still the source of truth and a later boot will rehydrate.
+    if let Some(fs) = rpc.fs.as_ref() {
+        if let Err(e) = fs.add_root(&canonical_path) {
+            tracing::warn!(error = %e, path = %canonical, "attach: add_root failed");
+        }
+    }
+
     // Repos are 1:1 with attachments via the primary key — keep the
     // event payload consistent with `RepoUpdated` so subscribers that
     // already redraw the sidebar on repo changes pick this up too.
@@ -172,11 +184,26 @@ pub(super) async fn detach_workspace(
         DetachPolicy::LeaveRunning => {}
     }
 
+    let removed_root: Option<String> =
+        sqlx::query_scalar("SELECT fs_root_canonical FROM attached_workspaces WHERE repo_id = ?")
+            .bind(args.repo_id.to_string())
+            .fetch_optional(rpc.pool())
+            .await
+            .map_err(super::db_err)?;
+
     sqlx::query("DELETE FROM attached_workspaces WHERE repo_id = ?")
         .bind(args.repo_id.to_string())
         .execute(rpc.pool())
         .await
         .map_err(super::db_err)?;
+
+    // Pull the corresponding entry out of the host adapter so a
+    // subsequent `fs.*` call against the detached path surfaces as
+    // `PermissionDenied`, matching the doc's "subsequent fs_* calls
+    // under that path return PermissionDenied (not Internal)" rule.
+    if let (Some(fs), Some(canonical)) = (rpc.fs.as_ref(), removed_root.as_deref()) {
+        fs.remove_root(Path::new(canonical));
+    }
 
     rpc.bus
         .publish(

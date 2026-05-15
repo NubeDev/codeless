@@ -206,3 +206,14 @@ async fn insert_boot_repo(
 pub fn _canonicalise_for_test(raw: &Path) -> std::io::Result<PathBuf> {
     std::fs::canonicalize(raw)
 }
+
+/// Snapshot of every currently-attached workspace's canonical root.
+/// Used at boot to seed the `HostFs` allowed-roots list from rows the
+/// previous run persisted; lives here (rather than in `serve.rs`) so
+/// the SQL stays next to the schema notes and `codeless-cli` does not
+/// pick up a direct `sqlx` dependency.
+pub async fn list_canonical_roots(pool: &SqlitePool) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar::<_, String>("SELECT fs_root_canonical FROM attached_workspaces")
+        .fetch_all(pool)
+        .await
+}
