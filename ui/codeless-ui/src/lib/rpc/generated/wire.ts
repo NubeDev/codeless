@@ -892,6 +892,16 @@ export type Job = {
 	 *  "think" / "think hard" / "ultrathink" cues.
 	 */
 	effort: string | null,
+	/**
+	 *  Optional persona-derived system prompt composed at submit time.
+	 *  When set, the runner factory uses this as the agent's system
+	 *  prompt for every stage of the job, overriding the server's
+	 *  default. `None` keeps the server-configured default in place so
+	 *  jobs submitted without a persona run unchanged. Stored on the
+	 *  row so a reboot, resume, or rerun reproduces the same prompt;
+	 *  `rerun_job` carries the value forward verbatim.
+	 */
+	system_prompt: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
@@ -1287,6 +1297,17 @@ export type SubmitJobArgs = {
 	model?: string | null,
 	permission_mode?: string | null,
 	effort?: string | null,
+	/**
+	 *  Persona-derived system prompt composed by the caller (UI, CLI)
+	 *  and applied to every stage of the job. The UI fills this from
+	 *  the selected persona's `instructions` when the user picks one
+	 *  from the job-submit dropdown; `None` keeps the server's
+	 *  configured default. A future stage replaces this with a
+	 *  `persona_id` lookup against a server-side persona table; until
+	 *  then the composed text travels on the submit args and is
+	 *  persisted on the job row so reruns and resumes reproduce it.
+	 */
+	system_prompt?: string | null,
 	/**
 	 *  `false` (default) lands the job in `Draft` status — the row
 	 *  exists, the user can edit the spec / docs / handover, but the

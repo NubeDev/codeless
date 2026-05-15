@@ -64,6 +64,16 @@ pub struct SubmitJobArgs {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Persona-derived system prompt composed by the caller (UI, CLI)
+    /// and applied to every stage of the job. The UI fills this from
+    /// the selected persona's `instructions` when the user picks one
+    /// from the job-submit dropdown; `None` keeps the server's
+    /// configured default. A future stage replaces this with a
+    /// `persona_id` lookup against a server-side persona table; until
+    /// then the composed text travels on the submit args and is
+    /// persisted on the job row so reruns and resumes reproduce it.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
     /// `false` (default) lands the job in `Draft` status — the row
     /// exists, the user can edit the spec / docs / handover, but the
     /// driver does not pick it up. The user calls `start_job` to

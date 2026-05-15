@@ -89,6 +89,7 @@ async fn fixture_with_job(
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await

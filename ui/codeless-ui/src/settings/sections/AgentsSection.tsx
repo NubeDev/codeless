@@ -98,6 +98,7 @@ export function AgentsSection() {
                 builtIn: false,
                 useForJobs: false,
                 allowedSubagents: [...ALL_SUBAGENT_TYPES],
+                defaultModel: null,
               })
             }
           >
@@ -416,6 +417,29 @@ function AgentEditorDialog({
               onCheckedChange={(v) =>
                 setDraft({ ...draft, useForJobs: v === true })
               }
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label>Default model</Label>
+            <span className="text-[10.5px] text-muted-foreground">
+              Seeds the job-submit Model dropdown when this persona is
+              picked. Free-form — match a runner's catalogue id (e.g.{" "}
+              <code className="font-mono">claude-opus-4-7</code>). Empty
+              falls through to the runner default.
+            </span>
+            <Input
+              value={draft.defaultModel ?? ""}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  defaultModel:
+                    e.target.value.trim().length === 0
+                      ? null
+                      : e.target.value,
+                })
+              }
+              placeholder="claude-opus-4-7"
+              className="h-8 text-[12px]"
             />
           </div>
           <div className="flex flex-col gap-1">

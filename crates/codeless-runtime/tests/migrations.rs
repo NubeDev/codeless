@@ -160,6 +160,7 @@ async fn jobs_columns_match_appendix_a() {
             "permission_mode",
             "effort",
             "workspace_mode",
+            "system_prompt",
         ],
     );
 }

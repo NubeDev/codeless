@@ -81,6 +81,12 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
         model: args.model,
         permission_mode: args.permission_mode,
         effort: args.effort,
+        // The UI composes this from the selected persona's
+        // `instructions` and passes it through verbatim. Server-side
+        // persona resolution lands in a later stage; until then the
+        // composed text round-trips on the row so a resume reproduces
+        // the same agent posture the user picked at submit time.
+        system_prompt: args.system_prompt.filter(|s| !s.is_empty()),
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -643,6 +649,7 @@ pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResu
         model: source.model,
         permission_mode: source.permission_mode,
         effort: source.effort,
+        system_prompt: source.system_prompt,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -984,6 +991,10 @@ pub(super) async fn draft_job_from_conversation(
             model,
             permission_mode,
             effort,
+            // Chat-drafted jobs have no persona binding yet; the user
+            // can pick one from the dropdown on the submit form if they
+            // promote the draft from the job page.
+            system_prompt: None,
             start_immediately: false,
         },
     )

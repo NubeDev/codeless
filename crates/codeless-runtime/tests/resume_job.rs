@@ -44,6 +44,7 @@ async fn seed_stopped_job(rpc: &InProcessRpc, reason: StopReason) -> codeless_ty
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await

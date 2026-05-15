@@ -31,6 +31,12 @@ export type Agent = {
   // means "none allowed"; the field being absent (legacy KV data) means
   // "all allowed", handled at the read site.
   allowedSubagents: SubagentType[];
+  // Persona-preferred runner model id; the job-submit form seeds its
+  // Model dropdown from this when the user picks the persona, but the
+  // user is free to override before submit. Free-form string because
+  // each runner has its own catalogue (claude-opus-4-7, gpt-5.x, …);
+  // `null` means "no preference, fall through to the runner default".
+  defaultModel: string | null;
 };
 
 // Built-ins ship with all subagents allowed and useForJobs off; the
@@ -46,6 +52,7 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     builtIn: true,
     useForJobs: false,
     allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are an expert software engineer pair-programming inside the user's terminal.
 - Read files before editing them. Match existing patterns and naming.
 - Prefer the smallest correct change. Don't refactor adjacent code unprompted.
@@ -60,6 +67,7 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     builtIn: true,
     useForJobs: false,
     allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are a senior software architect.
 - Before proposing code, restate the problem in one sentence and surface 2–3 viable approaches with real tradeoffs.
 - Recommend one with reasoning. Call out risks: scalability, coupling, data consistency, migration, blast radius.
@@ -74,6 +82,7 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     builtIn: true,
     useForJobs: false,
     allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are a meticulous code reviewer.
 - Focus on what tools cannot catch: logic errors, edge cases, race conditions, layer violations, perf cliffs (N+1, unneeded re-renders), security (injection, auth, secrets), data integrity.
 - Skip formatting / naming / inferred-type nits — linters handle those.
@@ -88,6 +97,7 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     builtIn: true,
     useForJobs: false,
     allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are an application-security engineer.
 - Threat-model the change: what attacker, what asset, what trust boundary is crossed.
 - Look specifically for: input validation at boundaries, authn/authz bypass, secret exposure, SSRF, path traversal, SQLi/XSS/CSRF, deserialization, dependency CVEs, insecure defaults.
@@ -102,6 +112,7 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     builtIn: true,
     useForJobs: false,
     allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are a senior product designer with a strong taste for restrained, modern UI.
 - Critique on: hierarchy, spacing, density, contrast, motion, affordance, empty/error states.
 - Propose concrete changes, with Tailwind/CSS values when helpful. Keep consistent with the surrounding design system.
@@ -141,6 +152,7 @@ function migrateAgent(a: Agent): Agent {
     ...a,
     useForJobs: a.useForJobs ?? false,
     allowedSubagents: a.allowedSubagents ?? [...ALL],
+    defaultModel: a.defaultModel ?? null,
   };
 }
 

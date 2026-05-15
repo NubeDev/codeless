@@ -93,9 +93,9 @@ impl SqliteStore {
             "INSERT INTO jobs \
              (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
               workspace_mode, worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
-              model, permission_mode, effort, \
+              model, permission_mode, effort, system_prompt, \
               started_at, ended_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(job.id.to_string())
         .bind(job.repo_id.to_string())
@@ -113,6 +113,7 @@ impl SqliteStore {
         .bind(&job.model)
         .bind(&job.permission_mode)
         .bind(&job.effort)
+        .bind(&job.system_prompt)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -136,7 +137,7 @@ impl SqliteStore {
             "UPDATE jobs SET \
                 repo_id=?, status=?, stop_reason=?, template_yaml=?, prompt=?, runner=?, \
                 branch=?, workspace_mode=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
-                cost_cents=?, model=?, permission_mode=?, effort=?, \
+                cost_cents=?, model=?, permission_mode=?, effort=?, system_prompt=?, \
                 started_at=?, ended_at=?, created_at=? \
              WHERE id=?",
         )
@@ -155,6 +156,7 @@ impl SqliteStore {
         .bind(&job.model)
         .bind(&job.permission_mode)
         .bind(&job.effort)
+        .bind(&job.system_prompt)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -1125,6 +1127,7 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
         model: row.try_get("model")?,
         permission_mode: row.try_get("permission_mode")?,
         effort: row.try_get("effort")?,
+        system_prompt: row.try_get("system_prompt")?,
         started_at: started_at.map(UnixMillis),
         ended_at: ended_at.map(UnixMillis),
         created_at: UnixMillis(row.try_get("created_at")?),

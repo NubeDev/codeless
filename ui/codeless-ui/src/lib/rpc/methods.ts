@@ -89,6 +89,10 @@ export interface SubmitJobArgs {
   permission_mode?: string | null;
   /** Thinking-budget hint: `low | medium | high`. */
   effort?: string | null;
+  /** Persona-derived system prompt composed at submit time. The
+   * runtime applies this on top of the server's baseline system
+   * prompt for every stage; `null` keeps the server default. */
+  system_prompt?: string | null;
   /** When `false` (default) the job lands in `Draft` status — the row
    * exists, the user can edit the spec / docs / handover, but the
    * driver does not pick it up. The user calls `start_job` to promote

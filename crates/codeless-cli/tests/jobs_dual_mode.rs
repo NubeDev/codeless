@@ -52,6 +52,7 @@ async fn seed(db: &Path) -> JobId {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await

@@ -90,6 +90,7 @@ async fn submit_job_rejects_unknown_repo() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await;
@@ -130,6 +131,7 @@ async fn submit_job_succeeds_and_emits_queued_event() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await
@@ -151,6 +153,57 @@ async fn submit_job_succeeds_and_emits_queued_event() {
         .await
         .expect("get_job");
     assert_eq!(fetched.id, job.id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submit_job_persists_system_prompt_on_the_job_row() {
+    // The job-submit dropdown sends the selected persona's
+    // `instructions` as `system_prompt`; the row must round-trip it so a
+    // subsequent get_job (or a runner-factory build after a restart)
+    // sees the same posture the user picked at submit time.
+    let rpc = InProcessRpc::new().await.unwrap();
+    let repo = rpc
+        .add_repo(AddRepoArgs {
+            name: "demo".into(),
+            clone_url: "https://example.test/demo.git".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp/demo".into(),
+            git_auth: token_auth(),
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .expect("add_repo");
+    let job = rpc
+        .submit_job(SubmitJobArgs {
+            repo_id: repo.id,
+            prompt: Some("write hello.txt".into()),
+            template_yaml: None,
+            runner: "mock".into(),
+            branch: "codeless/job-persona".into(),
+            workspace_mode: None,
+            cost_cap_cents: 500,
+            wall_clock_cap_ms: 60_000,
+            model: Some("claude-opus-4-7".into()),
+            permission_mode: None,
+            effort: None,
+            system_prompt: Some("You are the Architect persona.".into()),
+            start_immediately: true,
+        })
+        .await
+        .expect("submit_job");
+    assert_eq!(
+        job.system_prompt.as_deref(),
+        Some("You are the Architect persona.")
+    );
+    assert_eq!(job.model.as_deref(), Some("claude-opus-4-7"));
+
+    let fetched = rpc
+        .get_job(GetJobArgs { job_id: job.id })
+        .await
+        .expect("get_job");
+    assert_eq!(fetched.system_prompt, job.system_prompt);
+    assert_eq!(fetched.model, job.model);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -181,6 +234,7 @@ async fn stop_job_emits_event_and_is_idempotent_against_terminal_state() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await
@@ -236,6 +290,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await
@@ -259,6 +314,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await
@@ -307,6 +363,7 @@ async fn since_cursor_replay_returns_events_above_cursor() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
             start_immediately: true,
         })
         .await

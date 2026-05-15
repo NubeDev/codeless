@@ -47,6 +47,7 @@ async fn fresh_job(rpc: &InProcessRpc, runner: &str) -> JobId {
         model: None,
         permission_mode: None,
         effort: None,
+        system_prompt: None,
         start_immediately: true,
     })
     .await
