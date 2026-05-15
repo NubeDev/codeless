@@ -321,6 +321,95 @@ mod tests {
         assert_eq!(events[0].2.as_deref(), Some("missing"));
     }
 
+    /// Regression test for the wedge post-mortem: an earlier theory of the
+    /// stuck-in-Queued bug was that the liveness sweep had been writing to
+    /// the `jobs` table (e.g. flipping Stopped to Queued when a workspace
+    /// transiently disappeared). The audit recorded in
+    /// `DOCS/RUNTIME-DRIVER-RECOVERY-DECISIONS.md` confirms it does not.
+    /// This test pins that invariant: every job row's `status`,
+    /// `stop_reason`, `worktree_path`, `started_at` and `ended_at` are
+    /// byte-identical before and after a sweep that publishes both an
+    /// unhealthy and a recovered transition.
+    #[tokio::test]
+    async fn sweep_never_writes_to_jobs_table() {
+        let rpc = InProcessRpc::new().await.unwrap();
+        let tmp = tempdir().unwrap();
+        let canonical_path = std::fs::canonicalize(tmp.path()).unwrap();
+        let canonical = canonical_path.to_string_lossy().into_owned();
+        let fs = Arc::new(HostFs::new(tmp.path()).unwrap());
+        let repo_id = RepoId(ulid::Ulid::new());
+        seed_attached(rpc.pool(), repo_id, &canonical).await;
+
+        // Seed one job per status the post-mortem flagged as a candidate
+        // target: Queued (theorised re-queue victim), Stopped (theorised
+        // source state), Running (would be catastrophic to touch), Failed
+        // (terminal-but-recoverable). If the sweep mutated any of them the
+        // diff below would fire regardless of which it picked.
+        for status in ["draft", "queued", "running", "stopped", "failed"] {
+            sqlx::query(
+                "INSERT INTO jobs \
+                 (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
+                  workspace_mode, worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
+                  model, permission_mode, effort, started_at, ended_at, created_at) \
+                 VALUES (?, ?, ?, NULL, NULL, NULL, 'mock', 'main', \
+                  'worktree', ?, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, 0)",
+            )
+            .bind(ulid::Ulid::new().to_string())
+            .bind(repo_id.to_string())
+            .bind(status)
+            .bind(&canonical)
+            .execute(rpc.pool())
+            .await
+            .unwrap();
+        }
+
+        // (id, status, stop_reason, worktree_path, started_at, ended_at).
+        // Every column the sweep could plausibly touch; aliased to keep
+        // clippy's type-complexity gate happy.
+        type JobAuditRow = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        );
+        let snapshot = || async {
+            sqlx::query_as::<_, JobAuditRow>(
+                "SELECT id, status, stop_reason, worktree_path, started_at, ended_at \
+                 FROM jobs ORDER BY id",
+            )
+            .fetch_all(rpc.pool())
+            .await
+            .unwrap()
+        };
+        let before = snapshot().await;
+        assert_eq!(before.len(), 5);
+
+        // Drive both edges in a single test: healthy on tick one (no
+        // workspace event yet), unhealthy on tick two after the dir
+        // disappears, recovered on tick three after we recreate it. Any
+        // job-table write would surface on the diff regardless of which
+        // tick triggered it.
+        let mut state = HashMap::new();
+        sweep_once(&fs, rpc.bus(), rpc.pool(), &mut state).await;
+        drop(tmp);
+        sweep_once(&fs, rpc.bus(), rpc.pool(), &mut state).await;
+        std::fs::create_dir_all(&canonical_path).unwrap();
+        sweep_once(&fs, rpc.bus(), rpc.pool(), &mut state).await;
+
+        let after = snapshot().await;
+
+        assert_eq!(before, after, "liveness sweep mutated the jobs table");
+
+        // Sanity check: the sweep did emit the workspace events it owns,
+        // so a vacuous "wrote nothing because it did nothing" is ruled out.
+        let events = collect_workspace_events(rpc.pool()).await;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, "workspace-unhealthy");
+        assert_eq!(events[1].0, "workspace-recovered");
+    }
+
     #[tokio::test]
     async fn removed_root_drops_state_entry() {
         let rpc = InProcessRpc::new().await.unwrap();
