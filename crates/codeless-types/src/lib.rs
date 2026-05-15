@@ -16,6 +16,7 @@ pub mod review;
 pub mod stage;
 pub mod task;
 pub mod time;
+pub mod workspace;
 
 pub use event::{Event, EventCursor, EventEnvelope};
 pub use fs::{FsEntry, FsEntryKind};
@@ -29,3 +30,8 @@ pub use review::{Review, ReviewStatus};
 pub use stage::{Stage, StageStatus};
 pub use task::{Task, TaskStatus};
 pub use time::UnixMillis;
+pub use workspace::{
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, DetachPolicy,
+    DetachWorkspaceArgs, ListWorkspacesResult, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
+};
