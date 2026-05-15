@@ -17,16 +17,22 @@
 //!   stage level. A single runaway stage can still hit the per-job
 //!   cap; per-stage budgeting is a future refinement.
 //!
-//! REVIEW stage semantics (the SESSION-MUTABLE-SCOPE Step 1 contract):
+//! REVIEW stage semantics (the SESSION-MUTABLE-SCOPE Step 1 + 2
+//! contract):
 //!
 //! A stage marked `review: true` (or with the `REVIEW ` flat-string
 //! prefix) is a **model-driven blocking gate**, not a human-review
-//! pause. The runner spawns the inner adapter the same way it would
-//! for a WORK stage, but with a prompt that instructs the model to
-//! emit a single `PASS:` or `FAIL:` sentinel line in its handover.
-//! After the adapter finishes, the template runner reads the handover
-//! file, parses the sentinel via `review_gate::parse_review_verdict`,
-//! and:
+//! pause. Before the inner adapter is spawned, the runner runs a
+//! deterministic Layer-1 **diff-verify pre-check** (Step 2): it reads
+//! the *prior* stage's handover, extracts every path-shaped token
+//! from its `Done` section, and confirms each one appears in the
+//! worktree's `git diff`. A handover that claims paths the commit did
+//! not touch is auto-FAIL with no model invoked — the cheapest,
+//! highest-signal check in the ramp. If the pre-check passes, the
+//! adapter runs with a prompt that instructs the model to emit a
+//! single `PASS:` or `FAIL:` sentinel line in its handover. After the
+//! adapter finishes, the template runner reads the handover file,
+//! parses the sentinel via `review_gate::parse_review_verdict`, and:
 //!
 //! - `Pass` ⇒ the stage finishes `Passed` and the next stage runs.
 //! - `Fail` ⇒ the stage finishes `Failed` and `run` returns
@@ -51,6 +57,9 @@ use codeless_types::{Event, StageId, StageStatus, TaskId};
 use tokio_util::sync::CancellationToken;
 
 use crate::claude_runner::ClaudeRunnerAdapter;
+use crate::diff_verify::{
+    fail_reason as diff_verify_fail_reason, verify_handover, DiffVerifyOutcome,
+};
 use crate::handover::handover_path;
 use crate::review_gate::{parse_review_verdict, ReviewVerdict, VerdictParseError};
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
@@ -193,6 +202,12 @@ impl Runner for TemplateRunner {
     async fn run(&self, ctx: RunnerContext) -> RunnerOutcome {
         let planned = self.template.planned_stages();
         let total = planned.len();
+        // Tracks the stage_id of the most recent stage that finished
+        // (Passed) so a REVIEW stage's diff-verify pre-check can read
+        // the prior WORK stage's handover by key rather than rely on
+        // mtime-ranked discovery. Set after each stage's StageCompleted
+        // emit; consumed at the top of the next REVIEW iteration.
+        let mut prev_stage_id: Option<StageId> = None;
         for stage in &planned {
             if ctx.cancel.is_cancelled() {
                 tracing::info!(
@@ -228,6 +243,47 @@ impl Runner for TemplateRunner {
                 },
             )
             .await;
+
+            // SESSION-MUTABLE-SCOPE Step 2: Layer-1 diff-verify
+            // pre-check. For REVIEW stages, walk every path-shaped
+            // token in the *prior* stage's handover `Done` and confirm
+            // each one appears in the worktree's git diff. A miss is
+            // auto-FAIL with no model invoked — the highest-signal
+            // check in the ramp, run before any tokens are spent. The
+            // check is silently skipped when there is no prior stage
+            // (a job that opens with REVIEW, or the mock-runner path
+            // where the prior stage wrote no handover): the contract
+            // is "verify the handover that *is* there," not "demand
+            // one exist."
+            if stage.is_review {
+                if let Some(prev) = prev_stage_id {
+                    if let Some(wt) = ctx.worktree_path.as_deref() {
+                        match run_diff_verify_precheck(wt, ctx.job_id, prev).await {
+                            PreCheckOutcome::Pass | PreCheckOutcome::Skipped => {}
+                            PreCheckOutcome::Fail(reason) => {
+                                publish(
+                                    &ctx,
+                                    stage_id,
+                                    task_id,
+                                    Event::StageCompleted {
+                                        stage_id,
+                                        status: StageStatus::Failed,
+                                    },
+                                )
+                                .await;
+                                tracing::warn!(
+                                    stage = stage.title,
+                                    %reason,
+                                    "diff-verify pre-check failed; review stage auto-failed without invoking model"
+                                );
+                                return RunnerOutcome::Failed {
+                                    reason: format!("diff-verify pre-check failed: {reason}"),
+                                };
+                            }
+                        }
+                    }
+                }
+            }
 
             // REVIEW and WORK stages share the same execution shape:
             // build the prompt, hand it to the inner adapter (or the
@@ -415,8 +471,113 @@ impl Runner for TemplateRunner {
                 },
             )
             .await;
+            // The next iteration's REVIEW pre-check (if any) keys off
+            // this stage's id to locate its handover. Updated only on
+            // the Passed exit path; a Failed stage short-circuits via
+            // `return` above and never reaches here.
+            prev_stage_id = Some(stage_id);
         }
         RunnerOutcome::Completed
+    }
+}
+
+/// Outcome of the REVIEW-stage diff-verify pre-check. `Skipped`
+/// distinguishes "ran and nothing to verify" / "could not run because
+/// the prior handover is absent" from `Pass` (verified at least one
+/// path) so the structured log can be read with that distinction
+/// intact. The caller treats `Pass` and `Skipped` identically — both
+/// allow the inner adapter to run — but the log line is different.
+#[derive(Debug)]
+enum PreCheckOutcome {
+    Pass,
+    Skipped,
+    Fail(String),
+}
+
+/// Run the Layer-1 diff-verify pre-check for a REVIEW stage. Reads
+/// the prior stage's handover from `worktree`, lists the worktree's
+/// changed paths via `codeless_adapters_host::changed_files`, and
+/// asks `diff_verify::verify_handover` whether every `Done`-claimed
+/// path is present.
+///
+/// The `git` invocation is wrapped in `tokio::task::spawn_blocking`
+/// because `changed_files` shells out synchronously; running it on
+/// the reactor would stall every other in-flight stage on a slow
+/// repo. The blocking task's `JoinError` collapses into a Skipped
+/// outcome — we would rather miss a verification than fail a stage on
+/// a runtime bug in our own thread pool.
+async fn run_diff_verify_precheck(
+    worktree: &std::path::Path,
+    job_id: codeless_types::JobId,
+    prev_stage_id: StageId,
+) -> PreCheckOutcome {
+    let handover_file = handover_path(worktree, job_id, prev_stage_id);
+    let body = match tokio::fs::read_to_string(&handover_file).await {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::info!(
+                ?err,
+                path = %handover_file.display(),
+                "diff-verify pre-check: prior handover absent; skipping"
+            );
+            return PreCheckOutcome::Skipped;
+        }
+    };
+    let handover = match codeless_types::Handover::from_markdown(&body) {
+        Ok(h) => h,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                path = %handover_file.display(),
+                "diff-verify pre-check: prior handover unparseable; skipping (H7 should catch this on the next write)"
+            );
+            return PreCheckOutcome::Skipped;
+        }
+    };
+
+    let wt = worktree.to_path_buf();
+    // The base ref the worktree forked from: `main` is the default in
+    // every codeless repo today (see `Repo::default_branch`). When the
+    // ref does not resolve, `changed_files` falls back to listing
+    // every commit on the current branch, which is the right answer
+    // for a fresh worktree whose `main` was pruned.
+    let diff_paths = match tokio::task::spawn_blocking(move || {
+        codeless_adapters_host::changed_files(&wt, "main")
+    })
+    .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(err)) => {
+            tracing::warn!(
+                ?err,
+                "diff-verify pre-check: git enumeration failed; skipping"
+            );
+            return PreCheckOutcome::Skipped;
+        }
+        Err(err) => {
+            tracing::warn!(?err, "diff-verify pre-check: join error; skipping");
+            return PreCheckOutcome::Skipped;
+        }
+    };
+
+    match verify_handover(&handover, &diff_paths) {
+        DiffVerifyOutcome::Pass { verified } => {
+            tracing::info!(
+                count = verified.len(),
+                "diff-verify pre-check: every claimed path resolved to a diff entry"
+            );
+            PreCheckOutcome::Pass
+        }
+        DiffVerifyOutcome::NothingToVerify => {
+            tracing::info!(
+                path = %handover_file.display(),
+                "diff-verify pre-check: prior handover `Done` named no path-shaped tokens; nothing to verify"
+            );
+            PreCheckOutcome::Skipped
+        }
+        DiffVerifyOutcome::Fail { missing } => {
+            PreCheckOutcome::Fail(diff_verify_fail_reason(&missing))
+        }
     }
 }
 
@@ -679,5 +840,144 @@ stages:
         let prompt = r.stage_prompt(planned[0], 2, None);
         assert!(!prompt.contains("# Stage 1 docs"));
         assert!(!prompt.contains("# Job docs"));
+    }
+
+    /// Build a real-on-disk git worktree seeded with one commit on a
+    /// `feature` branch so `run_diff_verify_precheck` can shell out to
+    /// `git` against the same paths the test asserts on. Returns the
+    /// worktree root (the `TempDir` is held by the test to keep the
+    /// directory alive).
+    fn seed_worktree_with(paths: &[&str]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        for (op, args) in [
+            ("init", vec!["init", "--initial-branch=main"]),
+            ("config-name", vec!["config", "user.email", "t@e"]),
+            ("config-email", vec!["config", "user.name", "t"]),
+        ] {
+            let out = std::process::Command::new("git")
+                .current_dir(p)
+                .args(&args)
+                .output()
+                .expect(op);
+            assert!(out.status.success(), "git {op} failed");
+        }
+        std::fs::write(p.join("README.md"), "# seed\n").unwrap();
+        let _ = std::process::Command::new("git")
+            .current_dir(p)
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        let _ = std::process::Command::new("git")
+            .current_dir(p)
+            .args(["commit", "-m", "seed"])
+            .output()
+            .unwrap();
+        let _ = std::process::Command::new("git")
+            .current_dir(p)
+            .args(["checkout", "-b", "feature"])
+            .output()
+            .unwrap();
+        for path in paths {
+            let full = p.join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&full, "x\n").unwrap();
+        }
+        let _ = std::process::Command::new("git")
+            .current_dir(p)
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        let _ = std::process::Command::new("git")
+            .current_dir(p)
+            .args(["commit", "-m", "stage work"])
+            .output()
+            .unwrap();
+        tmp
+    }
+
+    #[tokio::test]
+    async fn precheck_passes_when_handover_claims_match_diff() {
+        use codeless_types::{Handover, JobId};
+        let tmp = seed_worktree_with(&["crates/codeless-runtime/src/diff_verify.rs"]);
+        let job_id = JobId::new();
+        let prev = StageId::new();
+        let h = Handover {
+            done: vec!["added `crates/codeless-runtime/src/diff_verify.rs`".into()],
+            next: vec!["review the diff".into()],
+            ..Default::default()
+        };
+        crate::handover::write_handover(tmp.path(), job_id, prev, &h)
+            .await
+            .unwrap();
+        match run_diff_verify_precheck(tmp.path(), job_id, prev).await {
+            PreCheckOutcome::Pass => {}
+            other => panic!("expected Pass, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn precheck_fails_when_handover_claims_a_path_no_commit_touched() {
+        use codeless_types::{Handover, JobId};
+        let tmp = seed_worktree_with(&["a/b.rs"]);
+        let job_id = JobId::new();
+        let prev = StageId::new();
+        let h = Handover {
+            done: vec!["edited `unrelated/notes.md` and `a/b.rs`".into()],
+            next: vec!["go".into()],
+            ..Default::default()
+        };
+        crate::handover::write_handover(tmp.path(), job_id, prev, &h)
+            .await
+            .unwrap();
+        match run_diff_verify_precheck(tmp.path(), job_id, prev).await {
+            PreCheckOutcome::Fail(reason) => {
+                assert!(
+                    reason.contains("unrelated/notes.md"),
+                    "reason did not name the missing path: {reason}"
+                );
+                assert!(
+                    !reason.contains("a/b.rs"),
+                    "reason should not list verified paths as missing: {reason}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn precheck_skips_when_prior_handover_is_absent() {
+        use codeless_types::JobId;
+        let tmp = seed_worktree_with(&["a/b.rs"]);
+        let job_id = JobId::new();
+        // No write_handover call — the file deliberately does not
+        // exist. The pre-check must not synthesise one; mock-runner
+        // mode and "REVIEW as the first stage" both depend on this.
+        match run_diff_verify_precheck(tmp.path(), job_id, StageId::new()).await {
+            PreCheckOutcome::Skipped => {}
+            other => panic!("expected Skipped, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn precheck_skips_when_done_names_no_paths() {
+        use codeless_types::{Handover, JobId};
+        let tmp = seed_worktree_with(&["a/b.rs"]);
+        let job_id = JobId::new();
+        let prev = StageId::new();
+        let h = Handover {
+            done: vec!["addressed R1 and bumped MSRV to 1.78".into()],
+            next: vec!["next".into()],
+            ..Default::default()
+        };
+        crate::handover::write_handover(tmp.path(), job_id, prev, &h)
+            .await
+            .unwrap();
+        match run_diff_verify_precheck(tmp.path(), job_id, prev).await {
+            PreCheckOutcome::Skipped => {}
+            other => panic!("expected Skipped, got {other:?}"),
+        }
     }
 }
