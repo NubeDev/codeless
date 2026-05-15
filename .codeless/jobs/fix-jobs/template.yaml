@@ -8,6 +8,8 @@ goal: |
   root cause, add a failing RTL test, fix the underlying state-sharing
   bug — not a remount workaround.
 
+docs:
+  - CHAT.md
 stages:
   - reproduce the bug locally with two job-detail tabs open at once and capture which side is blank, the dev-tools console errors, and the network/SSE state for both jobIds; write findings into SCOPE.md §Reproduction (S)
   - read codeless/ui/codeless-ui/src/lib/rpc/ hooks + SSE plumbing + the chat store; identify exactly which module-level state is shared across JobPage instances and document it in SCOPE.md §Root cause (S)
