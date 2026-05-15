@@ -13,7 +13,9 @@
 //! `ToolRegistry`.
 
 pub mod handler;
+pub mod personas;
 pub mod server;
 
 pub use handler::CodelessMcpHandler;
+pub use personas::{EmptyPersonaSource, PersonaSource, SqlitePersonaSource};
 pub use server::{serve_stdio, ServerContext};
