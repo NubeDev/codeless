@@ -5,8 +5,9 @@
 //! drop the event.
 
 use codeless_types::{
-    Event, EventCursor, EventEnvelope, GitAuth, JobId, JobStatus, RepoId, ReviewId, StageId,
-    StageStatus, StopReason, TaskId, TaskStatus, UnixMillis,
+    Event, EventCursor, EventEnvelope, GitAuth, JobId, JobStatus, RepoId, ReviewId, ScopePatchId,
+    ScopePatchKind, ScopePatchTarget, StageId, StageStatus, StopReason, TaskId, TaskStatus,
+    UnixMillis,
 };
 use serde_json::json;
 
@@ -184,6 +185,33 @@ fn verify_step_event_labels_and_payloads_round_trip() {
     assert_eq!(v["reason"], "prior-gate-red");
     let back: Event = serde_json::from_value(v).unwrap();
     assert_eq!(back, skipped);
+}
+
+#[test]
+fn scope_patch_proposed_event_wire_shape() {
+    let stage = StageId::new();
+    let review = ReviewId::new();
+    let patch = ScopePatchId::new();
+    let evidence = StageId::new();
+    let ev = Event::ScopePatchProposed {
+        stage_id: stage,
+        review_id: review,
+        patch_id: patch,
+        kind: ScopePatchKind::Loosen,
+        target: ScopePatchTarget::JobScopeMd,
+        target_path: ".codeless/jobs/foo/SCOPE.md".into(),
+        evidence_stage_id: Some(evidence),
+        has_predicate: false,
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["type"], "scope-patch-proposed");
+    assert_eq!(v["kind"], "loosen");
+    assert_eq!(v["target"], "job-scope-md");
+    assert_eq!(v["target_path"], ".codeless/jobs/foo/SCOPE.md");
+    assert_eq!(v["evidence_stage_id"], evidence.to_string());
+    assert_eq!(v["has_predicate"], false);
+    let round: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(round, ev);
 }
 
 #[test]

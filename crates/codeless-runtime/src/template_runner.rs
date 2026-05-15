@@ -53,7 +53,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codeless_types::{Event, StageId, StageStatus, TaskId};
+use codeless_types::{Event, ReviewId, StageId, StageStatus, TaskId};
 use tokio_util::sync::CancellationToken;
 
 use crate::claude_runner::ClaudeRunnerAdapter;
@@ -63,6 +63,7 @@ use crate::diff_verify::{
 use crate::handover::handover_path;
 use crate::review_gate::{parse_review_verdict, ReviewVerdict, VerdictParseError};
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
+use crate::scope_patch_emit::{emit_from_handover, EmitOutcome};
 use crate::store::SqliteStore;
 use crate::template::{JobTemplate, PlannedStage};
 use crate::time::now_ms;
@@ -422,6 +423,65 @@ impl Runner for TemplateRunner {
                 {
                     Ok(ReviewVerdict::Pass { reason }) => {
                         tracing::info!(stage = stage.title, %reason, "review gate passed");
+                        // Step 4 shadow-mode: a PASS verdict may carry a
+                        // single `ScopePatch` proposal in the same
+                        // handover body. The runtime parses, persists to
+                        // `DOCS/SCOPE-PROPOSED.md`, and emits a
+                        // `ScopePatchProposed` envelope. Nothing merges —
+                        // human approval lands in Step 6. Failures here
+                        // are observable-but-non-fatal in shadow mode
+                        // (per `scope_patch_emit::EmitOutcome` doc), so
+                        // they map onto warn-level structured logs
+                        // rather than flipping the gate's verdict; Step
+                        // 5 promotes the parse errors to FAIL reasons.
+                        if let Some(wt) = ctx.worktree_path.as_deref() {
+                            let body =
+                                tokio::fs::read_to_string(handover_path(wt, ctx.job_id, stage_id))
+                                    .await
+                                    .unwrap_or_default();
+                            let review_id = ReviewId::new();
+                            match emit_from_handover(
+                                ctx.bus.as_ref(),
+                                wt,
+                                ctx.job_id,
+                                stage_id,
+                                review_id,
+                                &body,
+                            )
+                            .await
+                            {
+                                EmitOutcome::Emitted(patch_id) => {
+                                    tracing::info!(
+                                        stage = stage.title,
+                                        %patch_id,
+                                        "scope-patch proposal recorded in shadow mode"
+                                    );
+                                }
+                                EmitOutcome::NoBlock => {}
+                                EmitOutcome::MultipleBlocks => {
+                                    tracing::warn!(
+                                        stage = stage.title,
+                                        "review handover carried multiple SCOPE-PATCH blocks; \
+                                         shadow mode ignores all of them (Step 5 will FAIL)"
+                                    );
+                                }
+                                EmitOutcome::Malformed(reason) => {
+                                    tracing::warn!(
+                                        stage = stage.title,
+                                        %reason,
+                                        "review handover carried a malformed SCOPE-PATCH block; \
+                                         shadow mode ignores it (Step 5 will FAIL)"
+                                    );
+                                }
+                                EmitOutcome::SideEffectFailed(reason) => {
+                                    tracing::warn!(
+                                        stage = stage.title,
+                                        %reason,
+                                        "scope-patch proposal side-effect failed; continuing"
+                                    );
+                                }
+                            }
+                        }
                     }
                     Ok(ReviewVerdict::Fail { reason }) => {
                         publish(

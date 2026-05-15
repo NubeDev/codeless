@@ -687,7 +687,32 @@ reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageSt
  *  refreshes on the next `JobTemplateUpdated` (run-time resync)
  *  or on user navigation.
  */
-{ type: "job-file-updated"; job_id: JobId; filename: string };
+{ type: "job-file-updated"; job_id: JobId; filename: string } | 
+/**
+ *  A REVIEW stage proposed a rulebook patch (Step 4 of the
+ *  SESSION-MUTABLE-SCOPE ramp, shadow mode). The full proposal
+ *  body lives in `DOCS/SCOPE-PROPOSED.md`; this event carries
+ *  identifiers and discriminants only so consumers can answer
+ *  the kill-criterion query ("how many proposals in the last K
+ *  REVIEW stages, how many had a predicate, how many landed")
+ *  without re-reading the file. Decisions Q7 records why this
+ *  is an event rather than a row in a new SQLite table (R4 —
+ *  SQLite is source of truth, no new persistence store).
+ * 
+ *  `evidence_stage_id` is `Some` only for `Loosen` and `None`
+ *  for `Tighten`; `has_predicate` is the dual signal for
+ *  `Tighten`. Carrying both as separate fields (rather than
+ *  merging into a single variant per kind) keeps the SSE wire
+ *  label single — one envelope shape per event type — which
+ *  the existing UI subscriber assumes.
+ */
+{ type: "scope-patch-proposed"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; 
+/**
+ *  Repo-relative path of the file the proposal targets.
+ *  Carried on the wire so subscribers can render the path
+ *  without fetching the proposal body.
+ */
+target_path: string; evidence_stage_id: StageId | null; has_predicate: boolean };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -1104,6 +1129,133 @@ export type RunnerInfo = {
 	id: string,
 	default: boolean,
 };
+
+/**
+ *  One patch proposal — the structured form of a single suggested
+ *  edit to the rulebook. Read by humans via `DOCS/SCOPE-PROPOSED.md`
+ *  and by automated consumers via the matching `ScopePatchProposed`
+ *  event.
+ * 
+ *  Field invariants honoured by the *parser* (Step 5; not enforced at
+ *  this struct's level so a Step 4 shadow-mode emit can land with a
+ *  partially-populated proposal and still be observable):
+ * 
+ *  - `has_predicate = true` requires `kind == Tighten` and a paired
+ *    predicate file in the same human commit when the patch is
+ *    approved.
+ *  - `evidence_stage_id = Some(_)` requires `kind == Loosen` and
+ *    names a stage whose diff exhibits the positive fixture.
+ *  - `kind == Tighten` ⇒ `evidence_stage_id` is `None`.
+ *  - `kind == Loosen` ⇒ `evidence_stage_id` is `Some(_)` and
+ *    `has_predicate` is `false`.
+ * 
+ *  `body` carries the literal text the patch would apply (a unified
+ *  diff snippet, a replacement sentence, or a "delete the paragraph
+ *  matching ..." instruction). The Step 6 approval UX shows it
+ *  verbatim; the runtime does not parse it.
+ */
+export type ScopePatch = {
+	id: ScopePatchId,
+	/**
+	 *  The REVIEW stage that emitted the proposal. Pairs the proposal
+	 *  with the `ReviewRequested` / `ReviewApproved` envelopes the UI
+	 *  already renders.
+	 */
+	review_id: ReviewId,
+	/**
+	 *  The stage that ran the REVIEW. Same value travels on the
+	 *  `ScopePatchProposed` event's `stage_id` field.
+	 */
+	stage_id: StageId,
+	kind: ScopePatchKind,
+	target: ScopePatchTarget,
+	/**
+	 *  Repo-relative path of the file the patch proposes to edit.
+	 *  Step 5 cross-checks this against the mutable-set list in
+	 *  `rule_bearing_files`; Step 6 displays it.
+	 */
+	target_path: string,
+	/**
+	 *  One-sentence justification the REVIEW model wrote alongside
+	 *  the `PASS:` sentinel. The approval UX surfaces it as the
+	 *  proposal's title; do not stuff prose here.
+	 */
+	rationale: string,
+	/**
+	 *  The literal edit body (diff fragment, replacement text, or
+	 *  delete-this-paragraph instruction). Free-form on the wire;
+	 *  the human-authored approval commit interprets it.
+	 */
+	body: string,
+	/**
+	 *  True ⇒ a predicate file landed in the same proposal. Required
+	 *  for `Tighten` once Step 5 enforcement is live; carried on the
+	 *  envelope so the approval UX can group "patch + predicate"
+	 *  proposals together without re-reading the body.
+	 */
+	has_predicate: boolean,
+	/**
+	 *  For `Loosen`: the stage whose diff is the positive fixture.
+	 *  `None` on `Tighten`; `Some` on `Loosen` once Step 5 lands.
+	 *  Optional in Step 4 shadow mode so partial proposals are
+	 *  observable on the wire and the parse-time rejection can name
+	 *  the missing field by Step 5.
+	 */
+	evidence_stage_id: StageId | null,
+};
+
+/**
+ *  Identity of one `ScopePatch` proposal. ULID for the same reason
+ *  every other identity in `codeless-types::id` is a ULID: monotonic
+ *  over a session, sortable by creation order, and unambiguous on the
+ *  wire. Defined here rather than in `id.rs` because adding it to the
+ *  shared `ulid_newtype!` macro would force every consumer (mobile
+ *  included) to depend on the macro the moment a `ScopePatchId`
+ *  imports — keeping it in this module keeps the patch types one
+ *  logical unit.
+ */
+export type ScopePatchId = string;
+
+/**
+ *  Whether a patch makes a rule stricter (`Tighten`) or weaker
+ *  (`Loosen`). Per `SESSION-MUTABLE-SCOPE-DECISIONS.md` Q2, rule
+ *  *removal* is `Loosen`: after the patch lands the rule no longer
+ *  constrains, which is observably the same effect as a
+ *  textually-narrower replacement. Predicate-file deletion is **not**
+ *  a third kind — it rides on a paired `Loosen` patch in the
+ *  approving human's commit (decisions Q5).
+ */
+export type ScopePatchKind = "tighten" | "loosen";
+
+/**
+ *  Which rulebook surface the patch proposes to change. The enum
+ *  names the *category* the surface belongs to; the exact file path
+ *  travels separately on the `ScopePatch.target_path` field so the
+ *  human approval UX in Step 6 can show "this proposal edits
+ *  `.codeless/jobs/foo/SCOPE.md`" without needing a per-job variant
+ *  here.
+ * 
+ *  The mutable-set vs wire-format-set distinction in
+ *  `codeless-runtime::rule_bearing_files` is enforced at parse time
+ *  in Step 5; this enum lists only categories that are members of the
+ *  mutable set. Wire-format files (`DOCS/JOB-MODEL.md`,
+ *  `DOCS/JOB-LOOP.md`, `codeless-types/src/handover.rs`) have no
+ *  variant here on purpose — proposing a patch against one is a
+ *  parse-time reject.
+ */
+export type ScopePatchTarget = 
+// Workspace-level `CLAUDE.md` or the inner repo's `CLAUDE.md`.
+"claude-md" | 
+// A per-job `SCOPE.md` under `.codeless/jobs/<name>/`.
+"job-scope-md" | 
+// A per-job `WORKFLOW.md` under `.codeless/jobs/<name>/`.
+"job-workflow-md" | 
+/**
+ *  A per-job `CLAUDE.md` under `.codeless/jobs/<name>/` (only
+ *  some jobs ship one; the variant is present so a future job
+ *  that does can still surface patches).
+ */
+"job-claude-md";
 
 /**
  *  `GET /server/info` payload. Sits outside the bearer gate alongside
