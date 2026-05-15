@@ -1,0 +1,23 @@
+name: agent-personas
+goal: |
+  Unify the three meanings of "agent" (persona, subagent, runner) into
+  one persona record consumed by three call sites: chat panel (already
+  wired), job-submit, and per-stage override. Personas become typed
+  job templates without inventing a new template system. Subagent
+  whitelisting moves into the persona record. SQLite becomes the
+  source of truth for personas so jobs can FK them. Ship the
+  minimum-viable first slice end-to-end before touching the
+  per-stage / peer-review tie-in.
+
+stages:
+  - "Resolve open questions — record decisions in DOCS/AGENT-DECISIONS.md for the five open questions (per-stage syntax location, persona/snippet overlap, MCP exposure dimension, snippet resolution at job time, reviewer-persona default). Do not silently guess."
+  - "MVP slice 1 KV-only persona fields — extend the existing UI-side Persona record in agents.ts with use_for_jobs (boolean) and allowed_subagents (string array); surface both in AgentsSection.tsx (toggle + multi-select); enforce allowed_subagents whitelist in runSubagent.ts before resolving subagent id (two-layer enforcement, registry still hands back READ_ONLY_TOOLS only — personas can narrow, never widen)."
+  - "MVP slice 2 job-submit persona dropdown — wire the create-job form to read the same KV store, show only personas where use_for_jobs is true, concatenate selected persona instructions into the runner system prompt at job-start, seed model from default_model."
+  - "MVP slice 3 persist persona_id on jobs — one ALTER TABLE jobs ADD COLUMN persona_id TEXT (no FK yet — personas still KV); store the id at job-submit; expose it on get_job so a re-run reproduces it."
+  - "REVIEW before SQLite migration — confirm MVP slices 1-3 are integrated end-to-end with no regressions; confirm helper-role rule #4 holds (job runs with no persona configured); confirm READ_ONLY_TOOLS guarantee is not weakened; confirm persona blob never sent UI to LLM directly."
+  - "SQLite personas table — create the personas table per the schema sketch (built_in flag, allowed_subagents/default_snippets as json arrays, timestamps); seed built-in personas (Coder, Architect, Code Reviewer, Security, Designer) on first boot with built_in=1; user edits write new rows with built_in=0."
+  - "RpcClient surface for personas — add list_personas, get_persona, upsert_persona, delete_persona to RpcClient (R2: UI imports RpcClient only); make the UI ai-agents KV store a cache that mirrors SQLite via these methods."
+  - "FK jobs.persona_id and add stages.persona_id — promote jobs.persona_id to REFERENCES personas(id); add stages.persona_id with the same FK; record the persona used on each stage handover for the per-stage override path."
+  - "Per-stage persona override — stage YAML accepts a persona declaration like builtin reviewer (exact syntax decided in stage 1); runtime resolves the id, applies the persona instructions to that stage runner system prompt only; default is the job-level persona, then runner default. Tie-in with peer-review proposal P1 lives here but does NOT redefine the reviewer-default (peer-review doc owns that)."
+  - "MCP prompts surface — expose personas where use_for_jobs is true as MCP prompts per SCOPE.md Prompts section; use_for_jobs is the single dimension gating MCP visibility — do not add a separate expose_via_mcp flag."
+  - "REVIEW final — confirm all five Rules that keep this honest hold (personas pure config, subagents read-only, personas do not drive coding, job runs without persona, single record format); confirm R1 (no host-only reachability added to mobile-safe crates), R2 (UI imports RpcClient only), R3 (no per-shell persona UI), R4 (SQLite is source of truth, KV is cache), R5 (single-tenant trust unchanged); confirm no Persona.web / Persona.job / Persona.review variants introduced."
