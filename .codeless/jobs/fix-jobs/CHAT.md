@@ -48,3 +48,11 @@ I'll read the current spec files and then add the new bug.I'll add the spec-mode
 - Added three new stages (8–10): trace the lifecycle, apply the minimal fix, verify persistence
 
 The sequencing keeps Bug 1 fully closed (including its REVIEW gate) before Bug 2 stages begin, so the two investigations don't interfere.
+
+## user @ 2026-05-15T04:34:46Z
+
+oh wait maybe it does work, just add in to confirm it should work....
+
+## assistant @ 2026-05-15T04:35:15Z
+
+I'll update the spec so Bug 2 is framed as "confirm this works" rather than a confirmed regression.Now update `template.yaml` to match — the goal and stage 8 should reflect "verify, fix only if broken":Done. Stage 8 now starts with "verify first — if it already works, skip stages 9 and 10." The SCOPE.md Bug 2 section is reframed as "unconfirmed, may already work." No investigation or fix happens unless the verification actually shows messages are lost.
