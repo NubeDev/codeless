@@ -166,6 +166,15 @@ export type ChatContext = {
 	 *  UI is responsible for ordering.
 	 */
 	user_prompts?: UserPromptSnippet[],
+	/**
+	 *  Other jobs the user wants folded into this turn's preamble.
+	 *  Each entry opts into the referenced job's spec files and/or
+	 *  recent history snapshot. Restricted server-side to refs whose
+	 *  repo matches the active job's — cross-repo refs return
+	 *  `InvalidArgument`. Additive: an empty vec preserves the
+	 *  pre-`job_refs` preamble shape exactly.
+	 */
+	job_refs?: JobContextRef[],
 };
 
 /**
@@ -399,6 +408,22 @@ export type Job = {
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
+};
+
+/**
+ *  One referenced job folded into the chat preamble. Toggles let the
+ *  caller pick a spec-only attach (cheap, useful for "what is job B
+ *  trying to do"), a history-only attach (cheap-ish, useful for "what
+ *  has job B actually done lately"), or both. `history_turn_limit`
+ *  bounds the walk before rendering so a long-running job doesn't
+ *  silently blow the per-section byte budget on the runtime side.
+ *  `None` means "use the runtime default".
+ */
+export type JobContextRef = {
+	job_id: JobId,
+	include_spec: boolean,
+	include_history: boolean,
+	history_turn_limit?: number | null,
 };
 
 export type JobDiffArgs = {
@@ -696,6 +721,40 @@ export type Stage = {
 	 *  codebase-exploration every time.
 	 */
 	session_id: string | null,
+	/**
+	 *  One-sentence statement of what success for this stage means.
+	 *  Authored in the per-stage docs; surfaced in the UI overview so
+	 *  the reader doesn't have to open the stage doc to remember the
+	 *  intent. `None` for stages authored before the field existed.
+	 */
+	goal?: string | null,
+	/**
+	 *  Acceptance criteria bullets, in author order. The UI renders
+	 *  each as a tickable line so the human reviewer can match output
+	 *  against the contract the stage was written to. `None` (not
+	 *  `Some(vec![])`) for stages authored before the field existed
+	 *  so a missing list and a deliberately empty list stay
+	 *  distinguishable.
+	 */
+	acceptance?: string[] | null,
+	/**
+	 *  Wall-clock millis of the last activity observed on this stage's
+	 *  warm session (turn start, user message, sweeper tick). `None`
+	 *  when the stage has never had a session captured. Used by the
+	 *  runtime's idle-timeout sweeper to decide when to archive the
+	 *  session so a paused/failed stage does not hold a runner
+	 *  subprocess open forever; see `session_idle` module.
+	 */
+	last_activity_at?: UnixMillis | null,
+	/**
+	 *  `true` once the warm session has been archived (idle timeout
+	 *  elapsed or explicit `archive_session` RPC). One-way flag: the
+	 *  next user message against this stage opens a fresh session with
+	 *  a handover document rather than resuming the recorded
+	 *  `session_id`. The captured id is preserved on the row for
+	 *  audit / UI labelling of the archived turn.
+	 */
+	archived?: boolean,
 };
 
 //Identity of a verify-gated chunk within a job.

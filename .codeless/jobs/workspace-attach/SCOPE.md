@@ -73,9 +73,12 @@ list. The UI is **not** touched in this job — that's a follow-up.
 
 1. `codeless/workspace-attach` branch with one commit per stage,
    pushed via mani.
-2. `cargo test --workspace` green; the round-trip
+2. [x] `cargo test --workspace` green; the round-trip
    `attach → list → detach` test exists in `codeless-runtime` and
    exercises an in-memory SQLite pool plus the host adapter.
+   (See `crates/codeless-runtime/tests/workspaces_rpc.rs`. Note:
+   `jobs_columns_match_appendix_a` in `tests/migrations.rs` is a
+   pre-existing failure unrelated to this stage.)
 3. The canonicalisation test asserts `/a/b`, `/a/b/`, and a symlink
    pointing at `/a/b` all upsert into a single row.
 4. `ServerInfo.fs_root` returns the boot-time value (or `None`);

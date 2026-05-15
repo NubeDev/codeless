@@ -721,6 +721,40 @@ export type Stage = {
 	 *  codebase-exploration every time.
 	 */
 	session_id: string | null,
+	/**
+	 *  One-sentence statement of what success for this stage means.
+	 *  Authored in the per-stage docs; surfaced in the UI overview so
+	 *  the reader doesn't have to open the stage doc to remember the
+	 *  intent. `None` for stages authored before the field existed.
+	 */
+	goal?: string | null,
+	/**
+	 *  Acceptance criteria bullets, in author order. The UI renders
+	 *  each as a tickable line so the human reviewer can match output
+	 *  against the contract the stage was written to. `None` (not
+	 *  `Some(vec![])`) for stages authored before the field existed
+	 *  so a missing list and a deliberately empty list stay
+	 *  distinguishable.
+	 */
+	acceptance?: string[] | null,
+	/**
+	 *  Wall-clock millis of the last activity observed on this stage's
+	 *  warm session (turn start, user message, sweeper tick). `None`
+	 *  when the stage has never had a session captured. Used by the
+	 *  runtime's idle-timeout sweeper to decide when to archive the
+	 *  session so a paused/failed stage does not hold a runner
+	 *  subprocess open forever; see `session_idle` module.
+	 */
+	last_activity_at?: UnixMillis | null,
+	/**
+	 *  `true` once the warm session has been archived (idle timeout
+	 *  elapsed or explicit `archive_session` RPC). One-way flag: the
+	 *  next user message against this stage opens a fresh session with
+	 *  a handover document rather than resuming the recorded
+	 *  `session_id`. The captured id is preserved on the row for
+	 *  audit / UI labelling of the archived turn.
+	 */
+	archived?: boolean,
 };
 
 //Identity of a verify-gated chunk within a job.

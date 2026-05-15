@@ -13,14 +13,18 @@ pub mod methods;
 pub mod server;
 pub mod subscribe;
 
+pub use codeless_types::{
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, DetachPolicy,
+    DetachWorkspaceArgs, ListWorkspacesResult, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
+};
 pub use error::{RpcError, RpcResult};
 pub use methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
     ChatAttachmentRef, ChatContext, ChatMode, ClaudeStatus, CommentReviewArgs, DeleteJobArgs,
-    DeleteJobFileArgs,
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
+    DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobContextRef, JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, JobReportArgs,
     JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage, JobReportToolCall,
     JobReportTurn, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
@@ -28,9 +32,9 @@ pub use methods::{
     PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
     RunnerInfo, ServerInfo, StageRollup, StartJobArgs, StopActiveArgs, StopActiveResult,
     StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UserPromptSnippet, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UserPromptSnippet, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

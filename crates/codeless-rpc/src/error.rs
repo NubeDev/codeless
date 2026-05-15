@@ -1,3 +1,4 @@
+use codeless_types::WorkspaceError;
 use thiserror::Error;
 
 /// Errors returned by every `RpcServer` method. Variants are wire-stable:
@@ -18,6 +19,15 @@ pub enum RpcError {
     /// (e.g. stopping a job that is already completed).
     #[error("conflict: {0}")]
     Conflict(String),
+
+    /// Structured workspace failure. Carries a typed `WorkspaceError`
+    /// payload so the UI can branch on the variant (`AlreadyAttached`,
+    /// `RunningJobs`, `PathRejected`, `NotAttached`) without string
+    /// matching on a generic `Conflict` message. Transports serialise
+    /// the payload as JSON in the response body — see
+    /// `WORKSPACE-ATTACH.md` §"Error model".
+    #[error("workspace: {0:?}")]
+    Workspace(WorkspaceError),
 
     /// Anything the runtime can't express more specifically. Transports
     /// surface this as a generic 500. Avoid in new code — add a variant.

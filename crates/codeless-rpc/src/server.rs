@@ -1,22 +1,23 @@
 use async_trait::async_trait;
-use codeless_types::{Job, Repo, Review};
+use codeless_types::{
+    AttachWorkspaceArgs, AttachWorkspaceResult, DetachWorkspaceArgs, Job, ListWorkspacesResult,
+    Repo, Review, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+};
 
 use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
     CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
-    FsCwdResult,
-    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
-    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
-    JobReportArgs, JobReportResult, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 
@@ -271,4 +272,44 @@ pub trait RpcServer: Send + Sync + 'static {
     /// instead of `stop_job` so it works on chat-turns over a
     /// terminal job too.
     async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult>;
+
+    /// Register a `repos` row as an editor-side workspace: persist a
+    /// row in `attached_workspaces` keyed by the canonical filesystem
+    /// path so the `fs.*` surface accepts paths under it and the UI
+    /// surfaces it in the workspaces sidebar. Idempotent on the
+    /// canonical path; a second call with the same effective root
+    /// returns `RpcError::Workspace(WorkspaceError::AlreadyAttached)`
+    /// so the UI can present a clear "already attached" rather than a
+    /// generic Conflict. Path-shape problems (system path, dotfile
+    /// escape, missing dir) surface as
+    /// `WorkspaceError::PathRejected { problems }`.
+    async fn attach_workspace(&self, args: AttachWorkspaceArgs)
+        -> RpcResult<AttachWorkspaceResult>;
+
+    /// Drop the `attached_workspaces` row for `repo_id`. The `repos`
+    /// row is left in place — destructive removal is `remove_repo`.
+    /// `DetachPolicy::Refuse` (the default) returns
+    /// `WorkspaceError::RunningJobs` with the in-flight job ids so the
+    /// UI can prompt; `Stop` cancels them first; `LeaveRunning`
+    /// detaches the editor surface without touching runner worktrees.
+    /// An unknown repo or one with no attachment row returns
+    /// `WorkspaceError::NotAttached`.
+    async fn detach_workspace(&self, args: DetachWorkspaceArgs) -> RpcResult<()>;
+
+    /// Snapshot the live attached set. Ordered by `attached_at` so the
+    /// sidebar renders in the order the operator attached. Returns an
+    /// empty list when no `--fs-root` was passed and no UI-driven
+    /// attach has happened yet.
+    async fn list_workspaces(&self) -> RpcResult<ListWorkspacesResult>;
+
+    /// Dry-run validation for the workspace picker: canonicalise the
+    /// path, surface every per-row problem the UI needs to render
+    /// inline (system path, not a directory, not a git repo, already
+    /// attached, ...). The call never mutates state; the result is a
+    /// `WorkspaceProblem` list rather than a hard error so the picker
+    /// can render the row even when the path is unusable.
+    async fn validate_workspace_path(
+        &self,
+        args: ValidateWorkspacePathArgs,
+    ) -> RpcResult<ValidateWorkspacePathResult>;
 }

@@ -31,6 +31,7 @@ pub(crate) mod job_files;
 pub(crate) mod jobs;
 pub(crate) mod repos;
 pub(crate) mod reviews;
+pub(crate) mod workspaces;
 
 /// In-process `RpcServer`. The CLI's `codeless run --once` path talks
 /// to this directly without serialising over a wire; the hosted server
@@ -365,5 +366,27 @@ impl RpcServer for InProcessRpc {
 
     async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult> {
         chat::stop_active(self, args).await
+    }
+
+    async fn attach_workspace(
+        &self,
+        args: codeless_rpc::AttachWorkspaceArgs,
+    ) -> RpcResult<codeless_rpc::AttachWorkspaceResult> {
+        workspaces::attach_workspace(self, args).await
+    }
+
+    async fn detach_workspace(&self, args: codeless_rpc::DetachWorkspaceArgs) -> RpcResult<()> {
+        workspaces::detach_workspace(self, args).await
+    }
+
+    async fn list_workspaces(&self) -> RpcResult<codeless_rpc::ListWorkspacesResult> {
+        workspaces::list_workspaces(self).await
+    }
+
+    async fn validate_workspace_path(
+        &self,
+        args: codeless_rpc::ValidateWorkspacePathArgs,
+    ) -> RpcResult<codeless_rpc::ValidateWorkspacePathResult> {
+        workspaces::validate_workspace_path(self, args).await
     }
 }
