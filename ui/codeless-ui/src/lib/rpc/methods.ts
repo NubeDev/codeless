@@ -457,6 +457,48 @@ export interface SecretsRmArgs {
   provider: string;
 }
 
+// Persona RPC surface (agent-personas stage 7). Personas live in
+// SQLite (`personas` table, migration 0011); this is the wire the
+// UI's `ai-agents` KV store mirrors. The KV stays as a cache so a
+// brief outage of the RPC does not lose the persona dropdown — but
+// the runtime is the source of truth (R4).
+export interface Persona {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  instructions: string;
+  use_for_jobs: boolean;
+  default_model: string | null;
+  allowed_subagents: string[];
+  default_snippets: string[];
+  built_in: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ListPersonasArgs {}
+export interface ListPersonasResult {
+  personas: Persona[];
+}
+export interface GetPersonaArgs {
+  id: string;
+}
+export interface UpsertPersonaArgs {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  instructions: string;
+  use_for_jobs: boolean;
+  default_model?: string | null;
+  allowed_subagents: string[];
+  default_snippets?: string[];
+}
+export interface DeletePersonaArgs {
+  id: string;
+}
+
 export interface RpcMethodMap {
   add_repo: { args: AddRepoArgs; result: Repo };
   remove_repo: { args: RemoveRepoArgs; result: null };
@@ -559,6 +601,11 @@ export interface RpcMethodMap {
     args: CancelAssistantActionArgs;
     result: CancelAssistantActionResult;
   };
+
+  list_personas: { args: ListPersonasArgs; result: ListPersonasResult };
+  get_persona: { args: GetPersonaArgs; result: Persona };
+  upsert_persona: { args: UpsertPersonaArgs; result: Persona };
+  delete_persona: { args: DeletePersonaArgs; result: null };
 }
 
 export type {

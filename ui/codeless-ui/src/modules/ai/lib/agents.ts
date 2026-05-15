@@ -1,4 +1,6 @@
 import { getStore } from "@/lib/shell";
+import type { RpcClient } from "@/lib/rpc";
+import type { Persona } from "@/lib/rpc/methods";
 import { SUBAGENTS, type SubagentType } from "../agents/registry";
 
 const STORE_NAME = "ai-agents";
@@ -166,6 +168,92 @@ export async function saveActiveAgentId(id: string): Promise<void> {
 
 export function newAgentId(): string {
   return `a-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// Wire-to-UI shape conversion. The runtime's `Persona` is snake_case
+// and uses `string[]` for `allowed_subagents`; the UI's `Agent` is
+// camelCase and types `allowedSubagents` against the registry's
+// `SubagentType`. Unknown ids returned by the wire are dropped so a
+// future runtime that adds a subagent the UI does not know yet does
+// not crash the chat panel's spawn path.
+export function personaToAgent(p: Persona): Agent {
+  const allowed = p.allowed_subagents.filter(
+    (s): s is SubagentType => s in SUBAGENTS,
+  );
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    instructions: p.instructions,
+    icon: (p.icon as AgentIconId) ?? "spark",
+    builtIn: p.built_in,
+    useForJobs: p.use_for_jobs,
+    allowedSubagents: allowed,
+    defaultModel: p.default_model,
+  };
+}
+
+// Inverse — used when the store writes through `upsert_persona`. The
+// runtime ignores `built_in` on the wire (it is preserved server-side)
+// so the conversion drops it.
+function agentToUpsertArgs(a: Agent) {
+  return {
+    id: a.id,
+    name: a.name,
+    description: a.description,
+    icon: a.icon,
+    instructions: a.instructions,
+    use_for_jobs: a.useForJobs,
+    default_model: a.defaultModel,
+    allowed_subagents: [...a.allowedSubagents],
+    default_snippets: [] as string[],
+  };
+}
+
+// Load personas through the RPC, mirror into the KV cache, and return
+// them in the same `LoadedAgents` shape as the legacy KV-only path so
+// the store does not branch on transport. Built-ins are filtered out
+// of `custom` because the UI keeps `BUILTIN_AGENTS` as a separate
+// constant for now; later stages collapse the two when the built-in
+// fallback is no longer needed for offline boot.
+//
+// On RPC failure the call falls back to the KV cache. R4 still holds
+// — SQLite is the source of truth and a fresh load with a healthy
+// RPC will overwrite the cache — but during a brief outage the UI
+// keeps rendering the last good snapshot rather than going blank.
+export async function loadAgentsFromRpc(
+  rpc: RpcClient,
+): Promise<LoadedAgents> {
+  try {
+    const { personas } = await rpc.call("list_personas", {});
+    const all = personas.map(personaToAgent);
+    const custom = all.filter((a) => !a.builtIn);
+    const store = getStore(STORE_NAME);
+    await store.set(KEY_CUSTOM, custom);
+    const entries = await store.loadAll();
+    let activeId: string | undefined;
+    for (const [k, v] of entries) {
+      if (k === KEY_ACTIVE) activeId = v as string;
+    }
+    return { custom, activeId: activeId ?? BUILTIN_AGENTS[0].id };
+  } catch {
+    return loadAgents();
+  }
+}
+
+export async function upsertPersonaViaRpc(
+  rpc: RpcClient,
+  agent: Agent,
+): Promise<Agent> {
+  const persona = await rpc.call("upsert_persona", agentToUpsertArgs(agent));
+  return personaToAgent(persona);
+}
+
+export async function deletePersonaViaRpc(
+  rpc: RpcClient,
+  id: string,
+): Promise<void> {
+  await rpc.call("delete_persona", { id });
 }
 
 export function findAgent(

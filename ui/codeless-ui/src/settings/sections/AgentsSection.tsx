@@ -1,3 +1,4 @@
+import { useRpc } from "@/lib/rpc";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -51,6 +52,7 @@ const ICON_OPTIONS: AgentIconId[] = [
 ];
 
 export function AgentsSection() {
+  const rpc = useRpc();
   const customInstructions = usePreferencesStore((s) => s.customInstructions);
   const customAgents = useAgentsStore((s) => s.customAgents);
   const activeAgentId = useAgentsStore((s) => s.activeId);
@@ -65,9 +67,9 @@ export function AgentsSection() {
   const hydrateSnippets = useSnippetsStore((s) => s.hydrate);
 
   useEffect(() => {
-    void hydrateAgents();
+    void hydrateAgents(rpc);
     void hydrateSnippets();
-  }, [hydrateAgents, hydrateSnippets]);
+  }, [hydrateAgents, hydrateSnippets, rpc]);
 
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
@@ -114,7 +116,7 @@ export function AgentsSection() {
               active={a.id === activeAgentId}
               onActivate={() => setActiveAgentId(a.id)}
               onEdit={a.builtIn ? null : () => setEditingAgent(a)}
-              onDelete={a.builtIn ? null : () => removeAgent(a.id)}
+              onDelete={a.builtIn ? null : () => void removeAgent(a.id, rpc)}
             />
           ))}
         </div>
@@ -213,7 +215,7 @@ export function AgentsSection() {
         existing={customAgents}
         onClose={() => setEditingAgent(null)}
         onSave={(a) => {
-          upsertAgent(a);
+          void upsertAgent(a, rpc);
           setEditingAgent(null);
         }}
       />
