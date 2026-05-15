@@ -5,9 +5,9 @@
 //! drop the event.
 
 use codeless_types::{
-    Event, EventCursor, EventEnvelope, GitAuth, JobId, JobStatus, RepoId, ReviewId, ScopePatchId,
-    ScopePatchKind, ScopePatchTarget, StageId, StageStatus, StopReason, TaskId, TaskStatus,
-    UnixMillis,
+    Event, EventCursor, EventEnvelope, GitAuth, JobId, JobStatus, PreCheckOutcome, RepoId,
+    ReviewId, ReviewVerdict, ScopePatchId, ScopePatchKind, ScopePatchTarget, StageId, StageStatus,
+    StopReason, TaskId, TaskStatus, UnixMillis,
 };
 use serde_json::json;
 
@@ -212,6 +212,41 @@ fn scope_patch_proposed_event_wire_shape() {
     assert_eq!(v["has_predicate"], false);
     let round: Event = serde_json::from_value(v).unwrap();
     assert_eq!(round, ev);
+}
+
+#[test]
+fn review_pre_check_event_wire_shape() {
+    let stage = StageId::new();
+    let ev = Event::ReviewPreCheck {
+        stage_id: stage,
+        outcome: PreCheckOutcome::Fail {
+            missing: vec!["unrelated/notes.md".into()],
+        },
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["type"], "review-pre-check");
+    assert_eq!(v["stage_id"], stage.to_string());
+    assert_eq!(v["outcome"]["outcome"], "fail");
+    assert_eq!(v["outcome"]["missing"], json!(["unrelated/notes.md"]));
+    let back: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(back, ev);
+}
+
+#[test]
+fn review_verdict_event_carries_auto_fail() {
+    let stage = StageId::new();
+    let ev = Event::ReviewVerdict {
+        stage_id: stage,
+        verdict: ReviewVerdict::AutoFail {
+            reason: "diff-verify pre-check failed".into(),
+        },
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["type"], "review-verdict");
+    assert_eq!(v["verdict"]["verdict"], "auto-fail");
+    assert_eq!(v["verdict"]["reason"], "diff-verify pre-check failed");
+    let back: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(back, ev);
 }
 
 #[test]

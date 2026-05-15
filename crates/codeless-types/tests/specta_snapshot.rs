@@ -14,10 +14,10 @@ use codeless_types::{
     AssistantThread, AssistantThreadId, AttachWorkspaceArgs, AttachWorkspaceResult,
     AttachedWorkspace, CostCents, DetachPolicy, DetachWorkspaceArgs, Event, EventCursor,
     EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId, JobStatus, ListWorkspacesResult,
-    Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatch, ScopePatchId, ScopePatchKind,
-    ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
-    UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError,
-    WorkspaceProblem,
+    PreCheckOutcome, Repo, RepoId, Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch,
+    ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task,
+    TaskId, TaskStatus, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -71,7 +71,9 @@ fn collect() -> TypeCollection {
         .register_mut::<ScopePatchId>()
         .register_mut::<ScopePatchKind>()
         .register_mut::<ScopePatchTarget>()
-        .register_mut::<ScopePatch>();
+        .register_mut::<ScopePatch>()
+        .register_mut::<PreCheckOutcome>()
+        .register_mut::<ReviewVerdict>();
     types
 }
 

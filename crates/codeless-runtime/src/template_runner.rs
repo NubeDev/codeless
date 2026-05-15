@@ -53,6 +53,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use codeless_types::review_gate::{PreCheckOutcome as WirePreCheck, ReviewVerdict as WireVerdict};
 use codeless_types::{Event, ReviewId, StageId, StageStatus, TaskId};
 use tokio_util::sync::CancellationToken;
 
@@ -324,9 +325,56 @@ impl Runner for TemplateRunner {
             if stage.is_review {
                 if let Some(prev) = prev_stage_id {
                     if let Some(wt) = ctx.worktree_path.as_deref() {
-                        match run_diff_verify_precheck(wt, ctx.job_id, prev).await {
-                            PreCheckOutcome::Pass | PreCheckOutcome::Skipped => {}
-                            PreCheckOutcome::Fail(reason) => {
+                        let outcome = run_diff_verify_precheck(wt, ctx.job_id, prev).await;
+                        // Mirror the internal outcome onto the wire so
+                        // Surface A can render the same shape the
+                        // tracing line already records. Emitted before
+                        // any control-flow branch so the event lands
+                        // regardless of whether the stage proceeds or
+                        // auto-fails.
+                        let wire = match &outcome {
+                            PreCheckOutcome::Pass { verified } => WirePreCheck::Pass {
+                                verified: verified.clone(),
+                            },
+                            PreCheckOutcome::Skipped => WirePreCheck::Skipped,
+                            PreCheckOutcome::NothingToVerify => WirePreCheck::NothingToVerify,
+                            PreCheckOutcome::Fail { missing, .. } => WirePreCheck::Fail {
+                                missing: missing.clone(),
+                            },
+                        };
+                        publish(
+                            &ctx,
+                            stage_id,
+                            task_id,
+                            Event::ReviewPreCheck {
+                                stage_id,
+                                outcome: wire,
+                            },
+                        )
+                        .await;
+                        match outcome {
+                            PreCheckOutcome::Pass { .. }
+                            | PreCheckOutcome::Skipped
+                            | PreCheckOutcome::NothingToVerify => {}
+                            PreCheckOutcome::Fail { reason, .. } => {
+                                // Pre-check rejection short-circuits
+                                // before the model runs; the gate's
+                                // verdict on the wire is `AutoFail`
+                                // (no model verdict to report). Pairs
+                                // with the ReviewPreCheck::Fail event
+                                // already published above.
+                                publish(
+                                    &ctx,
+                                    stage_id,
+                                    task_id,
+                                    Event::ReviewVerdict {
+                                        stage_id,
+                                        verdict: WireVerdict::AutoFail {
+                                            reason: reason.clone(),
+                                        },
+                                    },
+                                )
+                                .await;
                                 publish(
                                     &ctx,
                                     stage_id,
@@ -501,6 +549,23 @@ impl Runner for TemplateRunner {
                 {
                     Ok(ReviewVerdict::Pass { reason }) => {
                         tracing::info!(stage = stage.title, %reason, "review gate passed");
+                        // Surface A: model-driven PASS verdict. Emitted
+                        // before patch validation so a later AutoFail
+                        // (scope-patch malformed / rejected) lands as
+                        // a second, distinct verdict event rather than
+                        // replacing this one.
+                        publish(
+                            &ctx,
+                            stage_id,
+                            task_id,
+                            Event::ReviewVerdict {
+                                stage_id,
+                                verdict: WireVerdict::Pass {
+                                    reason: reason.clone(),
+                                },
+                            },
+                        )
+                        .await;
                         // Step 5: a PASS verdict may carry a single
                         // `ScopePatch` proposal in the same handover
                         // body. The runtime parses, validates, persists
@@ -563,6 +628,22 @@ impl Runner for TemplateRunner {
                                 }
                             };
                             if let Some(reason) = reject_reason {
+                                // The model said PASS but the scope-
+                                // patch validator overrode it; the
+                                // wire verdict is AutoFail (the gate
+                                // closed without a clean model verdict).
+                                publish(
+                                    &ctx,
+                                    stage_id,
+                                    task_id,
+                                    Event::ReviewVerdict {
+                                        stage_id,
+                                        verdict: WireVerdict::AutoFail {
+                                            reason: reason.clone(),
+                                        },
+                                    },
+                                )
+                                .await;
                                 publish(
                                     &ctx,
                                     stage_id,
@@ -589,6 +670,18 @@ impl Runner for TemplateRunner {
                             &ctx,
                             stage_id,
                             task_id,
+                            Event::ReviewVerdict {
+                                stage_id,
+                                verdict: WireVerdict::Fail {
+                                    reason: reason.clone(),
+                                },
+                            },
+                        )
+                        .await;
+                        publish(
+                            &ctx,
+                            stage_id,
+                            task_id,
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
@@ -605,6 +698,22 @@ impl Runner for TemplateRunner {
                         };
                     }
                     Err(err) => {
+                        let reason = format!("review gate verdict unparseable: {err}");
+                        // The sentinel parser refused the handover —
+                        // no model verdict to report, so the wire
+                        // verdict is AutoFail with the parser's reason.
+                        publish(
+                            &ctx,
+                            stage_id,
+                            task_id,
+                            Event::ReviewVerdict {
+                                stage_id,
+                                verdict: WireVerdict::AutoFail {
+                                    reason: reason.clone(),
+                                },
+                            },
+                        )
+                        .await;
                         publish(
                             &ctx,
                             stage_id,
@@ -615,7 +724,6 @@ impl Runner for TemplateRunner {
                             },
                         )
                         .await;
-                        let reason = format!("review gate verdict unparseable: {err}");
                         tracing::warn!(stage = stage.title, %reason, "review gate aborted run");
                         return RunnerOutcome::Failed { reason };
                     }
@@ -648,11 +756,23 @@ impl Runner for TemplateRunner {
 /// path) so the structured log can be read with that distinction
 /// intact. The caller treats `Pass` and `Skipped` identically — both
 /// allow the inner adapter to run — but the log line is different.
+/// Internal pre-check outcome. Mirrors the wire
+/// `codeless_types::review_gate::PreCheckOutcome` shape so the caller
+/// can publish the wire event without re-deriving the variant; the
+/// `Fail` variant additionally carries the human-readable `reason`
+/// the runner returns to `RunnerOutcome::Failed` so a single match
+/// drives both the event emit and the control flow.
 #[derive(Debug)]
 enum PreCheckOutcome {
-    Pass,
+    Pass {
+        verified: Vec<String>,
+    },
     Skipped,
-    Fail(String),
+    NothingToVerify,
+    Fail {
+        reason: String,
+        missing: Vec<String>,
+    },
 }
 
 /// Enumerate the worktree's changed-file set against its base ref.
@@ -756,17 +876,26 @@ async fn run_diff_verify_precheck(
                 count = verified.len(),
                 "diff-verify pre-check: every claimed path resolved to a diff entry"
             );
-            PreCheckOutcome::Pass
+            PreCheckOutcome::Pass { verified }
         }
         DiffVerifyOutcome::NothingToVerify => {
             tracing::info!(
                 path = %handover_file.display(),
                 "diff-verify pre-check: prior handover `Done` named no path-shaped tokens; nothing to verify"
             );
-            PreCheckOutcome::Skipped
+            PreCheckOutcome::NothingToVerify
         }
         DiffVerifyOutcome::Fail { missing } => {
-            PreCheckOutcome::Fail(diff_verify_fail_reason(&missing))
+            let reason = diff_verify_fail_reason(&missing);
+            // Wire variant carries the claimed-path strings only; the
+            // candidate suggestions stay in the `reason` text that
+            // RunnerOutcome::Failed surfaces, same as the existing
+            // tracing line.
+            let missing_paths: Vec<String> = missing.iter().map(|m| m.claimed.clone()).collect();
+            PreCheckOutcome::Fail {
+                reason,
+                missing: missing_paths,
+            }
         }
     }
 }
@@ -1103,7 +1232,7 @@ stages:
             .await
             .unwrap();
         match run_diff_verify_precheck(tmp.path(), job_id, prev).await {
-            PreCheckOutcome::Pass => {}
+            PreCheckOutcome::Pass { .. } => {}
             other => panic!("expected Pass, got {other:?}"),
         }
     }
@@ -1123,7 +1252,7 @@ stages:
             .await
             .unwrap();
         match run_diff_verify_precheck(tmp.path(), job_id, prev).await {
-            PreCheckOutcome::Fail(reason) => {
+            PreCheckOutcome::Fail { reason, missing } => {
                 assert!(
                     reason.contains("unrelated/notes.md"),
                     "reason did not name the missing path: {reason}"
@@ -1131,6 +1260,10 @@ stages:
                 assert!(
                     !reason.contains("a/b.rs"),
                     "reason should not list verified paths as missing: {reason}"
+                );
+                assert!(
+                    missing.iter().any(|m| m == "unrelated/notes.md"),
+                    "missing list did not include the claimed path: {missing:?}"
                 );
             }
             other => panic!("expected Fail, got {other:?}"),
@@ -1152,7 +1285,7 @@ stages:
     }
 
     #[tokio::test]
-    async fn precheck_skips_when_done_names_no_paths() {
+    async fn precheck_reports_nothing_to_verify_when_done_names_no_paths() {
         use codeless_types::{Handover, JobId};
         let tmp = seed_worktree_with(&["a/b.rs"]);
         let job_id = JobId::new();
@@ -1166,8 +1299,8 @@ stages:
             .await
             .unwrap();
         match run_diff_verify_precheck(tmp.path(), job_id, prev).await {
-            PreCheckOutcome::Skipped => {}
-            other => panic!("expected Skipped, got {other:?}"),
+            PreCheckOutcome::NothingToVerify => {}
+            other => panic!("expected NothingToVerify, got {other:?}"),
         }
     }
 

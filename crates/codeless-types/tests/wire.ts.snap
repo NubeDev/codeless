@@ -444,8 +444,31 @@ reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageSt
  *  merging into a single variant per kind) keeps the SSE wire
  *  label single — one envelope shape per event type — which
  *  the existing UI subscriber assumes.
+ *  Layer-1 diff-verify pre-check result for a REVIEW stage —
+ *  the first half of Surface A's gate diagnostics. Emitted by
+ *  `template_runner` alongside the existing `tracing::info!` /
+ *  `tracing::warn!` lines that report the same outcome; the
+ *  logs stay for operator debugging, the event carries the
+ *  structured form the UI panel renders. `Pass` and `Fail`
+ *  carry the resolved path lists rather than a boolean so the
+ *  panel can name the exact set; `Skipped` and `NothingToVerify`
+ *  are distinct on the wire so the panel can tell a setup gap
+ *  apart from a clean-baseline handover (see
+ *  `review_gate::PreCheckOutcome` for the variant contract).
  */
-{ type: "scope-patch-proposed"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; 
+{ type: "review-pre-check"; stage_id: StageId; outcome: PreCheckOutcome } | 
+/**
+ *  Final REVIEW-gate verdict, including the runtime's own
+ *  `AutoFail` cases (pre-check rejected, sentinel unparseable,
+ *  scope-patch validation failed). Emitted exactly once per
+ *  REVIEW stage that reaches a terminal verdict; the
+ *  matching `tracing` call on `template_runner` keeps the
+ *  human-readable log line. Pairs with `ReviewPreCheck` —
+ *  when the pre-check auto-fails, both events fire (pre-check
+ *  with `Fail`, verdict with `AutoFail`) so the panel sees
+ *  the same two-phase shape it does for the model-driven path.
+ */
+{ type: "review-verdict"; stage_id: StageId; verdict: ReviewVerdict } | { type: "scope-patch-proposed"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; 
 /**
  *  Repo-relative path of the file the proposal targets.
  *  Carried on the wire so subscribers can render the path
@@ -606,6 +629,56 @@ export type ListWorkspacesResult = {
 	workspaces: AttachedWorkspace[],
 };
 
+/**
+ *  Result of the Layer-1 diff-verify pre-check the runtime runs
+ *  against the prior stage's handover before invoking the REVIEW
+ *  model. `Pass` and `Fail` carry the path lists the verifier
+ *  resolved so the UI can render the exact set rather than a
+ *  boolean glyph; `Skipped` and `NothingToVerify` are split so the
+ *  UI can distinguish "no prior handover / git enumeration failed"
+ *  from "handover present but no path-shaped tokens to verify"
+ *  (the former is a setup gap, the latter is a clean baseline).
+ * 
+ *  The internal `template_runner::PreCheckOutcome` carries a single
+ *  `Fail(String)` and collapses the verified-path list; this wire
+ *  variant promotes both halves so the panel renders the actual
+ *  paths.
+ */
+export type PreCheckOutcome = 
+/**
+ *  Every path the prior handover's `Done` section claimed
+ *  resolved to a real diff entry. `verified` is the claimed
+ *  path text, in the order the handover listed it.
+ */
+{ outcome: "pass"; verified: string[] } | 
+/**
+ *  At least one claimed path was absent from the diff.
+ *  `missing` is the claimed-path text for each missing entry,
+ *  in the order the handover listed them. The runtime's
+ *  `diff_verify::MissingPath` also carries fuzzy candidates
+ *  for each miss; this wire shape keeps only the claim text
+ *  because the panel surfaces the miss list directly and the
+ *  candidates were never reported in the existing log line.
+ */
+{ outcome: "fail"; missing: string[] } | 
+/**
+ *  The pre-check could not run: no prior stage on the job, no
+ *  worktree on the run context, the prior handover file was
+ *  absent, git enumeration failed, or the spawn_blocking task
+ *  joined with an error. The runtime treats this identically
+ *  to `Pass` (the inner adapter still runs); the wire variant
+ *  is kept distinct so the panel renders a setup-gap glyph
+ *  rather than a green check.
+ */
+{ outcome: "skipped" } | 
+/**
+ *  The pre-check ran and the prior handover's `Done` named no
+ *  path-shaped tokens. Distinct from `Skipped` because the
+ *  handover was readable and the diff was enumerable; there
+ *  was simply nothing the verifier could match against.
+ */
+{ outcome: "nothing-to-verify" };
+
 // A managed git repository row — see SCOPE.md Appendix A `repos`.
 export type Repo = {
 	id: RepoId,
@@ -644,6 +717,31 @@ export type ReviewId = string;
  *  are the verify-gated unit. Reviews are gates, not nodes…").
  */
 export type ReviewStatus = "pending" | "approved" | "rejected" | "stopped" | "rerun-requested";
+
+/**
+ *  REVIEW-stage verdict surfaced on the event bus. The runtime
+ *  keeps its own `ReviewVerdict` next to the sentinel parser; this
+ *  wire variant adds `AutoFail` for the cases where the model was
+ *  never invoked (pre-check rejected the stage) or where the
+ *  post-stage validator rejected the gate before the verdict could
+ *  be acted on (sentinel unparseable, scope-patch validation
+ *  failed). The reason text mirrors what the matching `tracing`
+ *  call already records, verbatim.
+ */
+export type ReviewVerdict = 
+/**
+ *  The model wrote a `PASS:` sentinel and downstream patch
+ *  validation accepted the handover.
+ */
+{ verdict: "pass"; reason: string } | 
+// The model wrote a `FAIL:` sentinel.
+{ verdict: "fail"; reason: string } | 
+/**
+ *  The runtime closed the gate without (or in spite of) the
+ *  model's verdict: pre-check fail, sentinel missing /
+ *  ambiguous, or scope-patch validation rejected.
+ */
+{ verdict: "auto-fail"; reason: string };
 
 /**
  *  One patch proposal — the structured form of a single suggested
