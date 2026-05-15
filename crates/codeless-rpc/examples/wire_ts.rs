@@ -31,10 +31,10 @@ use codeless_rpc::methods::{
     GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, ResetJobArgs, RunnerInfo, ServerInfo, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UserPromptSnippet,
+    RemoveRepoArgs, ResetJobArgs, RunnerInfo, ServerFeatureFlags, ServerInfo, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
@@ -109,6 +109,7 @@ fn collect() -> TypeCollection {
         .register_mut::<RunnerInfo>()
         .register_mut::<ClaudeStatus>()
         .register_mut::<ServerInfo>()
+        .register_mut::<ServerFeatureFlags>()
         .register_mut::<JobDiffArgs>()
         .register_mut::<JobDiffFile>()
         .register_mut::<JobDiffResult>()

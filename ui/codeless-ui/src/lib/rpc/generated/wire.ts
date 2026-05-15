@@ -1413,6 +1413,30 @@ export type ScopePatchTarget =
 "job-claude-md";
 
 /**
+ *  Capability bits the runtime advertises to the UI at boot. Each
+ *  flag is `false` by default and flips to `true` only when the
+ *  runtime can guarantee the corresponding behaviour end-to-end.
+ *  Whoever lands the runtime support also flips the flag, in the
+ *  same change, so the UI never has to special-case "flag exists
+ *  but the underlying behaviour is half-built".
+ */
+export type ServerFeatureFlags = {
+	/**
+	 *  `true` once the handover writer round-trips
+	 *  `<!-- SCOPE-PATCH-BEGIN ... -->` / `<!-- SCOPE-PATCH-END -->`
+	 *  markers without dropping or rewriting them — the precondition
+	 *  for the SESSION-MUTABLE-SCOPE patch flow to surface in the UI.
+	 *  Surface A's "Patches proposed: N" counter row is omitted while
+	 *  this is `false`, on the principle from
+	 *  `DOCS/SCOPE-MUTABLE-UI-DECISIONS.md` OQ#1 that a counter row
+	 *  gated on a half-built capability would lie. Step 2 of the
+	 *  scope-mutable-ui ramp lands the handover-schema fix and flips
+	 *  this to `true` from `build_server_info`.
+	 */
+	scope_patch_handover_round_trip?: boolean,
+};
+
+/**
  *  `GET /server/info` payload. Sits outside the bearer gate alongside
  *  `/healthz` and `/version` — the UI must reach it before the user
  *  can supply a token, since the runner dropdown and "demo mode"
@@ -1451,6 +1475,16 @@ export type ServerInfo = {
 	 *  re-launch the server to refresh after installing a new CLI.
 	 */
 	available_cli_runners?: string[],
+	/**
+	 *  Boot-time capability flags. The runtime sets each flag once
+	 *  the underlying capability is real; the UI gates surfaces on
+	 *  the corresponding flag rather than shipping a row that may
+	 *  silently lie when the runtime side has not yet landed. New
+	 *  flags must default to `false` so older runtimes parse a
+	 *  shorter payload as "capability absent" rather than missing
+	 *  the field and crashing the UI deserialisation.
+	 */
+	feature_flags?: ServerFeatureFlags,
 };
 
 // A verify-gated chunk of a job — see SCOPE.md Appendix A `stages`.
