@@ -8,6 +8,7 @@
 pub mod ai_chat;
 pub mod ai_runner_bridge;
 pub mod claude;
+pub mod editor;
 pub mod fs;
 pub mod git_changed;
 pub mod git_commit;
@@ -20,6 +21,7 @@ pub use ai_chat::{
 };
 pub use ai_runner_bridge::{forward_events, map_event};
 pub use claude::probe as probe_claude;
+pub use editor::{invoke_editor, pick_editor, EditorError};
 pub use fs::{FsError, HostFs};
 pub use git_changed::{changed_files, GitChangedError};
 pub use git_commit::{commit_paths, GitCommitError};

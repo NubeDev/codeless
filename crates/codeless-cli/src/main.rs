@@ -12,6 +12,7 @@ mod cost;
 mod demo;
 mod job;
 mod jobs;
+mod patches;
 mod repos;
 mod review;
 mod rpc_open;
@@ -130,6 +131,15 @@ enum Cmd {
         #[command(subcommand)]
         verb: demo::Verb,
     },
+    /// Walk the proposed scope-patch queue in
+    /// `DOCS/SCOPE-PROPOSED.md`. `list` and `show` are read-only;
+    /// `approve` / `reject` produce a human-authored git commit;
+    /// `edit` opens the patch in `$EDITOR` and rewrites the queue.
+    /// Step 6 of the SESSION-MUTABLE-SCOPE ramp.
+    Patches {
+        #[command(subcommand)]
+        verb: patches::Verb,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -215,6 +225,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Jobs { verb } => jobs::handle(verb, cli.core, cli.token, cli.db),
         Cmd::Cost { verb } => cost::handle(verb, cli.core, cli.token, cli.db),
         Cmd::Demo { verb } => demo::handle(verb, cli.db),
+        Cmd::Patches { verb } => patches::handle(verb),
     }
 }
 
