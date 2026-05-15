@@ -31,6 +31,56 @@ Prose between bullets is ignored by the parser. Unknown headings are
 a parse error — the contract is the four canonical sections, full
 stop.
 
+**Worked example (skeleton, empty stage).**
+
+```
+## Done
+
+- (none)
+
+## Next
+
+- (none)
+
+## What you need to know
+
+- (none)
+
+## Open questions
+
+- (none)
+```
+
+An empty stage is still a well-formed handover: every heading is
+present in order, every section renders `- (none)`. The runtime's
+write-time validator (see **Validation** below) rejects this on the
+grounds that `Done` cannot legitimately be empty, but the *parse*
+succeeds — the distinction matters because the parser and the
+validator are separate failure modes.
+
+**Anti-example (missing heading, reordered, prose where a list
+belongs).**
+
+```
+## Done
+- shipped the predicate runner
+
+## What you need to know
+- host-only crate
+
+## Next
+- write the parse-time guards
+
+(no Open questions section)
+```
+
+Three faults: `Next` and `What you need to know` are swapped, the
+`Open questions` heading is missing entirely, and the handover ends
+with a prose paragraph instead of a fourth section. The parser
+rejects on the first fault and never reads the rest — handover
+authors who "save space" by omitting empty sections produce
+unparseable artifacts.
+
 ## Done
 
 What landed in this session. Committed code, decisions ratified by a
@@ -192,5 +242,53 @@ before commit + push. The current checks:
   not touch is auto-FAIL with no model invoked.
 
 Schema versioning, not REVIEW patches, governs this file: the wire
-format is sacred per `SCOPE.md`. A change to the shape requires a
-`schema_version` bump in `handover.rs` plus a migration.
+format is sacred per `SCOPE.md`, and the wire-format file list in
+`JOB-LOOP.md`'s **Rule-bearing files** section pins `JOB-MODEL.md`,
+`JOB-LOOP.md`, and `handover.rs` as off-limits to the patch path
+(`SESSION-MUTABLE-SCOPE-DECISIONS.md` provenance rule). A change to
+the shape requires a `schema_version` bump in `handover.rs` plus a
+migration.
+
+**Worked example (validator rejection that the session must
+repair).**
+
+```
+## Done
+
+- updated crates/codeless-runtime/src/template_runner.rs to parse
+  the PASS/FAIL sentinel
+
+## Next
+
+- wire diff-verify in front of the REVIEW prompt
+
+## What you need to know
+
+- ...
+
+## Open questions
+
+- (none)
+```
+
+…written by a session whose commit only touched
+`crates/codeless-runtime/src/review_gate.rs`. Diff-verify rejects:
+the path in `Done` does not appear in the commit's diff. The fix is
+*not* to delete the bullet; it is to update the bullet to the path
+the commit actually touched (or to amend the commit so the diff
+matches the claim).
+
+**Anti-example (validator pretends to pass).**
+
+```
+## Done
+
+- everything that the stage was supposed to do
+```
+
+`Done` is non-empty, so the cheapest validator passes; diff-verify
+has nothing to check because no path is named. The next session
+inherits a handover that says nothing happened *and* nothing
+useful, with no way to recover the actual landing surface short of
+reading the diff by hand — which is the failure mode the handover
+exists to prevent.

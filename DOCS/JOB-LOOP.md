@@ -57,10 +57,18 @@ Three stage types exist; their behaviour in the runner differs.
   rejects a WORK stage whose diff touches the rule set.
 - **REVIEW** — a blocking gate. Emits either a `PASS` or `FAIL`
   sentinel parsed from the last assistant turn; on `FAIL` the job
-  halts and the human resumes. Starting with Step 4 of the ramp,
-  REVIEW stages additionally emit zero-or-one `ScopePatch` proposal
-  to `DOCS/SCOPE-PROPOSED.md`. REVIEW stages may NOT directly edit
-  `SCOPE.md`, `CLAUDE.md`, or any wire-format file.
+  halts and the human resumes. The blocking gate's lifecycle reuses
+  the existing `Review*` event family
+  (`ReviewRequested` / `ReviewApproved` / …) plus the standard
+  `StageStarted` / `StageCompleted` / `TaskCompleted` pair — no
+  `ReviewGate*` variants are introduced (see
+  `SESSION-MUTABLE-SCOPE-DECISIONS.md`, "Event naming"). Starting
+  with Step 4 of the ramp, REVIEW stages additionally emit
+  zero-or-one `ScopePatch` proposal to `DOCS/SCOPE-PROPOSED.md`,
+  surfaced on the event bus as a single new
+  `Event::ScopePatchProposed` variant (decisions Q7). REVIEW stages
+  may NOT directly edit `SCOPE.md`, `CLAUDE.md`, or any wire-format
+  file.
 - **TEST** — runs the existing test suite plus new tests for the
   feature; a failure halts the job and surfaces for human triage.
   TEST stages explicitly do **not** emit patches (out-of-scope per
@@ -82,7 +90,11 @@ touch any of these auto-FAIL before the model is even invoked:
   exists per Step 3) — predicate code is human-authored.
 
 `SCOPE-PROPOSED.md` is **not** rule-bearing; the runtime appends to
-it during REVIEW stages.
+it during REVIEW stages. It is, however, **opaque to WORK stages**
+(decisions Q1): a WORK stage's diff that touches
+`DOCS/SCOPE-PROPOSED.md` auto-FAILs at Layer 1, because a WORK stage
+that read or wrote the proposal queue would be executing against
+*proposed* rules rather than the current, merged rulebook.
 
 ## Mandatory rules
 
@@ -133,6 +145,14 @@ reject; the second patch waits for its own REVIEW stage to surface
 it. This keeps the patch queue's audit trail one-to-one with REVIEW
 verdicts.
 
+The patch's `kind` is `Tighten` or `Loosen` (decisions Q2): rule
+*removal* is classified as `Loosen` and obeys the same evidence
+requirement as a textually-narrower replacement. A strengthening
+patch applies forward only (decisions Q3) — prior stages keep the
+verdicts they earned under the old snapshot. Predicate file
+deletion never rides on a REVIEW patch; it lands in the approving
+human's commit on a paired `Loosen` patch (decisions Q5).
+
 ### No `--force`, no `--no-verify`
 
 The session that bypasses a hook bypasses every downstream check
@@ -159,10 +179,10 @@ intervention.
   scope and re-runs. The runtime does not auto-retry a FAILed
   REVIEW.
 - **Predicate failure post-merge.** Stale predicates (per
-  `DECISIONS.md` Q5) are removed only by the approving human in the
-  patch-approval commit. A predicate that crashes on every diff is
-  itself a bug — fix or remove in a human-authored commit, not
-  through the REVIEW path.
+  `SESSION-MUTABLE-SCOPE-DECISIONS.md` Q5) are removed only by the
+  approving human in the patch-approval commit. A predicate that
+  crashes on every diff is itself a bug — fix or remove in a
+  human-authored commit, not through the REVIEW path.
 
 ## Out of scope for this document
 
