@@ -6,10 +6,9 @@ use codeless_adapters_host::{HostFs, WorktreeManager};
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
     CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs,
-    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    ListJobFilesArgs,
+    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, ListJobFilesArgs,
     ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
     ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
     ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,

@@ -197,6 +197,26 @@ async fn run_server(
     // worktree root sits outside `--fs-root` (the source repo).
     let worktree_root_effective = effective_worktree_root(&args);
     if let Some(root) = &args.fs_root {
+        // WORKSPACE-ATTACH milestone 2 — `--fs-root` is now a
+        // bootstrap convenience: canonicalise the path and upsert it
+        // into `attached_workspaces`. Repeated boots with `/a/b`,
+        // `/a/b/`, or a symlink resolving to `/a/b` all collapse to
+        // the one row keyed on canonical (see migration 0007).
+        match codeless_runtime::attached_workspaces::upsert_boot_workspace(
+            runtime.pool(),
+            root,
+        )
+        .await
+        {
+            Ok(outcome) => eprintln!(
+                "codeless-server: attached_workspaces upsert ok (canonical={}, created_repo={}, created_attachment={})",
+                outcome.canonical, outcome.created_repo, outcome.created_attachment,
+            ),
+            Err(e) => eprintln!(
+                "codeless-server: attached_workspaces upsert for {} failed: {e}",
+                root.display(),
+            ),
+        }
         let mut host_fs = codeless_adapters_host::HostFs::new(root)
             .map_err(|e| anyhow!("fs root {}: {e}", root.display()))?;
         if let Some(wt) = &worktree_root_effective {

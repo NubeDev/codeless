@@ -56,6 +56,7 @@ async fn migrator_creates_all_tables_from_appendix_a() {
     assert_eq!(
         tables,
         vec![
+            "attached_workspaces".to_string(),
             "events".to_string(),
             "jobs".to_string(),
             "pty_sessions".to_string(),
@@ -182,6 +183,26 @@ async fn expected_indexes_are_present() {
             "missing index {required}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attached_workspaces_columns_and_unique_canonical_index() {
+    let pool = fresh_db().await;
+    assert_eq!(
+        columns(&pool, "attached_workspaces").await,
+        vec![
+            "repo_id",
+            "fs_root_canonical",
+            "fs_root_display",
+            "attached_at",
+        ],
+    );
+    assert!(
+        index_names(&pool)
+            .await
+            .contains(&"idx_attached_workspaces_canonical".to_string()),
+        "missing idx_attached_workspaces_canonical",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
