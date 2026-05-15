@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::id::{JobId, RepoId, ReviewId, StageId, TaskId};
 use crate::job::StopReason;
 use crate::money::CostCents;
+use crate::review_gate::{PreCheckOutcome, ReviewVerdict};
 use crate::scope_patch::{ScopePatchId, ScopePatchKind, ScopePatchTarget};
 use crate::stage::StageStatus;
 use crate::task::TaskStatus;
@@ -325,6 +326,37 @@ pub enum Event {
     /// merging into a single variant per kind) keeps the SSE wire
     /// label single — one envelope shape per event type — which
     /// the existing UI subscriber assumes.
+    /// Layer-1 diff-verify pre-check result for a REVIEW stage —
+    /// the first half of Surface A's gate diagnostics. Emitted by
+    /// `template_runner` alongside the existing `tracing::info!` /
+    /// `tracing::warn!` lines that report the same outcome; the
+    /// logs stay for operator debugging, the event carries the
+    /// structured form the UI panel renders. `Pass` and `Fail`
+    /// carry the resolved path lists rather than a boolean so the
+    /// panel can name the exact set; `Skipped` and `NothingToVerify`
+    /// are distinct on the wire so the panel can tell a setup gap
+    /// apart from a clean-baseline handover (see
+    /// `review_gate::PreCheckOutcome` for the variant contract).
+    #[serde(rename = "review-pre-check")]
+    ReviewPreCheck {
+        stage_id: StageId,
+        outcome: PreCheckOutcome,
+    },
+    /// Final REVIEW-gate verdict, including the runtime's own
+    /// `AutoFail` cases (pre-check rejected, sentinel unparseable,
+    /// scope-patch validation failed). Emitted exactly once per
+    /// REVIEW stage that reaches a terminal verdict; the
+    /// matching `tracing` call on `template_runner` keeps the
+    /// human-readable log line. Pairs with `ReviewPreCheck` —
+    /// when the pre-check auto-fails, both events fire (pre-check
+    /// with `Fail`, verdict with `AutoFail`) so the panel sees
+    /// the same two-phase shape it does for the model-driven path.
+    #[serde(rename = "review-verdict")]
+    ReviewVerdict {
+        stage_id: StageId,
+        verdict: ReviewVerdict,
+    },
+
     #[serde(rename = "scope-patch-proposed")]
     ScopePatchProposed {
         stage_id: StageId,

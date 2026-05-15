@@ -41,9 +41,10 @@ use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
     AssistantThread, AssistantThreadId, CostCents, Event, EventCursor, EventEnvelope, FsEntry,
-    FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewId,
-    ReviewStatus, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage, StageId,
-    StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
+    FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus, PreCheckOutcome, Repo, RepoId, Review,
+    ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind,
+    ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
+    UnixMillis,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -148,7 +149,9 @@ fn collect() -> TypeCollection {
         .register_mut::<ScopePatchId>()
         .register_mut::<ScopePatchKind>()
         .register_mut::<ScopePatchTarget>()
-        .register_mut::<ScopePatch>();
+        .register_mut::<ScopePatch>()
+        .register_mut::<PreCheckOutcome>()
+        .register_mut::<ReviewVerdict>();
     types
 }
 
