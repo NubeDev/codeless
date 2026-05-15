@@ -1,194 +1,592 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import {
+  useEventStream,
   useRpc,
+  type EventEnvelope,
   type JobId,
   type StageRollup,
 } from "@/lib/rpc";
 
+// ------------------------------------------------------------------ types
+
+type StageStatus = "pending" | "running" | "passed" | "failed";
+type TaskStatus = "queued" | "running" | "passed" | "failed";
+type VerifyStepStatus = "running" | "passed" | "failed" | "skipped";
+
+interface TaskRow {
+  kind: "task";
+  taskId: string;
+  ordinal: number;
+  status: TaskStatus;
+}
+
+interface VerifyStepRow {
+  kind: "verify-step";
+  stepIndex: number;
+  name: string;
+  status: VerifyStepStatus;
+  durationMs: number | null;
+  tail: string | null;
+  exitCode: number | null;
+}
+
+type ChildRow = TaskRow | VerifyStepRow;
+
+interface StageState {
+  // null until the list_stages call returns
+  rollup: StageRollup | null;
+  // Overrides the rollup status as events arrive, so the UI reflects
+  // in-flight transitions without waiting for a database write.
+  liveStatus: StageStatus | null;
+  children: ChildRow[];
+}
+
+// ------------------------------------------------------------------ reducer
+
+// Reduce a single event into the children array for this stage.
+// Only called when the event's stage_id matches the target; the
+// caller filters before passing events here.
+function applyEvent(state: StageState, env: EventEnvelope): StageState {
+  const e = env.event;
+
+  switch (e.type) {
+    case "stage-started":
+      return { ...state, liveStatus: "running" };
+
+    case "stage-completed":
+      return {
+        ...state,
+        liveStatus: e.status === "passed" ? "passed" : "failed",
+      };
+
+    case "verify-failed":
+      return { ...state, liveStatus: "failed" };
+
+    case "task-enqueued": {
+      const already = state.children.some(
+        (c) => c.kind === "task" && c.taskId === e.task_id,
+      );
+      if (already) return state;
+      const ordinal =
+        state.children.filter((c) => c.kind === "task").length + 1;
+      const row: TaskRow = {
+        kind: "task",
+        taskId: e.task_id,
+        ordinal,
+        status: "queued",
+      };
+      return { ...state, children: [...state.children, row] };
+    }
+
+    case "task-started": {
+      const has = state.children.some(
+        (c) => c.kind === "task" && c.taskId === e.task_id,
+      );
+      if (has) {
+        return {
+          ...state,
+          children: state.children.map((c) =>
+            c.kind === "task" && c.taskId === e.task_id
+              ? { ...c, status: "running" as TaskStatus }
+              : c,
+          ),
+        };
+      }
+      // Synthesise a row when task-started arrives before task-enqueued.
+      const ordinal =
+        state.children.filter((c) => c.kind === "task").length + 1;
+      return {
+        ...state,
+        children: [
+          ...state.children,
+          {
+            kind: "task",
+            taskId: e.task_id,
+            ordinal,
+            status: "running" as TaskStatus,
+          },
+        ],
+      };
+    }
+
+    case "task-completed": {
+      const termStatus: TaskStatus =
+        e.status === "completed" ? "passed" : "failed";
+      return {
+        ...state,
+        children: state.children.map((c) =>
+          c.kind === "task" && c.taskId === e.task_id
+            ? { ...c, status: termStatus }
+            : c,
+        ),
+      };
+    }
+
+    case "verify-step-started": {
+      const already = state.children.some(
+        (c) => c.kind === "verify-step" && c.stepIndex === e.step_index,
+      );
+      if (already) {
+        return {
+          ...state,
+          children: state.children.map((c) =>
+            c.kind === "verify-step" && c.stepIndex === e.step_index
+              ? { ...c, status: "running" as VerifyStepStatus }
+              : c,
+          ),
+        };
+      }
+      const row: VerifyStepRow = {
+        kind: "verify-step",
+        stepIndex: e.step_index,
+        name: e.name,
+        status: "running",
+        durationMs: null,
+        tail: null,
+        exitCode: null,
+      };
+      return { ...state, children: [...state.children, row] };
+    }
+
+    case "verify-step-passed":
+      return {
+        ...state,
+        children: state.children.map((c) =>
+          c.kind === "verify-step" && c.stepIndex === e.step_index
+            ? { ...c, status: "passed" as VerifyStepStatus, durationMs: e.duration_ms }
+            : c,
+        ),
+      };
+
+    case "verify-step-failed": {
+      const has = state.children.some(
+        (c) => c.kind === "verify-step" && c.stepIndex === e.step_index,
+      );
+      if (has) {
+        return {
+          ...state,
+          children: state.children.map((c) =>
+            c.kind === "verify-step" && c.stepIndex === e.step_index
+              ? {
+                  ...c,
+                  status: "failed" as VerifyStepStatus,
+                  exitCode: e.exit_code,
+                  tail: e.tail,
+                }
+              : c,
+          ),
+        };
+      }
+      // Synthesise when verify-step-failed arrives without a prior started.
+      return {
+        ...state,
+        children: [
+          ...state.children,
+          {
+            kind: "verify-step",
+            stepIndex: e.step_index,
+            name: e.name,
+            status: "failed" as VerifyStepStatus,
+            durationMs: null,
+            tail: e.tail,
+            exitCode: e.exit_code,
+          },
+        ],
+      };
+    }
+
+    case "verify-step-skipped": {
+      const already = state.children.some(
+        (c) => c.kind === "verify-step" && c.stepIndex === e.step_index,
+      );
+      if (already) {
+        return {
+          ...state,
+          children: state.children.map((c) =>
+            c.kind === "verify-step" && c.stepIndex === e.step_index
+              ? { ...c, status: "skipped" as VerifyStepStatus }
+              : c,
+          ),
+        };
+      }
+      return {
+        ...state,
+        children: [
+          ...state.children,
+          {
+            kind: "verify-step",
+            stepIndex: e.step_index,
+            name: e.name,
+            status: "skipped" as VerifyStepStatus,
+            durationMs: null,
+            tail: null,
+            exitCode: null,
+          },
+        ],
+      };
+    }
+
+    default:
+      return state;
+  }
+}
+
+// ------------------------------------------------------------------ helpers
+
+function resolvedStatus(s: StageState): StageStatus {
+  if (s.liveStatus !== null) return s.liveStatus;
+  if (!s.rollup) return "pending";
+  const rs = s.rollup.stage.status;
+  if (rs === "passed") return "passed";
+  if (rs === "failed") return "failed";
+  if (rs === "running" || rs === "awaiting-review") return "running";
+  return "pending";
+}
+
+function glyphFor(status: StageStatus | TaskStatus | VerifyStepStatus): {
+  char: string;
+  tone: string;
+  label: string;
+} {
+  switch (status) {
+    case "passed":
+      return {
+        char: "✓",
+        tone: "text-emerald-600 dark:text-emerald-400",
+        label: "passed",
+      };
+    case "running":
+      return { char: "●", tone: "text-blue-500", label: "running" };
+    case "failed":
+      return { char: "!", tone: "text-destructive", label: "failed" };
+    case "queued":
+    case "pending":
+      return { char: "○", tone: "text-muted-foreground", label: "queued" };
+    case "skipped":
+      return { char: "—", tone: "text-muted-foreground", label: "skipped" };
+    default:
+      return { char: "?", tone: "text-muted-foreground", label: "unknown" };
+  }
+}
+
+// ------------------------------------------------------------------ component
+
 interface Props {
   jobId: JobId;
   stageId: string;
-  onBack: () => void;
+  stageName: string;
 }
 
-// Right-pane detail for one selected stage. Today renders the rollup
-// (status, duration, cost, task count) and placeholders for the
-// pending wishlist items: claude session id, per-stage commits, tool
-// ribbon, final assistant message. Each placeholder is an honest
-// "coming next session" with the source the data will come from, so
-// future agents picking up this work know where to look.
+// Full detail view for one stage tab. Shows the stage goal (name),
+// a compact TICKS strip of each task and verify step, a FAILURE block
+// when any verify step failed, and three action buttons that map to
+// existing job-control RPCs.
 //
-// The rollup itself is fetched fresh on mount + on stageId change;
-// this is a focused query, not the all-stages list, but the existing
-// list_stages RPC is the cheapest source — we filter client-side
-// rather than adding a new endpoint until per-stage detail proves
-// noisy enough to warrant it.
-export function StageDetail({ jobId, stageId, onBack }: Props) {
+// Data model: seeds from list_stages (authoritative for completed stages)
+// then layers live events on top. The children list (ticks / verify steps)
+// is built purely from events because the list_stages rollup does not
+// carry per-step rows.
+export function StageDetail({ jobId, stageId, stageName }: Props) {
   const rpc = useRpc();
-  const [rollup, setRollup] = useState<StageRollup | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
+  const [stage, setStage] = useState<StageState>({
+    rollup: null,
+    liveStatus: null,
+    children: [],
+  });
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Seed rollup from persisted data on mount / stageId change.
   useEffect(() => {
     let cancelled = false;
-    setRollup(null);
-    setError(null);
+    setStage({ rollup: null, liveStatus: null, children: [] });
+    setFetchError(null);
     rpc
       .call("list_stages", { job_id: jobId })
       .then((res) => {
         if (cancelled) return;
         const found = res.stages.find((s) => s.stage.id === stageId) ?? null;
-        setRollup(found);
+        if (found) {
+          setStage((prev) => ({ ...prev, rollup: found }));
+        }
       })
-      .catch((e) => {
+      .catch((err) => {
         if (cancelled) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setFetchError(err instanceof Error ? err.message : String(err));
       });
     return () => {
       cancelled = true;
     };
   }, [rpc, jobId, stageId]);
 
+  // Subscribe to live events, filtering to this stage only.
+  const onEvent = useCallback(
+    (env: EventEnvelope) => {
+      const e = env.event;
+      const evtStageId =
+        env.stage_id ??
+        ("stage_id" in e && typeof e.stage_id === "string"
+          ? e.stage_id
+          : null);
+      // task events carry task_id only; the envelope's stage_id column
+      // is the authoritative join, so fall through to it.
+      if (evtStageId !== stageId) return;
+      setStage((prev) => applyEvent(prev, env));
+    },
+    [stageId],
+  );
+
+  useEventStream({ scope: "job", job_id: jobId }, onEvent);
+
+  const status = resolvedStatus(stage);
+  const rollup = stage.rollup;
+  const displayName =
+    rollup?.stage.name || stageName || `Stage ${(rollup?.stage.ordinal ?? 0) + 1}`;
+  const ordinalLabel =
+    rollup
+      ? `Stage ${rollup.stage.ordinal + 1}`
+      : stageName
+        ? `Stage: ${stageName}`
+        : "Stage";
+
+  const failedVerifySteps = stage.children.filter(
+    (c): c is VerifyStepRow => c.kind === "verify-step" && c.status === "failed",
+  );
+
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-4 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onBack}
-            className="h-7 px-2 text-xs"
-          >
-            ← all stages
-          </Button>
-          {rollup && <StatusPill status={rollup.stage.status} />}
+      <div className="space-y-5 p-5">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
+              {ordinalLabel}
+            </div>
+            <h2 className="mt-0.5 text-base font-semibold leading-tight">
+              {displayName}
+            </h2>
+          </div>
+          <StatusBadge status={status} />
         </div>
 
-        <div className="space-y-1">
-          <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
-            Stage {(rollup?.stage.ordinal ?? 0) + 1}
-          </div>
-          <h2 className="text-base font-medium">
-            {rollup?.stage.name || (
-              <span className="text-muted-foreground">unnamed</span>
+        {fetchError && (
+          <div className="text-destructive text-xs">{fetchError}</div>
+        )}
+
+        {/* GOAL */}
+        <Section label="Goal">
+          <p className="text-sm">
+            {rollup?.stage.name || stageName || (
+              <span className="text-muted-foreground italic">
+                no goal recorded
+              </span>
             )}
-          </h2>
-          <div className="text-muted-foreground font-mono text-[10px]">
-            {stageId}
-          </div>
-        </div>
+          </p>
+        </Section>
 
-        {error && (
-          <div className="text-destructive text-xs">{error}</div>
+        {/* TICKS */}
+        {stage.children.length > 0 && (
+          <Section label="Ticks">
+            <TicksStrip children={stage.children} />
+          </Section>
         )}
 
-        {rollup && (
-          <div className="grid grid-cols-3 gap-3">
-            <Stat label="duration" value={formatDuration(rollup)} />
-            <Stat label="cost" value={formatCost(rollup.cost_cents)} />
-            <Stat label="tasks" value={String(rollup.task_count)} />
-          </div>
+        {/* FAILURE */}
+        {status === "failed" && failedVerifySteps.length > 0 && (
+          <Section label="Failure">
+            <FailureBlock steps={failedVerifySteps} />
+          </Section>
         )}
 
-        {rollup?.stage.session_id ? (
-          <Captured label="Claude session id" value={rollup.stage.session_id} />
-        ) : (
-          <Pending
-            label="Claude session id"
-            source="captured from RunResult.session_id; mock-runner stages never emit one"
-          />
-        )}
-        <Pending
-          label="Commits made in this stage"
-          source="git log <branch> joined to stage timestamps"
-        />
-        <Pending
-          label="Tool-call ribbon"
-          source="rolled up from Event::ToolCall grouped by stage_id"
-        />
-        <Pending
-          label="Final assistant message"
-          source="last AiMessageComplete + buffered text from claude_runner.rs"
-        />
+        {/* Action buttons */}
+        <ActionBar jobId={jobId} />
       </div>
     </ScrollArea>
   );
 }
 
-function StatusPill({ status }: { status: string }) {
+// ------------------------------------------------------------------ sub-components
+
+function Section({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wider">
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Compact horizontal strip showing one glyph+label chip per child row.
+// Tasks render as "tick N", verify steps render by their step name.
+function TicksStrip({ children }: { children: ChildRow[] }) {
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+      {children.map((c, i) => {
+        const status = c.status;
+        const g = glyphFor(status);
+        const label =
+          c.kind === "task" ? `tick ${c.ordinal}` : c.name || "test";
+        return (
+          <span
+            key={c.kind === "task" ? `task-${c.taskId}` : `vs-${c.stepIndex}-${i}`}
+            className="flex items-baseline gap-1 text-xs"
+            title={g.label}
+          >
+            <span className={cn("font-mono", g.tone)}>{g.char}</span>
+            <span
+              className={cn(
+                status === "failed" ? g.tone : "text-muted-foreground",
+              )}
+            >
+              {label}
+            </span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// One card per failed verify step, showing the step name, exit code,
+// and the captured tail output. Only rendered when the stage failed
+// and at least one verify step has a failed status.
+function FailureBlock({ steps }: { steps: VerifyStepRow[] }) {
+  return (
+    <div className="space-y-3">
+      {steps.map((step) => (
+        <div key={step.stepIndex} className="space-y-1.5">
+          <div className="flex items-baseline gap-2 text-xs">
+            <span className="text-destructive font-mono">!</span>
+            <span className="font-medium">{step.name || "verify"}</span>
+            {step.exitCode !== null && (
+              <span className="text-muted-foreground">
+                exit {step.exitCode}
+              </span>
+            )}
+          </div>
+          {step.tail !== null && step.tail.length > 0 && (
+            <pre className="bg-muted/40 text-muted-foreground overflow-x-auto rounded px-3 py-2 text-[10px] leading-snug">
+              {step.tail}
+            </pre>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The three action buttons from JOB-UI.md "The Stage-N tab".
+//
+//   rerun now            — resumes the job via the captured session_id
+//                          so the runner passes --continue on next tick.
+//   new session+handover — creates a fresh job copy seeded from handover.md.
+//   stop                 — terminates the job; stage stays at failed.
+function ActionBar({ jobId }: { jobId: JobId }) {
+  const rpc = useRpc();
+  const [busy, setBusy] = useState<"rerun" | "new-session" | "stop" | null>(
+    null,
+  );
+  const [err, setErr] = useState<string | null>(null);
+
+  const rerunNow = async () => {
+    setBusy("rerun");
+    setErr(null);
+    try {
+      await rpc.call("resume_job", { job_id: jobId });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const newSession = async () => {
+    setBusy("new-session");
+    setErr(null);
+    try {
+      await rpc.call("rerun_job", { source_job_id: jobId });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stopJob = async () => {
+    setBusy("stop");
+    setErr(null);
+    try {
+      await rpc.call("stop_job", { job_id: jobId });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="default"
+          className="h-7 px-3 text-xs"
+          onClick={() => void rerunNow()}
+          disabled={busy !== null}
+        >
+          {busy === "rerun" ? "queuing…" : "rerun now"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-3 text-xs"
+          onClick={() => void newSession()}
+          disabled={busy !== null}
+        >
+          {busy === "new-session" ? "creating…" : "new session + handover"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-3 text-xs text-destructive hover:text-destructive"
+          onClick={() => void stopJob()}
+          disabled={busy !== null}
+        >
+          {busy === "stop" ? "stopping…" : "stop"}
+        </Button>
+      </div>
+      {err !== null && (
+        <div className="text-destructive text-[11px]">{err}</div>
+      )}
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: StageStatus }) {
   const tone =
     status === "passed"
       ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
       : status === "failed"
         ? "border-destructive/40 text-destructive"
-        : "border-border text-muted-foreground";
+        : status === "running"
+          ? "border-blue-500/40 text-blue-500"
+          : "border-border text-muted-foreground";
   return (
-    <Badge variant="outline" className={`text-[10px] ${tone}`}>
+    <Badge variant="outline" className={cn("shrink-0 text-[10px]", tone)}>
       {status}
     </Badge>
   );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-muted/40 rounded p-2.5">
-      <div className="text-base font-medium">{value}</div>
-      <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
-        {label}
-      </div>
-    </div>
-  );
-}
-
-// One placeholder card per wishlist item. Renders enough scaffolding
-// that a future agent picking up the wishlist work has a concrete
-// home for the data and can swap the placeholder for real content
-// without reshaping the page.
-// Sibling to Pending for wishlist items that now have data. Keeps
-// the same outer card shape so the layout doesn't shift when a stage
-// transitions from no-session to has-session.
-function Captured({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="border-border/40 bg-muted/20 rounded border p-3">
-      <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
-        {label}
-      </div>
-      <div className="mt-1 font-mono text-xs break-all">{value}</div>
-    </div>
-  );
-}
-
-function Pending({ label, source }: { label: string; source: string }) {
-  return (
-    <div className="border-border/40 bg-muted/20 rounded border border-dashed p-3">
-      <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
-        {label}
-      </div>
-      <div className="text-muted-foreground mt-1 text-xs">
-        Not wired yet. Source: {source}.
-      </div>
-    </div>
-  );
-}
-
-function formatDuration(rollup: StageRollup): string {
-  const start = rollup.stage.started_at;
-  const end = rollup.stage.ended_at;
-  if (start === null) return "—";
-  const ended = end ?? Date.now();
-  const ms = ended - start;
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.round(ms / 100) / 10;
-  if (s < 60) return `${s}s`;
-  const minutes = Math.floor(s / 60);
-  const remSec = Math.round(s - minutes * 60);
-  return `${minutes}m ${remSec}s`;
-}
-
-function formatCost(cents: number): string {
-  if (cents === 0) return "$0.00";
-  return `$${(cents / 100).toFixed(2)}`;
 }

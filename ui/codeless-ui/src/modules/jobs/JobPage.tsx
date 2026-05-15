@@ -15,6 +15,7 @@ import {
 import { CostCell, WallClockCell } from "./JobRow";
 import { JobChat } from "./RunPane";
 import { SpecPane } from "./spec/SpecPane";
+import { StageDetail } from "./StageDetail";
 import { StagesOverview } from "./StagesOverview";
 import { StatusBadge } from "./StatusBadge";
 import {
@@ -67,10 +68,27 @@ export function JobPage({
     id: "Stages",
   });
 
-  // Stage tabs opened by the user. A stage tab is created when the user
-  // clicks a stage row in StagesOverview; removed when the user closes
-  // it. Pinned tabs survive notional "reloads" (within this session).
-  const [stageTabs, setStageTabs] = useState<StageTab[]>([]);
+  // Stage tabs opened by the user. Pinned tabs are persisted in
+  // localStorage so they survive page reload. The key is scoped by
+  // jobId so tabs from different jobs don't bleed together.
+  const [stageTabs, setStageTabs] = useState<StageTab[]>(() => {
+    try {
+      const raw = localStorage.getItem(`codeless-pinned-tabs:${jobId}`);
+      if (!raw) return [];
+      const saved = JSON.parse(raw) as Array<{
+        stageId: string;
+        stageName: string;
+      }>;
+      return saved.map((t) => ({
+        kind: "stage" as const,
+        stageId: t.stageId,
+        stageName: t.stageName,
+        pinned: true,
+      }));
+    } catch {
+      return [];
+    }
+  });
 
   // Surface the derived title once when it changes. Pin the callback to
   // a ref so the effect doesn't re-run on every arrow-function recreate.
@@ -82,6 +100,18 @@ export function JobPage({
   useEffect(() => {
     if (derivedTitle) titleCbRef.current?.(derivedTitle);
   }, [derivedTitle]);
+
+  // Persist pinned tabs to localStorage whenever the tab list changes.
+  // Only pinned tabs are stored; unpinned tabs are transient.
+  useEffect(() => {
+    const pinned = stageTabs
+      .filter((t) => t.pinned)
+      .map((t) => ({ stageId: t.stageId, stageName: t.stageName }));
+    localStorage.setItem(
+      `codeless-pinned-tabs:${jobId}`,
+      JSON.stringify(pinned),
+    );
+  }, [stageTabs, jobId]);
 
   // Live-refetch the job row on lifecycle events that mutate it.
   const sseStatus = useEventStreamWithState(
@@ -240,10 +270,8 @@ export function JobPage({
           />
         )}
         {activeTab.kind === "stage" && (
-          // Stage detail tabs are built in stage 5. For now the tab is
-          // openable and closable; the content area is a placeholder so
-          // the user can see the stage id they clicked.
-          <StageTabPlaceholder
+          <StageDetail
+            jobId={jobId}
             stageId={activeTab.stageId}
             stageName={activeTab.stageName}
           />
@@ -410,23 +438,3 @@ function sseStatusVisual(status: SseConnectionStatus): {
   }
 }
 
-// Placeholder shown in a Stage-N tab until stage 5 builds the real
-// detail view. Surfaces the stage id so the user can confirm they
-// clicked the right row.
-function StageTabPlaceholder({
-  stageId,
-  stageName,
-}: {
-  stageId: string;
-  stageName: string;
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-      <div className="text-sm font-medium">{stageName}</div>
-      <div className="text-muted-foreground font-mono text-xs">{stageId}</div>
-      <div className="text-muted-foreground mt-2 text-xs">
-        Stage detail view — coming in stage 5.
-      </div>
-    </div>
-  );
-}
