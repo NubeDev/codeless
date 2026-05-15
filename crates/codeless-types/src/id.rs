@@ -62,3 +62,15 @@ ulid_newtype!(
     "Identity of one atomic runner invocation within a stage."
 );
 ulid_newtype!(ReviewId, "Identity of a review gate attached to a stage.");
+ulid_newtype!(
+    AssistantThreadId,
+    "Identity of one conversational thread on the /assistant surface."
+);
+ulid_newtype!(
+    AssistantMessageId,
+    "Identity of one persisted turn (user, assistant, system, or tool) in an assistant thread."
+);
+ulid_newtype!(
+    AssistantAttachmentId,
+    "Identity of one file uploaded into an assistant thread (`<codeless-data>/threads/<thread_id>/attachments/`)."
+);

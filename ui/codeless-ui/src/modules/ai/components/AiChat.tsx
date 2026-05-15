@@ -64,7 +64,7 @@ type ApprovalArg = {
   reason?: string;
 };
 
-type Props = {
+export type AiChatViewProps = {
   messages: UIMessage[];
   status: ChatStatus;
   error: Error | undefined;
@@ -79,7 +79,7 @@ export function AiChatView({
   error,
   clearError,
   addToolApprovalResponse,
-}: Props) {
+}: AiChatViewProps) {
   const isBusy = status === "submitted" || status === "streaming";
   const lastMessage = messages[messages.length - 1];
   const showSpinner = isBusy && lastMessage?.role === "user";

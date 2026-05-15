@@ -12,6 +12,7 @@ import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
   Briefcase01Icon,
   Cancel01Icon,
+  ChatBotIcon,
   ComputerTerminal02Icon,
   GitCompareIcon,
   Globe02Icon,
@@ -30,6 +31,7 @@ type Props = {
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewJobs: () => void;
+  onNewAssistant: () => void;
   onClose: (id: number) => void;
   /** Pin (promote) a preview tab to persistent on double-click. */
   onPin: (id: number) => void;
@@ -44,6 +46,7 @@ export function TabBar({
   onNewPreview,
   onNewEditor,
   onNewJobs,
+  onNewAssistant,
   onClose,
   onPin,
   compact,
@@ -186,6 +189,14 @@ export function TabBar({
               <span className="flex-1">Jobs</span>
               <span className="text-xs text-muted-foreground">{fmtShortcut(MOD_KEY, "J")}</span>
             </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onNewAssistant()}>
+              <HugeiconsIcon
+                icon={ChatBotIcon}
+                size={14}
+                strokeWidth={1.75}
+              />
+              <span className="flex-1">Assistant</span>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -228,6 +239,16 @@ function TabIcon({ tab }: { tab: Tab }) {
       />
     );
   }
+  if (tab.kind === "assistant") {
+    return (
+      <HugeiconsIcon
+        icon={ChatBotIcon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0"
+      />
+    );
+  }
   if (tab.kind === "job-detail") {
     // Same briefcase icon as the jobs list, but in muted tone so the
     // strip reads "this is a job thing" at a glance and the
@@ -257,6 +278,7 @@ function labelFor(t: Tab): string {
   if (t.kind === "ai-diff") return t.title;
   if (t.kind === "jobs") return t.title;
   if (t.kind === "job-detail") return t.title;
+  if (t.kind === "assistant") return t.title;
   if (!t.cwd) return t.title;
   const parts = t.cwd.split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : "/";

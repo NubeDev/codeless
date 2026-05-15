@@ -20,21 +20,25 @@ pub use codeless_types::{
 };
 pub use error::{RpcError, RpcResult};
 pub use methods::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    ChatAttachmentRef, ChatContext, ChatMode, ClaudeStatus, CommentReviewArgs, DeleteJobArgs,
-    DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
-    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
-    FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
-    JobContextRef, JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, JobReportArgs,
-    JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage, JobReportToolCall,
-    JobReportTurn, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, ChatAttachmentRef, ChatContext, ChatMode,
+    ClaudeStatus, CommentReviewArgs, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
+    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobContextRef, JobDiffArgs,
+    JobDiffFile, JobDiffResult, JobFileEntry, JobReportArgs, JobReportEventTally, JobReportResult,
+    JobReportSpecChange, JobReportStage, JobReportToolCall, JobReportTurn,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
     ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
     PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
     RunnerInfo, ServerInfo, StageRollup, StartJobArgs, StopActiveArgs, StopActiveResult,
     StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UserPromptSnippet, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UserPromptSnippet, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

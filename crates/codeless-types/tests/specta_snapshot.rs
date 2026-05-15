@@ -9,11 +9,14 @@
 use std::path::PathBuf;
 
 use codeless_types::{
-    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, CostCents, DetachPolicy,
-    DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job,
-    JobId, JobStatus, ListWorkspacesResult, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
-    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
+    AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
+    AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
+    AssistantThread, AssistantThreadId, AttachWorkspaceArgs, AttachWorkspaceResult,
+    AttachedWorkspace, CostCents, DetachPolicy, DetachWorkspaceArgs, Event, EventCursor,
+    EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId, JobStatus, ListWorkspacesResult,
+    Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task,
+    TaskId, TaskStatus, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -53,7 +56,17 @@ fn collect() -> TypeCollection {
         .register_mut::<ValidateWorkspacePathArgs>()
         .register_mut::<ValidateWorkspacePathResult>()
         .register_mut::<WorkspaceProblem>()
-        .register_mut::<WorkspaceError>();
+        .register_mut::<WorkspaceError>()
+        .register_mut::<AssistantThreadId>()
+        .register_mut::<AssistantMessageId>()
+        .register_mut::<AssistantAttachmentId>()
+        .register_mut::<AssistantThread>()
+        .register_mut::<AssistantMessage>()
+        .register_mut::<AssistantMessageRole>()
+        .register_mut::<AssistantAttachment>()
+        .register_mut::<AssistantAction>()
+        .register_mut::<AssistantActionStatus>()
+        .register_mut::<AssistantActionCard>();
     types
 }
 

@@ -6,21 +6,26 @@ use axum::{
     Json, Router,
 };
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, AttachWorkspaceArgs,
-    AttachWorkspaceResult, CancelChatTaskArgs, CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs,
-    DetachWorkspaceArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
-    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
-    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
-    JobReportArgs, JobReportResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs,
-    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
-    ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, AttachWorkspaceArgs, AttachWorkspaceResult,
+    CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
+    ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
+    DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DetachWorkspaceArgs,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
-use codeless_types::{Job, Repo, Review};
+use codeless_types::{AssistantThread, Job, Repo, Review};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -75,6 +80,35 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             "/rpc/validate_workspace_path",
             post(validate_workspace_path),
+        )
+        .route("/rpc/list_assistant_threads", post(list_assistant_threads))
+        .route(
+            "/rpc/create_assistant_thread",
+            post(create_assistant_thread),
+        )
+        .route(
+            "/rpc/delete_assistant_thread",
+            post(delete_assistant_thread),
+        )
+        .route(
+            "/rpc/upload_assistant_attachment",
+            post(upload_assistant_attachment),
+        )
+        .route(
+            "/rpc/list_assistant_messages",
+            post(list_assistant_messages),
+        )
+        .route(
+            "/rpc/append_assistant_message",
+            post(append_assistant_message),
+        )
+        .route(
+            "/rpc/confirm_assistant_action",
+            post(confirm_assistant_action),
+        )
+        .route(
+            "/rpc/cancel_assistant_action",
+            post(cancel_assistant_action),
         )
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
@@ -518,6 +552,94 @@ async fn validate_workspace_path(
 ) -> HandlerResult<ValidateWorkspacePathResult> {
     st.rpc
         .validate_workspace_path(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_assistant_threads(
+    State(st): State<AppState>,
+    Json(args): Json<ListAssistantThreadsArgs>,
+) -> HandlerResult<ListAssistantThreadsResult> {
+    st.rpc
+        .list_assistant_threads(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn create_assistant_thread(
+    State(st): State<AppState>,
+    Json(args): Json<CreateAssistantThreadArgs>,
+) -> HandlerResult<AssistantThread> {
+    st.rpc
+        .create_assistant_thread(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn delete_assistant_thread(
+    State(st): State<AppState>,
+    Json(args): Json<DeleteAssistantThreadArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .delete_assistant_thread(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn upload_assistant_attachment(
+    State(st): State<AppState>,
+    Json(args): Json<UploadAssistantAttachmentArgs>,
+) -> HandlerResult<UploadAssistantAttachmentResult> {
+    st.rpc
+        .upload_assistant_attachment(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_assistant_messages(
+    State(st): State<AppState>,
+    Json(args): Json<ListAssistantMessagesArgs>,
+) -> HandlerResult<ListAssistantMessagesResult> {
+    st.rpc
+        .list_assistant_messages(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn append_assistant_message(
+    State(st): State<AppState>,
+    Json(args): Json<AppendAssistantMessageArgs>,
+) -> HandlerResult<AppendAssistantMessageResult> {
+    st.rpc
+        .append_assistant_message(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn confirm_assistant_action(
+    State(st): State<AppState>,
+    Json(args): Json<ConfirmAssistantActionArgs>,
+) -> HandlerResult<ConfirmAssistantActionResult> {
+    st.rpc
+        .confirm_assistant_action(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn cancel_assistant_action(
+    State(st): State<AppState>,
+    Json(args): Json<CancelAssistantActionArgs>,
+) -> HandlerResult<CancelAssistantActionResult> {
+    st.rpc
+        .cancel_assistant_action(args)
         .await
         .map(Json)
         .map_err(map_err)
