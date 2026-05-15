@@ -553,12 +553,28 @@ export type GitAuth = { kind: "ssh"; key_path: string } | { kind: "token"; env_v
  *  A blank handover is forbidden (JOB-MODEL.md): at minimum the
  *  "Done" section must say *something*, even if it's "session aborted
  *  at <stage>, recovery needed".
+ * 
+ *  `raw_tail` carries everything in the handover body that follows
+ *  the four canonical sections. It exists so the
+ *  `SCOPE-PATCH-BEGIN` / `SCOPE-PATCH-END` block that the runtime's
+ *  `scope_patch_emit` parser reads survives a parse-and-serialise
+ *  round-trip of this struct: without it, a UI that displays a
+ *  handover (Surface B, per-job patch inbox) and writes the same
+ *  struct back would silently drop the proposal. The runtime's
+ *  emitter reads the on-disk file body unchanged — `raw_tail` only
+ *  guarantees the wire-shape doesn't lose the trailer.
+ * 
+ *  Adding this field is the wire-schema bump that ships alongside
+ *  Surface B: pre-bump JSON has no `raw_tail` key, so the field is
+ *  `#[serde(default)]` (deserialises to `None`) for one-way
+ *  compatibility with older payloads that never carried it.
  */
 export type Handover = {
 	done: string[],
 	next: string[],
 	what_you_need_to_know: string[],
 	open_questions: string[],
+	raw_tail?: string | null,
 };
 
 // One unit of work the user kicked off — see SCOPE.md Appendix A `jobs`.

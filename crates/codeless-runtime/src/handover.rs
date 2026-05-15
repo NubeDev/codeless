@@ -243,6 +243,7 @@ pub fn default_handover(runner: &str, status: JobStatus) -> Handover {
                 .into(),
         ],
         open_questions: Vec::new(),
+        raw_tail: None,
     }
 }
 
