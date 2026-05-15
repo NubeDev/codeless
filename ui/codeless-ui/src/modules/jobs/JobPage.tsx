@@ -364,7 +364,10 @@ const TERMINAL_STATUSES: Set<Job["status"]> = new Set([
   "stopped",
 ]);
 
-function PageHeader({
+// Exported for unit tests that assert action-button visibility per
+// status (e.g. the Reset button gating in JobPage.reset.test.tsx).
+// Production callers go through JobPage; do not import elsewhere.
+export function PageHeader({
   job,
   repoName,
   now,
@@ -382,7 +385,9 @@ function PageHeader({
   refetchJob: () => void;
 }) {
   const rpc = useRpc();
-  const [busy, setBusy] = useState<"stop" | "rerun" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"stop" | "rerun" | "delete" | "reset" | null>(
+    null,
+  );
   const [err, setErr] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -396,6 +401,15 @@ function PageHeader({
     job.status === "failed" ||
     job.status === "completed";
   const canDelete = canEdit && job.status !== "queued";
+  // Recovery hatch surfaces only for the three states the runtime
+  // accepts on the `reset_job` edge — Queued (driver gave up after
+  // retry-exhaustion), Failed, Stopped. Never visible while the job
+  // is Running / AwaitingReview / Paused / Completed: those have
+  // their own transitions.
+  const canReset =
+    job.status === "queued" ||
+    job.status === "failed" ||
+    job.status === "stopped";
 
   const deleteJob = async () => {
     setBusy("delete");
@@ -414,6 +428,19 @@ function PageHeader({
     setErr(null);
     try {
       await rpc.call("stop_job", { job_id: job.id });
+      refetchJob();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const reset = async () => {
+    setBusy("reset");
+    setErr(null);
+    try {
+      await rpc.call("reset_job", { job_id: job.id });
       refetchJob();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -483,6 +510,18 @@ function PageHeader({
               title="Queue a fresh run with the same prompt, runner, and caps"
             >
               {busy === "rerun" ? "queuing…" : "re-run"}
+            </Button>
+          )}
+          {canReset && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => void reset()}
+              disabled={busy !== null}
+              title="Return this job to Draft so it can be edited and re-submitted"
+            >
+              {busy === "reset" ? "resetting…" : "reset"}
             </Button>
           )}
           {canEdit && (

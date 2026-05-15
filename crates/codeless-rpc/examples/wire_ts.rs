@@ -31,8 +31,8 @@ use codeless_rpc::methods::{
     GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
     ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, RunnerInfo, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
+    RemoveRepoArgs, ResetJobArgs, RunnerInfo, ServerInfo, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
     UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
     UserPromptSnippet,
 };
@@ -89,6 +89,7 @@ fn collect() -> TypeCollection {
         .register_mut::<ListJobsResult>()
         .register_mut::<StopJobArgs>()
         .register_mut::<StartJobArgs>()
+        .register_mut::<ResetJobArgs>()
         .register_mut::<ListReviewsArgs>()
         .register_mut::<ListReviewsResult>()
         .register_mut::<ApproveReviewArgs>()
