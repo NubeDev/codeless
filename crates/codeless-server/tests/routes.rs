@@ -76,6 +76,7 @@ async fn server_info_returns_configured_snapshot_without_token() {
         worktree_root: Some("/tmp/demo/.codeless/worktrees".into()),
         claude: None,
         available_cli_runners: Vec::new(),
+        feature_flags: Default::default(),
     };
     let state = AppState::new(rpc, TOKEN).with_server_info(info.clone());
     let app = build_router(state);

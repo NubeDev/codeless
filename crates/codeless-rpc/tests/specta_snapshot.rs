@@ -21,8 +21,8 @@ use codeless_rpc::methods::{
     ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
     ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
     ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RunnerInfo, ServerInfo, StageRollup,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RunnerInfo, ServerFeatureFlags, ServerInfo,
+    StageRollup, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
     UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
     UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteHandoverArgs,
     WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
@@ -59,6 +59,7 @@ fn collect() -> TypeCollection {
         .register_mut::<RunnerInfo>()
         .register_mut::<ClaudeStatus>()
         .register_mut::<ServerInfo>()
+        .register_mut::<ServerFeatureFlags>()
         .register_mut::<JobDiffArgs>()
         .register_mut::<JobDiffFile>()
         .register_mut::<JobDiffResult>()

@@ -17,7 +17,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
-use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerInfo};
+use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerFeatureFlags, ServerInfo};
 use codeless_runtime::{
     parse_permission_mode, spawn_job_driver_loop, spawn_notifier, spawn_stage_recorder,
     template::JobTemplate, template_runner::TemplateRunner, AnthropicRunnerAdapter,
@@ -538,6 +538,14 @@ fn build_server_info(
         worktree_root: worktree_root.as_ref().map(|p| p.display().to_string()),
         claude,
         available_cli_runners,
+        // Capability flags default to `false`. Step 2 of the
+        // scope-mutable-ui ramp lands the handover-schema fix that
+        // round-trips `<!-- SCOPE-PATCH-* -->` markers, and flips
+        // `scope_patch_handover_round_trip` here at the same time —
+        // until then the UI's REVIEW-gate panel must omit the
+        // patch-counter row rather than display a number that the
+        // runtime cannot back.
+        feature_flags: ServerFeatureFlags::default(),
     }
 }
 

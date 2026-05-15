@@ -9,9 +9,13 @@ import {
   useRpc,
   type EventEnvelope,
   type JobId,
+  type PreCheckOutcome,
+  type ReviewVerdict,
+  type ScopePatchId,
   type StageRollup,
 } from "@/lib/rpc";
 
+import { ReviewGatePanel } from "./ReviewGatePanel";
 import { StageChat } from "./StageChat";
 
 // ------------------------------------------------------------------ types
@@ -46,6 +50,15 @@ interface StageState {
   // in-flight transitions without waiting for a database write.
   liveStatus: StageStatus | null;
   children: ChildRow[];
+  // Most recent REVIEW-gate diagnostics for this stage, populated
+  // for stages that emit them. Null when no event has arrived yet
+  // (or for non-REVIEW stages, which never emit either).
+  precheck: PreCheckOutcome | null;
+  verdict: ReviewVerdict | null;
+  // Set of patch ids the runtime has emitted a `ScopePatchProposed`
+  // event for on this stage. Stored as a set so SSE replays after a
+  // reconnect cannot double-count the same proposal.
+  patchIds: Set<ScopePatchId>;
 }
 
 // ------------------------------------------------------------------ reducer
@@ -233,6 +246,21 @@ function applyEvent(state: StageState, env: EventEnvelope): StageState {
       };
     }
 
+    case "review-pre-check":
+      return { ...state, precheck: e.outcome };
+
+    case "review-verdict":
+      return { ...state, verdict: e.verdict };
+
+    case "scope-patch-proposed": {
+      // Dedup on patch_id so an SSE replay cannot inflate the count.
+      // The `Set` is cloned (not mutated) so React notices the change.
+      if (state.patchIds.has(e.patch_id)) return state;
+      const next = new Set(state.patchIds);
+      next.add(e.patch_id);
+      return { ...state, patchIds: next };
+    }
+
     default:
       return state;
   }
@@ -303,13 +331,29 @@ export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) 
     rollup: null,
     liveStatus: null,
     children: [],
+    precheck: null,
+    verdict: null,
+    patchIds: new Set<ScopePatchId>(),
   });
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // `feature_flags.scope_patch_handover_round_trip` from `ServerInfo`.
+  // Until Step 2 of the scope-mutable-ui ramp lands the handover-schema
+  // fix and the runtime flips this to `true`, the `Patches proposed: N`
+  // counter row stays omitted (decision OQ#1 — never ship a counter
+  // gated on a half-built capability).
+  const [patchCounterEnabled, setPatchCounterEnabled] = useState(false);
 
   // Seed rollup from persisted data on mount / stageId change.
   useEffect(() => {
     let cancelled = false;
-    setStage({ rollup: null, liveStatus: null, children: [] });
+    setStage({
+      rollup: null,
+      liveStatus: null,
+      children: [],
+      precheck: null,
+      verdict: null,
+      patchIds: new Set<ScopePatchId>(),
+    });
     setFetchError(null);
     rpc
       .call("list_stages", { job_id: jobId })
@@ -348,6 +392,28 @@ export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) 
 
   useEventStream({ scope: "job", job_id: jobId }, onEvent);
 
+  // Read the patch-counter feature flag once. `serverInfo` is a boot
+  // snapshot — the flag never flips at runtime, so a single fetch per
+  // mount is enough; cache misses fall through silently to the
+  // "counter omitted" default rather than blocking the panel.
+  useEffect(() => {
+    let cancelled = false;
+    rpc
+      .serverInfo()
+      .then((info) => {
+        if (cancelled) return;
+        setPatchCounterEnabled(
+          info.feature_flags?.scope_patch_handover_round_trip === true,
+        );
+      })
+      .catch(() => {
+        // Silent: the panel still renders, just without the counter row.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc]);
+
   const status = resolvedStatus(stage);
   const rollup = stage.rollup;
   const displayName =
@@ -364,6 +430,17 @@ export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) 
   );
 
   const capturedSessionId = rollup?.stage.session_id ?? null;
+
+  // The runtime tags REVIEW stages by prefixing the stored stage
+  // name with `REVIEW ` (see `template_runner` `name_for_event`).
+  // Falling back to the chat-tab `stageName` covers the brief window
+  // before `list_stages` returns; the second condition catches stages
+  // that have already emitted a REVIEW event (defensive — the prefix
+  // should always be present once `rollup` lands).
+  const reviewByName = (rollup?.stage.name ?? stageName ?? "")
+    .startsWith("REVIEW ");
+  const reviewByEvent = stage.precheck !== null || stage.verdict !== null;
+  const isReview = reviewByName || reviewByEvent;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -398,6 +475,22 @@ export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) 
               )}
             </p>
           </Section>
+
+          {/* REVIEW gate panel — Surface A. Summary of the most-recent
+              `ReviewPreCheck` and `ReviewVerdict` events for this
+              stage; the raw events stay in the timeline (decision
+              OQ#6). Patch counter omitted unless the runtime
+              advertises the handover round-trip capability. */}
+          {isReview && (
+            <Section label="Review gate">
+              <ReviewGatePanel
+                precheck={stage.precheck}
+                verdict={stage.verdict}
+                patchesProposed={stage.patchIds.size}
+                patchCounterEnabled={patchCounterEnabled}
+              />
+            </Section>
+          )}
 
           {/* TICKS */}
           {stage.children.length > 0 && (
