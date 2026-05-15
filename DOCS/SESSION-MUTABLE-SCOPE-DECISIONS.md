@@ -181,6 +181,113 @@ signal. Two-citation gating plus categorical-phrase gating biases
 toward *patterns the human keeps re-explaining*, which is the
 correct trigger.
 
+## Q7 — Step 4 kill-criterion telemetry sink
+
+**Decision: the events bus, via a new `ScopePatchProposed` event
+variant on `codeless_types::Event`. No new persistence store.**
+
+Step 4 of the ramp ships REVIEW-emitted `ScopePatch` proposals in
+*shadow mode* — they accumulate in `DOCS/SCOPE-PROPOSED.md` but
+nothing yet acts on them. The shadow window has an explicit
+kill-criterion (the ramp doc: "if N consecutive REVIEW stages emit
+zero useful proposals, the gating loop is wrong"), and answering it
+requires counting proposals by stage, by reason, by acceptance
+outcome. That telemetry has to flow through *some* sink.
+
+R4 ("SQLite is source of truth; no new persistence store for patch
+data") plus the existing event bus already carrying every other
+stage-level signal (`ReviewRequested`, `ReviewApproved`,
+`TaskCompleted`, …) makes the choice mechanical: the proposal is an
+event, not a row.
+
+**Wire shape.** A new variant added to `codeless_types::Event`:
+
+```rust
+#[serde(rename = "scope-patch-proposed")]
+ScopePatchProposed {
+    stage_id: StageId,
+    review_id: ReviewId,
+    patch_id: ScopePatchId,
+    kind: ScopePatchKind, // Tighten | Loosen
+    target: ScopePatchTarget, // which mutable file
+    evidence_stage_id: Option<StageId>, // Loosen only
+    has_predicate: bool, // Tighten only; predicate file landed in same proposal
+},
+```
+
+`ScopePatchId`, `ScopePatchKind`, `ScopePatchTarget` are all
+defined in the same `codeless-types` module as `ScopePatch` itself
+(Step 4 land), so the event is mobile-safe by construction. The
+event carries identifiers and discriminants only, not the full patch
+body; consumers that need the body read `DOCS/SCOPE-PROPOSED.md` at
+the commit pinned in the event's standard envelope fields.
+
+**Aggregation.** The kill-criterion query — "how many proposals in
+the last K REVIEW stages, of those how many landed, of those how
+many had non-zero predicate count" — runs against the existing
+events table. No new schema, no new index beyond the ones already
+indexing `event_type`.
+
+**What this rules out.** A separate `scope_patch_proposals` table
+(violates R4, duplicates events). A metrics-only counter (no
+per-proposal drill-down). A log line (not queryable without
+ingesting log files into a second store).
+
+## Event naming — `ReviewRequested` vs a new `ReviewGate*` family
+
+**Decision: keep `ReviewRequested` for the existing pre-gate
+human-review flow; do not rename. The Step 1 blocking REVIEW stage
+type reuses the existing `Review*` event family
+(`ReviewRequested` / `ReviewApproved` / `ReviewCommented` /
+`ReviewStopped`); no `ReviewGate*` variants are introduced.**
+
+Two semantically distinct things are both called "review" in this
+ramp:
+
+1. **Human review of a stage's output** — already wired:
+   `ReviewRequested`, `ReviewApproved`, `ReviewCommented`,
+   `ReviewStopped` in `codeless_types::Event`. The UI's Spec/Review
+   pane subscribes to these.
+2. **Step 1 blocking REVIEW *stage type*** — a stage in the job
+   template whose `PASS` / `FAIL` sentinel decides whether the next
+   stage runs. The model is the actor; the human is not in the loop
+   on the hot path. The blocking gate's lifecycle hooks would
+   otherwise need their own event variants (e.g.
+   `ReviewGateEntered`, `ReviewGatePassed`, `ReviewGateFailed`).
+
+Pulling this decision forward of Step 1 matters because the wire
+contract for events is observable on the SSE stream — adding
+`ReviewGate*` later, after subscribers have shipped, is a wire
+change.
+
+**Why reuse, not introduce a parallel family.**
+
+- The blocking-gate stage already produces a `StageStarted` /
+  `StageCompleted` pair via the existing stage-runner plumbing, plus
+  a `TaskCompleted` with a `TaskStatus` that already encodes
+  pass/fail. A third event family for the same transitions is
+  redundant.
+- The verdict comes from the `PASS:` / `FAIL:` sentinel in handover
+  (per the ramp doc Step 1). The sentinel is parsed by
+  `template_runner.rs`; the result is a status, not a new event
+  kind. Downstream consumers that care about gate verdicts read
+  `TaskStatus` off `TaskCompleted` filtered by stage-type =
+  `review`.
+- A `ReviewRequested` event continues to mean exactly what it means
+  today: a *human* was asked to weigh in. Conflating it with the
+  model-driven blocking gate would muddle subscribers (the UI's
+  inbox listens for `ReviewRequested` and renders a card; a
+  per-stage automated gate would spam the inbox).
+
+**Consequence.** Step 1 lands without touching `Event`. Step 4 adds
+exactly one variant (`ScopePatchProposed`, above). The schema-bump
+budget for the ramp is one event variant, total.
+
+**If a future stage needs gate-specific telemetry** — e.g. surfacing
+the gate's FAIL reason without re-reading handover — that is a
+follow-up with its own `schema_version` bump and migration; do not
+pre-empt it here.
+
 ## Provenance
 
 This file is authored by stage 1 of the `session-mutable-scope` job
