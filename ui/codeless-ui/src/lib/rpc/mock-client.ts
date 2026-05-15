@@ -750,7 +750,12 @@ export class MockRpcClient implements RpcClient {
             `job ${a.job_id} has no worktree yet; the runner must run before a handover can be seeded`,
           );
         }
-        const path = `${job.worktree_path}/runs/${a.job_id}/handover.md`;
+        // Handover is keyed per-stage (JOB-MODEL.md H1). The mock
+        // does not model stages; substitute a fixed `mock-stage`
+        // segment so the synthetic path retains the per-stage shape
+        // the real runtime uses.
+        const stageSeg = a.stage_id ?? "mock-stage";
+        const path = `${job.worktree_path}/runs/${a.job_id}/${stageSeg}/handover.md`;
         // Stash under the synthetic file path so a subsequent
         // `fs_read_file` from HandoverPanel finds it. Same contract
         // as the real runtime.

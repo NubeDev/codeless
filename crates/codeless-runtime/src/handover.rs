@@ -1,46 +1,133 @@
-//! Writes the JOB-MODEL.md session-handover file on job termination.
+//! Writes the JOB-MODEL.md session-handover file on stage termination.
 //!
-//! `runs/<job_id>/handover.md` is the contract between sessions
-//! (DOCS/JOB-MODEL.md). The runtime always writes it on terminal
-//! status — even if all the runner gave us was "Completed" — so the
-//! next session has *something* to read. Real runners can produce
-//! richer content by emitting a structured handover the driver can
-//! extract; that path lands separately.
+//! `runs/<job_id>/<stage_id>/handover.md` is the contract between
+//! sessions (DOCS/JOB-MODEL.md). The file is written per-stage, not
+//! per-job: each stage produces exactly one handover, addressed by the
+//! `(job_id, stage_id)` key that the next session can resolve from the
+//! store. The mtime-ranked discovery that this module used to support
+//! is gone — picking the newest handover on disk could (and did)
+//! straddle unrelated jobs.
 //!
-//! Errors writing the file are logged at warn level but never fail
-//! the job: the job already succeeded by the time we get here, and
-//! losing the handover is recoverable (the next session re-derives
-//! state from the diff and the events stream). The alternative —
-//! marking a Completed job as Failed because a markdown file did not
-//! land — is a worse failure mode.
+//! Validation (H7): a handover whose `done` or `next` is empty is
+//! rejected at write time. `done` may not be empty because a stage
+//! that completes legitimately always landed *something* (even an
+//! aborted stage records the abort). `next` may not be empty because
+//! the canonical next action is the seed prompt for the next session;
+//! a blank `next` would force the next session to re-derive its first
+//! move from the diff, defeating the contract.
 
 use std::path::Path;
 
-use codeless_types::{Handover, JobId, JobStatus};
+use codeless_types::{Handover, JobId, JobStatus, StageId};
 use tokio::fs;
 
-/// Construct the conventional handover path for a job inside its
-/// worktree: `<worktree_root>/runs/<job_id>/handover.md`. Kept as a
-/// free function so the UI (`HandoverPanel.tsx`) can mirror the same
-/// convention by hand without us re-exporting through TS — the path
-/// shape is wire-stable and the UI's two-candidate probe already
-/// names this layout.
-pub fn handover_path(worktree_root: &Path, job_id: JobId) -> std::path::PathBuf {
+/// Construct the conventional handover path for a stage:
+/// `<worktree_root>/runs/<job_id>/<stage_id>/handover.md`. Kept as a
+/// free function so the UI and the archive path
+/// (`session_idle::handover_archive_path`) can mirror the same
+/// convention without re-exporting through TS.
+pub fn handover_path(worktree_root: &Path, job_id: JobId, stage_id: StageId) -> std::path::PathBuf {
     worktree_root
         .join("runs")
         .join(job_id.to_string())
+        .join(stage_id.to_string())
         .join("handover.md")
 }
 
-/// Write `handover` to `runs/<job_id>/handover.md` inside `worktree`.
-/// Creates the parent directories if missing. Returns the path that
-/// was written on success.
+/// Validation error emitted by [`validate_handover`]. The two empty-
+/// section variants are the H7 floor: a handover that fails either
+/// check is shipped against the runtime's intent, not what the
+/// JOB-MODEL.md contract promises the next session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandoverValidationError {
+    EmptyDone,
+    EmptyNext,
+}
+
+impl std::fmt::Display for HandoverValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HandoverValidationError::EmptyDone => f.write_str(
+                "handover `Done` section is empty; a stage that finished must record what landed \
+                 (even an aborted stage records the abort)",
+            ),
+            HandoverValidationError::EmptyNext => f.write_str(
+                "handover `Next` section is empty; the canonical next action is the seed prompt \
+                 for the next session and may not be blank",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HandoverValidationError {}
+
+/// Error type returned by [`write_handover`]. Distinguishes the "you
+/// gave me a malformed handover" case from the "the filesystem said
+/// no" case so callers (and logs) can act on each separately.
+#[derive(Debug)]
+pub enum HandoverWriteError {
+    Validation(HandoverValidationError),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for HandoverWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HandoverWriteError::Validation(e) => write!(f, "handover validation failed: {e}"),
+            HandoverWriteError::Io(e) => write!(f, "handover write failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for HandoverWriteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HandoverWriteError::Validation(e) => Some(e),
+            HandoverWriteError::Io(e) => Some(e),
+        }
+    }
+}
+
+impl From<HandoverValidationError> for HandoverWriteError {
+    fn from(value: HandoverValidationError) -> Self {
+        HandoverWriteError::Validation(value)
+    }
+}
+
+impl From<std::io::Error> for HandoverWriteError {
+    fn from(value: std::io::Error) -> Self {
+        HandoverWriteError::Io(value)
+    }
+}
+
+/// Reject handovers whose `Done` or `Next` sections are empty. The
+/// runtime calls this from `write_handover` so a malformed write
+/// surfaces as an error rather than landing a useless markdown file.
+/// Callers that want to skip the file write entirely (because the
+/// runner emitted no usable text) should not call `write_handover` at
+/// all — there is no "write a placeholder anyway" path.
+pub fn validate_handover(h: &Handover) -> Result<(), HandoverValidationError> {
+    if h.done.iter().all(|s| s.trim().is_empty()) {
+        return Err(HandoverValidationError::EmptyDone);
+    }
+    if h.next.iter().all(|s| s.trim().is_empty()) {
+        return Err(HandoverValidationError::EmptyNext);
+    }
+    Ok(())
+}
+
+/// Write `handover` to `runs/<job_id>/<stage_id>/handover.md` inside
+/// `worktree`. Creates the parent directories if missing. Validates
+/// the handover first; an invalid one is rejected before any
+/// filesystem state changes.
 pub async fn write_handover(
     worktree: &Path,
     job_id: JobId,
+    stage_id: StageId,
     handover: &Handover,
-) -> std::io::Result<std::path::PathBuf> {
-    let path = handover_path(worktree, job_id);
+) -> Result<std::path::PathBuf, HandoverWriteError> {
+    validate_handover(handover)?;
+    let path = handover_path(worktree, job_id, stage_id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
@@ -133,11 +220,11 @@ fn find_fenced_block(text: &str) -> Option<&str> {
     None
 }
 
-/// Fallback handover for jobs whose runner did not produce structured
-/// output (mock runner, any runner that finished before we wired in
-/// structured extraction). Names the runner that ran and the terminal
-/// status; the "Next" section is intentionally a single hint rather
-/// than empty so an operator reading it sees a sentence, not a blank.
+/// Fallback handover for stages whose runner did not produce
+/// structured output (mock runner, any runner that finished before we
+/// wired in structured extraction). Names the runner that ran and the
+/// terminal status; the "Next" section is intentionally a single hint
+/// rather than empty so the H7 write-time check still accepts it.
 pub fn default_handover(runner: &str, status: JobStatus) -> Handover {
     let done_line = match status {
         JobStatus::Completed => format!("`{runner}` run completed without writing a handover"),
@@ -159,46 +246,52 @@ pub fn default_handover(runner: &str, status: JobStatus) -> Handover {
     }
 }
 
-/// Locate the most recently written handover under
-/// `<repo_path>/.codeless/worktrees/job-*/runs/*/handover.md`. Returns
-/// the file's path and parsed content; `None` if no readable handover
-/// is present. The selection is "newest by mtime" — good enough until
-/// the path layout migrates to `<repo>/runs/<name>/handover.md`
-/// (JOB-MODEL.md's spec; today we still write per-worktree per-ulid).
+/// Look up the handover for a specific `(job_id, stage_id)` pair under
+/// `<repo_path>/.codeless/worktrees/*/runs/<job_id>/<stage_id>/handover.md`.
+/// Returns the resolved path and parsed body, or `None` if no readable
+/// handover is present for that key.
 ///
-/// Errors reading individual files are swallowed: a half-written
-/// handover from a crashed run should not block the next session's
-/// pickup. The caller can decide what to do with a `None` (mock
-/// runner: probably skip the prefix; real runner: same).
-pub async fn find_latest_handover(repo_path: &Path) -> Option<(std::path::PathBuf, Handover)> {
+/// This is the H3 replacement for the old `find_latest_handover` mtime
+/// ranking. The caller chooses which stage they want a handover from;
+/// the lookup never silently switches to a different job's handover
+/// just because that file happens to be newer on disk. Multiple
+/// worktree directories are scanned (a job can leave more than one
+/// worktree behind across re-runs); on collision the first readable
+/// match wins, which is acceptable because two worktrees writing the
+/// same `(job_id, stage_id)` is already a workflow bug the user must
+/// triage.
+pub async fn find_handover(
+    repo_path: &Path,
+    job_id: JobId,
+    stage_id: StageId,
+) -> Option<(std::path::PathBuf, Handover)> {
     let worktrees = repo_path.join(".codeless").join("worktrees");
     let mut wt_dir = match tokio::fs::read_dir(&worktrees).await {
         Ok(d) => d,
         Err(_) => return None,
     };
-    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
     while let Ok(Some(wt_entry)) = wt_dir.next_entry().await {
-        let runs = wt_entry.path().join("runs");
-        let mut runs_dir = match tokio::fs::read_dir(&runs).await {
-            Ok(d) => d,
-            Err(_) => continue,
+        let candidate = wt_entry
+            .path()
+            .join("runs")
+            .join(job_id.to_string())
+            .join(stage_id.to_string())
+            .join("handover.md");
+        let Ok(meta) = tokio::fs::metadata(&candidate).await else {
+            continue;
         };
-        while let Ok(Some(job_entry)) = runs_dir.next_entry().await {
-            let candidate = job_entry.path().join("handover.md");
-            let meta = match tokio::fs::metadata(&candidate).await {
-                Ok(m) if m.is_file() => m,
-                _ => continue,
-            };
-            let mtime = meta.modified().ok()?;
-            if best.as_ref().map_or(true, |(t, _)| mtime > *t) {
-                best = Some((mtime, candidate));
-            }
+        if !meta.is_file() {
+            continue;
         }
+        let Ok(body) = tokio::fs::read_to_string(&candidate).await else {
+            continue;
+        };
+        let Ok(handover) = Handover::from_markdown(&body) else {
+            continue;
+        };
+        return Some((candidate, handover));
     }
-    let (_, path) = best?;
-    let body = tokio::fs::read_to_string(&path).await.ok()?;
-    let handover = Handover::from_markdown(&body).ok()?;
-    Some((path, handover))
+    None
 }
 
 /// Render a handover as a prompt prefix the next runner sees. Names
@@ -224,15 +317,18 @@ mod tests {
     use codeless_types::JobStatus;
 
     #[tokio::test]
-    async fn writes_handover_to_runs_subdir() {
+    async fn writes_handover_to_per_stage_subdir() {
         let tmp = tempfile::tempdir().unwrap();
         let job_id = JobId::new();
+        let stage_id = StageId::new();
         let h = default_handover("mock", JobStatus::Completed);
-        let written = write_handover(tmp.path(), job_id, &h).await.unwrap();
+        let written = write_handover(tmp.path(), job_id, stage_id, &h)
+            .await
+            .unwrap();
         let body = std::fs::read_to_string(&written).unwrap();
         assert!(body.contains("## Done"));
         assert!(body.contains("`mock` run completed"));
-        assert!(written.ends_with(format!("runs/{job_id}/handover.md")));
+        assert!(written.ends_with(format!("runs/{job_id}/{stage_id}/handover.md")));
     }
 
     #[test]
@@ -295,59 +391,159 @@ trailing prose";
         let h = fallback_handover_from_text("claude", JobStatus::Completed, &long, 200);
         assert!(h.done[0].contains("`claude`"));
         assert!(h.done[0].contains("did not emit"));
-        // The truncated body lives in what_you_need_to_know, prefixed
-        // with the ellipsis marker we put there to signal a cut.
         let body = &h.what_you_need_to_know[0];
         assert!(body.starts_with('…'));
         assert!(body.chars().count() <= 201);
     }
 
-    #[tokio::test]
-    async fn find_latest_handover_picks_newest_by_mtime() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path();
-        let older_job = JobId::new();
-        let newer_job = JobId::new();
-        // Layout: <repo>/.codeless/worktrees/job-<id>/runs/<id>/handover.md
-        let older_wt = repo
-            .join(".codeless/worktrees")
-            .join(format!("job-{older_job}"));
-        let newer_wt = repo
-            .join(".codeless/worktrees")
-            .join(format!("job-{newer_job}"));
-        write_handover(
-            &older_wt,
-            older_job,
-            &Handover {
-                done: vec!["older".into()],
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        // Sleep a hair so the mtime ordering is observable; tokio's
-        // tempdir doesn't guarantee sub-second resolution on every
-        // filesystem.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        write_handover(
-            &newer_wt,
-            newer_job,
-            &Handover {
-                done: vec!["newer".into()],
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        let (path, h) = find_latest_handover(repo).await.expect("found");
-        assert_eq!(h.done, vec!["newer".to_string()]);
-        assert!(path.to_string_lossy().contains(&newer_job.to_string()));
+    #[test]
+    fn validate_rejects_empty_done() {
+        let mut h = default_handover("mock", JobStatus::Completed);
+        h.done.clear();
+        assert_eq!(
+            validate_handover(&h),
+            Err(HandoverValidationError::EmptyDone)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_done() {
+        let mut h = default_handover("mock", JobStatus::Completed);
+        h.done = vec!["   ".into(), "\t".into()];
+        assert_eq!(
+            validate_handover(&h),
+            Err(HandoverValidationError::EmptyDone)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_empty_next() {
+        let mut h = default_handover("mock", JobStatus::Completed);
+        h.next.clear();
+        assert_eq!(
+            validate_handover(&h),
+            Err(HandoverValidationError::EmptyNext)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_next() {
+        let mut h = default_handover("mock", JobStatus::Completed);
+        h.next = vec!["   ".into(), "\t\n".into()];
+        assert_eq!(
+            validate_handover(&h),
+            Err(HandoverValidationError::EmptyNext)
+        );
     }
 
     #[tokio::test]
-    async fn find_latest_handover_returns_none_when_absent() {
+    async fn write_handover_rejects_empty_next_without_touching_fs() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(find_latest_handover(tmp.path()).await.is_none());
+        let job_id = JobId::new();
+        let stage_id = StageId::new();
+        let mut h = default_handover("mock", JobStatus::Completed);
+        h.next.clear();
+        let err = write_handover(tmp.path(), job_id, stage_id, &h)
+            .await
+            .expect_err("empty next rejected");
+        match err {
+            HandoverWriteError::Validation(HandoverValidationError::EmptyNext) => {}
+            other => panic!("expected EmptyNext, got {other:?}"),
+        }
+        let target = handover_path(tmp.path(), job_id, stage_id);
+        assert!(
+            !target.exists(),
+            "handover file must not be created on validation failure"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_populated_handover() {
+        let h = default_handover("mock", JobStatus::Completed);
+        assert!(validate_handover(&h).is_ok());
+    }
+
+    #[tokio::test]
+    async fn write_handover_rejects_empty_done_without_touching_fs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_id = JobId::new();
+        let stage_id = StageId::new();
+        let mut h = default_handover("mock", JobStatus::Completed);
+        h.done.clear();
+        let err = write_handover(tmp.path(), job_id, stage_id, &h)
+            .await
+            .expect_err("empty done rejected");
+        match err {
+            HandoverWriteError::Validation(HandoverValidationError::EmptyDone) => {}
+            other => panic!("expected EmptyDone, got {other:?}"),
+        }
+        let target = handover_path(tmp.path(), job_id, stage_id);
+        assert!(
+            !target.exists(),
+            "handover file must not be created on validation failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_handover_resolves_keyed_pair() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let job_id = JobId::new();
+        let stage_a = StageId::new();
+        let stage_b = StageId::new();
+        let wt = repo
+            .join(".codeless/worktrees")
+            .join(format!("job-{job_id}"));
+        let h_a = Handover {
+            done: vec!["stage a".into()],
+            next: vec!["go".into()],
+            ..Default::default()
+        };
+        let h_b = Handover {
+            done: vec!["stage b".into()],
+            next: vec!["go".into()],
+            ..Default::default()
+        };
+        write_handover(&wt, job_id, stage_a, &h_a).await.unwrap();
+        write_handover(&wt, job_id, stage_b, &h_b).await.unwrap();
+
+        let (path, parsed) = find_handover(repo, job_id, stage_a).await.expect("found");
+        assert_eq!(parsed.done, vec!["stage a".to_string()]);
+        assert!(path.to_string_lossy().contains(&stage_a.to_string()));
+
+        let (_path_b, parsed_b) = find_handover(repo, job_id, stage_b).await.expect("found");
+        assert_eq!(parsed_b.done, vec!["stage b".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn find_handover_returns_none_for_unknown_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let job_id = JobId::new();
+        let stage_a = StageId::new();
+        let wt = repo
+            .join(".codeless/worktrees")
+            .join(format!("job-{job_id}"));
+        let h = Handover {
+            done: vec!["stage a".into()],
+            next: vec!["go".into()],
+            ..Default::default()
+        };
+        write_handover(&wt, job_id, stage_a, &h).await.unwrap();
+
+        let other_stage = StageId::new();
+        assert!(find_handover(repo, job_id, other_stage).await.is_none());
+
+        let other_job = JobId::new();
+        assert!(find_handover(repo, other_job, stage_a).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_handover_returns_none_when_worktree_root_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_id = JobId::new();
+        let stage_id = StageId::new();
+        assert!(find_handover(tmp.path(), job_id, stage_id).await.is_none());
     }
 
     #[test]
@@ -357,7 +553,7 @@ trailing prose";
             next: vec!["another".into()],
             ..Default::default()
         };
-        let p = std::path::Path::new("/repo/.codeless/worktrees/job-X/runs/X/handover.md");
+        let p = std::path::Path::new("/repo/.codeless/worktrees/job-X/runs/X/Y/handover.md");
         let prefix = prompt_prefix_for(p, &h);
         assert!(prefix.contains("# Prior session handover"));
         assert!(prefix.contains("/repo/.codeless"));

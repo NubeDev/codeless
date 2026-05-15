@@ -21,7 +21,8 @@ use codeless_rpc::{
     StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
     UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
     UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review, TaskId};
 use sqlx::SqlitePool;

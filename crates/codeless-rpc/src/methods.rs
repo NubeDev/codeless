@@ -724,23 +724,31 @@ pub struct UpdateJobTemplateResult {
     pub name: String,
 }
 
-/// Seed (or overwrite) the per-run handover. JOB-MODEL.md says
-/// handover lives at `<worktree>/runs/<job_id>/handover.md`; this
-/// RPC writes the structured `Handover` shape through the runtime's
-/// existing `write_handover` helper. The job must have a worktree
-/// (`job.worktree_path` non-null); raw-prompt jobs whose runner has
-/// not yet provisioned one get `Conflict`.
+/// Seed (or overwrite) the per-stage handover. JOB-MODEL.md (H1)
+/// keys handover by stage: the file lives at
+/// `<worktree>/runs/<job_id>/<stage_id>/handover.md`. Callers may
+/// supply `stage_id` explicitly; when omitted the runtime resolves to
+/// the job's highest-ordinal stage so the existing UI seeding flow
+/// keeps working without picking a stage by hand. The job must have
+/// a worktree (`job.worktree_path` non-null) and at least one stage;
+/// otherwise the call returns `Conflict`. The supplied `handover`
+/// must have non-empty `done` and `next` sections (H7);
+/// `InvalidArgument` is returned for a violation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct WriteHandoverArgs {
     pub job_id: JobId,
     pub handover: codeless_types::Handover,
+    /// Optional stage id. When omitted, the runtime writes to the
+    /// job's highest-ordinal stage (the current "active" stage).
+    #[serde(default)]
+    pub stage_id: Option<codeless_types::StageId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct WriteHandoverResult {
     /// Absolute path the runtime wrote, so the UI can surface it
     /// (e.g. for "open in editor tab"). Always inside the job's
-    /// worktree under `runs/<job_id>/handover.md`.
+    /// worktree under `runs/<job_id>/<stage_id>/handover.md`.
     pub path: String,
 }
 

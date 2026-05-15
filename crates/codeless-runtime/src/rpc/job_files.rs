@@ -276,13 +276,48 @@ pub(super) async fn write_handover(
             args.job_id
         ))
     })?;
+    // The handover layout is now per-stage (JOB-MODEL.md H1), so the
+    // RPC needs a stage to address. The UI's seeding flow does not
+    // pick a stage explicitly; resolve here to the job's
+    // highest-ordinal stage. A job with no stages cannot be seeded
+    // until its runner has scaffolded at least one — same shape as
+    // the existing "no worktree yet" error.
+    let stage_id = match args.stage_id {
+        Some(id) => id,
+        None => {
+            let stages = rpc
+                .store
+                .list_stages_for_job(args.job_id)
+                .await
+                .map_err(super::db_err)?;
+            stages
+                .into_iter()
+                .max_by_key(|s| s.stage.ordinal)
+                .map(|s| s.stage.id)
+                .ok_or_else(|| {
+                    RpcError::Conflict(format!(
+                        "job {} has no stages yet; handover is keyed by stage so the runner must \
+                         scaffold one before a handover can be seeded",
+                        args.job_id
+                    ))
+                })?
+        }
+    };
     let path = crate::handover::write_handover(
         std::path::Path::new(worktree),
         args.job_id,
+        stage_id,
         &args.handover,
     )
     .await
-    .map_err(|e| RpcError::Internal(format!("write handover: {e}")))?;
+    .map_err(|e| match e {
+        crate::handover::HandoverWriteError::Validation(v) => {
+            RpcError::InvalidArgument(format!("invalid handover: {v}"))
+        }
+        crate::handover::HandoverWriteError::Io(io) => {
+            RpcError::Internal(format!("write handover: {io}"))
+        }
+    })?;
     Ok(WriteHandoverResult {
         path: path.to_string_lossy().into_owned(),
     })

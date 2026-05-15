@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::id::{JobId, RepoId, ReviewId, StageId, TaskId};
 use crate::job::StopReason;
 use crate::money::CostCents;
+use crate::scope_patch::{ScopePatchId, ScopePatchKind, ScopePatchTarget};
 use crate::stage::StageStatus;
 use crate::task::TaskStatus;
 use crate::time::UnixMillis;
@@ -307,6 +308,37 @@ pub enum Event {
     /// or on user navigation.
     #[serde(rename = "job-file-updated")]
     JobFileUpdated { job_id: JobId, filename: String },
+
+    /// A REVIEW stage proposed a rulebook patch (Step 4 of the
+    /// SESSION-MUTABLE-SCOPE ramp, shadow mode). The full proposal
+    /// body lives in `DOCS/SCOPE-PROPOSED.md`; this event carries
+    /// identifiers and discriminants only so consumers can answer
+    /// the kill-criterion query ("how many proposals in the last K
+    /// REVIEW stages, how many had a predicate, how many landed")
+    /// without re-reading the file. Decisions Q7 records why this
+    /// is an event rather than a row in a new SQLite table (R4 —
+    /// SQLite is source of truth, no new persistence store).
+    ///
+    /// `evidence_stage_id` is `Some` only for `Loosen` and `None`
+    /// for `Tighten`; `has_predicate` is the dual signal for
+    /// `Tighten`. Carrying both as separate fields (rather than
+    /// merging into a single variant per kind) keeps the SSE wire
+    /// label single — one envelope shape per event type — which
+    /// the existing UI subscriber assumes.
+    #[serde(rename = "scope-patch-proposed")]
+    ScopePatchProposed {
+        stage_id: StageId,
+        review_id: ReviewId,
+        patch_id: ScopePatchId,
+        kind: ScopePatchKind,
+        target: ScopePatchTarget,
+        /// Repo-relative path of the file the proposal targets.
+        /// Carried on the wire so subscribers can render the path
+        /// without fetching the proposal body.
+        target_path: String,
+        evidence_stage_id: Option<StageId>,
+        has_predicate: bool,
+    },
 }
 
 /// Envelope written to the `events` table. The `cursor`, `created_at`,

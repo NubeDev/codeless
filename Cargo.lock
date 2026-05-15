@@ -614,6 +614,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "codeless-predicates"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "codeless-rpc"
 version = "0.0.0"
 dependencies = [
@@ -634,6 +641,7 @@ dependencies = [
  "async-trait",
  "base64",
  "codeless-adapters-host",
+ "codeless-predicates",
  "codeless-rpc",
  "codeless-types",
  "futures-core",
