@@ -45,6 +45,14 @@ pub fn transition_job(from: JobStatus, to: JobStatus) -> Result<(), TransitionEr
             | (Draft, Stopped)
             | (Queued, Running)
             | (Queued, Stopped)
+            // Driver give-up edge. Used by `job_driver_loop` when
+            // `drive_job` keeps erroring before the row ever reaches
+            // Running — the retry budget is exhausted (retryable
+            // failures) or the error is unrecoverable (runner not
+            // enabled, template parse). `stop_reason = RunnerCrash`
+            // is recorded on the row so the UI distinguishes this
+            // from a clean user-driven Failed state.
+            | (Queued, Failed)
             | (Running, AwaitingReview)
             | (Running, Completed)
             | (Running, Failed)

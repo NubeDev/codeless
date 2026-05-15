@@ -136,7 +136,7 @@ async fn submitted_mock_job_reaches_completed_via_driver() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unknown_runner_leaves_job_queued() {
+async fn unknown_runner_fails_job_with_runner_crash() {
     let dir = TempDir::new().unwrap();
     let secrets = dir.path().join("secrets.toml");
     let db = dir.path().join("codeless.db");
@@ -207,27 +207,24 @@ async fn unknown_runner_leaves_job_queued() {
         .unwrap();
     let job_id = submit["id"].as_str().unwrap().to_string();
 
-    // 500ms is enough for the driver to refuse and skip; we expect
-    // the job to stay Queued forever.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let fetched: serde_json::Value = client
-        .post(format!("{base}/rpc/get_job"))
-        .bearer_auth(TOKEN)
-        .json(&serde_json::json!({ "job_id": job_id }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    // The driver classifies "runner not enabled" as non-retryable
+    // and fails the job immediately with `stop_reason = runner-crash`
+    // so the user can recover via `reset_job`. Prior behaviour left
+    // the row pinned in Queued indefinitely — the wedge mode the
+    // runtime-driver-recovery job ships against.
+    let fetched = poll_until_terminal(&client, &base, &job_id, Duration::from_secs(3)).await;
 
     let _ = server.kill();
     let _ = server.wait();
     let _ = reader.join();
 
     assert_eq!(
-        fetched["status"], "queued",
-        "job should remain queued: {fetched}"
+        fetched["status"], "failed",
+        "job should move to failed: {fetched}"
+    );
+    assert_eq!(
+        fetched["stop_reason"], "runner-crash",
+        "stop_reason should record the driver give-up: {fetched}"
     );
 }
 
@@ -261,7 +258,7 @@ async fn poll_until_terminal(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn anthropic_runner_disabled_by_default_leaves_job_queued() {
+async fn anthropic_runner_disabled_by_default_fails_job_with_runner_crash() {
     let dir = TempDir::new().unwrap();
     let secrets = dir.path().join("secrets.toml");
     let db = dir.path().join("codeless.db");
@@ -333,23 +330,18 @@ async fn anthropic_runner_disabled_by_default_leaves_job_queued() {
         .unwrap();
     let job_id = submit["id"].as_str().unwrap().to_string();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let fetched: serde_json::Value = client
-        .post(format!("{base}/rpc/get_job"))
-        .bearer_auth(TOKEN)
-        .json(&serde_json::json!({ "job_id": job_id }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    // Anthropic adapter is disabled when the server boots without
+    // an API key wired in; the factory rejects the job and the
+    // driver fails it with `runner-crash` (non-retryable). The user
+    // resets the row after setting `ANTHROPIC_API_KEY`.
+    let fetched = poll_until_terminal(&client, &base, &job_id, Duration::from_secs(3)).await;
 
     let _ = server.kill();
     let _ = server.wait();
     let _ = reader.join();
 
-    assert_eq!(fetched["status"], "queued", "{fetched}");
+    assert_eq!(fetched["status"], "failed", "{fetched}");
+    assert_eq!(fetched["stop_reason"], "runner-crash", "{fetched}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

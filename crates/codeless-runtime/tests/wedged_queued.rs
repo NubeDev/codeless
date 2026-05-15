@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{AddRepoArgs, RpcServer, SubmitJobArgs};
 use codeless_runtime::{
-    spawn_job_driver_loop, InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome,
+    spawn_job_driver_loop_with_retry, InProcessRpc, MockRunner, MockStep, RetryPolicy, Runner,
+    RunnerFactory, RunnerOutcome,
 };
 use codeless_types::{GitAuth, Job, JobStatus, WorkspaceMode};
 use tempfile::TempDir;
@@ -149,11 +150,12 @@ async fn driver_loop_recovers_from_preexisting_worktree_path() {
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join("leftover.txt"), b"from a previous crash\n").unwrap();
 
-    let handle = spawn_job_driver_loop(
+    let handle = spawn_job_driver_loop_with_retry(
         Arc::clone(&rpc),
         Arc::new(AlwaysMock),
         Some(Arc::clone(&mgr)),
         1,
+        RetryPolicy::test_fast(),
     )
     .await
     .expect("spawn driver loop");
