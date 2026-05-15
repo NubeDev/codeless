@@ -1,6 +1,11 @@
 import { getStore } from "@/lib/shell";
+import { SUBAGENTS, type SubagentType } from "../agents/registry";
 
 const STORE_NAME = "ai-agents";
+
+export const ALL_SUBAGENT_TYPES: readonly SubagentType[] = Object.keys(
+  SUBAGENTS,
+) as SubagentType[];
 
 export type AgentIconId =
   | "coder"
@@ -17,7 +22,20 @@ export type Agent = {
   instructions: string;
   icon: AgentIconId;
   builtIn: boolean;
+  // Surfaces this persona to the job-submit picker (stage 2 lays the field
+  // down; job-submit wiring lands in a later stage).
+  useForJobs: boolean;
+  // Per-persona narrowing of the subagent registry. The registry already
+  // caps each subagent's toolset to READ_ONLY_TOOLS; this list further
+  // restricts WHICH subagents this persona may spawn at all. Empty array
+  // means "none allowed"; the field being absent (legacy KV data) means
+  // "all allowed", handled at the read site.
+  allowedSubagents: SubagentType[];
 };
+
+// Built-ins ship with all subagents allowed and useForJobs off; the
+// job-submit picker (later stage) is what flips useForJobs on per persona.
+const ALL: SubagentType[] = Object.keys(SUBAGENTS) as SubagentType[];
 
 export const BUILTIN_AGENTS: readonly Agent[] = [
   {
@@ -26,6 +44,8 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "General-purpose coding assistant. Writes, edits, and runs.",
     icon: "coder",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
     instructions: `You are an expert software engineer pair-programming inside the user's terminal.
 - Read files before editing them. Match existing patterns and naming.
 - Prefer the smallest correct change. Don't refactor adjacent code unprompted.
@@ -38,6 +58,8 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "Design and tradeoffs. Plans before code.",
     icon: "architect",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
     instructions: `You are a senior software architect.
 - Before proposing code, restate the problem in one sentence and surface 2–3 viable approaches with real tradeoffs.
 - Recommend one with reasoning. Call out risks: scalability, coupling, data consistency, migration, blast radius.
@@ -50,6 +72,8 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "Reviews diffs for correctness, perf, security.",
     icon: "reviewer",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
     instructions: `You are a meticulous code reviewer.
 - Focus on what tools cannot catch: logic errors, edge cases, race conditions, layer violations, perf cliffs (N+1, unneeded re-renders), security (injection, auth, secrets), data integrity.
 - Skip formatting / naming / inferred-type nits — linters handle those.
@@ -62,6 +86,8 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "Threat-models changes and flags vulns.",
     icon: "security",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
     instructions: `You are an application-security engineer.
 - Threat-model the change: what attacker, what asset, what trust boundary is crossed.
 - Look specifically for: input validation at boundaries, authn/authz bypass, secret exposure, SSRF, path traversal, SQLi/XSS/CSRF, deserialization, dependency CVEs, insecure defaults.
@@ -74,12 +100,14 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "UI/UX critique and refinement.",
     icon: "designer",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
     instructions: `You are a senior product designer with a strong taste for restrained, modern UI.
 - Critique on: hierarchy, spacing, density, contrast, motion, affordance, empty/error states.
 - Propose concrete changes, with Tailwind/CSS values when helpful. Keep consistent with the surrounding design system.
 - Avoid generic "make it pop" advice. Be specific about what's wrong and why.`,
   },
-] as const;
+];
 
 const KEY_CUSTOM = "customAgents";
 const KEY_ACTIVE = "activeAgentId";
@@ -98,7 +126,22 @@ export async function loadAgents(): Promise<LoadedAgents> {
     if (k === KEY_CUSTOM) custom = v as Agent[];
     else if (k === KEY_ACTIVE) activeId = v as string;
   }
-  return { custom: custom ?? [], activeId: activeId ?? BUILTIN_AGENTS[0].id };
+  return {
+    custom: (custom ?? []).map(migrateAgent),
+    activeId: activeId ?? BUILTIN_AGENTS[0].id,
+  };
+}
+
+// Existing KV-stored custom agents predate useForJobs / allowedSubagents.
+// Treat a missing allowedSubagents as "no narrowing yet" (= all subagents
+// permitted) so upgrading a workspace doesn't suddenly break agents that
+// were spawning subagents before the field existed.
+function migrateAgent(a: Agent): Agent {
+  return {
+    ...a,
+    useForJobs: a.useForJobs ?? false,
+    allowedSubagents: a.allowedSubagents ?? [...ALL],
+  };
 }
 
 export async function saveCustomAgents(custom: Agent[]): Promise<void> {

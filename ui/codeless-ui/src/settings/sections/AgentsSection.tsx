@@ -7,10 +7,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { SUBAGENTS } from "@/modules/ai/agents/registry";
 import { AGENT_ICONS } from "@/modules/ai/components/AgentSwitcher";
 import {
+  ALL_SUBAGENT_TYPES,
   BUILTIN_AGENTS,
   type Agent,
   type AgentIconId,
@@ -93,6 +96,8 @@ export function AgentsSection() {
                 instructions: "",
                 icon: "spark",
                 builtIn: false,
+                useForJobs: false,
+                allowedSubagents: [...ALL_SUBAGENT_TYPES],
               })
             }
           >
@@ -398,6 +403,55 @@ function AgentEditorDialog({
               placeholder="Persona & rules. Appended to Codeless's core system prompt."
               className="min-h-40 resize-y text-[12px] leading-relaxed"
             />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-card/40 px-3 py-2">
+            <div className="flex min-w-0 flex-col">
+              <Label>Use for jobs</Label>
+              <span className="text-[10.5px] text-muted-foreground">
+                Surface this persona in the job-submit picker.
+              </span>
+            </div>
+            <Switch
+              checked={draft.useForJobs}
+              onCheckedChange={(v) =>
+                setDraft({ ...draft, useForJobs: v === true })
+              }
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label>Allowed subagents</Label>
+            <span className="text-[10.5px] text-muted-foreground">
+              Which subagent types this persona may spawn. The registry still
+              caps each subagent to read-only tools — this list can only narrow.
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {ALL_SUBAGENT_TYPES.map((t) => {
+                const on = draft.allowedSubagents.includes(t);
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() =>
+                      setDraft({
+                        ...draft,
+                        allowedSubagents: on
+                          ? draft.allowedSubagents.filter((x) => x !== t)
+                          : [...draft.allowedSubagents, t],
+                      })
+                    }
+                    title={SUBAGENTS[t].description}
+                    className={cn(
+                      "rounded-md border px-2 py-1 text-[10.5px] transition-colors",
+                      on
+                        ? "border-foreground/40 bg-accent text-foreground"
+                        : "border-border/60 text-muted-foreground hover:bg-accent/40",
+                    )}
+                  >
+                    {SUBAGENTS[t].label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
         <DialogFooter>
