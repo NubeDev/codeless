@@ -711,6 +711,37 @@ pub struct WriteHandoverResult {
     pub path: String,
 }
 
+/// Rewrite a job's `SCOPE.md` from chat. The assistant surface
+/// dispatches a confirmed `EditScope` action card through this RPC so
+/// the paused-job guard lives behind a single named entry point; the
+/// raw `write_job_file` path stays unchanged for callers that opt into
+/// editing a live job. `content` is taken verbatim and written through
+/// the same commit pipeline as a Spec-pane save.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UpdateJobScopeArgs {
+    pub job_id: JobId,
+    pub content: String,
+}
+
+/// Result of `jobs.updateScope`. `filename` is the basename the runtime
+/// wrote (`SCOPE.md`) so the UI can re-select the file without a
+/// `list_job_files` round trip — same shape as `WriteJobFileResult`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UpdateJobScopeResult {
+    pub filename: String,
+}
+
+/// Mint a fresh `Draft` job from the latest pending `DraftJob` action
+/// card in an assistant thread. The runtime walks the thread's
+/// transcript newest-to-oldest, pulls the proposal out of the card's
+/// `meta_json`, and dispatches `submit_job` with `start_immediately =
+/// false` so the row lands in `Draft` for the user to edit before
+/// queueing. Returns the new `Job`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct DraftJobFromConversationArgs {
+    pub thread_id: codeless_types::AssistantThreadId,
+}
+
 /// One-shot chat turn routed to a CLI coder runner (Claude Code,
 /// Codex, Copilot). The runner is invoked in the server's working
 /// directory with the user's prompt; streaming output flows back via
@@ -1054,6 +1085,14 @@ pub struct AppendAssistantMessageArgs {
 pub struct AppendAssistantMessageResult {
     pub user_message: AssistantMessage,
     pub assistant_message: AssistantMessage,
+    /// Action-card rows the planner emitted alongside the text reply.
+    /// Each entry is a persisted assistant-role message whose
+    /// `meta_json` decodes to an [`AssistantActionCard`]; the UI
+    /// appends them to the transcript in order, exactly as it would
+    /// after a re-list. Empty when the turn produced no tool calls
+    /// (the common case for plain Q&A).
+    #[serde(default)]
+    pub cards: Vec<AssistantMessage>,
 }
 
 /// `assistant.confirmAction`. Dispatch the tool call proposed by a

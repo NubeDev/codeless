@@ -126,13 +126,47 @@ freeform markdown. A good `WORKFLOW.md` covers:
 - **Sequencing** — which stages can be batched, which must stop.
 - **Per-stage discipline** — what to read before writing, what to
   verify before committing, what counts as "done".
+- **Commit + push at the end of every stage** — non-negotiable;
+  see Hard rule 5 below. The workflow must say this explicitly so
+  the agent doesn't end a stage with uncommitted work in the
+  worktree.
 - **REVIEW gate behaviour** — what to write into the handover at
-  the gate.
+  the gate. REVIEW gates still commit + push the stage that *led*
+  to the gate; they only pause the *next* stage.
 - **Anti-patterns** — patterns specific to this job that the agent
   should not adopt.
 
 If the workflow is generic enough that it would apply to any job in
 this repo, it belongs in `CLAUDE.md` instead, not here.
+
+### Per-stage commit + push — exact wording for `WORKFLOW.md`
+
+Paste this block into every job's `WORKFLOW.md` (adjust the branch
+name). It survives stage boundaries because the agent re-reads
+`WORKFLOW.md` at the top of each stage.
+
+```markdown
+## Commit + push after every stage
+
+At the end of every stage — including stages that precede a REVIEW
+gate, including stages that only edit docs — the agent MUST:
+
+1. Stage every change the stage produced (`git add -A` from the
+   worktree root, or specific paths if the stage was surgical).
+2. Commit with the message `stage N: <one-line title from
+   template.yaml>` so the history mirrors the template stages
+   one-for-one.
+3. Push to the job's branch (`codeless/<job-name>`) so the work is
+   recoverable even if the worktree is wiped.
+
+A stage is not "done" until the push succeeds. If the commit or
+push fails, fix the cause and retry — do not mark the stage `[x]`,
+do not advance, and never `--force` or `--no-verify`. If a stage
+genuinely produced no change (e.g. an investigation stage that
+only updated `SCOPE.md` and that doc was already current), say so
+in the handover and skip the commit, but the next stage's commit
+must include any side-effect files the investigation touched.
+```
 
 ## Step 4 — submit it (curl)
 
@@ -247,6 +281,14 @@ under `SubmitJobArgs`.
 4. **Never delete `template.yaml` to "reset" a job.** Use
    `delete_job_file` (which refuses) or remove the whole directory
    with the server stopped.
+5. **Every stage commits and pushes its own work, on its own
+   branch.** No batching across stages, no "I'll commit at the
+   end". The recovery story for a crashed worktree is `git fetch`
+   plus the per-stage commits — without them, the work is lost.
+   `WORKFLOW.md` must include the per-stage commit-and-push block
+   from Step 3 above so the agent re-reads the rule at every
+   stage. Never `--force`, never `--no-verify`; if a hook fails,
+   fix the cause.
 
 ## Common gotchas
 

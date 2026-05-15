@@ -91,8 +91,8 @@ impl Tool for GithubIssueTool {
     async fn call(&self, ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> {
         super::check_network_policy(ctx, "api.github.com", "https://api.github.com")?;
 
-        let token = std::env::var("GITHUB_TOKEN")
-            .map_err(|_| ToolError::denied("GITHUB_TOKEN not set"))?;
+        let token =
+            std::env::var("GITHUB_TOKEN").map_err(|_| ToolError::denied("GITHUB_TOKEN not set"))?;
 
         let action = args["action"]
             .as_str()
@@ -156,15 +156,17 @@ impl Tool for GithubIssueTool {
                 let items: Vec<Value> = page
                     .items
                     .iter()
-                    .map(|i| json!({
-                        "number": i.number,
-                        "title": i.title,
-                        "state": format!("{:?}", i.state),
-                        "user": i.user.login,
-                        "created_at": i.created_at,
-                        "html_url": i.html_url,
-                        "labels": i.labels.iter().map(|l| &l.name).collect::<Vec<_>>(),
-                    }))
+                    .map(|i| {
+                        json!({
+                            "number": i.number,
+                            "title": i.title,
+                            "state": format!("{:?}", i.state),
+                            "user": i.user.login,
+                            "created_at": i.created_at,
+                            "html_url": i.html_url,
+                            "labels": i.labels.iter().map(|l| &l.name).collect::<Vec<_>>(),
+                        })
+                    })
                     .collect();
                 let count = items.len();
                 Ok(json!({ "issues": items, "count": count }))
@@ -178,7 +180,11 @@ impl Tool for GithubIssueTool {
                 let body = args["body"].as_str().unwrap_or("").to_string();
                 let labels: Vec<String> = args["labels"]
                     .as_array()
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let handler = gh.issues(owner, repo);
                 let fut = handler.create(&title).body(&body).labels(labels).send();

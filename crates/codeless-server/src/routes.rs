@@ -11,19 +11,20 @@ use codeless_rpc::{
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
     ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
     DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DetachWorkspaceArgs,
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListStagesArgs, ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    DraftJobFromConversationArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
+    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
+    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
+    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
+    RpcError, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
     UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Repo, Review};
 use serde_json::Value;
@@ -109,6 +110,11 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             "/rpc/cancel_assistant_action",
             post(cancel_assistant_action),
+        )
+        .route("/rpc/update_job_scope", post(update_job_scope))
+        .route(
+            "/rpc/draft_job_from_conversation",
+            post(draft_job_from_conversation),
         )
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
@@ -640,6 +646,28 @@ async fn cancel_assistant_action(
 ) -> HandlerResult<CancelAssistantActionResult> {
     st.rpc
         .cancel_assistant_action(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn update_job_scope(
+    State(st): State<AppState>,
+    Json(args): Json<UpdateJobScopeArgs>,
+) -> HandlerResult<UpdateJobScopeResult> {
+    st.rpc
+        .update_job_scope(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn draft_job_from_conversation(
+    State(st): State<AppState>,
+    Json(args): Json<DraftJobFromConversationArgs>,
+) -> HandlerResult<Job> {
+    st.rpc
+        .draft_job_from_conversation(args)
         .await
         .map(Json)
         .map_err(map_err)

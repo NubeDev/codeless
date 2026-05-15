@@ -3,12 +3,16 @@ use std::sync::Arc;
 
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{
-    GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobReportArgs,
-    JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage, JobReportToolCall,
-    JobReportTurn, ListJobsArgs, ListJobsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, StartJobArgs, StopJobArgs, SubmitJobArgs,
+    DraftJobFromConversationArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
+    JobReportArgs, JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage,
+    JobReportToolCall, JobReportTurn, ListJobsArgs, ListJobsResult, ListStagesArgs,
+    ListStagesResult, PauseJobArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, StartJobArgs,
+    StopJobArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, WriteJobFileArgs,
 };
-use codeless_types::{CostCents, Event, Job, JobId, JobStatus, StopReason};
+use codeless_types::{
+    AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantMessageRole, CostCents,
+    Event, Job, JobId, JobStatus, StopReason,
+};
 use sqlx::Row;
 
 use super::InProcessRpc;
@@ -849,4 +853,139 @@ pub(super) async fn resync_template_from_disk(
         .await
         .map_err(super::db_err)?;
     Ok(())
+}
+
+/// Filename `update_job_scope` writes. Held as a constant rather than
+/// inlined so the wire spelling is in one place and the dispatcher map
+/// in F3 stays trivial — the assistant action card carries no filename
+/// because the chat surface only ever rewrites `SCOPE.md`. Spec edits
+/// targeting other files go through `write_job_file` directly.
+pub(super) const SCOPE_FILENAME: &str = "SCOPE.md";
+
+pub(super) async fn update_job_scope(
+    rpc: &super::InProcessRpc,
+    args: UpdateJobScopeArgs,
+) -> RpcResult<UpdateJobScopeResult> {
+    if args.content.trim().is_empty() {
+        return Err(RpcError::InvalidArgument(
+            "scope content is empty; refusing to overwrite SCOPE.md with whitespace".into(),
+        ));
+    }
+    let job = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+    // The paused-job guard: the chat surface refuses to race the runner.
+    // `write_job_file` itself accepts the risk because the CLI / Spec
+    // pane explicitly opts in — the gate lives here so a future tool
+    // dispatcher routing `edit_scope` through this RPC inherits the
+    // same rule without a duplicate match arm.
+    if matches!(
+        job.status,
+        JobStatus::Running | JobStatus::Queued | JobStatus::AwaitingReview
+    ) {
+        return Err(RpcError::Conflict(format!(
+            "job {} is {:?}; pause it first before rewriting SCOPE.md",
+            job.id, job.status
+        )));
+    }
+    let res = super::job_files::write_job_file(
+        rpc,
+        WriteJobFileArgs {
+            job_id: args.job_id,
+            filename: SCOPE_FILENAME.to_owned(),
+            content: args.content,
+        },
+    )
+    .await?;
+    Ok(UpdateJobScopeResult { filename: res.name })
+}
+
+pub(super) async fn draft_job_from_conversation(
+    rpc: &super::InProcessRpc,
+    args: DraftJobFromConversationArgs,
+) -> RpcResult<Job> {
+    // Existence check up front so a missing thread surfaces as a typed
+    // 404 rather than "no pending card" — the two failure modes look
+    // similar from the wire and we want them distinguishable.
+    rpc.store
+        .get_assistant_thread(args.thread_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("assistant thread {}", args.thread_id)))?;
+
+    let messages = rpc
+        .store
+        .list_assistant_messages(args.thread_id)
+        .await
+        .map_err(super::db_err)?;
+
+    // Newest-pending wins. A thread can accumulate multiple `/draft`
+    // proposals over its lifetime; the user re-issues the command when
+    // they want to change the spec, and the dispatcher picks up the
+    // last one so the conversation reads naturally. Cancelled or
+    // already-confirmed cards are skipped — re-using one would
+    // double-submit the same proposal.
+    let draft = messages
+        .iter()
+        .rev()
+        .filter(|m| matches!(m.role, AssistantMessageRole::Assistant))
+        .filter_map(|m| m.meta_json.as_deref())
+        .filter_map(|meta| serde_json::from_str::<AssistantActionCard>(meta).ok())
+        .find(|card| {
+            matches!(card.status, AssistantActionStatus::Pending)
+                && matches!(card.action, AssistantAction::DraftJob { .. })
+        });
+
+    let Some(card) = draft else {
+        return Err(RpcError::InvalidArgument(format!(
+            "no pending DraftJob card on thread {}; issue `/draft <repo_id> -- <prompt>` first",
+            args.thread_id
+        )));
+    };
+
+    let AssistantAction::DraftJob {
+        repo_id,
+        prompt,
+        runner,
+        branch,
+        cost_cap_cents,
+        wall_clock_cap_ms,
+        workspace_mode,
+        model,
+        permission_mode,
+        effort,
+    } = card.action
+    else {
+        // Unreachable: the `find` above already matched the variant.
+        // Keeping the panic-free fallback so an accidental refactor
+        // returns a typed error rather than reaching `unreachable!`.
+        return Err(RpcError::Internal(
+            "draft card variant mismatched after lookup".into(),
+        ));
+    };
+
+    // `start_immediately = false` — the row lands in `Draft` so the
+    // user can edit the spec / docs / handover before queueing,
+    // matching SCOPE.md Decisions §3 (no "just do it" path from chat).
+    submit_job(
+        rpc,
+        SubmitJobArgs {
+            repo_id,
+            prompt: Some(prompt),
+            template_yaml: None,
+            runner,
+            branch,
+            workspace_mode,
+            cost_cap_cents,
+            wall_clock_cap_ms,
+            model,
+            permission_mode,
+            effort,
+            start_immediately: false,
+        },
+    )
+    .await
 }

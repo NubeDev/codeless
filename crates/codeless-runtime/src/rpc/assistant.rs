@@ -1,16 +1,16 @@
 use codeless_rpc::{
     AppendAssistantMessageArgs, AppendAssistantMessageResult, CancelAssistantActionArgs,
     CancelAssistantActionResult, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
-    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, GetJobArgs, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobsArgs, PauseJobArgs, ReadJobFileArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult,
-    RpcServer, StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobArgs,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteJobFileArgs,
+    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DraftJobFromConversationArgs, GetJobArgs,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListJobsArgs, PauseJobArgs, ReadJobFileArgs, RerunJobArgs,
+    ResumeJobArgs, RpcError, RpcResult, RpcServer, StartJobArgs, StopJobArgs, UpdateJobArgs,
+    UpdateJobScopeArgs, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, JobId, JobStatus, RepoId, WorkspaceMode,
+    AssistantThread, AssistantThreadId, JobId, RepoId, WorkspaceMode,
 };
 
 use super::InProcessRpc;
@@ -175,12 +175,13 @@ pub(super) async fn list_assistant_messages(
     Ok(ListAssistantMessagesResult { messages })
 }
 
-/// Body of the no-op stage-6 responder. Wrapping the text in a const
-/// (rather than inlining) makes it trivial for tests to assert on the
-/// exact reply and for later stages to grep-and-replace the responder
-/// with the planner output.
-const NOOP_ASSISTANT_REPLY: &str = "Assistant responder is not wired yet — message recorded. \
-     The real planner lands in a later stage.";
+/// Fallback used when the runtime is booted without an `agent_chat`
+/// registry — typically tests and `codeless run --once`. The CLI's
+/// `serve` path always wires the registry so the live product never
+/// hits this branch; it exists so unit tests that don't care about
+/// model dispatch keep round-tripping rows without spawning a fake.
+const NOOP_ASSISTANT_REPLY: &str = "Assistant planner is not configured on this runtime; \
+     boot with `with_agent_chat` to receive a model reply.";
 
 pub(super) async fn append_assistant_message(
     rpc: &InProcessRpc,
@@ -221,44 +222,198 @@ pub(super) async fn append_assistant_message(
     // coarse on some hosts; bumping by one millisecond is enough and
     // does not skew real-world timing telemetry.
     let assistant_now = codeless_types::UnixMillis(user_now.0.saturating_add(1));
-    // Slash-command parser stands in for the planner: stage 7 lands
-    // the action-card surface before the planner is wired, so a
-    // user can drive view/manage tools by typing `/start <job_id>`
-    // (etc.) and confirming the proposal. Anything that does not
-    // match falls through to the no-op acknowledgement so the
-    // transcript stays useful while the planner is still missing.
-    let (content, meta_json) = match parse_action(trimmed) {
+    // Slash-command parser intercepts the typed action-card grammar;
+    // anything else falls through to the F2 planner which streams a
+    // model-generated reply (possibly with action-card tool calls). The
+    // planner is skipped (NOOP fallback) when the runtime was booted
+    // without `with_agent_chat` so unit tests that don't wire a fake
+    // registry still exercise the row plumbing.
+    enum Reply {
+        /// One assistant row only. `meta_json` is `Some` for a slash-
+        /// command card and `None` for plain prose.
+        Single {
+            content: String,
+            meta_json: Option<String>,
+        },
+        /// Planner turn: a (possibly empty) prose reply plus zero or
+        /// more action-card rows. The text row is suppressed when its
+        /// trimmed body is empty so a pure-card turn does not leave a
+        /// blank assistant bubble in the transcript.
+        Planner {
+            content: String,
+            cards: Vec<AssistantActionCard>,
+        },
+    }
+    let reply = match parse_action(trimmed) {
         Some((action, summary)) => {
             let card = AssistantActionCard::new(action);
             let meta = serde_json::to_string(&card)
                 .map_err(|e| RpcError::Internal(format!("serialise action card: {e}")))?;
-            (summary, Some(meta))
+            Reply::Single {
+                content: summary,
+                meta_json: Some(meta),
+            }
         }
-        None => (NOOP_ASSISTANT_REPLY.to_owned(), None),
+        None if super::assistant_planner::planner_configured(rpc) => {
+            // History fold deliberately excludes the user row we just
+            // inserted: the planner takes the new turn as its `Current
+            // user message` trailer so the model treats it as the
+            // message it is replying to, not as another historical entry.
+            let history = rpc
+                .store
+                .list_assistant_messages(args.thread_id)
+                .await
+                .map_err(super::db_err)?;
+            let prior: Vec<_> = history
+                .into_iter()
+                .filter(|m| m.id != user_message.id)
+                .collect();
+            let turn =
+                super::assistant_planner::run_planner_turn(rpc, args.thread_id, &prior, trimmed)
+                    .await?;
+            Reply::Planner {
+                content: turn.content,
+                cards: turn.cards,
+            }
+        }
+        None => Reply::Single {
+            content: NOOP_ASSISTANT_REPLY.to_owned(),
+            meta_json: None,
+        },
     };
-    let assistant_message = AssistantMessage {
-        id: AssistantMessageId::new(),
-        thread_id: args.thread_id,
-        role: AssistantMessageRole::Assistant,
-        content,
-        meta_json,
-        created_at: assistant_now,
+
+    // Persist the assistant turn. Cards arrive after the prose row so
+    // the transcript renders "text, then proposals" — the order the UI
+    // already expects from a manual re-list. Each card row gets its own
+    // monotonically-increasing timestamp so the ASC sort by created_at
+    // is stable across the multiple inserts.
+    let (assistant_message, cards) = match reply {
+        Reply::Single { content, meta_json } => {
+            let row = AssistantMessage {
+                id: AssistantMessageId::new(),
+                thread_id: args.thread_id,
+                role: AssistantMessageRole::Assistant,
+                content,
+                meta_json,
+                created_at: assistant_now,
+            };
+            rpc.store
+                .insert_assistant_message(&row)
+                .await
+                .map_err(super::db_err)?;
+            (row, Vec::new())
+        }
+        Reply::Planner { content, cards } => {
+            // The text reply gets its own row only when non-empty; a
+            // pure-card turn skips it and surfaces the first card as
+            // `assistant_message` so existing UI code that always
+            // appends `res.assistant_message` still renders something
+            // confirmable.
+            let mut next_ms = assistant_now.0;
+            let mut text_row: Option<AssistantMessage> = None;
+            if !content.is_empty() {
+                let row = AssistantMessage {
+                    id: AssistantMessageId::new(),
+                    thread_id: args.thread_id,
+                    role: AssistantMessageRole::Assistant,
+                    content,
+                    meta_json: None,
+                    created_at: codeless_types::UnixMillis(next_ms),
+                };
+                rpc.store
+                    .insert_assistant_message(&row)
+                    .await
+                    .map_err(super::db_err)?;
+                next_ms = next_ms.saturating_add(1);
+                text_row = Some(row);
+            }
+            let mut card_rows: Vec<AssistantMessage> = Vec::with_capacity(cards.len());
+            for card in cards {
+                let meta = serde_json::to_string(&card)
+                    .map_err(|e| RpcError::Internal(format!("serialise action card: {e}")))?;
+                // The card row's `content` is a short human label so a
+                // chat surface that ignores `meta_json` (logs, search,
+                // text export) still has something readable. The card
+                // payload is the load-bearing data.
+                let summary = describe_action(&card.action);
+                let row = AssistantMessage {
+                    id: AssistantMessageId::new(),
+                    thread_id: args.thread_id,
+                    role: AssistantMessageRole::Assistant,
+                    content: summary,
+                    meta_json: Some(meta),
+                    created_at: codeless_types::UnixMillis(next_ms),
+                };
+                rpc.store
+                    .insert_assistant_message(&row)
+                    .await
+                    .map_err(super::db_err)?;
+                next_ms = next_ms.saturating_add(1);
+                card_rows.push(row);
+            }
+            let primary = text_row
+                .or_else(|| card_rows.first().cloned())
+                .expect("planner turn returned neither text nor cards");
+            // The primary row is included in the result's
+            // `assistant_message` slot. When the primary *is* the first
+            // card, drop it from `cards` so the caller does not render
+            // it twice. The remaining cards (if any) follow in order.
+            let trailing = if text_row_is_primary(&primary) {
+                card_rows
+            } else {
+                card_rows.into_iter().skip(1).collect()
+            };
+            (primary, trailing)
+        }
     };
-    rpc.store
-        .insert_assistant_message(&assistant_message)
-        .await
-        .map_err(super::db_err)?;
 
     let _ = rpc
         .store
-        .touch_assistant_thread(args.thread_id, assistant_now)
+        .touch_assistant_thread(args.thread_id, assistant_message.created_at)
         .await
         .map_err(super::db_err)?;
 
     Ok(AppendAssistantMessageResult {
         user_message,
         assistant_message,
+        cards,
     })
+}
+
+/// Discriminate the "primary" row in the planner branch: a text reply
+/// has `meta_json == None`, an action card has `Some`. Used so the
+/// caller does not include the card-as-primary in the trailing `cards`
+/// list a second time.
+fn text_row_is_primary(row: &AssistantMessage) -> bool {
+    row.meta_json.is_none()
+}
+
+/// Short human label for an action card row. The card's `meta_json`
+/// carries the structured payload; this string is what a text-only
+/// rendering of the transcript (CLI dump, search index) shows for the
+/// row, so it has to be readable on its own.
+fn describe_action(action: &AssistantAction) -> String {
+    match action {
+        AssistantAction::ListJobs { repo_id: None } => "Proposed: list jobs".to_owned(),
+        AssistantAction::ListJobs { repo_id: Some(r) } => {
+            format!("Proposed: list jobs in repo `{r}`")
+        }
+        AssistantAction::GetJob { job_id } => format!("Proposed: get job `{job_id}`"),
+        AssistantAction::StartJob { job_id } => format!("Proposed: start job `{job_id}`"),
+        AssistantAction::StopJob { job_id } => format!("Proposed: stop job `{job_id}`"),
+        AssistantAction::PauseJob { job_id } => format!("Proposed: pause job `{job_id}`"),
+        AssistantAction::ResumeJob { job_id } => format!("Proposed: resume job `{job_id}`"),
+        AssistantAction::RestartJob { job_id } => format!("Proposed: restart job `{job_id}`"),
+        AssistantAction::UpdateJob { job_id, .. } => format!("Proposed: update job `{job_id}`"),
+        AssistantAction::DraftJob { repo_id, .. } => {
+            format!("Proposed: draft a new job in repo `{repo_id}`")
+        }
+        AssistantAction::EditScope {
+            job_id, filename, ..
+        } => {
+            format!("Proposed: rewrite `{filename}` on job `{job_id}`")
+        }
+    }
 }
 
 /// Parse a user turn into an action proposal. Stage-7 stand-in for the
@@ -714,6 +869,7 @@ fn build_tool_message(
 /// — the runtime never swallows the underlying RPC's typed error.
 async fn dispatch_action(
     rpc: &InProcessRpc,
+    thread_id: AssistantThreadId,
     action: &AssistantAction,
 ) -> RpcResult<(String, serde_json::Value)> {
     use serde_json::json;
@@ -802,37 +958,15 @@ async fn dispatch_action(
                 json!({ "tool": "update_job", "job": job }),
             ))
         }
-        AssistantAction::DraftJob {
-            repo_id,
-            prompt,
-            runner,
-            branch,
-            cost_cap_cents,
-            wall_clock_cap_ms,
-            workspace_mode,
-            model,
-            permission_mode,
-            effort,
-        } => {
-            // SCOPE.md Decisions §3 — no "just do it" path. The card
-            // is the confirmation; landing the row as `Draft` lets the
-            // user edit the spec / docs / handover before kicking off
-            // the runner, matching the regular submit-from-CLI flow.
+        AssistantAction::DraftJob { .. } => {
+            // F3: the chat surface route goes through the named RPC so
+            // the same path is reachable from the CLI and any future
+            // shell. `draft_job_from_conversation` walks the thread for
+            // the newest pending DraftJob card — which is precisely the
+            // one being confirmed here, since the status flip to
+            // Confirmed happens after dispatch returns.
             let job = rpc
-                .submit_job(SubmitJobArgs {
-                    repo_id: *repo_id,
-                    prompt: Some(prompt.clone()),
-                    template_yaml: None,
-                    runner: runner.clone(),
-                    branch: branch.clone(),
-                    workspace_mode: *workspace_mode,
-                    cost_cap_cents: *cost_cap_cents,
-                    wall_clock_cap_ms: *wall_clock_cap_ms,
-                    model: model.clone(),
-                    permission_mode: permission_mode.clone(),
-                    effort: effort.clone(),
-                    start_immediately: false,
-                })
+                .draft_job_from_conversation(DraftJobFromConversationArgs { thread_id })
                 .await?;
             Ok((
                 format!("Drafted job `{}` (status: {:?}).", job.id, job.status),
@@ -844,31 +978,26 @@ async fn dispatch_action(
             filename,
             new_content,
         } => {
-            // The paused-job rule: a chat-driven spec edit must not
-            // race the runner that is currently reading the same file
-            // off disk. Only non-running statuses go through; the user
-            // pauses (or stops, or waits for the job to finish) and
-            // re-confirms. `update_job_template` does not enforce this
-            // because the CLI surface accepts the risk of editing a
-            // live job; the assistant surface is the friendlier path
-            // and the gate lives here.
-            let job = rpc.get_job(GetJobArgs { job_id: *job_id }).await?;
-            if matches!(
-                job.status,
-                JobStatus::Running | JobStatus::Queued | JobStatus::AwaitingReview
-            ) {
-                return Err(RpcError::Conflict(format!(
-                    "job {job_id} is {:?}; pause it first with `/pause {job_id}` \
-                     before editing the spec",
-                    job.status
+            // F3: the chat surface only rewrites SCOPE.md via the named
+            // RPC, which owns the paused-job guard so the same rule
+            // holds for every caller. A non-SCOPE filename surviving
+            // through the parser surfaces as InvalidArgument here so
+            // the failure mode is typed rather than silently rerouted.
+            if filename != super::jobs::SCOPE_FILENAME {
+                return Err(RpcError::InvalidArgument(format!(
+                    "chat-surface edit_scope only rewrites `{}`; got `{filename}`",
+                    super::jobs::SCOPE_FILENAME,
                 )));
             }
 
-            // Read the current body so we can emit a diff in the
-            // tool message. NotFound means the file does not exist
-            // yet — treat that as an empty current body so the diff
-            // shows the whole new content as additions, matching
-            // what `git diff` would say about a brand-new file.
+            // Read the current body before the write so the tool
+            // message carries an honest diff. NotFound means the file
+            // does not exist yet — render that as an empty current
+            // body so the diff shows the whole new content as
+            // additions, matching what `git diff` would say about a
+            // brand-new file. A NotFound on the job itself is left to
+            // `update_job_scope` to surface so the typed error matches
+            // the call that actually mutates.
             let current = match rpc
                 .read_job_file(ReadJobFileArgs {
                     job_id: *job_id,
@@ -882,24 +1011,23 @@ async fn dispatch_action(
             };
 
             let result = rpc
-                .write_job_file(WriteJobFileArgs {
+                .update_job_scope(UpdateJobScopeArgs {
                     job_id: *job_id,
-                    filename: filename.clone(),
                     content: new_content.clone(),
                 })
                 .await?;
-            let diff = unified_diff(&current, new_content, &result.name);
+            let diff = unified_diff(&current, new_content, &result.filename);
             Ok((
                 format!(
                     "Wrote `{}` on job `{job_id}` ({} → {} bytes).",
-                    result.name,
+                    result.filename,
                     current.len(),
                     new_content.len(),
                 ),
                 json!({
                     "tool": "edit_scope",
                     "job_id": job_id,
-                    "filename": result.name,
+                    "filename": result.filename,
                     "diff": diff,
                 }),
             ))
@@ -921,7 +1049,7 @@ pub(super) async fn confirm_assistant_action(
     // companion, and a failure on the way appears as `Failed` plus a
     // tool message describing the error.
     let now = now_ms();
-    match dispatch_action(rpc, &card.action).await {
+    match dispatch_action(rpc, args.thread_id, &card.action).await {
         Ok((summary, result_json)) => {
             let card_row =
                 write_card_status(rpc, &message, card, AssistantActionStatus::Confirmed).await?;
@@ -985,6 +1113,7 @@ pub(super) async fn cancel_assistant_action(
 mod tests {
     use super::*;
     use codeless_rpc::RpcServer;
+    use codeless_types::JobStatus;
     use tempfile::TempDir;
 
     async fn rpc_with_data_dir() -> (InProcessRpc, TempDir) {
@@ -1233,6 +1362,190 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::InvalidArgument(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_with_planner_persists_streamed_reply_with_empty_meta() {
+        use super::super::assistant_planner::tests::FakeChatRunner;
+        use std::sync::Arc;
+
+        let runner = Arc::new(FakeChatRunner::new(vec!["streamed ", "reply"]));
+        let registry = ai_runner::Registry::new();
+        registry.register(runner);
+        let rpc = InProcessRpc::new()
+            .await
+            .unwrap()
+            .with_agent_chat(Arc::new(registry), std::env::temp_dir());
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: "what jobs are running?".into(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(res.user_message.role, AssistantMessageRole::User);
+        assert_eq!(res.assistant_message.role, AssistantMessageRole::Assistant);
+        assert_eq!(res.assistant_message.content, "streamed reply");
+        // F2 chat replies are not action cards: meta_json must be NULL
+        // so the UI's CommonChat renderer treats the row as plain prose.
+        assert!(res.assistant_message.meta_json.is_none());
+
+        // Slash commands keep their action-card path even with the
+        // planner wired — `meta_json` must carry the card payload.
+        let job_id = JobId::new();
+        let card_res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: format!("/start {job_id}"),
+            })
+            .await
+            .unwrap();
+        assert!(card_res.assistant_message.meta_json.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_tool_call_persists_as_card_and_dispatches_on_confirm() {
+        use super::super::assistant_planner::tests::{FakeChatRunner, FakeStep};
+        use std::sync::Arc;
+
+        // Pure-card turn: the model says nothing and just emits a
+        // `list_jobs` tool call. The result must surface the card as
+        // `assistant_message` (so existing UI append code renders
+        // something confirmable) and the planner's `cards` slot stays
+        // empty because the primary row already carries the only card.
+        let runner = Arc::new(FakeChatRunner::with_steps(vec![FakeStep::Tool {
+            name: "list_jobs".into(),
+            input: serde_json::json!({}),
+        }]));
+        let registry = ai_runner::Registry::new();
+        registry.register(runner);
+        let rpc = InProcessRpc::new()
+            .await
+            .unwrap()
+            .with_agent_chat(Arc::new(registry), std::env::temp_dir());
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: "show me the running jobs".into(),
+            })
+            .await
+            .unwrap();
+
+        // The primary assistant row is the card itself: meta_json must
+        // decode to a pending `list_jobs` proposal.
+        let meta = res
+            .assistant_message
+            .meta_json
+            .as_deref()
+            .expect("planner-emitted card row must carry meta_json");
+        let card: AssistantActionCard = serde_json::from_str(meta).unwrap();
+        assert!(matches!(card.status, AssistantActionStatus::Pending));
+        assert!(matches!(
+            card.action,
+            AssistantAction::ListJobs { repo_id: None }
+        ));
+        assert!(
+            res.cards.is_empty(),
+            "no trailing cards when primary is the only one"
+        );
+
+        // The persisted transcript matches the in-line return: a user
+        // row followed by exactly one assistant row carrying the card.
+        let listed = rpc
+            .list_assistant_messages(ListAssistantMessagesArgs {
+                thread_id: thread.id,
+            })
+            .await
+            .unwrap()
+            .messages;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].role, AssistantMessageRole::User);
+        assert_eq!(listed[1].role, AssistantMessageRole::Assistant);
+        assert_eq!(listed[1].id, res.assistant_message.id);
+
+        // End-to-end: confirming the planner-emitted card runs the
+        // underlying RPC (list_jobs) and appends a Tool-role message
+        // with the result summary — the same surface a slash-command
+        // card would produce.
+        let confirm = rpc
+            .confirm_assistant_action(ConfirmAssistantActionArgs {
+                thread_id: thread.id,
+                message_id: res.assistant_message.id,
+            })
+            .await
+            .unwrap();
+        let confirmed: AssistantActionCard =
+            serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(confirmed.status, AssistantActionStatus::Confirmed));
+        assert!(confirm.tool_message.content.starts_with("Listed "));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_mixed_text_and_card_persists_both_rows() {
+        use super::super::assistant_planner::tests::{FakeChatRunner, FakeStep};
+        use std::sync::Arc;
+
+        // Mixed turn: prose preamble, then a tool call. The prose row
+        // is the primary `assistant_message`; the card lands in
+        // `cards`. The persisted transcript is user + assistant text +
+        // assistant card, in that order.
+        let job_id = JobId::new();
+        let runner = Arc::new(FakeChatRunner::with_steps(vec![
+            FakeStep::Text("Pausing now.".into()),
+            FakeStep::Tool {
+                name: "pause_job".into(),
+                input: serde_json::json!({ "job_id": job_id }),
+            },
+        ]));
+        let registry = ai_runner::Registry::new();
+        registry.register(runner);
+        let rpc = InProcessRpc::new()
+            .await
+            .unwrap()
+            .with_agent_chat(Arc::new(registry), std::env::temp_dir());
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: "pause it please".into(),
+            })
+            .await
+            .unwrap();
+        assert!(res.assistant_message.meta_json.is_none());
+        assert_eq!(res.assistant_message.content, "Pausing now.");
+        assert_eq!(res.cards.len(), 1);
+        let card_row = &res.cards[0];
+        let card: AssistantActionCard =
+            serde_json::from_str(card_row.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(card.action, AssistantAction::PauseJob { job_id: j } if j == job_id));
+
+        let listed = rpc
+            .list_assistant_messages(ListAssistantMessagesArgs {
+                thread_id: thread.id,
+            })
+            .await
+            .unwrap()
+            .messages;
+        // user, prose, card — in created_at-ASC order.
+        assert_eq!(listed.len(), 3);
+        assert_eq!(listed[0].role, AssistantMessageRole::User);
+        assert_eq!(listed[1].id, res.assistant_message.id);
+        assert_eq!(listed[2].id, card_row.id);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

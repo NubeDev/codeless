@@ -10,18 +10,19 @@ use crate::methods::{
     AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
     CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
-    DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
-    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
-    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
-    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    DeleteJobArgs, DeleteJobFileArgs, DraftJobFromConversationArgs, FsCreateDirArgs,
+    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -401,4 +402,28 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: CancelAssistantActionArgs,
     ) -> RpcResult<CancelAssistantActionResult>;
+
+    /// Rewrite a job's `SCOPE.md` from chat. Rejects with `Conflict`
+    /// when the job is `Running`, `Queued`, or `AwaitingReview` so the
+    /// runner is not racing the user's spec edit (the assistant
+    /// surface's "pause first" affordance is the recovery path). Other
+    /// states — `Draft`, `Paused`, and the terminal trio — go through
+    /// the same commit pipeline as the Spec pane's save.
+    /// `NotFound` for an unknown job; `InvalidArgument` for an empty
+    /// body so a missed-`--` slash command can't silently clobber the
+    /// file with whitespace.
+    async fn update_job_scope(&self, args: UpdateJobScopeArgs) -> RpcResult<UpdateJobScopeResult>;
+
+    /// Materialise a fresh `Draft` job from the most recent pending
+    /// `DraftJob` action card on the given assistant thread. The
+    /// proposal lives on an `Assistant`-role message's `meta_json`;
+    /// this RPC walks the transcript newest-to-oldest, decodes the
+    /// card, and forwards the captured fields into `submit_job` with
+    /// `start_immediately = false`. `NotFound` for an unknown thread;
+    /// `InvalidArgument` when no pending `DraftJob` card is present so
+    /// the UI can guide the user to issue `/draft` first.
+    async fn draft_job_from_conversation(
+        &self,
+        args: DraftJobFromConversationArgs,
+    ) -> RpcResult<codeless_types::Job>;
 }

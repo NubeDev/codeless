@@ -17,14 +17,12 @@ import {
 import { cn } from "@/lib/utils";
 import {
   AgentRunBridge,
-  AiInputBar,
   AiMiniWindow,
   getAllKeys,
   hasAnyKey,
   SelectionAskAi,
   useChatStore,
 } from "@/modules/ai";
-import { AiInputBarConnect } from "@/modules/ai/components/AiInputBar";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import { useSnippetsStore } from "@/modules/ai/store/snippetsStore";
@@ -36,7 +34,7 @@ import {
 } from "@/modules/editor";
 import { FileExplorer } from "@/modules/explorer";
 import { JobDetailStack, JobsDashboard } from "@/modules/jobs";
-import { AssistantPage } from "@/modules/assistant";
+import { AssistantFooterBar, AssistantPage } from "@/modules/assistant";
 import {
   Header,
   type SearchInlineHandle,
@@ -469,17 +467,18 @@ export default function App() {
   }, [tabs, activeId]);
 
   const togglePanelAndFocus = useCallback(() => {
-    if (!hasComposer) {
-      void settingsWindow.open("models");
-      return;
-    }
+    // The footer composer is now the assistant entry point; the
+    // assistant uses server-side credentials, so the API-key gate
+    // that used to route a keyless user into settings here is gone.
+    // The in-editor AI mini-window (`AiMiniWindow`) keeps its own
+    // gate because it still drives the browser-side SDK transport.
     if (panelOpen) {
       useChatStore.getState().closePanel();
     } else {
       openPanel();
       focusInput(null);
     }
-  }, [hasComposer, panelOpen, openPanel, focusInput]);
+  }, [panelOpen, openPanel, focusInput]);
 
   const attachSelection = useChatStore((s) => s.attachSelection);
 
@@ -1016,7 +1015,6 @@ export default function App() {
 
                   {keysLoaded ? (
                     <motion.div
-                      data-ai-input-bar
                       initial={false}
                       animate={{
                         height: panelOpen ? "auto" : 0,
@@ -1026,13 +1024,9 @@ export default function App() {
                       className="overflow-hidden"
                       aria-hidden={!panelOpen}
                     >
-                      {hasComposer ? (
-                        <AiInputBar />
-                      ) : (
-                        <AiInputBarConnect
-                          onAdd={() => void settingsWindow.open("models")}
-                        />
-                      )}
+                      <AssistantFooterBar
+                        onOpenAssistant={() => newAssistantTab()}
+                      />
                     </motion.div>
                   ) : null}
                 </div>

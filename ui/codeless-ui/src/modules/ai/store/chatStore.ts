@@ -1,3 +1,13 @@
+// Single-process store for the in-editor AI panel (`AiMiniWindow`).
+// Before F1, the footer composer (`AiInputBar`) read messages here too;
+// post-F1 the footer is driven by `assistant.*` RPCs against SQLite and
+// only borrows this store's *UI-presentation* slots — `panelOpen`,
+// `focusSignal`, `pendingPrefill`, `pendingSelections`. The session
+// list / `Chat<UIMessage>` instances / per-token persistence remain so
+// the in-editor mini-window keeps working unchanged. SQLite is the
+// source of truth for the assistant; the browser-side message ledger
+// here is only for the editor's mini-window, which has not been
+// folded into the assistant yet.
 import { Chat, type UIMessage } from "@ai-sdk/react";
 import {
   type ChatTransport,
