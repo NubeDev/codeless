@@ -84,10 +84,16 @@ export function AssistantThreadView({
           thread_id: thread.id,
           content,
         });
+        // The planner may emit one or more action-card rows alongside
+        // the prose reply; they arrive in created_at order, so a plain
+        // concatenation matches what a re-list would render. Empty for
+        // a plain Q&A turn — slash commands route through the same
+        // shape with `assistant_message` carrying the only card.
         setMessages((prev) => [
           ...prev,
           res.user_message,
           res.assistant_message,
+          ...(res.cards ?? []),
         ]);
         setInput("");
         onThreadTouched?.();

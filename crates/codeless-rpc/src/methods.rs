@@ -1085,6 +1085,14 @@ pub struct AppendAssistantMessageArgs {
 pub struct AppendAssistantMessageResult {
     pub user_message: AssistantMessage,
     pub assistant_message: AssistantMessage,
+    /// Action-card rows the planner emitted alongside the text reply.
+    /// Each entry is a persisted assistant-role message whose
+    /// `meta_json` decodes to an [`AssistantActionCard`]; the UI
+    /// appends them to the transcript in order, exactly as it would
+    /// after a re-list. Empty when the turn produced no tool calls
+    /// (the common case for plain Q&A).
+    #[serde(default)]
+    pub cards: Vec<AssistantMessage>,
 }
 
 /// `assistant.confirmAction`. Dispatch the tool call proposed by a

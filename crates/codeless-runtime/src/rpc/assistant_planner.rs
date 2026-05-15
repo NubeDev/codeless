@@ -16,7 +16,10 @@ use std::sync::Arc;
 use ai_runner::Provider;
 use codeless_adapters_host::ChatRunCfg;
 use codeless_rpc::{RpcError, RpcResult};
-use codeless_types::{AssistantMessage, AssistantMessageRole, AssistantThreadId, JobId, TaskId};
+use codeless_types::{
+    AssistantAction, AssistantActionCard, AssistantMessage, AssistantMessageRole,
+    AssistantThreadId, JobId, TaskId,
+};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -37,7 +40,17 @@ const DEFAULT_PLANNER_RUNNER: Provider = Provider::Claude;
 /// subscriber correlates them by that key.
 #[derive(Debug)]
 pub(super) struct PlannerTurn {
+    /// Concatenated text the model emitted between (or after) any tool
+    /// invocations. May be empty when the model answered purely with a
+    /// tool call — the caller then suppresses the standalone text row
+    /// and lets the card rows carry the turn.
     pub content: String,
+    /// Action cards parsed out of `Event::ToolCall` envelopes captured
+    /// during the run. Each card is persisted by the caller as its own
+    /// assistant-role message with `meta_json` set, so the renderer can
+    /// surface the confirm/cancel chrome and the dispatcher (already in
+    /// `confirm_assistant_action`) can run the underlying RPC.
+    pub cards: Vec<AssistantActionCard>,
 }
 
 /// Whether the runtime is wired with an agent_chat registry + cwd.
@@ -87,14 +100,38 @@ pub(super) async fn run_planner_turn(
     let bus_job_id = JobId(thread_id.0);
     let bus = Arc::clone(&rpc.bus);
     let collected: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let sink = Arc::clone(&collected);
+    let cards_sink: Arc<Mutex<Vec<AssistantActionCard>>> = Arc::new(Mutex::new(Vec::new()));
+    let text_sink = Arc::clone(&collected);
+    let card_sink = Arc::clone(&cards_sink);
 
     let publish = move |event: codeless_types::Event| {
         let bus = Arc::clone(&bus);
-        let sink = Arc::clone(&sink);
+        let text_sink = Arc::clone(&text_sink);
+        let card_sink = Arc::clone(&card_sink);
         async move {
-            if let codeless_types::Event::AiToken { ref delta, .. } = event {
-                sink.lock().push_str(delta);
+            match &event {
+                codeless_types::Event::AiToken { delta, .. } => {
+                    text_sink.lock().push_str(delta);
+                }
+                // Each tool invocation the model emits becomes a card
+                // proposal. Parsing happens inline so a malformed payload
+                // is logged once and dropped — preferable to halting the
+                // turn, since the surrounding text reply may still be
+                // useful and a stricter caller can always cancel the
+                // turn through the (forthcoming) abort surface.
+                codeless_types::Event::ToolCall {
+                    tool, args_json, ..
+                } => match parse_tool_call(tool, args_json) {
+                    Ok(action) => card_sink.lock().push(AssistantActionCard::new(action)),
+                    Err(e) => {
+                        tracing::warn!(
+                            tool = %tool,
+                            error = %e,
+                            "assistant planner: dropping unrecognised tool call",
+                        );
+                    }
+                },
+                _ => {}
             }
             bus.publish(Some(bus_job_id), None, Some(task_id), event, now_ms())
                 .await
@@ -127,15 +164,51 @@ pub(super) async fn run_planner_turn(
     // alternative `Arc::try_unwrap` would panic if a stray clone
     // outlived us during a future refactor.
     let text = std::mem::take(&mut *collected.lock());
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+    let cards = std::mem::take(&mut *cards_sink.lock());
+    let trimmed = text.trim().to_owned();
+    // A turn with neither prose nor tool calls is the failure mode we
+    // care about — the model returned nothing actionable. Pure-card
+    // replies are valid: the card rows themselves carry the turn.
+    if trimmed.is_empty() && cards.is_empty() {
         return Err(RpcError::Internal(
             "planner produced an empty reply".to_owned(),
         ));
     }
     Ok(PlannerTurn {
-        content: trimmed.to_owned(),
+        content: trimmed,
+        cards,
     })
+}
+
+/// Parse a tool-call envelope from the runner into a typed
+/// `AssistantAction`. The envelope arrives as `(name, args_json)`; we
+/// fold the name back into the JSON document as the serde tag
+/// (`AssistantAction` is `#[serde(tag = "tool")]`) and let serde do the
+/// per-variant validation. Empty `args_json` is treated as `{}` so a
+/// nullary tool (`list_jobs` without a repo filter) round-trips
+/// without the runner having to emit a sentinel object.
+fn parse_tool_call(name: &str, args_json: &str) -> Result<AssistantAction, String> {
+    let raw = args_json.trim();
+    let mut value: serde_json::Value = if raw.is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_str(raw).map_err(|e| format!("args_json: {e}"))?
+    };
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| "args_json must be a JSON object".to_owned())?;
+    // The runner-side name is the discriminator; rejecting a
+    // pre-existing `tool` key keeps the wire shape unambiguous (the
+    // model cannot rename its own tool by smuggling a different
+    // discriminator into the args).
+    if obj.contains_key("tool") {
+        return Err("args_json must not carry a `tool` discriminator".to_owned());
+    }
+    obj.insert(
+        "tool".to_owned(),
+        serde_json::Value::String(name.to_owned()),
+    );
+    serde_json::from_value::<AssistantAction>(value).map_err(|e| format!("decode action: {e}"))
 }
 
 /// Render a single-shot prompt from the thread's prior turns and the
@@ -166,15 +239,42 @@ fn build_planner_prompt(history: &[AssistantMessage], user_content: &str) -> Str
     }
     out.push_str("\n\n## Current user message\n");
     out.push_str(user_content);
-    out.push_str("\n\nReply to the user. Plain prose only — action cards land in a later stage.\n");
+    out.push_str(PLANNER_TOOL_TRAILER);
     out
 }
 
 const PLANNER_SYSTEM_PREAMBLE: &str = "You are Codeless's in-app assistant. \
 The user is talking to you from the workspace assistant pane. \
 Answer their questions about jobs, repos, and the codebase concisely. \
-Do not invent action cards; the dispatcher that turns them into \
-real RPC calls is not yet wired.";
+When the user wants to view or change job state, propose a tool call \
+instead of describing the action in prose — confirmation lives on the \
+user side. Each tool invocation surfaces as an action card the user \
+must confirm before the runtime dispatches the underlying RPC.";
+
+/// Catalogue of tool calls the planner is allowed to emit. The names
+/// match `AssistantAction`'s serde tag (snake_case); the args block of
+/// each tool must be a JSON object whose keys match the variant's
+/// fields. Surfaced inside the prompt so a CLI runner (which does not
+/// see a structured tools list the way a REST provider does) still has
+/// the schema in-band.
+const PLANNER_TOOL_TRAILER: &str = "\n\nReply to the user. \
+You may emit one or more tool calls in addition to (or in place of) \
+prose. Each tool call must use one of these names with a JSON object \
+matching the documented arg keys:\n\
+- `list_jobs` { repo_id?: RepoId }\n\
+- `get_job` { job_id: JobId }\n\
+- `start_job` { job_id: JobId }\n\
+- `stop_job` { job_id: JobId }\n\
+- `pause_job` { job_id: JobId }\n\
+- `resume_job` { job_id: JobId }\n\
+- `restart_job` { job_id: JobId }\n\
+- `update_job` { job_id: JobId, runner?, model?, permission_mode?, \
+effort?, cost_cap_cents?, wall_clock_cap_ms?, branch? }\n\
+- `draft_job` { repo_id, prompt, runner, branch, cost_cap_cents, \
+wall_clock_cap_ms, workspace_mode?, model?, permission_mode?, effort? }\n\
+- `edit_scope` { job_id: JobId, filename: string, new_content: string }\n\
+The runtime persists each tool call as a confirmable card; the user \
+clicks Confirm to dispatch it. Do not invent tool names.\n";
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -189,12 +289,25 @@ pub(crate) mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken as Cancel;
 
-    /// MockRunner-style fake for the planner: emits a scripted set of
-    /// `Text` chunks then a `Done` envelope. Mirrors the shape the
-    /// claude wrapper would produce, without spawning a child process.
+    /// One scripted envelope the fake runner emits for the current run.
+    /// Mirrors the `ai_runner::EventKind` shape so a test can drive the
+    /// planner through interleaved text and tool-call events without
+    /// stitching its own envelopes.
+    pub(crate) enum FakeStep {
+        Text(String),
+        Tool {
+            name: String,
+            input: serde_json::Value,
+        },
+    }
+
+    /// MockRunner-style fake for the planner: emits a scripted sequence
+    /// of `Text` / `ToolUse` envelopes then a `Done` envelope. Mirrors
+    /// the shape the claude wrapper would produce, without spawning a
+    /// child process.
     pub(crate) struct FakeChatRunner {
         provider: Provider,
-        chunks: Vec<String>,
+        steps: Vec<FakeStep>,
         seen_prompt: Arc<StdMutex<Option<String>>>,
     }
 
@@ -202,7 +315,18 @@ pub(crate) mod tests {
         pub fn new(chunks: impl IntoIterator<Item = impl Into<String>>) -> Self {
             Self {
                 provider: Provider::Claude,
-                chunks: chunks.into_iter().map(Into::into).collect(),
+                steps: chunks
+                    .into_iter()
+                    .map(|c| FakeStep::Text(c.into()))
+                    .collect(),
+                seen_prompt: Arc::new(StdMutex::new(None)),
+            }
+        }
+
+        pub fn with_steps(steps: Vec<FakeStep>) -> Self {
+            Self {
+                provider: Provider::Claude,
+                steps,
                 seen_prompt: Arc::new(StdMutex::new(None)),
             }
         }
@@ -232,14 +356,22 @@ pub(crate) mod tests {
             if let RunnerInput::Cli(cfg) = &input {
                 *self.seen_prompt.lock().unwrap() = Some(cfg.prompt.clone());
             }
-            for chunk in &self.chunks {
+            for step in &self.steps {
+                let kind = match step {
+                    FakeStep::Text(content) => EventKind::Text {
+                        content: content.clone(),
+                    },
+                    FakeStep::Tool { name, input } => EventKind::ToolUse {
+                        id: Some(format!("call-{name}")),
+                        name: name.clone(),
+                        input: Some(input.clone()),
+                    },
+                };
                 let _ = on_event
                     .send(AiEvent {
                         session_id: session_id.clone(),
                         provider: "claude".into(),
-                        kind: EventKind::Text {
-                            content: chunk.clone(),
-                        },
+                        kind,
                     })
                     .await;
             }
@@ -322,11 +454,8 @@ pub(crate) mod tests {
         // bounded drain keeps the test from hanging if the stream is
         // somehow empty (which would itself be the failure to assert).
         for _ in 0..16 {
-            let next = tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                stream.next(),
-            )
-            .await;
+            let next =
+                tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await;
             match next {
                 Ok(Some(Ok(env))) => match env.event {
                     Event::AiToken { delta, task_id } => {
@@ -371,7 +500,9 @@ pub(crate) mod tests {
                 created_at: now_ms(),
             },
         ];
-        let _ = run_planner_turn(&rpc, thread_id, &history, "follow-up").await.unwrap();
+        let _ = run_planner_turn(&rpc, thread_id, &history, "follow-up")
+            .await
+            .unwrap();
         let prompt = seen.lock().unwrap().clone().unwrap();
         assert!(prompt.contains("prior question"));
         assert!(prompt.contains("prior reply"));
@@ -390,6 +521,107 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::Internal(_)), "got {err:?}");
+    }
+
+    async fn rpc_with_steps(steps: Vec<FakeStep>) -> InProcessRpc {
+        let runner = Arc::new(FakeChatRunner::with_steps(steps));
+        let registry = registry_with(runner);
+        InProcessRpc::new()
+            .await
+            .unwrap()
+            .with_agent_chat(registry, std::env::temp_dir())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_emits_action_card_from_tool_use() {
+        let job_id = JobId::new();
+        let rpc = rpc_with_steps(vec![
+            FakeStep::Text("Sure, starting it now.".into()),
+            FakeStep::Tool {
+                name: "start_job".into(),
+                input: serde_json::json!({ "job_id": job_id }),
+            },
+        ])
+        .await;
+        let turn = run_planner_turn(&rpc, AssistantThreadId::new(), &[], "kick off the job")
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "Sure, starting it now.");
+        assert_eq!(turn.cards.len(), 1);
+        match &turn.cards[0].action {
+            AssistantAction::StartJob { job_id: got } => assert_eq!(*got, job_id),
+            other => panic!("expected StartJob, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_allows_card_only_turn() {
+        let job_id = JobId::new();
+        let rpc = rpc_with_steps(vec![FakeStep::Tool {
+            name: "pause_job".into(),
+            input: serde_json::json!({ "job_id": job_id }),
+        }])
+        .await;
+        let turn = run_planner_turn(&rpc, AssistantThreadId::new(), &[], "pause it")
+            .await
+            .unwrap();
+        // No `Text` envelopes were emitted, but a tool call alone is a
+        // valid turn — the card row carries the model's response.
+        assert!(turn.content.is_empty());
+        assert_eq!(turn.cards.len(), 1);
+        assert!(matches!(
+            turn.cards[0].action,
+            AssistantAction::PauseJob { .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_drops_unknown_tool_call() {
+        let rpc = rpc_with_steps(vec![
+            FakeStep::Tool {
+                name: "not_a_tool".into(),
+                input: serde_json::json!({}),
+            },
+            FakeStep::Text("fallback prose".into()),
+        ])
+        .await;
+        let turn = run_planner_turn(&rpc, AssistantThreadId::new(), &[], "do a thing")
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "fallback prose");
+        // Unknown tool names are logged and dropped so the surrounding
+        // prose still lands; failing the whole turn would swallow what
+        // the user actually asked for.
+        assert!(turn.cards.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_call_recovers_each_variant() {
+        let job_id = JobId::new();
+        let action = parse_tool_call(
+            "start_job",
+            &serde_json::json!({ "job_id": job_id }).to_string(),
+        )
+        .unwrap();
+        assert!(matches!(action, AssistantAction::StartJob { job_id: j } if j == job_id));
+
+        // Empty / whitespace-only args parses as the all-defaults shape
+        // for nullary tools (`list_jobs` with no repo filter).
+        let action = parse_tool_call("list_jobs", "").unwrap();
+        assert!(matches!(
+            action,
+            AssistantAction::ListJobs { repo_id: None }
+        ));
+
+        // A non-object payload is a hard error — the runner is expected
+        // to send a JSON object even when the variant is nullary, and
+        // anything else means a malformed envelope.
+        assert!(parse_tool_call("start_job", "\"bare-string\"").is_err());
+
+        // Smuggled discriminator is rejected — the tool name is the
+        // sole source of truth for which variant we are decoding.
+        let smuggled = serde_json::json!({ "tool": "stop_job", "job_id": job_id }).to_string();
+        assert!(parse_tool_call("start_job", &smuggled).is_err());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

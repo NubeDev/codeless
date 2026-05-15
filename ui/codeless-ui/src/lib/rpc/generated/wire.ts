@@ -133,6 +133,15 @@ export type AppendAssistantMessageArgs = {
 export type AppendAssistantMessageResult = {
 	user_message: AssistantMessage,
 	assistant_message: AssistantMessage,
+	/**
+	 *  Action-card rows the planner emitted alongside the text reply.
+	 *  Each entry is a persisted assistant-role message whose
+	 *  `meta_json` decodes to an [`AssistantActionCard`]; the UI
+	 *  appends them to the transcript in order, exactly as it would
+	 *  after a re-list. Empty when the turn produced no tool calls
+	 *  (the common case for plain Q&A).
+	 */
+	cards?: AssistantMessage[],
 };
 
 export type ApproveReviewArgs = {
@@ -648,6 +657,27 @@ reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageSt
  */
 { type: "job-template-updated"; job_id: JobId } | 
 /**
+ *  An attached workspace's canonical root is no longer reachable
+ *  (the directory was deleted, the volume unmounted, the symlink
+ *  target vanished, etc). Emitted exactly once per transition by the
+ *  30s liveness sweep in `codeless-runtime::workspace_liveness`; the
+ *  follow-up `WorkspaceRecovered` event fires when the path comes
+ *  back. The UI uses the pair to flip a per-workspace badge in the
+ *  sidebar without polling.
+ * 
+ *  `fs_root` is the canonical path as registered in
+ *  `attached_workspaces.fs_root_canonical`. `reason` is a short
+ *  machine-readable tag (`"missing"`, `"not-a-directory"`,
+ *  `"io-error"`) — string-typed rather than a wire enum so a new
+ *  failure mode can land without an enum-bump on every shell.
+ */
+{ type: "workspace-unhealthy"; repo_id: RepoId; fs_root: string; reason: string } | 
+/**
+ *  Paired with `WorkspaceUnhealthy`. Fires the next sweep after the
+ *  path resolves to a directory again.
+ */
+{ type: "workspace-recovered"; repo_id: RepoId; fs_root: string } | 
+/**
  *  A supporting file under `.codeless/jobs/<name>/` was written
  *  or deleted. `filename` is the basename (e.g. `SCOPE.md`),
  *  not a full path, so subscribers don't have to know about
@@ -1085,6 +1115,16 @@ export type RunnerInfo = {
 export type ServerInfo = {
 	version: string,
 	runners: RunnerInfo[],
+	/**
+	 *  Frozen at boot to the `--fs-root` flag the operator launched
+	 *  `codeless serve` with (or `None` when the flag was omitted). Does
+	 *  **not** track the live `attached_workspaces` set: attaching or
+	 *  detaching a workspace at runtime never rewrites this field, so
+	 *  the UI must read `list_workspaces` for the active roster. The
+	 *  field stays in `ServerInfo` because some shells (the bootstrap
+	 *  banner, the demo-mode hint) need the boot-time path before any
+	 *  authenticated RPC has run.
+	 */
 	fs_root: string | null,
 	worktree_root: string | null,
 	/**

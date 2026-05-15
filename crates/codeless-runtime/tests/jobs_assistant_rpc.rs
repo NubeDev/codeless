@@ -15,8 +15,8 @@ use codeless_rpc::{
 };
 use codeless_runtime::InProcessRpc;
 use codeless_types::{
-    AssistantActionCard, AssistantActionStatus, AssistantMessageRole, AssistantThreadId,
-    CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, WorkspaceMode,
+    AssistantActionCard, AssistantActionStatus, AssistantMessageRole, AssistantThreadId, CostCents,
+    GitAuth, Job, JobId, JobStatus, Repo, RepoId, WorkspaceMode,
 };
 use tempfile::TempDir;
 

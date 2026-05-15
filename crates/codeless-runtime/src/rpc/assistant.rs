@@ -1,8 +1,8 @@
 use codeless_rpc::{
     AppendAssistantMessageArgs, AppendAssistantMessageResult, CancelAssistantActionArgs,
     CancelAssistantActionResult, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
-    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DraftJobFromConversationArgs,
-    GetJobArgs, ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DraftJobFromConversationArgs, GetJobArgs,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
     ListAssistantThreadsResult, ListJobsArgs, PauseJobArgs, ReadJobFileArgs, RerunJobArgs,
     ResumeJobArgs, RpcError, RpcResult, RpcServer, StartJobArgs, StopJobArgs, UpdateJobArgs,
     UpdateJobScopeArgs, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
@@ -224,15 +224,35 @@ pub(super) async fn append_assistant_message(
     let assistant_now = codeless_types::UnixMillis(user_now.0.saturating_add(1));
     // Slash-command parser intercepts the typed action-card grammar;
     // anything else falls through to the F2 planner which streams a
-    // model-generated reply. The planner is skipped (NOOP fallback) when
-    // the runtime was booted without `with_agent_chat` so unit tests
-    // that don't wire a fake registry still exercise the row plumbing.
-    let (content, meta_json) = match parse_action(trimmed) {
+    // model-generated reply (possibly with action-card tool calls). The
+    // planner is skipped (NOOP fallback) when the runtime was booted
+    // without `with_agent_chat` so unit tests that don't wire a fake
+    // registry still exercise the row plumbing.
+    enum Reply {
+        /// One assistant row only. `meta_json` is `Some` for a slash-
+        /// command card and `None` for plain prose.
+        Single {
+            content: String,
+            meta_json: Option<String>,
+        },
+        /// Planner turn: a (possibly empty) prose reply plus zero or
+        /// more action-card rows. The text row is suppressed when its
+        /// trimmed body is empty so a pure-card turn does not leave a
+        /// blank assistant bubble in the transcript.
+        Planner {
+            content: String,
+            cards: Vec<AssistantActionCard>,
+        },
+    }
+    let reply = match parse_action(trimmed) {
         Some((action, summary)) => {
             let card = AssistantActionCard::new(action);
             let meta = serde_json::to_string(&card)
                 .map_err(|e| RpcError::Internal(format!("serialise action card: {e}")))?;
-            (summary, Some(meta))
+            Reply::Single {
+                content: summary,
+                meta_json: Some(meta),
+            }
         }
         None if super::assistant_planner::planner_configured(rpc) => {
             // History fold deliberately excludes the user row we just
@@ -251,33 +271,149 @@ pub(super) async fn append_assistant_message(
             let turn =
                 super::assistant_planner::run_planner_turn(rpc, args.thread_id, &prior, trimmed)
                     .await?;
-            (turn.content, None)
+            Reply::Planner {
+                content: turn.content,
+                cards: turn.cards,
+            }
         }
-        None => (NOOP_ASSISTANT_REPLY.to_owned(), None),
+        None => Reply::Single {
+            content: NOOP_ASSISTANT_REPLY.to_owned(),
+            meta_json: None,
+        },
     };
-    let assistant_message = AssistantMessage {
-        id: AssistantMessageId::new(),
-        thread_id: args.thread_id,
-        role: AssistantMessageRole::Assistant,
-        content,
-        meta_json,
-        created_at: assistant_now,
+
+    // Persist the assistant turn. Cards arrive after the prose row so
+    // the transcript renders "text, then proposals" — the order the UI
+    // already expects from a manual re-list. Each card row gets its own
+    // monotonically-increasing timestamp so the ASC sort by created_at
+    // is stable across the multiple inserts.
+    let (assistant_message, cards) = match reply {
+        Reply::Single { content, meta_json } => {
+            let row = AssistantMessage {
+                id: AssistantMessageId::new(),
+                thread_id: args.thread_id,
+                role: AssistantMessageRole::Assistant,
+                content,
+                meta_json,
+                created_at: assistant_now,
+            };
+            rpc.store
+                .insert_assistant_message(&row)
+                .await
+                .map_err(super::db_err)?;
+            (row, Vec::new())
+        }
+        Reply::Planner { content, cards } => {
+            // The text reply gets its own row only when non-empty; a
+            // pure-card turn skips it and surfaces the first card as
+            // `assistant_message` so existing UI code that always
+            // appends `res.assistant_message` still renders something
+            // confirmable.
+            let mut next_ms = assistant_now.0;
+            let mut text_row: Option<AssistantMessage> = None;
+            if !content.is_empty() {
+                let row = AssistantMessage {
+                    id: AssistantMessageId::new(),
+                    thread_id: args.thread_id,
+                    role: AssistantMessageRole::Assistant,
+                    content,
+                    meta_json: None,
+                    created_at: codeless_types::UnixMillis(next_ms),
+                };
+                rpc.store
+                    .insert_assistant_message(&row)
+                    .await
+                    .map_err(super::db_err)?;
+                next_ms = next_ms.saturating_add(1);
+                text_row = Some(row);
+            }
+            let mut card_rows: Vec<AssistantMessage> = Vec::with_capacity(cards.len());
+            for card in cards {
+                let meta = serde_json::to_string(&card)
+                    .map_err(|e| RpcError::Internal(format!("serialise action card: {e}")))?;
+                // The card row's `content` is a short human label so a
+                // chat surface that ignores `meta_json` (logs, search,
+                // text export) still has something readable. The card
+                // payload is the load-bearing data.
+                let summary = describe_action(&card.action);
+                let row = AssistantMessage {
+                    id: AssistantMessageId::new(),
+                    thread_id: args.thread_id,
+                    role: AssistantMessageRole::Assistant,
+                    content: summary,
+                    meta_json: Some(meta),
+                    created_at: codeless_types::UnixMillis(next_ms),
+                };
+                rpc.store
+                    .insert_assistant_message(&row)
+                    .await
+                    .map_err(super::db_err)?;
+                next_ms = next_ms.saturating_add(1);
+                card_rows.push(row);
+            }
+            let primary = text_row
+                .or_else(|| card_rows.first().cloned())
+                .expect("planner turn returned neither text nor cards");
+            // The primary row is included in the result's
+            // `assistant_message` slot. When the primary *is* the first
+            // card, drop it from `cards` so the caller does not render
+            // it twice. The remaining cards (if any) follow in order.
+            let trailing = if text_row_is_primary(&primary) {
+                card_rows
+            } else {
+                card_rows.into_iter().skip(1).collect()
+            };
+            (primary, trailing)
+        }
     };
-    rpc.store
-        .insert_assistant_message(&assistant_message)
-        .await
-        .map_err(super::db_err)?;
 
     let _ = rpc
         .store
-        .touch_assistant_thread(args.thread_id, assistant_now)
+        .touch_assistant_thread(args.thread_id, assistant_message.created_at)
         .await
         .map_err(super::db_err)?;
 
     Ok(AppendAssistantMessageResult {
         user_message,
         assistant_message,
+        cards,
     })
+}
+
+/// Discriminate the "primary" row in the planner branch: a text reply
+/// has `meta_json == None`, an action card has `Some`. Used so the
+/// caller does not include the card-as-primary in the trailing `cards`
+/// list a second time.
+fn text_row_is_primary(row: &AssistantMessage) -> bool {
+    row.meta_json.is_none()
+}
+
+/// Short human label for an action card row. The card's `meta_json`
+/// carries the structured payload; this string is what a text-only
+/// rendering of the transcript (CLI dump, search index) shows for the
+/// row, so it has to be readable on its own.
+fn describe_action(action: &AssistantAction) -> String {
+    match action {
+        AssistantAction::ListJobs { repo_id: None } => "Proposed: list jobs".to_owned(),
+        AssistantAction::ListJobs { repo_id: Some(r) } => {
+            format!("Proposed: list jobs in repo `{r}`")
+        }
+        AssistantAction::GetJob { job_id } => format!("Proposed: get job `{job_id}`"),
+        AssistantAction::StartJob { job_id } => format!("Proposed: start job `{job_id}`"),
+        AssistantAction::StopJob { job_id } => format!("Proposed: stop job `{job_id}`"),
+        AssistantAction::PauseJob { job_id } => format!("Proposed: pause job `{job_id}`"),
+        AssistantAction::ResumeJob { job_id } => format!("Proposed: resume job `{job_id}`"),
+        AssistantAction::RestartJob { job_id } => format!("Proposed: restart job `{job_id}`"),
+        AssistantAction::UpdateJob { job_id, .. } => format!("Proposed: update job `{job_id}`"),
+        AssistantAction::DraftJob { repo_id, .. } => {
+            format!("Proposed: draft a new job in repo `{repo_id}`")
+        }
+        AssistantAction::EditScope {
+            job_id, filename, ..
+        } => {
+            format!("Proposed: rewrite `{filename}` on job `{job_id}`")
+        }
+    }
 }
 
 /// Parse a user turn into an action proposal. Stage-7 stand-in for the
@@ -1271,6 +1407,145 @@ mod tests {
             .await
             .unwrap();
         assert!(card_res.assistant_message.meta_json.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_tool_call_persists_as_card_and_dispatches_on_confirm() {
+        use super::super::assistant_planner::tests::{FakeChatRunner, FakeStep};
+        use std::sync::Arc;
+
+        // Pure-card turn: the model says nothing and just emits a
+        // `list_jobs` tool call. The result must surface the card as
+        // `assistant_message` (so existing UI append code renders
+        // something confirmable) and the planner's `cards` slot stays
+        // empty because the primary row already carries the only card.
+        let runner = Arc::new(FakeChatRunner::with_steps(vec![FakeStep::Tool {
+            name: "list_jobs".into(),
+            input: serde_json::json!({}),
+        }]));
+        let registry = ai_runner::Registry::new();
+        registry.register(runner);
+        let rpc = InProcessRpc::new()
+            .await
+            .unwrap()
+            .with_agent_chat(Arc::new(registry), std::env::temp_dir());
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: "show me the running jobs".into(),
+            })
+            .await
+            .unwrap();
+
+        // The primary assistant row is the card itself: meta_json must
+        // decode to a pending `list_jobs` proposal.
+        let meta = res
+            .assistant_message
+            .meta_json
+            .as_deref()
+            .expect("planner-emitted card row must carry meta_json");
+        let card: AssistantActionCard = serde_json::from_str(meta).unwrap();
+        assert!(matches!(card.status, AssistantActionStatus::Pending));
+        assert!(matches!(
+            card.action,
+            AssistantAction::ListJobs { repo_id: None }
+        ));
+        assert!(
+            res.cards.is_empty(),
+            "no trailing cards when primary is the only one"
+        );
+
+        // The persisted transcript matches the in-line return: a user
+        // row followed by exactly one assistant row carrying the card.
+        let listed = rpc
+            .list_assistant_messages(ListAssistantMessagesArgs {
+                thread_id: thread.id,
+            })
+            .await
+            .unwrap()
+            .messages;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].role, AssistantMessageRole::User);
+        assert_eq!(listed[1].role, AssistantMessageRole::Assistant);
+        assert_eq!(listed[1].id, res.assistant_message.id);
+
+        // End-to-end: confirming the planner-emitted card runs the
+        // underlying RPC (list_jobs) and appends a Tool-role message
+        // with the result summary — the same surface a slash-command
+        // card would produce.
+        let confirm = rpc
+            .confirm_assistant_action(ConfirmAssistantActionArgs {
+                thread_id: thread.id,
+                message_id: res.assistant_message.id,
+            })
+            .await
+            .unwrap();
+        let confirmed: AssistantActionCard =
+            serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(confirmed.status, AssistantActionStatus::Confirmed));
+        assert!(confirm.tool_message.content.starts_with("Listed "));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_mixed_text_and_card_persists_both_rows() {
+        use super::super::assistant_planner::tests::{FakeChatRunner, FakeStep};
+        use std::sync::Arc;
+
+        // Mixed turn: prose preamble, then a tool call. The prose row
+        // is the primary `assistant_message`; the card lands in
+        // `cards`. The persisted transcript is user + assistant text +
+        // assistant card, in that order.
+        let job_id = JobId::new();
+        let runner = Arc::new(FakeChatRunner::with_steps(vec![
+            FakeStep::Text("Pausing now.".into()),
+            FakeStep::Tool {
+                name: "pause_job".into(),
+                input: serde_json::json!({ "job_id": job_id }),
+            },
+        ]));
+        let registry = ai_runner::Registry::new();
+        registry.register(runner);
+        let rpc = InProcessRpc::new()
+            .await
+            .unwrap()
+            .with_agent_chat(Arc::new(registry), std::env::temp_dir());
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: "pause it please".into(),
+            })
+            .await
+            .unwrap();
+        assert!(res.assistant_message.meta_json.is_none());
+        assert_eq!(res.assistant_message.content, "Pausing now.");
+        assert_eq!(res.cards.len(), 1);
+        let card_row = &res.cards[0];
+        let card: AssistantActionCard =
+            serde_json::from_str(card_row.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(card.action, AssistantAction::PauseJob { job_id: j } if j == job_id));
+
+        let listed = rpc
+            .list_assistant_messages(ListAssistantMessagesArgs {
+                thread_id: thread.id,
+            })
+            .await
+            .unwrap()
+            .messages;
+        // user, prose, card — in created_at-ASC order.
+        assert_eq!(listed.len(), 3);
+        assert_eq!(listed[0].role, AssistantMessageRole::User);
+        assert_eq!(listed[1].id, res.assistant_message.id);
+        assert_eq!(listed[2].id, card_row.id);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
