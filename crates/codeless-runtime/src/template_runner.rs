@@ -917,6 +917,7 @@ async fn write_mock_review_handover(
                 .to_string(),
         ],
         open_questions: Vec::new(),
+        raw_tail: None,
     };
     if let Err(err) = crate::handover::write_handover(worktree, job_id, stage_id, &h).await {
         tracing::warn!(?err, "mock review handover write failed; gate will fail");
@@ -1032,6 +1033,7 @@ mod tests {
             next: vec!["next thing".into()],
             what_you_need_to_know: vec!["PASS: invariants hold".into()],
             open_questions: Vec::new(),
+            raw_tail: None,
         };
         crate::handover::write_handover(tmp.path(), job_id, stage_id, &h)
             .await
