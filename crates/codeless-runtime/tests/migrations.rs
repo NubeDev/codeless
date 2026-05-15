@@ -62,6 +62,7 @@ async fn migrator_creates_all_tables_from_appendix_a() {
             "attached_workspaces".to_string(),
             "events".to_string(),
             "jobs".to_string(),
+            "personas".to_string(),
             "pty_sessions".to_string(),
             "repos".to_string(),
             "reviews".to_string(),
@@ -253,6 +254,67 @@ async fn attached_workspaces_columns_and_unique_canonical_index() {
             .contains(&"idx_attached_workspaces_canonical".to_string()),
         "missing idx_attached_workspaces_canonical",
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn personas_table_matches_schema_sketch_and_seeds_built_ins() {
+    let pool = fresh_db().await;
+    assert_eq!(
+        columns(&pool, "personas").await,
+        vec![
+            "id",
+            "name",
+            "description",
+            "icon",
+            "instructions",
+            "use_for_jobs",
+            "default_model",
+            "allowed_subagents",
+            "default_snippets",
+            "built_in",
+            "created_at",
+            "updated_at",
+        ],
+    );
+    assert!(
+        index_names(&pool)
+            .await
+            .contains(&"personas_use_for_jobs_idx".to_string()),
+        "missing personas_use_for_jobs_idx",
+    );
+
+    let seeded: Vec<(String, i64)> =
+        sqlx::query("SELECT id, built_in FROM personas WHERE built_in = 1 ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("query seeded personas")
+            .into_iter()
+            .map(|r| (r.get::<String, _>("id"), r.get::<i64, _>("built_in")))
+            .collect();
+    assert_eq!(
+        seeded,
+        vec![
+            ("builtin:architect".to_string(), 1),
+            ("builtin:coder".to_string(), 1),
+            ("builtin:designer".to_string(), 1),
+            ("builtin:reviewer".to_string(), 1),
+            ("builtin:security".to_string(), 1),
+        ],
+    );
+
+    // allowed_subagents / default_snippets are JSON arrays the
+    // application-side serde parses; the migration must store valid
+    // JSON so the next stage's read path does not need a fallback for
+    // built-in rows.
+    let coder_subagents: String =
+        sqlx::query("SELECT allowed_subagents FROM personas WHERE id = 'builtin:coder'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("allowed_subagents");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&coder_subagents).expect("allowed_subagents parses as JSON");
+    assert!(parsed.is_array(), "allowed_subagents must be a JSON array");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
