@@ -9,13 +9,6 @@
 //!
 //! Scope gaps, documented honestly:
 //!
-//! - `REVIEW`-prefixed stages emit a `review-requested` envelope but do
-//!   not block. The runtime's `approve_review` RPC exists; what's
-//!   missing is the orchestrator wait — a `tokio::sync::Notify` keyed
-//!   to the review row. Until that lands, REVIEW stages render in the
-//!   timeline as "human gate noted" and the loop continues. The author
-//!   of the template can still tell the next session "this stage
-//!   should have been reviewed" from the log.
 //! - `verify:` shell command (JOB-MODEL.md "one shell command, must
 //!   exit 0") is not run between stages. The model is asked to commit
 //!   per stage; if a stage's output is wrong, it carries forward.
@@ -23,14 +16,43 @@
 //! - Cost / wall-clock caps are tracked at the JOB level, not the
 //!   stage level. A single runaway stage can still hit the per-job
 //!   cap; per-stage budgeting is a future refinement.
+//!
+//! REVIEW stage semantics (the SESSION-MUTABLE-SCOPE Step 1 contract):
+//!
+//! A stage marked `review: true` (or with the `REVIEW ` flat-string
+//! prefix) is a **model-driven blocking gate**, not a human-review
+//! pause. The runner spawns the inner adapter the same way it would
+//! for a WORK stage, but with a prompt that instructs the model to
+//! emit a single `PASS:` or `FAIL:` sentinel line in its handover.
+//! After the adapter finishes, the template runner reads the handover
+//! file, parses the sentinel via `review_gate::parse_review_verdict`,
+//! and:
+//!
+//! - `Pass` ⇒ the stage finishes `Passed` and the next stage runs.
+//! - `Fail` ⇒ the stage finishes `Failed` and `run` returns
+//!   `RunnerOutcome::Failed`; no later stages execute.
+//! - Missing or ambiguous sentinel ⇒ same as `Fail`. A silent gate is
+//!   treated as failure, so a model that forgets the sentinel can
+//!   never accidentally wave a bad change through.
+//!
+//! No `Event::ReviewRequested` is emitted for these gates. That event
+//! continues to mean "a human is asked to weigh in" (per
+//! `SESSION-MUTABLE-SCOPE-DECISIONS.md`'s `ReviewRequested` vs
+//! `ReviewGate*` decision); the model-driven gate's verdict surfaces
+//! through the existing `StageCompleted` + `TaskCompleted` events.
+//! Step 4 of the ramp adds patch-proposal emission on PASS; Step 5
+//! enforces patch shape. This module is Step 1: sentinel parsing,
+//! nothing more.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codeless_types::{Event, ReviewId, StageId, StageStatus, TaskId};
+use codeless_types::{Event, StageId, StageStatus, TaskId};
 use tokio_util::sync::CancellationToken;
 
 use crate::claude_runner::ClaudeRunnerAdapter;
+use crate::handover::handover_path;
+use crate::review_gate::{parse_review_verdict, ReviewVerdict, VerdictParseError};
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
 use crate::store::SqliteStore;
 use crate::template::{JobTemplate, PlannedStage};
@@ -113,11 +135,22 @@ impl TemplateRunner {
         worktree: Option<&std::path::Path>,
     ) -> String {
         let stage_num = planned.index + 1;
+        // REVIEW stages get an explicit sentinel contract appended to
+        // the prompt. The runtime parses `PASS:` / `FAIL:` from the
+        // handover after the stage runs; a missing or ambiguous
+        // sentinel is treated as failure, so the wording has to be
+        // unambiguous about what is required.
         let review_note = if planned.is_review {
-            "\n\nThis is a REVIEW stage. The user will approve the work \
-             you do here before the next stage runs (today the runtime \
-             does not yet block on the gate, but emit the handover as \
-             if review is the terminator)."
+            "\n\nThis is a REVIEW stage — a blocking gate, not a human \
+             pause. Examine the diff from the prior WORK stages and \
+             decide whether the rulebook's Layer-1 invariants hold \
+             (R1 crate dependency direction, R2 single transport, \
+             R4/R5 trust boundary, wire-formats untouched). Emit \
+             exactly one sentinel line in your handover: `PASS: <one-\
+             sentence reason>` if the gate holds, or `FAIL: <one-\
+             sentence reason>` if it does not. The runtime parses the \
+             sentinel and halts the job on FAIL. Do not propose patches \
+             yet; that lands in a later ramp step."
         } else {
             ""
         };
@@ -196,25 +229,14 @@ impl Runner for TemplateRunner {
             )
             .await;
 
-            if stage.is_review {
-                // REVIEW stage: surface the gate as a review-requested
-                // event but do not wait. The review row creation lives
-                // on the runtime's review RPC surface; emitting the
-                // event here keeps the timeline honest about the gate
-                // without forcing the orchestrator to spin on a
-                // notification channel that does not yet exist.
-                let review_id = ReviewId::new();
-                publish(
-                    &ctx,
-                    stage_id,
-                    task_id,
-                    Event::ReviewRequested {
-                        review_id,
-                        stage_id,
-                    },
-                )
-                .await;
-            } else {
+            // REVIEW and WORK stages share the same execution shape:
+            // build the prompt, hand it to the inner adapter (or the
+            // mock event sequence), then on success let control fall
+            // through to the post-stage REVIEW sentinel check below.
+            // Splitting them previously short-circuited the model
+            // invocation for REVIEW stages, which made the gate a
+            // theatre rather than a real check.
+            {
                 let prompt = self.stage_prompt(*stage, total, ctx.worktree_path.as_deref());
                 let sub_ctx = RunnerContext {
                     job_id: ctx.job_id,
@@ -276,6 +298,20 @@ impl Runner for TemplateRunner {
                     // Hold ctx to silence unused warnings around the
                     // branch's `sub_ctx`.
                     drop(sub_ctx);
+                    // The real claude adapter writes the handover; the
+                    // mock branch doesn't go through it, so synthesise
+                    // a handover for REVIEW stages with the required
+                    // PASS sentinel — otherwise the gate downstream
+                    // would fail every mock REVIEW run. The synthetic
+                    // verdict is intentionally PASS: mock mode is for
+                    // UI / event-shape demos, not for exercising the
+                    // gate's FAIL path (production REVIEW with claude
+                    // exercises FAIL via real model output).
+                    if stage.is_review {
+                        if let Some(wt) = ctx.worktree_path.as_ref() {
+                            write_mock_review_handover(wt, ctx.job_id, stage_id).await;
+                        }
+                    }
                     RunnerOutcome::Completed
                 } else {
                     let mut adapter = ClaudeRunnerAdapter::new(prompt, task_id);
@@ -318,6 +354,57 @@ impl Runner for TemplateRunner {
                 }
             }
 
+            // REVIEW blocking-gate evaluation. Runs only for stages
+            // flagged review; reads the handover the inner adapter
+            // wrote, parses the `PASS:` / `FAIL:` sentinel, and turns
+            // the verdict into stage status. Missing or ambiguous
+            // sentinel is treated as failure — a silent gate is not
+            // permitted to wave a job through. See module docs and
+            // `review_gate.rs` for the contract.
+            if stage.is_review {
+                match evaluate_review_gate(ctx.worktree_path.as_deref(), ctx.job_id, stage_id).await
+                {
+                    Ok(ReviewVerdict::Pass { reason }) => {
+                        tracing::info!(stage = stage.title, %reason, "review gate passed");
+                    }
+                    Ok(ReviewVerdict::Fail { reason }) => {
+                        publish(
+                            &ctx,
+                            stage_id,
+                            task_id,
+                            Event::StageCompleted {
+                                stage_id,
+                                status: StageStatus::Failed,
+                            },
+                        )
+                        .await;
+                        tracing::warn!(
+                            stage = stage.title,
+                            %reason,
+                            "review gate failed; aborting template run"
+                        );
+                        return RunnerOutcome::Failed {
+                            reason: format!("review gate failed: {reason}"),
+                        };
+                    }
+                    Err(err) => {
+                        publish(
+                            &ctx,
+                            stage_id,
+                            task_id,
+                            Event::StageCompleted {
+                                stage_id,
+                                status: StageStatus::Failed,
+                            },
+                        )
+                        .await;
+                        let reason = format!("review gate verdict unparseable: {err}");
+                        tracing::warn!(stage = stage.title, %reason, "review gate aborted run");
+                        return RunnerOutcome::Failed { reason };
+                    }
+                }
+            }
+
             publish(
                 &ctx,
                 stage_id,
@@ -331,6 +418,51 @@ impl Runner for TemplateRunner {
         }
         RunnerOutcome::Completed
     }
+}
+
+/// Synthesise a minimal handover with a `PASS:` sentinel for the
+/// mock-runner REVIEW path. Only used when `use_mock_runner` is on;
+/// the real claude adapter writes its own handover from model output.
+async fn write_mock_review_handover(
+    worktree: &std::path::Path,
+    job_id: codeless_types::JobId,
+    stage_id: StageId,
+) {
+    let h = codeless_types::Handover {
+        done: vec!["mock review stage".to_string()],
+        next: vec!["next stage runs".to_string()],
+        what_you_need_to_know: vec![
+            "PASS: mock runner auto-passes REVIEW gates so the dev/demo \
+             event shape stays consistent with the real adapter."
+                .to_string(),
+        ],
+        open_questions: Vec::new(),
+    };
+    if let Err(err) = crate::handover::write_handover(worktree, job_id, stage_id, &h).await {
+        tracing::warn!(?err, "mock review handover write failed; gate will fail");
+    }
+}
+
+/// Read the handover the inner adapter wrote for this stage and
+/// parse its `PASS:` / `FAIL:` sentinel into a verdict. The error
+/// type is `String` because the failure path collapses three
+/// underlying causes — no worktree on the context, the handover file
+/// missing/unreadable, and the sentinel being missing or ambiguous —
+/// into a single "the gate could not produce a verdict" outcome that
+/// the caller treats as failure regardless of cause.
+async fn evaluate_review_gate(
+    worktree: Option<&std::path::Path>,
+    job_id: codeless_types::JobId,
+    stage_id: StageId,
+) -> Result<ReviewVerdict, String> {
+    let worktree = worktree.ok_or_else(|| {
+        "review gate has no worktree on its runner context; cannot read handover".to_string()
+    })?;
+    let path = handover_path(worktree, job_id, stage_id);
+    let body = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|err| format!("read handover {}: {err}", path.display()))?;
+    parse_review_verdict(&body).map_err(|err: VerdictParseError| err.to_string())
 }
 
 async fn publish(ctx: &RunnerContext, stage_id: StageId, task_id: TaskId, event: Event) {
@@ -394,11 +526,108 @@ mod tests {
     }
 
     #[test]
-    fn review_prompt_carries_gate_note() {
+    fn review_prompt_carries_sentinel_contract() {
+        // The REVIEW prompt must instruct the model on the exact
+        // `PASS:` / `FAIL:` sentinel the runtime parses after the
+        // stage runs. Asserting on the sentinel tokens (rather than
+        // just the word "REVIEW") protects the wire-level contract
+        // between the prompt and `review_gate::parse_review_verdict`.
         let r = TemplateRunner::new(template_with_stages(&["REVIEW gate", "after"]));
         let planned = r.template.planned_stages();
         let prompt = r.stage_prompt(planned[0], 2, None);
         assert!(prompt.contains("REVIEW stage"));
+        assert!(prompt.contains("PASS:"));
+        assert!(prompt.contains("FAIL:"));
+        assert!(prompt.contains("blocking gate"));
+    }
+
+    #[tokio::test]
+    async fn evaluate_review_gate_reads_pass_from_handover() {
+        use codeless_types::{Handover, JobId};
+        let tmp = tempfile::tempdir().unwrap();
+        let job_id = JobId::new();
+        let stage_id = StageId::new();
+        let h = Handover {
+            done: vec!["did stuff".into()],
+            next: vec!["next thing".into()],
+            what_you_need_to_know: vec!["PASS: invariants hold".into()],
+            open_questions: Vec::new(),
+        };
+        crate::handover::write_handover(tmp.path(), job_id, stage_id, &h)
+            .await
+            .unwrap();
+
+        let verdict = evaluate_review_gate(Some(tmp.path()), job_id, stage_id)
+            .await
+            .expect("verdict parses");
+        match verdict {
+            ReviewVerdict::Pass { reason } => assert_eq!(reason, "invariants hold"),
+            other => panic!("expected Pass, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn evaluate_review_gate_reads_fail_from_handover() {
+        use codeless_types::{Handover, JobId};
+        let tmp = tempfile::tempdir().unwrap();
+        let job_id = JobId::new();
+        let stage_id = StageId::new();
+        let h = Handover {
+            done: vec!["FAIL: WORK touched CLAUDE.md".into()],
+            next: vec!["fix it".into()],
+            ..Default::default()
+        };
+        crate::handover::write_handover(tmp.path(), job_id, stage_id, &h)
+            .await
+            .unwrap();
+
+        let verdict = evaluate_review_gate(Some(tmp.path()), job_id, stage_id)
+            .await
+            .expect("verdict parses");
+        match verdict {
+            ReviewVerdict::Fail { reason } => assert_eq!(reason, "WORK touched CLAUDE.md"),
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn evaluate_review_gate_missing_sentinel_is_error() {
+        use codeless_types::{Handover, JobId};
+        let tmp = tempfile::tempdir().unwrap();
+        let job_id = JobId::new();
+        let stage_id = StageId::new();
+        let h = Handover {
+            done: vec!["forgot the sentinel".into()],
+            next: vec!["nothing".into()],
+            ..Default::default()
+        };
+        crate::handover::write_handover(tmp.path(), job_id, stage_id, &h)
+            .await
+            .unwrap();
+
+        let err = evaluate_review_gate(Some(tmp.path()), job_id, stage_id)
+            .await
+            .expect_err("missing sentinel is an error");
+        assert!(err.contains("did not contain"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn evaluate_review_gate_missing_handover_is_error() {
+        use codeless_types::JobId;
+        let tmp = tempfile::tempdir().unwrap();
+        let err = evaluate_review_gate(Some(tmp.path()), JobId::new(), StageId::new())
+            .await
+            .expect_err("missing handover is an error");
+        assert!(err.contains("read handover"));
+    }
+
+    #[tokio::test]
+    async fn evaluate_review_gate_no_worktree_is_error() {
+        use codeless_types::JobId;
+        let err = evaluate_review_gate(None, JobId::new(), StageId::new())
+            .await
+            .expect_err("no worktree is an error");
+        assert!(err.contains("no worktree"));
     }
 
     #[test]
