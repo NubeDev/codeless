@@ -316,9 +316,13 @@ impl Runner for ClaudeRunnerAdapter {
         // Drop a structured handover into the worktree when the run
         // produced text we can parse. Done here (rather than in the
         // driver) because only the adapter has the accumulated
-        // assistant message buffer; the driver writes a default
-        // handover later if this path leaves the file absent.
-        if let Some(worktree) = ctx.worktree_path.as_ref() {
+        // assistant message buffer. The handover is keyed by stage
+        // (JOB-MODEL.md H1) — when this adapter runs without a stage
+        // frame (legacy single-runner driver path, in-process tests)
+        // we have no place to address the file, so we skip rather
+        // than writing to a job-level fallback that keyed discovery
+        // (H3) could not resolve.
+        if let (Some(worktree), Some(stage_id)) = (ctx.worktree_path.as_ref(), ctx.stage_id) {
             let status = match &outcome {
                 RunnerOutcome::Completed => JobStatus::Completed,
                 RunnerOutcome::Failed { .. } => JobStatus::Failed,
@@ -328,13 +332,18 @@ impl Runner for ClaudeRunnerAdapter {
                 Some(h) => h,
                 None => fallback_handover_from_text("claude", status, &assistant_text, 2000),
             };
-            match write_handover(worktree, job_id, &handover).await {
+            match write_handover(worktree, job_id, stage_id, &handover).await {
                 Ok(path) => tracing::info!(handover = %path.display(), "claude handover written"),
                 Err(err) => tracing::warn!(
                     ?err,
-                    "failed to write claude handover; driver default will fill in"
+                    "failed to write claude handover; next session will read no prior handover"
                 ),
             }
+        } else if ctx.stage_id.is_none() && ctx.worktree_path.is_some() {
+            tracing::debug!(
+                %job_id,
+                "claude runner produced output without a stage frame; skipping handover write"
+            );
         }
 
         outcome

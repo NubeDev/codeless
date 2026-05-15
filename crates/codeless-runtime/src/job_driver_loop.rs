@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::RpcError;
-use codeless_types::{Event, Job, JobStatus};
+use codeless_types::{Event, Job, JobId, JobStatus, StageId, StageStatus};
 use futures_util::StreamExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -174,7 +174,7 @@ async fn dispatch<F: RunnerFactory>(
     factory: Arc<F>,
     worktrees: Option<Arc<WorktreeManager>>,
     semaphore: Arc<Semaphore>,
-    job_id: codeless_types::JobId,
+    job_id: JobId,
 ) {
     let mut job = match rpc.store().get_job(job_id).await {
         Ok(Some(job)) => job,
@@ -210,10 +210,22 @@ async fn dispatch<F: RunnerFactory>(
     // existing per-run handover, not through this loop.
     if let Ok(Some(repo)) = rpc.store().get_repo(job.repo_id).await {
         let repo_path = std::path::PathBuf::from(&repo.local_path);
+        // Keyed handover discovery (JOB-MODEL.md H3): pick the prior
+        // handover by `(job_id, stage_id)`, not by mtime. The mtime
+        // ranking that previously lived here straddled unrelated jobs
+        // — it would prefix the next job's prompt with whatever
+        // worktree happened to be newest on disk. The correct prior
+        // is the most-recently-terminated stage of *this* job; if no
+        // such stage exists (fresh JobQueued, no resume context),
+        // no prefix is added.
         let mut handover_prefix = String::new();
-        if let Some((path, prior)) = crate::handover::find_latest_handover(&repo_path).await {
-            handover_prefix = crate::handover::prompt_prefix_for(&path, &prior);
-            tracing::info!(handover = %path.display(), "prepended prior handover to prompt");
+        if let Some(stage_id) = latest_terminal_stage(&rpc, job_id).await {
+            if let Some((path, prior)) =
+                crate::handover::find_handover(&repo_path, job_id, stage_id).await
+            {
+                handover_prefix = crate::handover::prompt_prefix_for(&path, &prior);
+                tracing::info!(handover = %path.display(), "prepended prior handover to prompt");
+            }
         }
 
         let job_docs = job
@@ -261,4 +273,28 @@ async fn dispatch<F: RunnerFactory>(
             tracing::warn!(%job_id, error = %e, "drive_job returned error");
         }
     });
+}
+
+/// Find the `StageId` whose handover should prefix the next prompt
+/// for `job_id`. Selection rule: highest-ordinal stage that has
+/// already reached a terminal status (Passed, Failed, or
+/// AwaitingReview — the last because a paused-at-review stage's
+/// handover is the contract the next session resumes against).
+/// Returns `None` when the job has no such stage yet — the prompt-
+/// prefix path then runs without a prior-handover preamble, which is
+/// correct for a fresh job and for the very first stage of a resumed
+/// one.
+async fn latest_terminal_stage(rpc: &Arc<InProcessRpc>, job_id: JobId) -> Option<StageId> {
+    let stages = rpc.store().list_stages_for_job(job_id).await.ok()?;
+    stages
+        .into_iter()
+        .filter(|s| {
+            matches!(
+                s.stage.status,
+                StageStatus::Passed | StageStatus::Failed | StageStatus::AwaitingReview
+            )
+        })
+        .map(|s| (s.stage.ordinal, s.stage.id))
+        .max_by_key(|(ordinal, _)| *ordinal)
+        .map(|(_, id)| id)
 }

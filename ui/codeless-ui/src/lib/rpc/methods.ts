@@ -23,6 +23,7 @@ import type {
   Repo,
   RepoId,
   Review,
+  StageId,
   ShellBgEntry,
   ShellBgLogChunk,
   ShellCommandOutput,
@@ -414,6 +415,9 @@ export interface UpdateJobTemplateResult {
 export interface WriteHandoverArgs {
   job_id: JobId;
   handover: Handover;
+  // Optional stage id. When omitted, the runtime writes to the job's
+  // highest-ordinal stage (the current "active" stage).
+  stage_id?: StageId | null;
 }
 
 export interface WriteHandoverResult {

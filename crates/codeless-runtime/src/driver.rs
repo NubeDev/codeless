@@ -185,31 +185,14 @@ pub async fn drive_job(
     // from where it left off. `release_worktree` is kept around for
     // an upcoming user-driven `gc_worktrees` RPC, not auto-fired.
     //
-    // Drop a session handover at `runs/<job_id>/handover.md` inside
-    // the worktree so the next session has the JOB-MODEL.md contract
-    // to read. Today only the default ("no structured handover emitted")
-    // content lands here — runner-specific extraction is a follow-up.
-    // Failure to write the handover is logged but never fails the job:
-    // the work already succeeded by this point and a missing markdown
-    // file is recoverable from the diff + events stream.
+    // The handover is now per-stage (`runs/<job_id>/<stage_id>/...`,
+    // JOB-MODEL.md H1), so the driver no longer synthesises a
+    // job-level fallback here — there is no stage frame at this
+    // call site. Per-stage runners (TemplateRunner) drop their own
+    // handover inside `runner.run`; runners that bypass the stage
+    // frame leave no handover, which is the correct outcome for the
+    // keyed-discovery contract (H3).
     if let Some(worktree) = provisioned.as_ref().map(|p| p.worktree.clone()) {
-        // The runner adapter may have already dropped a structured
-        // handover by the time we reach here (Group B work). If so,
-        // we leave that file alone — only fill in the default when
-        // nothing has been written. The check is a cheap stat against
-        // a one-file path; no race with the runner because the runner
-        // finishes before this point in the driver.
-        let target = crate::handover::handover_path(&worktree, job_id);
-        if tokio::fs::try_exists(&target).await.unwrap_or(false) {
-            tracing::debug!(handover = %target.display(), "runner wrote handover; leaving as-is");
-        } else {
-            let synth = crate::handover::default_handover(&updated.runner, next_status);
-            match crate::handover::write_handover(&worktree, job_id, &synth).await {
-                Ok(path) => tracing::info!(handover = %path.display(), "handover written"),
-                Err(err) => tracing::warn!(?err, "failed to write handover; ignoring"),
-            }
-        }
-
         // Append the session block to runs/<job_id>/log.md. Always
         // runs (the handover is overwritten each session; the log
         // never is — JOB-MODEL.md "one block per session, never
