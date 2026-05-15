@@ -90,6 +90,22 @@ pub enum Event {
         previous_reason: Option<StopReason>,
     },
 
+    /// `reset_job` returned a stuck job (`Queued` whose driver kept
+    /// failing, or a terminal `Failed` / `Stopped`) to an editable
+    /// `Draft`. The captured worktree was reaped (best-effort) and
+    /// `worktree_path` / `stop_reason` / `ended_at` were cleared.
+    /// Distinct from `JobQueued` and `JobPromoted` so the dashboard
+    /// can render a "reset to draft" divider rather than treating the
+    /// row as a new submission. `previous_status` is the state the
+    /// row held immediately before the reset so subscribers can
+    /// distinguish a driver-give-up recovery from a manual rewind of
+    /// a completed-but-failed run.
+    #[serde(rename = "job-reset")]
+    JobReset {
+        job_id: JobId,
+        previous_status: crate::job::JobStatus,
+    },
+
     #[serde(rename = "stage-started")]
     StageStarted {
         stage_id: StageId,

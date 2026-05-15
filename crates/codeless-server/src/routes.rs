@@ -19,13 +19,14 @@ use codeless_rpc::{
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
-    RpcError, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UpsertPersonaArgs, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RpcError, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use serde_json::Value;
@@ -49,6 +50,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/start_job", post(start_job))
         .route("/rpc/resume_job", post(resume_job))
         .route("/rpc/rerun_job", post(rerun_job))
+        .route("/rpc/reset_job", post(reset_job))
         .route("/rpc/update_job", post(update_job))
         .route("/rpc/delete_job", post(delete_job))
         .route("/rpc/gc_worktrees", post(gc_worktrees))
@@ -285,6 +287,13 @@ async fn rerun_job(
     Json(args): Json<RerunJobArgs>,
 ) -> HandlerResult<Job> {
     st.rpc.rerun_job(args).await.map(Json).map_err(map_err)
+}
+
+async fn reset_job(
+    State(st): State<AppState>,
+    Json(args): Json<ResetJobArgs>,
+) -> HandlerResult<Job> {
+    st.rpc.reset_job(args).await.map(Json).map_err(map_err)
 }
 
 async fn update_job(

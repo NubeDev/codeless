@@ -18,11 +18,12 @@ use crate::methods::{
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
+    WriteHandoverResult,
     WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
@@ -90,6 +91,18 @@ pub trait RpcServer: Send + Sync + 'static {
     /// `Conflict` if the job is not in a resumable state (`Stopped`
     /// or `Failed`), `NotFound` for an unknown id.
     async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job>;
+
+    /// Manual recovery hatch for jobs the driver loop could not move
+    /// out of `Queued` (worktree provisioning kept failing past the
+    /// retry budget, runner not enabled on this core, template parse
+    /// errors), plus the symmetric escape from `Failed` and `Stopped`
+    /// back to an editable `Draft`. Reaps the captured worktree
+    /// best-effort, clears `worktree_path` / `stop_reason` / `ended_at`,
+    /// and publishes `Event::JobReset`. Refused for `Running`,
+    /// `Paused`, `AwaitingReview`, and `Completed` — those are not
+    /// stuck-states (use `stop_job` / `pause_job` / `resume_job`
+    /// instead). `NotFound` for an unknown id.
+    async fn reset_job(&self, args: ResetJobArgs) -> RpcResult<Job>;
 
     /// List the stages of a job, each enriched with rolled-up
     /// `cost_cents` (sum over the stage's tasks) and a `task_count`.

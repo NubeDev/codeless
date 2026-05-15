@@ -254,6 +254,20 @@ pub struct StopJobArgs {
     pub job_id: JobId,
 }
 
+/// Argument shape for the `reset_job` recovery hatch. A job stuck in
+/// `Queued` (driver kept failing before reaching `Running`), `Failed`,
+/// or `Stopped` is moved back to `Draft` so the operator can edit the
+/// spec or simply re-`start_job` without the resume-cap dance. The
+/// captured worktree (if any) is reaped and `worktree_path` is
+/// cleared; `stop_reason` and `ended_at` are wiped so the row reads
+/// like a fresh draft. Refused for `Running`, `Paused`, `AwaitingReview`,
+/// and `Completed` — those go through `stop_job` / `pause_job` /
+/// `resume_job` instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ResetJobArgs {
+    pub job_id: JobId,
+}
+
 /// Patch mutable fields on a job. Only editable while the job is
 /// `Draft` or a terminal state (`Stopped`, `Failed`, `Completed`).
 /// Every field is optional — `None` means "leave unchanged".

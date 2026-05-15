@@ -6,8 +6,9 @@ use codeless_rpc::{
     DraftJobFromConversationArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobReportArgs, JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage,
     JobReportToolCall, JobReportTurn, ListJobsArgs, ListJobsResult, ListStagesArgs,
-    ListStagesResult, PauseJobArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, StartJobArgs,
-    StopJobArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, WriteJobFileArgs,
+    ListStagesResult, PauseJobArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError, RpcResult,
+    StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    WriteJobFileArgs,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantMessageRole, CostCents,
@@ -650,6 +651,84 @@ pub(super) async fn pause_job(rpc: &InProcessRpc, args: PauseJobArgs) -> RpcResu
         .await
         .map_err(super::db_err)?;
     Ok(())
+}
+
+pub(super) async fn reset_job(rpc: &InProcessRpc, args: ResetJobArgs) -> RpcResult<Job> {
+    let mut job = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("job {}", args.job_id)))?;
+    let previous_status = job.status;
+    if !matches!(
+        job.status,
+        JobStatus::Queued | JobStatus::Failed | JobStatus::Stopped
+    ) {
+        return Err(RpcError::Conflict(format!(
+            "job {} is {:?}; only Queued, Failed, or Stopped jobs can be reset. \
+             Use stop_job / pause_job / resume_job for live or paused rows.",
+            job.id, job.status
+        )));
+    }
+    crate::state_machine::transition_job(job.status, JobStatus::Draft).map_err(|e| {
+        RpcError::Conflict(format!(
+            "illegal job transition from {:?} to Draft: {e}",
+            job.status
+        ))
+    })?;
+
+    // Best-effort worktree reap. A `Queued` row that never made it to
+    // Running may have no worktree at all (the whole reason reset is
+    // needed); a row with `worktree_path` set may still have on-disk
+    // state from a partial provision. Either way, failure to reap is
+    // logged but not surfaced — the user is already in recovery mode
+    // and a hard error would re-wedge the row they are trying to free.
+    if let (Some(path), Some(worktrees)) = (job.worktree_path.clone(), rpc.worktrees.clone()) {
+        if let Ok(Some(repo)) = rpc.store.get_repo(job.repo_id).await {
+            let repo_path = std::path::PathBuf::from(repo.local_path);
+            let wt_path = std::path::PathBuf::from(&path);
+            let res =
+                tokio::task::spawn_blocking(move || worktrees.remove(&repo_path, &wt_path)).await;
+            match res {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(
+                    job_id = %job.id,
+                    worktree = %path,
+                    error = %e,
+                    "reset_job: worktree remove failed, continuing"
+                ),
+                Err(e) => tracing::warn!(
+                    job_id = %job.id,
+                    worktree = %path,
+                    error = %e,
+                    "reset_job: worktree remove join failed, continuing"
+                ),
+            }
+        }
+    }
+
+    job.status = JobStatus::Draft;
+    job.worktree_path = None;
+    job.stop_reason = None;
+    job.ended_at = None;
+    if !rpc.store.update_job(&job).await.map_err(super::db_err)? {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            Event::JobReset {
+                job_id: job.id,
+                previous_status,
+            },
+            now_ms(),
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(job)
 }
 
 pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResult<Job> {

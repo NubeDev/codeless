@@ -571,7 +571,20 @@ export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-remo
  *  resume of a never-stopped row is a programming error;
  *  the RPC enforces it).
  */
-previous_reason?: StopReason | null } | { type: "stage-started"; stage_id: StageId; job_id: JobId; 
+previous_reason?: StopReason | null } | 
+/**
+ *  `reset_job` returned a stuck job (`Queued` whose driver kept
+ *  failing, or a terminal `Failed` / `Stopped`) to an editable
+ *  `Draft`. The captured worktree was reaped (best-effort) and
+ *  `worktree_path` / `stop_reason` / `ended_at` were cleared.
+ *  Distinct from `JobQueued` and `JobPromoted` so the dashboard
+ *  can render a "reset to draft" divider rather than treating the
+ *  row as a new submission. `previous_status` is the state the
+ *  row held immediately before the reset so subscribers can
+ *  distinguish a driver-give-up recovery from a manual rewind of
+ *  a completed-but-failed run.
+ */
+{ type: "job-reset"; job_id: JobId; previous_status: JobStatus } | { type: "stage-started"; stage_id: StageId; job_id: JobId; 
 /**
  *  0-based position of this stage in the template's `stages:`
  *  list. Carried on the wire so subscribers can persist
@@ -1099,6 +1112,21 @@ export type Repo = {
 
 //Identity of a managed git repository row.
 export type RepoId = string;
+
+/**
+ *  Argument shape for the `reset_job` recovery hatch. A job stuck in
+ *  `Queued` (driver kept failing before reaching `Running`), `Failed`,
+ *  or `Stopped` is moved back to `Draft` so the operator can edit the
+ *  spec or simply re-`start_job` without the resume-cap dance. The
+ *  captured worktree (if any) is reaped and `worktree_path` is
+ *  cleared; `stop_reason` and `ended_at` are wiped so the row reads
+ *  like a fresh draft. Refused for `Running`, `Paused`, `AwaitingReview`,
+ *  and `Completed` — those go through `stop_job` / `pause_job` /
+ *  `resume_job` instead.
+ */
+export type ResetJobArgs = {
+	job_id: JobId,
+};
 
 // A review row attached to a stage — see SCOPE.md Appendix A `reviews`.
 export type Review = {
