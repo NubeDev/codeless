@@ -21,6 +21,8 @@ import {
 
 import { navigate } from "@/lib/route";
 
+import { CommonChat } from "../chat";
+
 import { setGlobalDocs } from "./spec/mutateTemplate";
 
 type JobDiffFile = JobDiffResult["files"][number];
@@ -163,7 +165,7 @@ export function RunPane({ job, refetchJob, onOpenJobTab, onEditSpec }: Props) {
           </div>
           {showChat && (
             <aside className="min-w-0 lg:sticky lg:top-4 lg:self-start">
-              <JobChat job={job} onOpenJobTab={onOpenJobTab} />
+              <CommonChat kind="job" job={job} onOpenJobTab={onOpenJobTab} />
             </aside>
           )}
         </div>
@@ -953,12 +955,7 @@ function liveItemFromEvent(
   }
 }
 
-export function JobChat({
-  job,
-  uiLocation,
-  refetchJob,
-  onOpenJobTab: _onOpenJobTab,
-}: {
+export type JobChatProps = {
   job: Job;
   /**
    * Where the user is in the app when they hit send (e.g.
@@ -977,7 +974,14 @@ export function JobChat({
    */
   refetchJob?: () => void;
   onOpenJobTab?: (jobId: JobId, initialTitle: string) => void;
-}) {
+};
+
+export function JobChat({
+  job,
+  uiLocation,
+  refetchJob,
+  onOpenJobTab: _onOpenJobTab,
+}: JobChatProps) {
   const rpc = useRpc();
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [loaded, setLoaded] = useState(false);

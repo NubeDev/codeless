@@ -18,7 +18,8 @@ import { CostCell, WallClockCell } from "./JobRow";
 import { JobTimeline } from "./JobTimeline";
 import { JobReport } from "./JobReport";
 import { ReviewPanel } from "./ReviewPanel";
-import { JobChat, RunStrip } from "./RunPane";
+import { RunStrip } from "./RunPane";
+import { CommonChat } from "../chat";
 import { SpecPane } from "./spec/SpecPane";
 import { StageTree } from "./StageTree";
 import { StatusBadge } from "./StatusBadge";
@@ -150,7 +151,8 @@ export function JobChatPage({ jobId }: { jobId: JobId }) {
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {view === "chat" ? (
             <div className="flex min-h-0 min-w-0 flex-1 flex-col px-4 py-4 md:px-8">
-              <JobChat
+              <CommonChat
+                kind="job"
                 job={job}
                 uiLocation={`jobs/${job.id}`}
                 refetchJob={refetchJob}
