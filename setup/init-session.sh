@@ -26,7 +26,7 @@ PID_FILE="$CODELESS_HOME/server.pid"
 
 BIND="${CODELESS_BIND:-127.0.0.1:7777}"
 FS_ROOT="${CODELESS_FS_ROOT:-}"
-RUNNERS="${CODELESS_RUNNERS:-claude}"   # comma list: claude,anthropic
+RUNNERS="${CODELESS_RUNNERS:-claude}"   # comma list: claude,anthropic,codex,copilot
 DRIVER_CONCURRENCY="${CODELESS_DRIVER_CONCURRENCY:-4}"
 
 usage() {
@@ -46,7 +46,7 @@ env:
   CODELESS_HOME           default: \$HOME/.codeless
   CODELESS_BIND           default: 127.0.0.1:7777
   CODELESS_FS_ROOT        default: <added repo's local_path>, or unset
-  CODELESS_RUNNERS        default: claude  (comma list: claude,anthropic)
+  CODELESS_RUNNERS        default: claude  (comma list: claude,anthropic,codex,copilot)
   CODELESS_DRIVER_CONCURRENCY  default: 4
 EOF
 }
@@ -71,8 +71,10 @@ build_serve_args() {
     case "$r" in
       claude)    args+=(--enable-claude) ;;
       anthropic) args+=(--enable-anthropic) ;;
+      codex)     args+=(--enable-codex) ;;
+      copilot)   args+=(--enable-copilot) ;;
       mock|"")   ;;
-      *) echo "unknown runner: $r (allowed: claude,anthropic,mock)" >&2; exit 2 ;;
+      *) echo "unknown runner: $r (allowed: claude,anthropic,codex,copilot,mock)" >&2; exit 2 ;;
     esac
   done
   printf '%s\n' "${args[@]}"
