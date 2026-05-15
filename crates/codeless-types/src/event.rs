@@ -371,6 +371,40 @@ pub enum Event {
         evidence_stage_id: Option<StageId>,
         has_predicate: bool,
     },
+
+    /// Operator approved a proposed scope patch through the UI. Emitted
+    /// after the approval commit lands so cross-window subscribers can
+    /// invalidate their patch-inbox caches and link to the resulting
+    /// commit without a follow-up RPC. Same shape considerations as
+    /// `ScopePatchProposed` — mobile-safe, no enrichment that requires
+    /// host-only types.
+    #[serde(rename = "scope-patch-approved")]
+    ScopePatchApproved {
+        stage_id: StageId,
+        review_id: ReviewId,
+        patch_id: ScopePatchId,
+        kind: ScopePatchKind,
+        target: ScopePatchTarget,
+        target_path: String,
+        /// SHA of the human-authored approval commit produced by
+        /// `approve_scope_patch`. The UI links the inbox row to a
+        /// `commit/<sha>` route off this field.
+        commit_sha: String,
+    },
+
+    /// Operator rejected a proposed scope patch through the UI. Pairs
+    /// with `ScopePatchApproved`; same cross-window invalidation use
+    /// case.
+    #[serde(rename = "scope-patch-rejected")]
+    ScopePatchRejected {
+        stage_id: StageId,
+        review_id: ReviewId,
+        patch_id: ScopePatchId,
+        kind: ScopePatchKind,
+        target: ScopePatchTarget,
+        target_path: String,
+        commit_sha: String,
+    },
 }
 
 /// Envelope written to the `events` table. The `cursor`, `created_at`,

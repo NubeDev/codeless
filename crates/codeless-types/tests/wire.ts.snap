@@ -474,7 +474,28 @@ reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageSt
  *  Carried on the wire so subscribers can render the path
  *  without fetching the proposal body.
  */
-target_path: string; evidence_stage_id: StageId | null; has_predicate: boolean };
+target_path: string; evidence_stage_id: StageId | null; has_predicate: boolean } | 
+/**
+ *  Operator approved a proposed scope patch through the UI. Emitted
+ *  after the approval commit lands so cross-window subscribers can
+ *  invalidate their patch-inbox caches and link to the resulting
+ *  commit without a follow-up RPC. Same shape considerations as
+ *  `ScopePatchProposed` — mobile-safe, no enrichment that requires
+ *  host-only types.
+ */
+{ type: "scope-patch-approved"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; target_path: string; 
+/**
+ *  SHA of the human-authored approval commit produced by
+ *  `approve_scope_patch`. The UI links the inbox row to a
+ *  `commit/<sha>` route off this field.
+ */
+commit_sha: string } | 
+/**
+ *  Operator rejected a proposed scope patch through the UI. Pairs
+ *  with `ScopePatchApproved`; same cross-window invalidation use
+ *  case.
+ */
+{ type: "scope-patch-rejected"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; target_path: string; commit_sha: string };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER

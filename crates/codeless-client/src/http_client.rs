@@ -1,22 +1,23 @@
 use async_trait::async_trait;
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, AttachWorkspaceArgs, AttachWorkspaceResult,
-    CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
-    ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
-    DeleteAssistantThreadArgs, DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs,
-    DraftJobFromConversationArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs,
-    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
-    ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs, AttachWorkspaceArgs,
+    AttachWorkspaceResult, CancelAssistantActionArgs, CancelAssistantActionResult,
+    CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
+    DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs, DraftJobFromConversationArgs,
+    EditScopePatchArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult,
+    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
+    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
+    GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListPersonasArgs, ListPersonasResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RpcError, RpcResult, RpcServer, ScopePatchActionResult, Since, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
     UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
     ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
@@ -465,6 +466,27 @@ impl RpcServer for HttpRpcClient {
 
     async fn delete_persona(&self, args: DeletePersonaArgs) -> RpcResult<()> {
         self.call_void("delete_persona", &args).await
+    }
+
+    async fn approve_scope_patch(
+        &self,
+        args: ApproveScopePatchArgs,
+    ) -> RpcResult<ScopePatchActionResult> {
+        self.call("approve_scope_patch", &args).await
+    }
+
+    async fn reject_scope_patch(
+        &self,
+        args: RejectScopePatchArgs,
+    ) -> RpcResult<ScopePatchActionResult> {
+        self.call("reject_scope_patch", &args).await
+    }
+
+    async fn edit_scope_patch(
+        &self,
+        args: EditScopePatchArgs,
+    ) -> RpcResult<ScopePatchActionResult> {
+        self.call("edit_scope_patch", &args).await
     }
 }
 

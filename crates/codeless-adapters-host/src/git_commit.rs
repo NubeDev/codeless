@@ -38,6 +38,106 @@ pub enum GitCommitError {
     },
 }
 
+/// Resolve `HEAD` to a full commit SHA. Used by callers that need to
+/// link back to a commit they just produced with `commit_paths` — for
+/// the UI patch-approval flow, the SHA travels on the
+/// `ScopePatchApproved` / `ScopePatchRejected` event so the inbox can
+/// render a `commit/<sha>` link without a follow-up shell-out.
+pub fn head_sha(repo: &Path) -> Result<String, GitCommitError> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| GitCommitError::Io {
+            op: "rev-parse",
+            source: e,
+        })?;
+    if !out.status.success() {
+        return Err(GitCommitError::GitFailed {
+            op: "rev-parse",
+            status: out.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Outcome of looking up a previously-resolved scope patch in `git
+/// log`. The UI's idempotent-call path uses this to render
+/// `ScopePatchActionResult::AlreadyResolved` without rerunning the
+/// approve/reject side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PriorPatchResolution {
+    Approved { commit_sha: String },
+    Rejected { commit_sha: String },
+}
+
+/// Search the repo's commit history for the most recent commit that
+/// resolved a scope patch with the given id. Matches the commit-body
+/// markers the runtime / CLI emit:
+///
+/// - `Approved scope patch <id>.` → `PriorPatchResolution::Approved`
+/// - `Rejected scope patch <id>.` → `PriorPatchResolution::Rejected`
+///
+/// Returns `Ok(None)` when no such commit exists — the caller treats
+/// that as "this id was never queued, surface it as `NotFound`".
+pub fn find_patch_resolution(
+    repo: &Path,
+    patch_id: &str,
+) -> Result<Option<PriorPatchResolution>, GitCommitError> {
+    let pattern = format!("scope patch {patch_id}");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "log",
+            "--all",
+            "-F",
+            "--grep",
+            pattern.as_str(),
+            "--format=%H%n%B%n<<<END-COMMIT>>>",
+            "-n",
+            "32",
+        ])
+        .output()
+        .map_err(|e| GitCommitError::Io {
+            op: "log --grep",
+            source: e,
+        })?;
+    if !out.status.success() {
+        return Err(GitCommitError::GitFailed {
+            op: "log --grep",
+            status: out.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let approved_marker = format!("Approved scope patch {patch_id}");
+    let rejected_marker = format!("Rejected scope patch {patch_id}");
+    for record in text.split("<<<END-COMMIT>>>") {
+        let record = record.trim_start_matches('\n');
+        if record.trim().is_empty() {
+            continue;
+        }
+        let (sha, body) = match record.split_once('\n') {
+            Some((sha, rest)) => (sha.trim(), rest),
+            None => continue,
+        };
+        if body.contains(&approved_marker) {
+            return Ok(Some(PriorPatchResolution::Approved {
+                commit_sha: sha.to_owned(),
+            }));
+        }
+        if body.contains(&rejected_marker) {
+            return Ok(Some(PriorPatchResolution::Rejected {
+                commit_sha: sha.to_owned(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
 /// Stage the given paths and create a commit with `subject`. Returns
 /// `Ok(true)` if a commit was produced, `Ok(false)` if there was
 /// nothing to commit after staging. Both outcomes are success — the
