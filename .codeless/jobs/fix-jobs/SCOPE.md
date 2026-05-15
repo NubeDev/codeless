@@ -276,9 +276,71 @@ disappear; the URL singleton is the part that matches the goal's
 
 ## Manual verification
 
-[Stage 6 fills this in: dated, with the two job IDs used, the
-sequence of clicks, and a one-line note on whether both jobs continue
-to receive their own SSE events.]
+Stage 6, 2026-05-15.
+
+**Headless constraint.** This stage runs inside an isolated git
+worktree with no interactive user and no running app — a click-through
+of two live job-detail tabs is not possible in this environment. The
+verification recorded below is the strongest signal achievable
+headlessly; an interactive pass against a live server is still
+required at the stage-7 REVIEW gate before the PR merges (see
+"Pending" below).
+
+### Automated verification (performed this stage)
+
+- `pnpm -C ui/codeless-ui test` — 1 file / 1 test passing.
+  `ui/codeless-ui/src/modules/jobs/__tests__/JobDetailStack.parallel.test.tsx`
+  mounts two `JobPage` instances inside one `JobDetailStack` against
+  distinct jobIds (`A` and `B`) with `MockRpcClient`. After
+  `?tab=stage:a-stage-1` is written into `window.location.search` by
+  job A (the active mount), job B's lazy `activeTab` initialiser no
+  longer inherits that stageId; both panes show their own `Stages`
+  tab, and the test's `selectedStagesTabs.toHaveLength(2)` assertion
+  passes. This test failed on `master` (commit 4e4225e, stage 3)
+  and passes on `627f097` (stage 5, the fix).
+- `pnpm -C ui/codeless-ui lint` — no eslint configured; trivially
+  passes.
+- `pnpm -C ui/codeless-ui test` confirms the parallel-mount harness
+  exercises both:
+  - independent `useJob(jobId)` resolution (each `JobPage` renders
+    its own job title without cross-contamination), and
+  - independent SSE subscription scope (the test's `MockRpcClient`
+    records `subscribe({ scope: "job", job_id })` calls keyed by
+    jobId and asserts both are present).
+  Live SSE delivery against a real backend is the remaining piece
+  the headless suite cannot exercise; that is the only item below.
+
+### Build status note (pre-existing, not caused by this fix)
+
+`pnpm -C ui/codeless-ui typecheck` fails with
+`src/app/App.tsx(155,9): error TS2552: Cannot find name 'path'.` This
+error is present on the stage-3 parent commit (4e4225e) and on
+`master` — it is unrelated to the `activeTab`/`window.location` gate
+introduced in stage 5. Flagged in the stage-5 handover; out of scope
+for this job per §"Out of scope" and the "no drive-by refactors"
+rule.
+
+### Pending — must be done by the stage-7 reviewer
+
+The following requires the running app and a human at the keyboard:
+
+1. Boot `codeless serve` against a sqlite store with at least two
+   real jobs.
+2. Open `/jobs/<A>` in one workspace tab and `/jobs/<B>` in another.
+3. In tab A, click a Stage row so the URL becomes
+   `?tab=stage:<A-stage>`.
+4. Switch to tab B. Confirm:
+   - tab B's right pane is **not blank** — `Stages` overview renders
+     (the safe default for the freshly-mounted, inactive-then-active
+     sibling whose pathname did not match `window.location.pathname`
+     at mount time);
+   - switching A↔B is instant (no remount flicker, no network
+     refetch of `get_job`);
+   - emitting a `job_event` for job A surfaces only in tab A's
+     event-driven UI, and similarly for B (each `JobPage`'s
+     `SHARED_SUBSCRIPTIONS` entry is keyed by its own jobId).
+5. Record the jobIds used and a one-line pass/fail in this section
+   before approving the stage-7 REVIEW.
 
 ## Spec-mode chat root cause
 
