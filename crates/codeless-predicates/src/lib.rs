@@ -76,6 +76,23 @@ pub fn run_all(files: &[ChangedFile]) -> Vec<Violation> {
     out
 }
 
+/// The stable names of every seeded probe. The Step 5 patch validator
+/// uses this list to check that a `Tighten` proposal's
+/// `predicate-ref` (when present) names an existing probe — a typo
+/// would otherwise silently slip through the parse-time gate and only
+/// surface in Step 6 review. Names match the `PROBE` constants in
+/// each probe module and are the same strings rendered by
+/// `Violation::render`.
+pub fn probe_names() -> &'static [&'static str] {
+    &[
+        "no-process-spawn-outside-adapters-host",
+        "no-tauri-imports-outside-desktop-shell",
+        "no-direct-rpc-fetch-outside-sse-client",
+        "no-emojis-in-source",
+        "no-task-status-comments",
+    ]
+}
+
 /// Read a list of repo-relative paths under `worktree` into
 /// [`ChangedFile`] values. Missing files (a path that the diff lists
 /// because it was deleted) are skipped silently — a deleted file

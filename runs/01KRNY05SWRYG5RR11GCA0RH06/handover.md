@@ -1,26 +1,27 @@
 ## Done
 
-- added `crates/codeless-runtime/src/diff_verify.rs` (path extraction from handover `Done` bullets, verification against a diff-paths list, fail-reason rendering) with 12 unit tests
-- added `crates/codeless-adapters-host/src/git_changed.rs` (`changed_files(worktree, base)` shells out to `git diff --name-only base...HEAD` + `git status --porcelain`; falls back to `git log` when base is missing) with 3 git-backed unit tests; R1 honoured — process spawning stays in adapters-host
-- wired diff-verify pre-check into `crates/codeless-runtime/src/template_runner.rs`: `prev_stage_id` tracked across the stage loop, `run_diff_verify_precheck` runs at the top of every REVIEW iteration before the inner adapter, miss publishes `StageCompleted { Failed }` and returns `RunnerOutcome::Failed` with no model invoked
-- exposed `changed_files` + `GitChangedError` from `codeless-adapters-host::lib.rs`; registered new `diff_verify` module in `codeless-runtime::lib.rs`
-- added 4 integration-style tests for `run_diff_verify_precheck` (pass / fail / absent-handover / no-paths skips) using real on-disk git repos
-- committed as `stage 2: diff-verify pre-check ...` on `codeless/session-mutable-scope`
+- crates/codeless-types/src/scope_patch.rs (new): ScopePatchId, ScopePatchKind {Tighten,Loosen}, ScopePatchTarget {ClaudeMd, JobScopeMd, JobWorkflowMd, JobClaudeMd}, ScopePatch — mobile-safe, specta + serde derives, kebab-case wire labels
+- crates/codeless-types/src/event.rs: new Event::ScopePatchProposed variant (rename "scope-patch-proposed") carrying stage_id, review_id, patch_id, kind, target, target_path, evidence_stage_id (Loosen), has_predicate (Tighten) per SESSION-MUTABLE-SCOPE-DECISIONS.md Q7
+- crates/codeless-types/src/lib.rs: module + re-exports
+- crates/codeless-types/tests/{serde_wire.rs,specta_snapshot.rs,wire.ts.snap}: wire-shape test + specta registration + regenerated snapshot
+- crates/codeless-runtime/src/scope_patch_emit.rs (new): parse_blocks for SCOPE-PATCH-BEGIN/END mini-format (kind/target/target-path/rationale/predicate/evidence/body), append_to_proposals_file (creates DOCS/SCOPE-PROPOSED.md with header on first append, append-only after), emit_from_handover orchestration publishing Event::ScopePatchProposed. EmitOutcome enum {Emitted, NoBlock, MultipleBlocks, Malformed, SideEffectFailed} keeps shadow-mode failures observable-but-non-fatal.
+- crates/codeless-runtime/src/lib.rs: pub mod scope_patch_emit
+- crates/codeless-runtime/src/template_runner.rs: on REVIEW PASS, read the stage's handover and call emit_from_handover with a fresh ReviewId; map every EmitOutcome to a structured warn/info log; gate verdict unchanged (Step 5 promotes Malformed/Multiple to FAIL)
+- crates/codeless-rpc/examples/wire_ts.rs + ui/codeless-ui/src/lib/rpc/generated/wire.ts: new types registered and regenerated so UI compiles against the new event variant
+- committed as `stage 4: ScopePatch shadow mode …` on codeless/session-mutable-scope
 
 ## Next
 
-- stage 3: stand up the predicate-runner crate (xtask-shaped, host-only per R1) seeded with 3-5 hand-written probes (e.g. no `tokio::process` outside `codeless-adapters-host`, no-emoji-in-source, handover-four-sections-present); decisions file Q4 pins the exact crate name and Cargo member entry — read it before naming anything
+- REVIEW gate before Step 5: confirm shadow-mode emission is visible end-to-end, then land parse-time guards in codeless-runtime/scope_patch_emit (kind/target mutable-set membership, one-patch-per-REVIEW promoted from a warn to a FAIL reason, evidence_stage_id required on Loosen, has_predicate required on Tighten). Cite SCOPE.md Step 5 invariants.
 
 ## What you need to know
 
-- `prev_stage_id` is updated only on the Passed exit path; a Failed prior stage short-circuits the loop and never reaches the assignment, so the next REVIEW (which would not run anyway) cannot read a stale id
-- diff-verify is intentionally lenient about prior-handover absence: missing / unparseable / no-path-tokens → `PreCheckOutcome::Skipped` (info log, no fail). The contract is "verify what was claimed," not "demand a claim exists." Mock-runner mode and "REVIEW as the first stage" both depend on this
-- the path-extractor's slash rule requires at least one lowercase ASCII letter so `PASS/FAIL` (which appears literally in the REVIEW prompt and will show up in `Done` bullets that quote it) does not get treated as a path. Every real codebase path satisfies the lowercase requirement
-- the suffix-match rule is one-directional: a bare-leaf claim matches a deep diff entry, but a deep claim does not match a bare-leaf diff entry — that prevents `runtime/src/template_runner.rs` from being satisfied by a stray `template_runner.rs` in some unrelated diff
-- the git call is wrapped in `tokio::task::spawn_blocking`; a JoinError collapses to `Skipped` rather than `Fail` (deliberate: better to miss a verification than to fail a stage on a thread-pool bug)
-- base ref is hardcoded to `main`; `changed_files` falls back to `git log` when the ref does not resolve, so a worktree whose `main` was pruned still works. If a non-`main` default branch appears later, plumb it through `RunnerContext` rather than guessing
-- pre-existing test failure on `rpc_in_process::job_filtered_subscription_drops_unrelated_events` reproduces on the parent commit (`13f7480`); unrelated to this stage
-- per CLAUDE.md commit-and-push rule the work must be pushed via `mani` from the workspace root; this headless session committed but did not push — the outer JOB-LOOP harness handles the push
+- Shadow-mode policy is deliberate: Malformed / MultipleBlocks / SideEffectFailed all return without aborting the REVIEW gate, so the kill-criterion telemetry can count noise without the gate weaponising parse errors before Step 5 lands. Step 5 promotes these to FAIL by changing the match arms in template_runner.rs and tightening parse_one in scope_patch_emit.rs.
+- The proposals-file format is markdown (header + per-patch `## <ulid>` heading + bulleted metadata + Rationale / Body sections). It is append-only; the Step 6 approval CLI is the only consumer that mutates entries (decisions Q1).
+- ScopePatchTarget intentionally omits any wire-format variant (handover.rs, JOB-MODEL.md, JOB-LOOP.md) so Step 5 can reject those at parse time without a separate "blocked" enum.
+- Mobile-safety: scope_patch.rs has no codeless-runtime dependency and no I/O; only serde + specta + ulid. Wire-ts regen confirms the types reach the UI.
+- No telemetry sink beyond the events bus — decisions Q7. The kill-criterion query runs against the existing events table indexed by `event_type`.
+- Pre-existing test flake `rpc_in_process::job_filtered_subscription_drops_unrelated_events` still failing on HEAD~; not introduced by this stage. cargo clippy --workspace --all-targets -- -D warnings and cargo fmt --check both clean. Per WORKFLOW.md the headless session committed but did not push — the outer JOB-LOOP harness handles the push.
 
 ## Open questions
 

@@ -423,55 +423,57 @@ impl Runner for TemplateRunner {
                 {
                     Ok(ReviewVerdict::Pass { reason }) => {
                         tracing::info!(stage = stage.title, %reason, "review gate passed");
-                        // Step 4 shadow-mode: a PASS verdict may carry a
-                        // single `ScopePatch` proposal in the same
-                        // handover body. The runtime parses, persists to
-                        // `DOCS/SCOPE-PROPOSED.md`, and emits a
-                        // `ScopePatchProposed` envelope. Nothing merges —
-                        // human approval lands in Step 6. Failures here
-                        // are observable-but-non-fatal in shadow mode
-                        // (per `scope_patch_emit::EmitOutcome` doc), so
-                        // they map onto warn-level structured logs
-                        // rather than flipping the gate's verdict; Step
-                        // 5 promotes the parse errors to FAIL reasons.
+                        // Step 5: a PASS verdict may carry a single
+                        // `ScopePatch` proposal in the same handover
+                        // body. The runtime parses, validates, persists
+                        // to `DOCS/SCOPE-PROPOSED.md`, and emits a
+                        // `ScopePatchProposed` envelope. Nothing merges
+                        // — human approval lands in Step 6. Step 5
+                        // promotes the parse-time and shape-time
+                        // failure modes (multiple blocks, malformed
+                        // block, mutable-set / evidence violation) to
+                        // REVIEW-gate FAIL reasons so a bad proposal
+                        // cannot ride a PASS verdict past the gate.
+                        // `SideEffectFailed` stays warn-only: an I/O
+                        // wobble writing the proposals file must not
+                        // fail a stage whose handover otherwise cleared.
                         if let Some(wt) = ctx.worktree_path.as_deref() {
                             let body =
                                 tokio::fs::read_to_string(handover_path(wt, ctx.job_id, stage_id))
                                     .await
                                     .unwrap_or_default();
                             let review_id = ReviewId::new();
-                            match emit_from_handover(
+                            let changed_paths = enumerate_changed_paths(wt).await;
+                            let outcome = emit_from_handover(
                                 ctx.bus.as_ref(),
                                 wt,
                                 ctx.job_id,
                                 stage_id,
                                 review_id,
                                 &body,
+                                &changed_paths,
                             )
-                            .await
-                            {
+                            .await;
+                            let reject_reason: Option<String> = match outcome {
                                 EmitOutcome::Emitted(patch_id) => {
                                     tracing::info!(
                                         stage = stage.title,
                                         %patch_id,
-                                        "scope-patch proposal recorded in shadow mode"
+                                        "scope-patch proposal recorded"
                                     );
+                                    None
                                 }
-                                EmitOutcome::NoBlock => {}
-                                EmitOutcome::MultipleBlocks => {
-                                    tracing::warn!(
-                                        stage = stage.title,
-                                        "review handover carried multiple SCOPE-PATCH blocks; \
-                                         shadow mode ignores all of them (Step 5 will FAIL)"
-                                    );
-                                }
+                                EmitOutcome::NoBlock => None,
+                                EmitOutcome::MultipleBlocks => Some(
+                                    "review handover carried more than one SCOPE-PATCH block; \
+                                     one patch per REVIEW"
+                                        .to_string(),
+                                ),
                                 EmitOutcome::Malformed(reason) => {
-                                    tracing::warn!(
-                                        stage = stage.title,
-                                        %reason,
-                                        "review handover carried a malformed SCOPE-PATCH block; \
-                                         shadow mode ignores it (Step 5 will FAIL)"
-                                    );
+                                    Some(format!("scope-patch block malformed: {reason}"))
+                                }
+                                EmitOutcome::Rejected(reason) => {
+                                    Some(format!("scope-patch rejected: {reason}"))
                                 }
                                 EmitOutcome::SideEffectFailed(reason) => {
                                     tracing::warn!(
@@ -479,7 +481,28 @@ impl Runner for TemplateRunner {
                                         %reason,
                                         "scope-patch proposal side-effect failed; continuing"
                                     );
+                                    None
                                 }
+                            };
+                            if let Some(reason) = reject_reason {
+                                publish(
+                                    &ctx,
+                                    stage_id,
+                                    task_id,
+                                    Event::StageCompleted {
+                                        stage_id,
+                                        status: StageStatus::Failed,
+                                    },
+                                )
+                                .await;
+                                tracing::warn!(
+                                    stage = stage.title,
+                                    %reason,
+                                    "review gate failed at patch parse/validation"
+                                );
+                                return RunnerOutcome::Failed {
+                                    reason: format!("review gate failed: {reason}"),
+                                };
                             }
                         }
                     }
@@ -552,6 +575,35 @@ enum PreCheckOutcome {
     Pass,
     Skipped,
     Fail(String),
+}
+
+/// Enumerate the worktree's changed-file set against its base ref.
+/// Shared between the REVIEW-stage diff-verify pre-check and the
+/// Step 5 `Loosen`-patch evidence verifier — both need the same view
+/// of "what did this worktree actually touch since branching off main".
+///
+/// Errors collapse into an empty vec with a warn-level log: the
+/// callers treat "no diff information" as "cannot verify", which is
+/// the right default (the patch validator returns the evidence-not-
+/// in-diff Rejection rather than emitting a proposal it cannot back).
+async fn enumerate_changed_paths(worktree: &std::path::Path) -> Vec<String> {
+    let wt = worktree.to_path_buf();
+    match tokio::task::spawn_blocking(move || codeless_adapters_host::changed_files(&wt, "main"))
+        .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(err)) => {
+            tracing::warn!(?err, "changed-file enumeration failed; returning empty set");
+            Vec::new()
+        }
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "changed-file enumeration join error; returning empty set"
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Run the Layer-1 diff-verify pre-check for a REVIEW stage. Reads
