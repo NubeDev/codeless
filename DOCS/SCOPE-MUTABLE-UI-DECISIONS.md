@@ -165,6 +165,7 @@ The doc's Dependency table:
 | B | #2 (handover schema), #3 (RPCs + approve/reject events) | new tab + cards module |
 | C | #2 + #4 (workspace-walk RPC) + proposal timestamp (see #4) | new route + module |
 | D | #5 (annotation convention) | new render component with three states |
+| E | #6 (bypass + chat-on-stage + resume-skips-Passed) | extends `StageDetail.tsx` alongside A |
 
 Cross-checked against each surface's Status block:
 
@@ -193,12 +194,43 @@ Cross-checked against each surface's Status block:
 - **D.** Status says: "mostly orthogonal. Can ship before A/B/C; the
   convention work is in `DOCS/`, the render work is a small
   component." Table lists `#5 (annotation convention)`. **Consistent.**
+- **E.** Status says: "the keystone surface for production readiness.
+  Ship E in the same loop as A — both extend `StageDetail.tsx`."
+  Table lists `#6` and frontend `extends StageDetail.tsx alongside A`.
+  The doc's Step-1 plan co-ships Dependency #6a (bypass arg on
+  `resume_job`) and #6b (resume-skips-Passed-stages) with Surface A,
+  deferring #6c (stage chat RPC) to Step 6. The table does not split
+  #6 into its three sub-parts (6a/6b/6c); the per-step ramp in the
+  doc's "What ships, in order" is what ties each sub-part to a stage.
+  **Consistent, with the note that #6 is a composite dependency whose
+  sub-parts land at Step 1 (6a, 6b) and Step 6 (6c).**
 
-**No corrections to the table.** The five points where the table
-appears to under-specify a Status block (B's #3, C's timestamp) are
-resolved by reading the relevant Status block and Dependency #N text
-together; recording the reconciliation above so later stages can
-cite this section rather than re-derive it.
+**No corrections to the table.** The points where the table appears
+to under-specify a Status block (B's #3, C's timestamp, E's
+sub-parts) are resolved by reading the relevant Status block and
+Dependency #N text together; recording the reconciliation above so
+later stages can cite this section rather than re-derive it.
+
+## Scope of this job vs. scope of the doc's ramp
+
+The doc's "What ships, in order" describes a six-step ramp
+(Step 1 ships A + E foundation; Step 6 completes E with the chat
+RPC). The job goal for this PR scopes the work to the first five
+steps: A → handover schema fix → B → C → D. **Surface E's bypass
+button (Dependency #6a + #6b) is in scope for Stage / Step 1 of
+this job** because the doc binds it to the same `StageDetail.tsx`
+change that introduces Surface A, and shipping A without the
+escape hatch leaves the always-finishable invariant unenforced
+(see the doc's "Stopping points" section: "Stop at Step 1: the
+editor sees the gate AND the always-finishable invariant holds").
+**Surface E's stage-chat affordance (Dependency #6c) is out of
+scope for this job**; Step 6 is the doc's stretch goal beyond
+what this PR ramps. A follow-up job will pick it up.
+
+This scope split was not an open question in the doc — Surface E
+was added after the original six OQs were drafted — so it is
+recorded here as a job-plan decision rather than an OQ
+resolution.
 
 ## What is explicitly not decided here
 
