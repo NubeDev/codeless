@@ -37,10 +37,24 @@ list. The UI is **not** touched in this job — that's a follow-up.
   surfaces as the doc's typed refusal rather than `Internal`. Attach /
   detach RPCs mirror their DB writes into the adapter; boot rehydrates
   every `attached_workspaces` row.
-- 30s liveness sweep emitting `workspace_unhealthy` /
-  `workspace_recovered` events.
-- `ServerInfo.fs_root` frozen to the boot-time `--fs-root` value (does
-  not shift as workspaces attach/detach).
+- [x] 30s liveness sweep emitting `workspace_unhealthy` /
+  `workspace_recovered` events. Lives in
+  `codeless-runtime::workspace_liveness`; walks `HostFs::roots()` once
+  per tick, looks up `repo_id` via
+  `attached_workspaces.fs_root_canonical`, and publishes the wire
+  events through the shared `EventBus` so subscribers see them on the
+  same SSE tail as everything else. Edges (healthy↔unhealthy) are
+  tracked in an in-process map so the sweep emits exactly once per
+  transition; first sight of an unhealthy root still emits so the
+  badge flips even after a server restart found the folder already
+  gone. Spawned in `codeless-cli::serve` whenever `--fs-root` produces
+  an adapter to watch.
+- [x] `ServerInfo.fs_root` frozen to the boot-time `--fs-root` value
+  (does not shift as workspaces attach/detach). The field has always
+  been populated from `args.fs_root` and `ServerInfo` is built once
+  during `run_server`; stage 7 just adds the contract-level comment on
+  the struct so future changes do not silently re-wire it to the live
+  set.
 
 ## Out of scope
 

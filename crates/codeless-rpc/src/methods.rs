@@ -490,6 +490,14 @@ pub struct ClaudeStatus {
 pub struct ServerInfo {
     pub version: String,
     pub runners: Vec<RunnerInfo>,
+    /// Frozen at boot to the `--fs-root` flag the operator launched
+    /// `codeless serve` with (or `None` when the flag was omitted). Does
+    /// **not** track the live `attached_workspaces` set: attaching or
+    /// detaching a workspace at runtime never rewrites this field, so
+    /// the UI must read `list_workspaces` for the active roster. The
+    /// field stays in `ServerInfo` because some shells (the bootstrap
+    /// banner, the demo-mode hint) need the boot-time path before any
+    /// authenticated RPC has run.
     pub fs_root: Option<String>,
     pub worktree_root: Option<String>,
     /// `Some` when the `claude` runner is enabled and the host probe

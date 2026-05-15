@@ -196,6 +196,7 @@ async fn run_server(
     // UI's Handover pane errors with `path escapes root` because the
     // worktree root sits outside `--fs-root` (the source repo).
     let worktree_root_effective = effective_worktree_root(&args);
+    let mut host_fs_for_liveness: Option<Arc<codeless_adapters_host::HostFs>> = None;
     if let Some(root) = &args.fs_root {
         // WORKSPACE-ATTACH milestone 2 — `--fs-root` is now a
         // bootstrap convenience: canonicalise the path and upsert it
@@ -249,7 +250,13 @@ async fn run_server(
                 .map_err(|e| anyhow!("worktree fs root {}: {e}", wt.display()))?;
             eprintln!("codeless-server: fs extra root = {}", wt.display());
         }
-        runtime = runtime.with_fs(Arc::new(host_fs));
+        let host_fs_arc = Arc::new(host_fs);
+        // Keep a clone aside so the liveness sweep (spawned after the
+        // runtime is sealed into an Arc) can stat the same allowed-roots
+        // set the `fs.*` surface serves. The runtime holds the
+        // authoritative reference; this is a peer handle, not a fork.
+        host_fs_for_liveness = Some(Arc::clone(&host_fs_arc));
+        runtime = runtime.with_fs(host_fs_arc);
         eprintln!("codeless-server: fs root = {}", root.display());
     }
     // Same `WorktreeManager` Arc is given to both the runtime (so
@@ -361,6 +368,27 @@ async fn run_server(
         .await
         .map_err(|e| anyhow!("spawn_stage_recorder: {e}"))?;
     eprintln!("codeless-server: stage recorder enabled");
+
+    // 30 s liveness sweep: every tick stats the canonical roots the host
+    // adapter is serving and publishes `workspace-unhealthy` /
+    // `workspace-recovered` envelopes on the event bus when state flips.
+    // Without an adapter (no `--fs-root`, nothing rehydrated from
+    // `attached_workspaces`) there is nothing to watch, so the sweep is
+    // only spawned when at least one root is registered. The handle
+    // stays alive in this scope — process exit is the teardown path.
+    let _liveness_sweep = host_fs_for_liveness.map(|fs| {
+        let handle = codeless_runtime::spawn_workspace_liveness_sweep(
+            fs,
+            rpc.bus().clone(),
+            rpc.pool().clone(),
+            codeless_runtime::WORKSPACE_LIVENESS_PERIOD,
+        );
+        eprintln!(
+            "codeless-server: workspace liveness sweep enabled (period={}s)",
+            codeless_runtime::WORKSPACE_LIVENESS_PERIOD.as_secs(),
+        );
+        handle
+    });
 
     // Background driver: pick up every `Queued` job and run it
     // through the in-process runtime. Default factory only enables

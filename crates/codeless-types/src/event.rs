@@ -249,6 +249,30 @@ pub enum Event {
     /// `read_job_file` / `get_job`.
     #[serde(rename = "job-template-updated")]
     JobTemplateUpdated { job_id: JobId },
+    /// An attached workspace's canonical root is no longer reachable
+    /// (the directory was deleted, the volume unmounted, the symlink
+    /// target vanished, etc). Emitted exactly once per transition by the
+    /// 30s liveness sweep in `codeless-runtime::workspace_liveness`; the
+    /// follow-up `WorkspaceRecovered` event fires when the path comes
+    /// back. The UI uses the pair to flip a per-workspace badge in the
+    /// sidebar without polling.
+    ///
+    /// `fs_root` is the canonical path as registered in
+    /// `attached_workspaces.fs_root_canonical`. `reason` is a short
+    /// machine-readable tag (`"missing"`, `"not-a-directory"`,
+    /// `"io-error"`) — string-typed rather than a wire enum so a new
+    /// failure mode can land without an enum-bump on every shell.
+    #[serde(rename = "workspace-unhealthy")]
+    WorkspaceUnhealthy {
+        repo_id: RepoId,
+        fs_root: String,
+        reason: String,
+    },
+    /// Paired with `WorkspaceUnhealthy`. Fires the next sweep after the
+    /// path resolves to a directory again.
+    #[serde(rename = "workspace-recovered")]
+    WorkspaceRecovered { repo_id: RepoId, fs_root: String },
+
     /// A supporting file under `.codeless/jobs/<name>/` was written
     /// or deleted. `filename` is the basename (e.g. `SCOPE.md`),
     /// not a full path, so subscribers don't have to know about

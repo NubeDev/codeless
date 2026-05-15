@@ -33,6 +33,7 @@ pub mod time;
 pub mod tracing_init;
 pub mod verify_runner;
 pub mod webhook;
+pub mod workspace_liveness;
 
 pub use anthropic_runner::AnthropicRunnerAdapter;
 pub use claude_runner::{parse_permission_mode, ClaudeRunnerAdapter};
@@ -63,3 +64,4 @@ pub use store::SqliteStore;
 pub use time::now_ms;
 pub use tracing_init::{try_init_json, try_init_pretty};
 pub use webhook::{WebhookConfig, WebhookNotifier, WebhookSetupError};
+pub use workspace_liveness::{spawn_workspace_liveness_sweep, WORKSPACE_LIVENESS_PERIOD};
