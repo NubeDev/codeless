@@ -136,25 +136,17 @@ export default function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
 
-  // Deep-link: when the initial URL is /jobs or /jobs/:id (e.g.
-  // bookmark, page reload, browser back), restore the matching tab.
-  // `/jobs` opens the dashboard; `/jobs/<id>` opens a job-detail tab
-  // keyed by that id so a refresh keeps the user on the job they were
-  // viewing rather than dumping them back on the list. Runs once on
-  // mount; tab focus afterwards stays user-driven.
-  const initialPathRef = useRef<string | null>(null);
-  if (initialPathRef.current === null && typeof window !== "undefined") {
-    initialPathRef.current = window.location.pathname;
-  }
+  // `useTabs` restores persisted Jobs / job-detail tabs and picks the
+  // initial active tab from the URL in its useState initializer. The
+  // only thing left for App to ensure on mount is that a Jobs tab
+  // always exists — without overriding whatever active tab buildInitialState
+  // already chose. `newJobsTab` is idempotent and re-activates the Jobs
+  // tab when called, so we only call it if no Jobs tab is present.
+  const restoredRef = useRef(false);
   useEffect(() => {
-    const path = initialPathRef.current ?? "";
-    const detailMatch = /^\/jobs\/([^/]+)\/?$/.exec(path);
-    if (detailMatch) {
-      const jobId = detailMatch[1];
-      newJobDetailTab(jobId, `Job ${jobId.slice(0, 6)}`);
-      return;
-    }
-    if (path.startsWith("/jobs")) {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    if (!tabs.some((t) => t.kind === "jobs")) {
       newJobsTab();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -303,11 +295,13 @@ export default function App() {
     } else if (activeTab?.kind === "jobs") {
       target = "/jobs";
     }
-    const current = window.location.pathname + window.location.search;
-    if (current === target) return;
+    const currentPath = window.location.pathname;
+    // Pathname already matches — leave the URL alone so child surfaces
+    // (e.g. JobPage's `?tab=` mirror) can keep their query string.
+    if (currentPath === target) return;
     if (activeTab?.kind === "job-detail" || activeTab?.kind === "jobs") {
       navigate(target, { replace: true });
-    } else if (current.startsWith("/jobs")) {
+    } else if (currentPath.startsWith("/jobs")) {
       navigate(target, { replace: true });
     }
   }, [activeTab]);

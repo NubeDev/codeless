@@ -108,23 +108,128 @@ function titleFromUrl(url: string): string {
   }
 }
 
+const JOBS_TABS_LS_KEY = "codeless-open-job-tabs-v3";
+
+interface PersistedTab {
+  kind: "jobs" | "job-detail";
+  jobId?: string;
+  title: string;
+}
+
+function readPersistedTabs(): PersistedTab[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(JOBS_TABS_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (t): t is PersistedTab =>
+        t &&
+        typeof t.title === "string" &&
+        (t.kind === "jobs" || (t.kind === "job-detail" && typeof t.jobId === "string")),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writePersistedTabs(tabs: Tab[]): void {
+  if (typeof window === "undefined") return;
+  const persisted: PersistedTab[] = [];
+  for (const t of tabs) {
+    if (t.kind === "jobs") {
+      persisted.push({ kind: "jobs", title: t.title });
+    } else if (t.kind === "job-detail") {
+      persisted.push({ kind: "job-detail", jobId: t.jobId, title: t.title });
+    }
+  }
+  try {
+    window.localStorage.setItem(JOBS_TABS_LS_KEY, JSON.stringify(persisted));
+  } catch {
+    // Quota or disabled — best effort.
+  }
+}
+
+// Compute the initial state once so `tabs` and `activeId` agree on the
+// first render. Doing this inside useTabs's useState initializers would
+// duplicate work and risk drift between the two; lifting it out keeps
+// the URL → active-tab decision in one place.
+function buildInitialState(
+  initial: Partial<TerminalTab> | undefined,
+): { tabs: Tab[]; activeId: number } {
+  const shellTabId = 1;
+  const leafId = 2;
+  const shellTab: Tab = {
+    id: shellTabId,
+    kind: "terminal",
+    title: initial?.title ?? "shell",
+    cwd: initial?.cwd,
+    paneTree: { kind: "leaf", id: leafId, cwd: initial?.cwd },
+    activeLeafId: leafId,
+  };
+  const persisted = readPersistedTabs();
+  let nextId = 3;
+  const restored: Tab[] = [];
+  for (const p of persisted) {
+    if (p.kind === "jobs") {
+      restored.push({ id: nextId++, kind: "jobs", title: p.title });
+    } else if (p.kind === "job-detail" && p.jobId) {
+      restored.push({
+        id: nextId++,
+        kind: "job-detail",
+        title: p.title,
+        jobId: p.jobId,
+      });
+    }
+  }
+  const tabs = [shellTab, ...restored];
+
+  // Honour the URL when picking the initial active tab so a reload at
+  // `/jobs/:id` lands on the job-detail tab, not the shell. The first
+  // render then matches the URL and the URL-mirror effect never has to
+  // rewrite the path away from what the user reloaded.
+  let activeId = shellTabId;
+  if (typeof window !== "undefined") {
+    const path = window.location.pathname;
+    const detailMatch = /^\/jobs\/([^/]+)\/?$/.exec(path);
+    if (detailMatch) {
+      const jobId = detailMatch[1];
+      const t = tabs.find(
+        (x): x is JobDetailTab => x.kind === "job-detail" && x.jobId === jobId,
+      );
+      if (t) activeId = t.id;
+    } else if (path === "/jobs" || path.startsWith("/jobs?")) {
+      const t = tabs.find((x): x is JobsTab => x.kind === "jobs");
+      if (t) activeId = t.id;
+    }
+  }
+  return { tabs, activeId };
+}
+
 export function useTabs(initial?: Partial<TerminalTab>) {
-  const [tabs, setTabs] = useState<Tab[]>(() => {
-    const tabId = 1;
-    const leafId = 2;
-    return [
-      {
-        id: tabId,
-        kind: "terminal",
-        title: initial?.title ?? "shell",
-        cwd: initial?.cwd,
-        paneTree: { kind: "leaf", id: leafId, cwd: initial?.cwd },
-        activeLeafId: leafId,
-      },
-    ];
-  });
-  const [activeId, setActiveId] = useState(1);
-  const nextIdRef = useRef(3);
+  const initialState = useRef<{ tabs: Tab[]; activeId: number } | null>(null);
+  if (initialState.current === null) {
+    initialState.current = buildInitialState(initial);
+  }
+  const [tabs, setTabsRaw] = useState<Tab[]>(initialState.current.tabs);
+
+  // Every mutation goes through this wrapper so localStorage stays in
+  // lock-step with the in-memory tab list. No effects, no closures —
+  // the persisted snapshot is computed from the value React just stored.
+  const setTabs: typeof setTabsRaw = useCallback((updater) => {
+    setTabsRaw((curr) => {
+      const next = typeof updater === "function" ? updater(curr) : updater;
+      writePersistedTabs(next);
+      return next;
+    });
+  }, []);
+
+  const [activeId, setActiveId] = useState(initialState.current.activeId);
+  // nextIdRef starts past any restored tab ids so new tabs never collide.
+  const nextIdRef = useRef(
+    Math.max(1, ...tabs.map((t) => t.id)) + 1,
+  );
 
   const newTab = useCallback((cwd?: string) => {
     const tabId = nextIdRef.current++;

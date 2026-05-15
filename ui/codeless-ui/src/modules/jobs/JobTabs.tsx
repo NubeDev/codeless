@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import {
+  BubbleChatIcon,
+  FileEditIcon,
+  ListViewIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+
 import { cn } from "@/lib/utils";
 import { useEventStream, type EventEnvelope, type JobId } from "@/lib/rpc";
+
+const SYSTEM_TAB_ICONS = {
+  CHAT: BubbleChatIcon,
+  SPEC: FileEditIcon,
+  Stages: ListViewIcon,
+} as const;
 
 // ------------------------------------------------------------------ types
 
@@ -245,12 +258,18 @@ function SystemTabButton({
       aria-selected={isActive}
       onClick={onClick}
       className={cn(
-        "flex shrink-0 items-center gap-1 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
+        "flex shrink-0 items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors",
         isActive
           ? "border-primary text-foreground"
           : "border-transparent text-muted-foreground hover:text-foreground",
       )}
     >
+      <HugeiconsIcon
+        icon={SYSTEM_TAB_ICONS[id]}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0"
+      />
       {id}
       {glyph && (
         <span className={cn("text-[10px]", indicatorTone(indicator))}>
