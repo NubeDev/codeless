@@ -87,6 +87,12 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
         // composed text round-trips on the row so a resume reproduces
         // the same agent posture the user picked at submit time.
         system_prompt: args.system_prompt.filter(|s| !s.is_empty()),
+        // Persist the persona id even when the caller did not also
+        // send a composed `system_prompt`: a future stage will move
+        // composition server-side and the id is the durable handle.
+        // Empty strings collapse to `None` so the column stays a
+        // clean optional regardless of how the UI shaped the payload.
+        persona_id: args.persona_id.filter(|s| !s.is_empty()),
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -650,6 +656,7 @@ pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResu
         permission_mode: source.permission_mode,
         effort: source.effort,
         system_prompt: source.system_prompt,
+        persona_id: source.persona_id,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -995,6 +1002,7 @@ pub(super) async fn draft_job_from_conversation(
             // can pick one from the dropdown on the submit form if they
             // promote the draft from the job page.
             system_prompt: None,
+            persona_id: None,
             start_immediately: false,
         },
     )

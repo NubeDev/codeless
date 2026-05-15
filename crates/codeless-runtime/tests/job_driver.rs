@@ -63,6 +63,7 @@ async fn fresh_queued_job(rpc: &InProcessRpc) -> codeless_types::JobId {
         permission_mode: None,
         effort: None,
         system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .await

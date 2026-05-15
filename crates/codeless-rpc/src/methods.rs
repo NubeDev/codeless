@@ -74,6 +74,15 @@ pub struct SubmitJobArgs {
     /// persisted on the job row so reruns and resumes reproduce it.
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Persona the user picked at submit time. The composed prompt
+    /// still travels on `system_prompt`; this is the lookup key that
+    /// produced it. The runtime persists it verbatim onto the job row
+    /// so a rerun can reproduce the same agent posture. `None` means
+    /// the user submitted without picking a persona. Personas live in
+    /// the UI KV store today, so the field is a free string; the FK
+    /// against a server-side persona table lands in a later stage.
+    #[serde(default)]
+    pub persona_id: Option<String>,
     /// `false` (default) lands the job in `Draft` status — the row
     /// exists, the user can edit the spec / docs / handover, but the
     /// driver does not pick it up. The user calls `start_job` to

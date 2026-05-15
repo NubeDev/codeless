@@ -93,6 +93,11 @@ export interface SubmitJobArgs {
    * runtime applies this on top of the server's baseline system
    * prompt for every stage; `null` keeps the server default. */
   system_prompt?: string | null;
+  /** Id of the persona the user picked, persisted alongside the
+   * already-resolved `system_prompt` so a rerun reproduces the same
+   * agent posture even if the persona's body is edited later.
+   * `null` means no persona was picked. */
+  persona_id?: string | null;
   /** When `false` (default) the job lands in `Draft` status — the row
    * exists, the user can edit the spec / docs / handover, but the
    * driver does not pick it up. The user calls `start_job` to promote

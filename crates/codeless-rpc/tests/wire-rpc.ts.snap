@@ -618,6 +618,16 @@ export type Job = {
 	 *  `rerun_job` carries the value forward verbatim.
 	 */
 	system_prompt: string | null,
+	/**
+	 *  Persona the user picked at submit time. The composed prompt
+	 *  rides on `system_prompt`; this column preserves the lookup key
+	 *  so a rerun can reproduce the same agent posture even if the
+	 *  persona's body is edited later. `None` means the user submitted
+	 *  without picking a persona — the server default applies and a
+	 *  rerun keeps that posture. Free TEXT until personas move to a
+	 *  server-side table; the FK lands in a later stage.
+	 */
+	persona_id: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
@@ -1113,6 +1123,16 @@ export type SubmitJobArgs = {
 	 *  persisted on the job row so reruns and resumes reproduce it.
 	 */
 	system_prompt?: string | null,
+	/**
+	 *  Persona the user picked at submit time. The composed prompt
+	 *  still travels on `system_prompt`; this is the lookup key that
+	 *  produced it. The runtime persists it verbatim onto the job row
+	 *  so a rerun can reproduce the same agent posture. `None` means
+	 *  the user submitted without picking a persona. Personas live in
+	 *  the UI KV store today, so the field is a free string; the FK
+	 *  against a server-side persona table lands in a later stage.
+	 */
+	persona_id?: string | null,
 	/**
 	 *  `false` (default) lands the job in `Draft` status — the row
 	 *  exists, the user can edit the spec / docs / handover, but the

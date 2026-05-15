@@ -41,6 +41,7 @@ async fn fresh_job(rpc: &InProcessRpc, cost_cap: i64, wall_clock_ms: i64) -> cod
         permission_mode: None,
         effort: None,
         system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .await

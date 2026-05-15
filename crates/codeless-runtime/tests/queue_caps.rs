@@ -52,6 +52,7 @@ async fn seed_repo_job(rpc: &InProcessRpc, name: &str, runner: &str) -> (RepoId,
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

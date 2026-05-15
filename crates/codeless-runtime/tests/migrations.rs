@@ -161,6 +161,7 @@ async fn jobs_columns_match_appendix_a() {
             "effort",
             "workspace_mode",
             "system_prompt",
+            "persona_id",
         ],
     );
 }

@@ -74,6 +74,7 @@ async fn restart_preserves_repos_jobs_tasks_events_and_cursors() {
                 permission_mode: None,
                 effort: None,
                 system_prompt: None,
+                persona_id: None,
                 start_immediately: true,
             })
             .await

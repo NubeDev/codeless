@@ -91,6 +91,7 @@ async fn submit_job_rejects_unknown_repo() {
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await;
@@ -132,6 +133,7 @@ async fn submit_job_succeeds_and_emits_queued_event() {
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -188,6 +190,7 @@ async fn submit_job_persists_system_prompt_on_the_job_row() {
             permission_mode: None,
             effort: None,
             system_prompt: Some("You are the Architect persona.".into()),
+            persona_id: Some("builtin:architect".into()),
             start_immediately: true,
         })
         .await
@@ -197,6 +200,10 @@ async fn submit_job_persists_system_prompt_on_the_job_row() {
         Some("You are the Architect persona.")
     );
     assert_eq!(job.model.as_deref(), Some("claude-opus-4-7"));
+    // `persona_id` is the lookup key the rerun path consults; the row
+    // must persist it alongside the resolved prompt so a later edit to
+    // the persona body does not silently change what a rerun runs.
+    assert_eq!(job.persona_id.as_deref(), Some("builtin:architect"));
 
     let fetched = rpc
         .get_job(GetJobArgs { job_id: job.id })
@@ -204,6 +211,7 @@ async fn submit_job_persists_system_prompt_on_the_job_row() {
         .expect("get_job");
     assert_eq!(fetched.system_prompt, job.system_prompt);
     assert_eq!(fetched.model, job.model);
+    assert_eq!(fetched.persona_id, job.persona_id);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -235,6 +243,7 @@ async fn stop_job_emits_event_and_is_idempotent_against_terminal_state() {
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -291,6 +300,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -315,6 +325,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
@@ -364,6 +375,7 @@ async fn since_cursor_replay_returns_events_above_cursor() {
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

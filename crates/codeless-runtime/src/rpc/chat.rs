@@ -726,6 +726,7 @@ mod tests {
                 permission_mode: None,
                 effort: None,
                 system_prompt: None,
+                persona_id: None,
                 start_immediately: true,
             })
             .await

@@ -41,6 +41,7 @@ async fn rerun_job_clones_source_and_queues_fresh() {
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

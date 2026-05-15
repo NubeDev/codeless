@@ -42,6 +42,7 @@ async fn seed_job(rpc: &InProcessRpc) -> Job {
         permission_mode: None,
         effort: None,
         system_prompt: None,
+        persona_id: None,
         start_immediately: false,
     })
     .await

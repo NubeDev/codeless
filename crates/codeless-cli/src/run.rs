@@ -85,6 +85,7 @@ async fn run_once(args: RunArgs, repo_path: PathBuf, db: Option<PathBuf>) -> Res
             // would never expect it to land a Draft they then have to
             // promote separately. Submit-and-run preserves intent.
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

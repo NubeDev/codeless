@@ -138,6 +138,7 @@ async fn bootstrap(args: BootstrapArgs, db: Option<PathBuf>) -> Result<ExitCode>
             // user-driven editing flow — keep the legacy behaviour of
             // queueing the job for immediate driver pickup.
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

@@ -325,6 +325,11 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
         // prompt server-side. `null` (no persona picked) keeps the
         // server's configured default unchanged.
         system_prompt: selectedPersona ? selectedPersona.instructions : null,
+        // Persist the lookup key alongside the composed text so a
+        // rerun reproduces the same posture even when the persona's
+        // body is edited later. `null` when the user submitted with
+        // no persona picked.
+        persona_id: selectedPersona ? selectedPersona.id : null,
         start_immediately: runImmediately,
       });
       // eslint-disable-next-line no-console

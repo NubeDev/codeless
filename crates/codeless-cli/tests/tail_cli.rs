@@ -44,6 +44,7 @@ async fn seed_completed_job(db_path: &std::path::Path) -> JobId {
             permission_mode: None,
             effort: None,
             system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await
