@@ -583,7 +583,16 @@ ordinal?: number;
  *  `REVIEW ` prefix preserved). Same source of truth the UI
  *  already uses; persisted on the `Stage` row.
  */
-name?: string } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | 
+name?: string; 
+/**
+ *  Per-stage persona override resolved at job-submit
+ *  (D1, D5). `None` means the stage inherits the job-level
+ *  persona; the StageRecorder writes this verbatim onto
+ *  `stages.persona_id` so a per-stage handover and a re-run
+ *  reproduce the same binding. Defaults to `None` so older
+ *  events from the persisted bus replay still decode.
+ */
+persona_id?: string | null } | { type: "verify-started"; stage_id: StageId } | { type: "verify-passed"; stage_id: StageId } | { type: "verify-failed"; stage_id: StageId; exit_code: number } | 
 /**
  *  One layered verify gate started running. Paired with
  *  `verify-step-passed`, `verify-step-failed`, or

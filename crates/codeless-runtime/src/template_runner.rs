@@ -183,6 +183,19 @@ impl Runner for TemplateRunner {
             } else {
                 stage.title.to_owned()
             };
+            // Per-stage persona override (D1). Resolution against
+            // `personas` is enforced at job-submit (rpc/jobs.rs), so
+            // by the time the runner sees the id it has already been
+            // validated. A `None` row at run time still degrades to
+            // the job-level system prompt — either the row was
+            // deleted between submit and dispatch, or the test
+            // harness wired the runner without a store. Both stay
+            // honest: the per-stage override just doesn't apply.
+            let stage_persona_id = stage.persona.map(str::to_owned);
+            let stage_persona = match (&stage_persona_id, self.store.as_ref()) {
+                (Some(id), Some(store)) => store.get_persona(id).await.ok().flatten(),
+                _ => None,
+            };
             publish(
                 &ctx,
                 stage_id,
@@ -192,6 +205,7 @@ impl Runner for TemplateRunner {
                     job_id: ctx.job_id,
                     ordinal: stage.index as u32,
                     name: name_for_event,
+                    persona_id: stage_persona_id.clone(),
                 },
             )
             .await;
@@ -279,7 +293,20 @@ impl Runner for TemplateRunner {
                     RunnerOutcome::Completed
                 } else {
                     let mut adapter = ClaudeRunnerAdapter::new(prompt, task_id);
-                    if let Some(sp) = &self.system_prompt {
+                    // Per-stage persona instructions override the
+                    // job-level system prompt for this stage only
+                    // (D1, D5). Inheritance order: stage-level
+                    // `persona.instructions` -> job-level
+                    // `system_prompt` -> runner default. Empty
+                    // `instructions` on a resolved persona row would
+                    // unset the prompt for the stage, so guard.
+                    let stage_sp = stage_persona
+                        .as_ref()
+                        .map(|p| p.instructions.as_str())
+                        .filter(|s| !s.is_empty());
+                    if let Some(sp) = stage_sp {
+                        adapter = adapter.with_system_prompt(sp.to_owned());
+                    } else if let Some(sp) = &self.system_prompt {
                         adapter = adapter.with_system_prompt(sp.clone());
                     }
                     // If the stage row already carries a captured
@@ -450,5 +477,68 @@ stages:
         let prompt = r.stage_prompt(planned[0], 2, None);
         assert!(!prompt.contains("# Stage 1 docs"));
         assert!(!prompt.contains("# Job docs"));
+    }
+
+    /// Per-stage persona override (D1): when the runner walks a
+    /// template whose stage carries `persona: <id>`, the published
+    /// `StageStarted` envelope must echo that id so the recorder can
+    /// stamp `stages.persona_id`. A stage with no override emits
+    /// `persona_id = None`, meaning "inherit the job-level persona".
+    #[tokio::test]
+    async fn stage_started_event_carries_per_stage_persona() {
+        use crate::event_bus::SubscribeFilter;
+        use crate::rpc::InProcessRpc;
+        use crate::runner::{Runner, RunnerContext};
+        use codeless_types::{Event, JobId};
+        use futures_util::StreamExt;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let src = r#"
+name: t
+goal: test goal
+stages:
+  - title: implement
+    persona: "builtin:coder"
+  - title: ship
+"#;
+        let template = JobTemplate::parse_yaml(src).unwrap();
+        // `use_mock_runner` avoids touching the claude binary; the
+        // recorder hookup is exercised by the stage_recorder tests.
+        let runner = TemplateRunner::new(template).with_mock_runner();
+        let rpc = InProcessRpc::new().await.unwrap();
+        let bus = rpc.bus().clone();
+        let mut stream = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+        let ctx = RunnerContext {
+            job_id: JobId::new(),
+            stage_id: None,
+            bus: Arc::clone(&bus),
+            worktree_path: None,
+            cancel: CancellationToken::new(),
+        };
+        runner.run(ctx).await;
+
+        let mut seen = Vec::new();
+        while let Ok(Some(env)) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), stream.next()).await
+        {
+            let env = env.unwrap();
+            if let Event::StageStarted {
+                ordinal,
+                persona_id,
+                ..
+            } = env.event
+            {
+                seen.push((ordinal, persona_id));
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![(0, Some("builtin:coder".to_string())), (1, None)],
+            "stage 0 carries its override; stage 1 inherits",
+        );
     }
 }

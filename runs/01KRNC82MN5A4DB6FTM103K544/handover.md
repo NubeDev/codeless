@@ -1,26 +1,26 @@
 ## Done
 
-- Added `Persona` wire type (`crates/codeless-types/src/persona.rs`) re-exported from `codeless-types` and `codeless-rpc`.
-- Added `ListPersonasArgs/Result`, `GetPersonaArgs`, `UpsertPersonaArgs`, `DeletePersonaArgs` to `codeless-rpc/src/methods.rs` and four corresponding `RpcServer` trait methods in `server.rs`.
-- Implemented persona store CRUD in `codeless-runtime/src/store.rs` (`list_personas`, `get_persona`, `upsert_persona`, `delete_persona` with `built_in`/`created_at` preservation across upsert) plus a `persona_from_row` helper.
-- Added runtime RPC dispatch module `crates/codeless-runtime/src/rpc/personas.rs` (with validation, NotFound mapping, built-in delete refusal as `Conflict`) and wired it through `rpc/mod.rs`.
-- Added HTTP client trait impls in `codeless-client/src/http_client.rs` and POST routes/handlers in `codeless-server/src/routes.rs`.
-- Added integration test `crates/codeless-runtime/tests/personas_rpc.rs` (5 tests, all pass): seeded built-ins listed in order, get/404, upsert create+update preserving built_in and created_at, validation rejection, delete refuses built-ins and removes user rows.
-- UI: extended `RpcMethodMap` with the four methods (`ui/.../lib/rpc/methods.ts`), added in-memory persona seed + 4 handlers to `mock-client.ts`, and made `ai-agents` KV a cache that mirrors SQLite — `loadAgentsFromRpc`, `upsertPersonaViaRpc`, `deletePersonaViaRpc` in `modules/ai/lib/agents.ts`; the `agentsStore.hydrate/upsert/remove` now accept an optional `RpcClient` and are wired through `AgentsSection.tsx` via `useRpc()`. KV fallback preserved for the RPC-offline path.
-- `cargo build`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, the new persona tests, `pnpm typecheck`, `pnpm test` (vitest) all pass.
-- Committed (`stage 7: RpcClient surface for personas`) and pushed to `codeless/agent-personas`.
+- `StageSpec` (`crates/codeless-runtime/src/template.rs`) gained optional `persona: Option<String>` decoded from the structured-form YAML; bare-string stage entries cannot carry it by design. Empty / whitespace strings collapse to `None`.
+- `PlannedStage` exposes the borrowed `persona: Option<&str>` so the orchestrator can read per-stage overrides without re-walking the source YAML.
+- `Event::StageStarted` (`crates/codeless-types/src/event.rs`) gained `persona_id: Option<String>` with `#[serde(default)]`, so persisted-bus replays of older envelopes still decode.
+- `TemplateRunner` resolves the stage persona via `SqliteStore::get_persona` at run time and applies its `instructions` as the stage's runner system prompt; inheritance order is stage `persona.instructions` → job-level `system_prompt` → runner default. The `StageStarted` envelope echoes the resolved id so the recorder can stamp `stages.persona_id`.
+- `stage_recorder` reads `persona_id` from `Event::StageStarted` and writes it onto the row (replacing the prior hard-coded `None`).
+- `submit_job` (`crates/codeless-runtime/src/rpc/jobs.rs`) validates every `stage.persona` against `personas` before scaffolding the job directory; an unresolved id returns `RpcError::InvalidArgument` and never reaches the runner.
+- Regenerated `crates/codeless-rpc/tests/wire-rpc.ts.snap` and `ui/codeless-ui/src/lib/rpc/generated/wire.ts` to pick up the new `Event::StageStarted.persona_id` and `Stage.persona_id` fields.
+- New tests: `template::tests::parses_per_stage_persona_override_on_structured_form`, `template::tests::empty_persona_string_collapses_to_none`, `template_runner::tests::stage_started_event_carries_per_stage_persona`, `rpc_in_process::submit_job_rejects_unknown_stage_persona`, and `rpc_in_process::submit_job_accepts_known_stage_persona`.
+- `cargo build --workspace`, `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `pnpm -C ui/codeless-ui typecheck` are clean. New tests pass.
 
 ## Next
 
-- Stage 8: promote `jobs.persona_id` to a real FK, add `stages.persona_id` with the same FK, and record the persona on each stage's handover.
+- Stage 10: expose personas where `use_for_jobs = 1` as MCP prompts; `use_for_jobs` is the single dimension gating MCP visibility — do not add a parallel `expose_via_mcp` flag (D3).
 
 ## What you need to know
 
-- Pre-existing flaky test `rpc_in_process::job_filtered_subscription_drops_unrelated_events` fails before and after this stage — verified via `git stash`. Not caused by this change; flag for separate triage.
-- `Persona.built_in` is preserved by `SqliteStore::upsert_persona` (explicit INSERT/UPDATE branches instead of REPLACE) so a user-edited built-in stays a built-in and the RPC's delete-refusal of built-ins still bites.
-- The UI's `agentsStore.upsert(agent, rpc)` writes through to SQLite first, then updates the in-memory list and KV from the *returned* row, so the three layers stay coherent. Built-ins remain absent from `customAgents` even after an edit echoes them back.
-- `loadAgentsFromRpc` falls back to the KV cache on transport error, so a brief outage does not blank the persona rail — but R4 still holds (SQLite is the source of truth; a successful refresh overwrites the cache).
-- `BUILTIN_AGENTS` (the local TS constant) and the seeded SQLite built-ins both ship with `use_for_jobs = false` and all four registry subagents allowed.
+- D5 is honoured: there is no special-case for REVIEW stages or for `builtin:reviewer`; the `persona:` key is resolved and applied uniformly for every stage. The reviewer-default itself remains owned by `DOCS/SESSION-PEER-REVIEW-IMPROVEMENTS.md`.
+- D4 is honoured: the runner composes the system prompt from `persona.instructions` alone; `default_snippets` is still chat-only.
+- Validation is fail-fast at submit. The runner additionally tolerates a missing persona row at run time (returns `Ok(None)` and degrades to the job-level prompt) — that covers the edge case where a user deletes a persona row between submit and dispatch.
+- The pre-existing flake `rpc_in_process::job_filtered_subscription_drops_unrelated_events` still fails the same way it did at stages 7 and 8 (verified by `git stash`); not caused by this stage. `codeless-adapters-host::git_commit::commit_paths_creates_commit_for_new_file` likewise reproduces on `git stash`.
+- The `wire-rpc.ts.snap.actual` file is tracked in the repo (it was created earlier when the snapshot drifted) — `SPECTA_UPDATE=1` regenerated both `.snap` and `.actual`, and they now match.
 
 ## Open questions
 

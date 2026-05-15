@@ -51,7 +51,33 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
     // the Job row lands. CLI submits whose YAML is the wrapper format
     // and prompt-only submits fall through unscaffolded.
     if let Some(template_src) = args.template_yaml.as_deref() {
-        if JobTemplate::parse_yaml(template_src).is_ok() {
+        if let Ok(template) = JobTemplate::parse_yaml(template_src) {
+            // Per-stage persona override (D1): every `stage.persona`
+            // id must resolve against the `personas` table before
+            // the job row lands. Failing here keeps the failure
+            // visible at the submit boundary — a missing id never
+            // reaches the runner, where it would silently degrade
+            // to the inherited persona. The lookup uses the same
+            // `id` column the chat panel quotes (`builtin:<slug>`
+            // for seeded rows, the user-minted id for user rows).
+            for (idx, stage) in template.stages.iter().enumerate() {
+                if let Some(persona_id) = stage.persona.as_deref() {
+                    let row = rpc
+                        .store
+                        .get_persona(persona_id)
+                        .await
+                        .map_err(super::db_err)?;
+                    if row.is_none() {
+                        return Err(RpcError::InvalidArgument(format!(
+                            "stage {} (`{}`) references persona `{}`, \
+                             which does not exist",
+                            idx + 1,
+                            stage.title,
+                            persona_id,
+                        )));
+                    }
+                }
+            }
             super::job_files::seed_job_directory(&repo.local_path, template_src)?;
         }
     }

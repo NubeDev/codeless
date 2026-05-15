@@ -1019,6 +1019,16 @@ export type Stage = {
 	 *  audit / UI labelling of the archived turn.
 	 */
 	archived?: boolean,
+	/**
+	 *  Persona id this stage runs under. NULL means the stage
+	 *  inherits the job-level persona (`jobs.persona_id`); a populated
+	 *  value is the result of the per-stage `persona:` YAML override
+	 *  resolved at job-submit time (AGENT-DECISIONS.md D1). The column
+	 *  is recorded on the row so a re-run reproduces the same persona
+	 *  the stage originally ran under even if the user later edited
+	 *  the template or the persona row.
+	 */
+	persona_id?: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.

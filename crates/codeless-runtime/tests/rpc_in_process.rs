@@ -214,6 +214,126 @@ async fn submit_job_persists_system_prompt_on_the_job_row() {
     assert_eq!(fetched.persona_id, job.persona_id);
 }
 
+/// Per-stage persona override (D1): submit_job must reject a
+/// template whose stage names a persona id that does not resolve
+/// against the `personas` table. Failing here keeps the failure
+/// visible at the submit boundary — a missing id never reaches the
+/// runner, where it would silently degrade to the inherited persona.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submit_job_rejects_unknown_stage_persona() {
+    let rpc = InProcessRpc::new().await.unwrap();
+    let repo = rpc
+        .add_repo(AddRepoArgs {
+            name: "demo".into(),
+            clone_url: "https://example.test/demo.git".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp/demo".into(),
+            git_auth: token_auth(),
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .expect("add_repo");
+    let yaml = r#"
+name: bad
+goal: stage references a persona that does not exist
+stages:
+  - title: implement
+    persona: "builtin:does-not-exist"
+"#;
+    let err = rpc
+        .submit_job(SubmitJobArgs {
+            repo_id: repo.id,
+            prompt: Some("p".into()),
+            template_yaml: Some(yaml.into()),
+            runner: "mock".into(),
+            branch: "codeless/bad-persona".into(),
+            workspace_mode: None,
+            cost_cap_cents: 1,
+            wall_clock_cap_ms: 1,
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            start_immediately: false,
+        })
+        .await
+        .expect_err("submit_job must reject unknown persona id");
+    assert!(
+        matches!(&err, RpcError::InvalidArgument(msg) if msg.contains("builtin:does-not-exist")),
+        "unexpected error: {err:?}",
+    );
+}
+
+/// Per-stage persona override (D1): a known persona id passes
+/// validation. Pairs with `submit_job_rejects_unknown_stage_persona`
+/// to pin the fail-fast / pass-through behaviour from both sides.
+/// Uses a real on-disk git repo because the submit path commits the
+/// scaffolded job dir via `commit_paths` — the validation step runs
+/// before that, so the test would still surface a NotFound /
+/// InvalidArgument error if the persona shape regressed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submit_job_accepts_known_stage_persona() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@example.com"][..],
+        &["config", "user.name", "t"][..],
+        &["commit", "--allow-empty", "-q", "-m", "root"][..],
+    ] {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(tmp.path())
+            .args(args.iter().copied())
+            .output()
+            .expect("spawn git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+    let rpc = InProcessRpc::new().await.unwrap();
+    let repo = rpc
+        .add_repo(AddRepoArgs {
+            name: "demo".into(),
+            clone_url: "https://example.test/demo.git".into(),
+            default_branch: "main".into(),
+            local_path: tmp.path().to_string_lossy().into_owned(),
+            git_auth: token_auth(),
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .expect("add_repo");
+    let yaml = r#"
+name: good-persona
+goal: stage references seeded built-ins
+stages:
+  - title: implement
+    persona: "builtin:coder"
+  - title: review
+    persona: "builtin:reviewer"
+"#;
+    let job = rpc
+        .submit_job(SubmitJobArgs {
+            repo_id: repo.id,
+            prompt: Some("p".into()),
+            template_yaml: Some(yaml.into()),
+            runner: "mock".into(),
+            branch: "codeless/good-persona".into(),
+            workspace_mode: None,
+            cost_cap_cents: 1,
+            wall_clock_cap_ms: 1,
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            start_immediately: false,
+        })
+        .await
+        .expect("submit_job");
+    assert_eq!(job.repo_id, repo.id);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_job_emits_event_and_is_idempotent_against_terminal_state() {
     let rpc = InProcessRpc::new().await.unwrap();

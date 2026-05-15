@@ -65,6 +65,7 @@ async fn handle_event(
             job_id,
             ordinal,
             name,
+            persona_id,
         } => {
             store
                 .insert_stage(&Stage {
@@ -90,10 +91,10 @@ async fn handle_event(
                     // values when first writing the stage row.
                     last_activity_at: Some(env.created_at),
                     archived: false,
-                    // Set lazily by the per-stage override path when it
-                    // lands; an unset value means the stage inherits
-                    // the job-level persona at read time.
-                    persona_id: None,
+                    // Per-stage persona override (D1). `None` means
+                    // the stage inherits the job-level persona; the
+                    // archive handover encodes that as `<inherited>`.
+                    persona_id: persona_id.clone(),
                 })
                 .await?;
         }
@@ -289,6 +290,7 @@ mod tests {
                 job_id,
                 ordinal: 0,
                 name: "first stage".into(),
+                persona_id: None,
             },
             now_ms(),
         )
@@ -382,6 +384,7 @@ mod tests {
                 job_id,
                 ordinal: 0,
                 name: "s".into(),
+                persona_id: None,
             },
             now_ms(),
         )
