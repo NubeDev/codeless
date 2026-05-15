@@ -7,6 +7,8 @@
 
 pub mod anthropic_runner;
 pub mod claude_runner;
+pub mod codex_runner;
+pub mod copilot_runner;
 pub mod driver;
 pub mod event_bus;
 pub mod handover;
@@ -33,6 +35,8 @@ pub mod webhook;
 
 pub use anthropic_runner::AnthropicRunnerAdapter;
 pub use claude_runner::{parse_permission_mode, ClaudeRunnerAdapter};
+pub use codex_runner::CodexRunnerAdapter;
+pub use copilot_runner::CopilotRunnerAdapter;
 pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};
 pub use heartbeat::spawn_heartbeat;

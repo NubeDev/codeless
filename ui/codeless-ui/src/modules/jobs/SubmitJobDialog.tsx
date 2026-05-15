@@ -93,6 +93,20 @@ const RUNNER_CAPS: Record<string, RunnerCapabilities> = {
     // value so the UI agrees with what would actually run.
     defaultPermissionMode: "bypass",
   },
+  codex: {
+    supportsModel: true,
+    supportsPermission: false,
+    supportsEffort: false,
+    models: [],
+    defaultPermissionMode: null,
+  },
+  copilot: {
+    supportsModel: true,
+    supportsPermission: false,
+    supportsEffort: false,
+    models: [],
+    defaultPermissionMode: null,
+  },
 };
 
 const PERMISSION_MODES: { id: string; label: string; hint: string }[] = [

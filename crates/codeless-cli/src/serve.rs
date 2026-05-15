@@ -21,8 +21,8 @@ use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerInfo};
 use codeless_runtime::{
     parse_permission_mode, spawn_job_driver_loop, spawn_notifier, spawn_stage_recorder,
     template::JobTemplate, template_runner::TemplateRunner, AnthropicRunnerAdapter,
-    ClaudeRunnerAdapter, InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome,
-    WebhookConfig, WebhookNotifier,
+    ClaudeRunnerAdapter, CodexRunnerAdapter, CopilotRunnerAdapter, InProcessRpc, MockRunner,
+    MockStep, Runner, RunnerFactory, RunnerOutcome, WebhookConfig, WebhookNotifier,
 };
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, AuthMode, TokenLoadError, TOKEN_SECRET_KEY,
@@ -88,6 +88,19 @@ pub struct ServeArgs {
     /// sees a clear error in the server log.
     #[arg(long)]
     pub enable_anthropic: bool,
+
+    /// Enable the `codex` runner. Requires the `codex` CLI on `PATH`
+    /// (`npm install -g @openai/codex`) and `OPENAI_API_KEY` in the
+    /// server's environment — the upstream binary reads the key
+    /// directly.
+    #[arg(long)]
+    pub enable_codex: bool,
+
+    /// Enable the `copilot` runner. Requires the `copilot` CLI on
+    /// `PATH` with a completed GitHub device-flow login (state under
+    /// `~/.copilot/`).
+    #[arg(long)]
+    pub enable_copilot: bool,
 
     /// Root directory the `fs.*` RPC surface is allowed to read and
     /// write under. When unset, `fs_*` methods return `Internal` —
@@ -334,6 +347,12 @@ async fn run_server(
         if args.enable_anthropic {
             enabled.push("anthropic");
         }
+        if args.enable_codex {
+            enabled.push("codex");
+        }
+        if args.enable_copilot {
+            enabled.push("copilot");
+        }
         if enabled.is_empty() {
             enabled.push("mock");
         }
@@ -351,6 +370,8 @@ async fn run_server(
         let factory = Arc::new(DefaultRunnerFactory {
             enable_claude: args.enable_claude,
             enable_anthropic: args.enable_anthropic,
+            enable_codex: args.enable_codex,
+            enable_copilot: args.enable_copilot,
             anthropic_api_key,
             claude_system_prompt,
             store: rpc.store().clone(),
@@ -401,7 +422,8 @@ fn build_server_info(
     available_cli_runners: Vec<String>,
 ) -> ServerInfo {
     let mut runners = Vec::new();
-    let real_runner_enabled = args.enable_claude || args.enable_anthropic;
+    let real_runner_enabled =
+        args.enable_claude || args.enable_anthropic || args.enable_codex || args.enable_copilot;
     // `mock` is only published when no real runner is enabled. When
     // the operator passes `--enable-claude` or `--enable-anthropic`
     // they have signalled that real coding work is what they want; a
@@ -427,6 +449,18 @@ fn build_server_info(
             // `claude` wins the default when both flags are passed; the
             // anthropic REST runner is the secondary path.
             default: !args.enable_claude,
+        });
+    }
+    if args.enable_codex {
+        runners.push(RunnerInfo {
+            id: "codex".to_owned(),
+            default: false,
+        });
+    }
+    if args.enable_copilot {
+        runners.push(RunnerInfo {
+            id: "copilot".to_owned(),
+            default: false,
         });
     }
     ServerInfo {
@@ -474,6 +508,8 @@ fn maybe_webhook_config(store: &SecretStore) -> Result<Option<WebhookConfig>> {
 struct DefaultRunnerFactory {
     enable_claude: bool,
     enable_anthropic: bool,
+    enable_codex: bool,
+    enable_copilot: bool,
     anthropic_api_key: Option<String>,
     /// Optional override for the claude headless system prompt. When
     /// the secrets file carries `claude_system_prompt`, it replaces
@@ -590,7 +626,8 @@ impl RunnerFactory for DefaultRunnerFactory {
         // submitted to a `--enable-claude` server returns None and
         // the driver fails the job loudly rather than silently
         // running a no-op against the user's repo.
-        let real_runner_enabled = self.enable_claude || self.enable_anthropic;
+        let real_runner_enabled =
+            self.enable_claude || self.enable_anthropic || self.enable_codex || self.enable_copilot;
         match job.runner.as_str() {
             "mock" if !real_runner_enabled => {
                 Some(Arc::new(MockRunner::new(demo_mock_script(&prompt))))
@@ -618,6 +655,20 @@ impl RunnerFactory for DefaultRunnerFactory {
             "anthropic" if self.enable_anthropic => {
                 let mut adapter = AnthropicRunnerAdapter::new(prompt, TaskId::new());
                 adapter.api_key = self.anthropic_api_key.clone();
+                Some(Arc::new(adapter))
+            }
+            "codex" if self.enable_codex => {
+                let mut adapter = CodexRunnerAdapter::new(prompt, TaskId::new());
+                if let Some(m) = job.model.as_deref() {
+                    adapter = adapter.with_model(m);
+                }
+                Some(Arc::new(adapter))
+            }
+            "copilot" if self.enable_copilot => {
+                let mut adapter = CopilotRunnerAdapter::new(prompt, TaskId::new());
+                if let Some(m) = job.model.as_deref() {
+                    adapter = adapter.with_model(m);
+                }
                 Some(Arc::new(adapter))
             }
             _ => None,
