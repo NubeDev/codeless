@@ -16,6 +16,7 @@ members = [
     "crates/codeless-tauri-desktop",
     "crates/codeless-tools",
     "crates/codeless-mcp",
+    "crates/codeless-predicates",
     # Vendored from rubix-agent. Path is `../ai-runner` because the
     # crate lives one level up in `codeless-workspace/` alongside
     # this inner repo. Treated as read-only here — updates flow from

@@ -1,0 +1,20 @@
+[package]
+name = "codeless-predicates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: checked-in predicate runner for stage diffs (SESSION-MUTABLE-SCOPE Step 3). Host-only — never reachable from the mobile build per R1. xtask-shaped: a binary entry point invoked by CI and the loop's verify step."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "codeless-predicates"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3"
