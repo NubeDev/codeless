@@ -15,6 +15,8 @@ pub mod browser_navigate;
 pub mod browser_read;
 pub mod browser_screenshot;
 pub mod browser_session;
+pub mod github_issue;
+pub mod github_pr;
 pub mod http_request;
 
 pub use browse_fetch::BrowseFetchTool;
@@ -30,6 +32,8 @@ pub use browser_screenshot::BrowserScreenshotTool;
 pub use browser_session::{
     BrowserSessionCloseTool, BrowserSessionListTool, BrowserSessionOpenTool,
 };
+pub use github_issue::GithubIssueTool;
+pub use github_pr::GithubPrTool;
 pub use http_request::HttpRequestTool;
 
 use crate::ctx::ToolCtx;
