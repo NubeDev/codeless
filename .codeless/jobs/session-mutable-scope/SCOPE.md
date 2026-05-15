@@ -30,13 +30,19 @@ This file is the per-job brief; the doc is authoritative.
   seeded with 3-5 hand-written probes.
 - Step 4 — `ScopePatch` wire type in `codeless-types` (mobile-safe);
   REVIEW stages emit proposals to `DOCS/SCOPE-PROPOSED.md` in shadow
-  mode; kill-criterion telemetry wired.
+  mode; kill-criterion telemetry wired as a new `ScopePatchProposed`
+  event variant on the existing event bus (not a new persistence
+  store, not a metrics endpoint — per R4). The four-week 60%-noise
+  kill is a future human call, not an auto-disable.
 - Step 5 — patch-shape rules enforced at parse: tightening requires
   predicate; loosening requires positive fixture + evidence stage;
   one patch per REVIEW; mutable-set membership; evidence verification.
-- Step 6 — CLI command (and/or UI affordance) for walking the
-  proposed-patch queue; approved patches land as human-authored
-  commits with predicate files in the same commit.
+- Step 6 — CLI command only (`codeless patches list / show /
+  approve / reject / edit`) for walking the proposed-patch queue.
+  **UI affordance is explicitly deferred to a follow-up job** —
+  pinning CLI-only here keeps the job within scope and satisfies
+  R2/R3 trivially. Approved patches land as human-authored commits
+  with predicate files in the same commit.
 
 ## Out of scope
 
@@ -91,24 +97,38 @@ This file is the per-job brief; the doc is authoritative.
 
 ## Resolution required from "Open questions"
 
-The scope doc lists open questions. The first stage MUST resolve
-these explicitly — record the decision in
-`DOCS/SESSION-MUTABLE-SCOPE-DECISIONS.md` (new file), do not silently
-guess:
+Stage 0a MUST resolve these explicitly — record the decision in
+`DOCS/SESSION-MUTABLE-SCOPE-DECISIONS.md` (new file). Stage 0a is
+followed by a REVIEW gate that confirms the decisions are recorded
+and internally consistent before any code stage runs:
 
 1. Can WORK read proposed-but-not-yet-approved patches?
 2. Is RULE-DEPRECATION its own patch type, or is removal the same as
    addition? (And: prose-only loosening / deletion is fine — confirm.)
 3. Does a strengthening patch re-trigger review of prior stages?
-4. Where does the predicate crate live in the crate graph (exact
-   crate name + Cargo.toml member entry)?
+4. Where does the predicate crate live in the crate graph — record
+   the exact crate name AND the exact Cargo.toml workspace member
+   entry. Wrong call here cascades through stages 3-5.
 5. Predicate staleness lifecycle — deletion path that does not route
    through "WORK edits SCOPE.md."
 6. Aggressiveness of prose-to-predicate promotion suggestions.
+7. Step 4 kill-criterion telemetry sink. Default per R4: a new
+   `ScopePatchProposed` event variant on the existing event bus.
+   Stage 0a confirms this and records the exact event-variant name
+   so stage 4 does not invent one.
 
-Stage 1 records the decisions; later stages cite them. A stage that
-contradicts a recorded decision without amending the decisions file
-is a workflow failure.
+Pulled forward from later stages (decisions belong here, not buried
+in a code stage):
+
+- ReviewRequested-vs-ReviewGate event naming. The design doc
+  warns "decide before step 1 lands; do not let two REVIEW concepts
+  coexist silently." Stage 0a records the call (rename existing
+  ReviewRequested, or add ReviewGate alongside) and the migration
+  path for any existing emitters.
+
+Later stages cite the decisions file. A stage that contradicts a
+recorded decision without amending the decisions file is a workflow
+failure.
 
 ## Pointers
 

@@ -4,8 +4,13 @@
 
 The ramp is intentionally ordered. Do not reorder:
 
-- Steps 0 + H1/H3/H7 can batch — both are docs-and-validation work
-  with no runtime state-machine changes.
+- Stage 0a (decisions) is first, alone. A REVIEW gate follows
+  immediately — wrong calls on Q4 (predicate crate) or Q7 (telemetry
+  sink) cascade through stages 3-5, so catching them here is the
+  cheapest possible save.
+- Stage 0b (doc tightening) + H1/H3/H7 can batch — both are
+  docs-and-validation work with no runtime state-machine changes,
+  and both run after the decisions file is approved.
 - Step 1 (REVIEW stage type) must land before Step 2 (diff-verify),
   because diff-verify is a pre-check of the REVIEW stage.
 - Step 3 (predicate runner) is independent of Steps 4-6 and can land
@@ -13,7 +18,7 @@ The ramp is intentionally ordered. Do not reorder:
   before Step 5 must confirm Step 3 is integrated before parse-time
   guards land.
 - Steps 5 and 6 must land in order: parse-time guards before the
-  approval UX, so the UX never sees malformed patches.
+  approval CLI, so the CLI never sees malformed patches.
 
 ## Per-stage discipline
 
@@ -59,8 +64,9 @@ must include any side-effect files the investigation touched.
 
 ## REVIEW gate behaviour
 
-This job has two REVIEW gates: one before Step 5 (parse-time
-enforcement), one after Step 6 (ramp complete). Each gate:
+This job has three REVIEW gates: one after stage 0a (decisions
+landed), one before Step 5 (parse-time enforcement), one after Step
+6 (ramp complete). Each gate:
 
 - Commits and pushes the stage that *led* to the gate before pausing.
 - Writes a handover that summarises what landed in the preceding
@@ -69,10 +75,15 @@ enforcement), one after Step 6 (ramp complete). Each gate:
 - Does NOT advance until the user resumes. Do not preemptively start
   the next stage to "save time."
 
-The gate before Step 5 is the most important review point in the job:
-it is the last moment to catch a wrong mutable-set list or a wrong
-wire-format list before parse-time guards reject real patches in
-production.
+The gate after stage 0a is the cheapest gate and the highest-leverage
+one — wrong Q4 (predicate crate) or Q7 (telemetry sink) cascades
+silently through stages 3-5 otherwise.
+
+The gate before Step 5 is the most important *code*-review point in
+the job: it is the last moment to catch a wrong mutable-set list or
+a wrong wire-format list before parse-time guards reject real patches
+in production. It runs as a literal checklist (see template.yaml) —
+each box is mechanical, not interpretive.
 
 ## Anti-patterns specific to this job
 
@@ -104,13 +115,15 @@ production.
 
 | Stage | Layer | Touches |
 |-------|-------|---------|
-| 0 docs-only | L2 | DOCS/JOB-MODEL.md, DOCS/JOB-LOOP.md, DOCS/SESSION-MUTABLE-SCOPE-DECISIONS.md |
+| 0a decisions | L2 | DOCS/SESSION-MUTABLE-SCOPE-DECISIONS.md (7 questions + event-naming) |
+| REVIEW (post-0a) | — | confirm decisions file complete and internally consistent |
+| 0b docs tightening | L2 | DOCS/JOB-MODEL.md, DOCS/JOB-LOOP.md |
 | H1/H3/H7 | L1+L2 | codeless-runtime handover discovery, write-time validation |
-| 1 REVIEW stage | L1 | template_runner.rs, runtime event enum, rule-bearing-file list |
+| 1 REVIEW stage | L1 | template_runner.rs, runtime event enum (per 0a decision), rule-bearing-file list |
 | 2 diff-verify | L1 | template_runner.rs pre-check phase |
-| 3 predicate runner | L1 | new xtask-shaped crate, 3-5 seed predicates |
-| REVIEW gate (pre-step-5) | — | confirm 0-3 integrated, mutable-set lists correct |
-| 4 ScopePatch shadow | L2+L3 | codeless-types new wire type, runtime emit path, DOCS/SCOPE-PROPOSED.md |
+| 3 predicate runner | L1 | new xtask-shaped crate (name per 0a Q4), 5 seed predicates |
+| REVIEW (pre-step-5) | — | checklist gate; see template.yaml for exact boxes |
+| 4 ScopePatch shadow | L2+L3 | codeless-types new wire type, ScopePatchProposed event, DOCS/SCOPE-PROPOSED.md |
 | 5 parse-time guards | L1 | patch parser in codeless-runtime |
-| 6 approval UX | L2 | CLI (and/or RpcClient-only UI affordance) |
-| REVIEW final | — | confirm ramp stopped at 6, R1/R5 hold, wire formats untouched |
+| 6 approval CLI | L2 | CLI subcommand only (UI deferred to follow-up) |
+| REVIEW final | — | checklist gate; see template.yaml for exact boxes |
