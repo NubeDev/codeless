@@ -2,16 +2,17 @@ use async_trait::async_trait;
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
     CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs,
-    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
-    RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    JobReportResult, ListJobFilesArgs,
+    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
+    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use futures_util::StreamExt;

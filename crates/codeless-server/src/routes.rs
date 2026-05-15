@@ -8,16 +8,18 @@ use axum::{
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
     CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
-    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    FsCwdResult,
+    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
+    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
-    ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ListJobFilesArgs,
+    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{Job, Repo, Review};
 use serde_json::Value;
@@ -352,7 +354,10 @@ async fn fs_create_dir(
         .map_err(map_err)
 }
 
-async fn fs_move(State(st): State<AppState>, Json(args): Json<FsMoveArgs>) -> HandlerResult<Value> {
+async fn fs_move(
+    State(st): State<AppState>,
+    Json(args): Json<FsMoveArgs>,
+) -> HandlerResult<Value> {
     st.rpc
         .fs_move(args)
         .await

@@ -5,16 +5,18 @@ use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
     CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
-    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    FsCwdResult,
+    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
+    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
+    JobReportArgs, JobReportResult, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 

@@ -57,14 +57,20 @@ pub(super) async fn fs_cwd(rpc: &InProcessRpc) -> RpcResult<FsCwdResult> {
     })
 }
 
-pub(super) async fn fs_create_file(rpc: &InProcessRpc, args: FsCreateFileArgs) -> RpcResult<()> {
+pub(super) async fn fs_create_file(
+    rpc: &InProcessRpc,
+    args: FsCreateFileArgs,
+) -> RpcResult<()> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
     fs.create_file(&args.path, args.content.as_deref(), args.overwrite)
         .await
         .map_err(fs_err)
 }
 
-pub(super) async fn fs_create_dir(rpc: &InProcessRpc, args: FsCreateDirArgs) -> RpcResult<()> {
+pub(super) async fn fs_create_dir(
+    rpc: &InProcessRpc,
+    args: FsCreateDirArgs,
+) -> RpcResult<()> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
     fs.create_dir(&args.path, args.recursive)
         .await
@@ -80,7 +86,9 @@ pub(super) async fn fs_move(rpc: &InProcessRpc, args: FsMoveArgs) -> RpcResult<(
 
 pub(super) async fn fs_delete(rpc: &InProcessRpc, args: FsDeleteArgs) -> RpcResult<()> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    fs.delete(&args.path, args.recursive).await.map_err(fs_err)
+    fs.delete(&args.path, args.recursive)
+        .await
+        .map_err(fs_err)
 }
 
 fn fs_not_configured() -> RpcError {
