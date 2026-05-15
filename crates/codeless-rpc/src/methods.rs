@@ -1,7 +1,8 @@
 use codeless_types::{
-    AssistantAttachment, AssistantMessage, AssistantThread, AssistantThreadId, FsEntry,
-    FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId,
-    TaskId, UnixMillis, WorkspaceMode,
+    AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
+    AssistantMessageId, AssistantThread, AssistantThreadId, FsEntry, FsEntryKind, GitAuth, Job,
+    JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, TaskId, UnixMillis,
+    WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1046,3 +1047,65 @@ pub struct AppendAssistantMessageResult {
     pub user_message: AssistantMessage,
     pub assistant_message: AssistantMessage,
 }
+
+/// `assistant.confirmAction`. Dispatch the tool call proposed by a
+/// prior `Assistant`-role message whose `meta_json` carries an
+/// `AssistantActionCard`. The runtime executes the same `RpcServer`
+/// method a direct caller would invoke, then writes a trailing
+/// `Tool`-role message with a structured result summary so the
+/// transcript captures both the proposal and what happened. The
+/// proposal row's `meta_json.status` is flipped to `confirmed` or
+/// `failed` in the same transaction so the UI does not have to keep
+/// confirm/cancel buttons live after the click.
+///
+/// `NotFound` for an unknown `message_id`; `InvalidArgument` when the
+/// message is not an action card or is no longer pending (already
+/// confirmed/cancelled — confirming twice is a no-op the UI shouldn't
+/// be able to trigger, but the server is the source of truth).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ConfirmAssistantActionArgs {
+    pub thread_id: AssistantThreadId,
+    pub message_id: AssistantMessageId,
+}
+
+/// Result of an action confirmation. `card` is the proposal row after
+/// the status flip — the UI swaps it in place to retire the buttons.
+/// `tool_message` is the newly-appended `Tool`-role row carrying the
+/// structured outcome (`content` is the human summary; `meta_json`
+/// carries the original action + a serde-tagged result payload so the
+/// renderer can show e.g. a list of jobs without re-querying).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ConfirmAssistantActionResult {
+    pub card: AssistantMessage,
+    pub tool_message: AssistantMessage,
+}
+
+/// `assistant.cancelAction`. Flip a pending action card's status to
+/// `cancelled` and do **nothing else** — no RPC is dispatched, no
+/// `Tool` message appended. The card row stays in the transcript so
+/// the user can see what they declined, but its confirm/cancel
+/// buttons retire.
+///
+/// `NotFound` for an unknown `message_id`; `InvalidArgument` when
+/// the row is not an action card or is no longer pending. The empty
+/// success case returns the updated card so the UI can re-render
+/// without a follow-up list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct CancelAssistantActionArgs {
+    pub thread_id: AssistantThreadId,
+    pub message_id: AssistantMessageId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct CancelAssistantActionResult {
+    pub card: AssistantMessage,
+}
+
+/// Re-exported here so wire-snapshot consumers see the action-card
+/// types in the same module they see the other assistant args. The
+/// proposal lives on `AssistantMessage.meta_json` as a JSON-encoded
+/// `AssistantActionCard`; exposing the type at the methods boundary
+/// keeps the TS bindings honest — without this, `meta_json` would
+/// remain an opaque string on the wire surface generated for the UI.
+pub type AssistantActionCardPayload = AssistantActionCard;
+pub type AssistantActionPayload = AssistantAction;

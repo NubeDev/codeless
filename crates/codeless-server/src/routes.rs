@@ -7,20 +7,22 @@ use axum::{
 };
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, CancelChatTaskArgs, CommentReviewArgs,
-    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs,
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
+    DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
+    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
+    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
+    ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Repo, Review};
 use serde_json::Value;
@@ -91,6 +93,14 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             "/rpc/append_assistant_message",
             post(append_assistant_message),
+        )
+        .route(
+            "/rpc/confirm_assistant_action",
+            post(confirm_assistant_action),
+        )
+        .route(
+            "/rpc/cancel_assistant_action",
+            post(cancel_assistant_action),
         )
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
@@ -550,6 +560,28 @@ async fn append_assistant_message(
 ) -> HandlerResult<AppendAssistantMessageResult> {
     st.rpc
         .append_assistant_message(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn confirm_assistant_action(
+    State(st): State<AppState>,
+    Json(args): Json<ConfirmAssistantActionArgs>,
+) -> HandlerResult<ConfirmAssistantActionResult> {
+    st.rpc
+        .confirm_assistant_action(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn cancel_assistant_action(
+    State(st): State<AppState>,
+    Json(args): Json<CancelAssistantActionArgs>,
+) -> HandlerResult<CancelAssistantActionResult> {
+    st.rpc
+        .cancel_assistant_action(args)
         .await
         .map(Json)
         .map_err(map_err)

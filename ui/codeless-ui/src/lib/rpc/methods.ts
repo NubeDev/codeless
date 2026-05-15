@@ -43,6 +43,13 @@ import type {
   ListAssistantMessagesResult,
   AppendAssistantMessageArgs,
   AppendAssistantMessageResult,
+  AssistantAction,
+  AssistantActionCard,
+  AssistantActionStatus,
+  ConfirmAssistantActionArgs,
+  ConfirmAssistantActionResult,
+  CancelAssistantActionArgs,
+  CancelAssistantActionResult,
 } from "./wire";
 
 export interface AddRepoArgs {
@@ -535,6 +542,14 @@ export interface RpcMethodMap {
     args: AppendAssistantMessageArgs;
     result: AppendAssistantMessageResult;
   };
+  confirm_assistant_action: {
+    args: ConfirmAssistantActionArgs;
+    result: ConfirmAssistantActionResult;
+  };
+  cancel_assistant_action: {
+    args: CancelAssistantActionArgs;
+    result: CancelAssistantActionResult;
+  };
 }
 
 export type {
@@ -557,6 +572,13 @@ export type {
   ListAssistantMessagesResult,
   AppendAssistantMessageArgs,
   AppendAssistantMessageResult,
+  AssistantAction,
+  AssistantActionCard,
+  AssistantActionStatus,
+  ConfirmAssistantActionArgs,
+  ConfirmAssistantActionResult,
+  CancelAssistantActionArgs,
+  CancelAssistantActionResult,
 };
 
 // Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,

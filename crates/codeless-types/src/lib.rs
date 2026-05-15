@@ -18,7 +18,10 @@ pub mod stage;
 pub mod task;
 pub mod time;
 
-pub use assistant::{AssistantAttachment, AssistantMessage, AssistantMessageRole, AssistantThread};
+pub use assistant::{
+    AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
+    AssistantMessage, AssistantMessageRole, AssistantThread,
+};
 pub use event::{Event, EventCursor, EventEnvelope};
 pub use fs::{FsEntry, FsEntryKind};
 pub use git_auth::GitAuth;

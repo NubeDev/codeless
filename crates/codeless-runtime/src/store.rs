@@ -1,10 +1,10 @@
 use std::str::FromStr;
 
 use codeless_types::{
-    AssistantAttachment, AssistantMessage, AssistantMessageRole, AssistantThread,
-    AssistantThreadId, CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewId,
-    ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
-    WorkspaceMode,
+    AssistantAttachment, AssistantMessage, AssistantMessageId, AssistantMessageRole,
+    AssistantThread, AssistantThreadId, CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId,
+    Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId,
+    TaskStatus, UnixMillis, WorkspaceMode,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -932,6 +932,42 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Fetch one message by id. Used by the action-card confirm/cancel
+    /// path so the runtime can re-parse `meta_json` server-side rather
+    /// than trust the client's claim about what's pending. Returns
+    /// `None` when the row is missing (already gone, or never existed).
+    pub async fn get_assistant_message(
+        &self,
+        id: AssistantMessageId,
+    ) -> sqlx::Result<Option<AssistantMessage>> {
+        let row = sqlx::query("SELECT * FROM assistant_messages WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(assistant_message_from_row).transpose()
+    }
+
+    /// Replace `meta_json` and `content` on an existing message. The
+    /// action-card flow uses this to flip the status of a proposal row
+    /// in place — keeping the same id and `created_at` means the rail
+    /// re-renders the card with new buttons (or none) instead of
+    /// growing a duplicate entry. Returns `false` if the row is gone.
+    pub async fn update_assistant_message(
+        &self,
+        id: AssistantMessageId,
+        content: &str,
+        meta_json: Option<&str>,
+    ) -> sqlx::Result<bool> {
+        let res =
+            sqlx::query("UPDATE assistant_messages SET content = ?, meta_json = ? WHERE id = ?")
+                .bind(content)
+                .bind(meta_json)
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     pub async fn list_assistant_messages(

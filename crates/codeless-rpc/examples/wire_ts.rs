@@ -23,24 +23,26 @@ use std::path::{Path, PathBuf};
 
 use codeless_rpc::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, CancelChatTaskArgs, ChatAttachmentRef,
-    ChatContext, ClaudeStatus, CommentReviewArgs, CreateAssistantThreadArgs,
-    DeleteAssistantThreadArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs,
-    JobDiffFile, JobDiffResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UserPromptSnippet,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, ChatAttachmentRef, ChatContext, ClaudeStatus,
+    CommentReviewArgs, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
+    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, FsCwdResult, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    RemoveRepoArgs, RunnerInfo, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
-    AssistantAttachment, AssistantAttachmentId, AssistantMessage, AssistantMessageId,
-    AssistantMessageRole, AssistantThread, AssistantThreadId, CostCents, Event, EventCursor,
-    EventEnvelope, FsEntry, FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus, Repo, RepoId,
-    Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId,
-    TaskStatus, UnixMillis,
+    AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
+    AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
+    AssistantThread, AssistantThreadId, CostCents, Event, EventCursor, EventEnvelope, FsEntry,
+    FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewId,
+    ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -133,7 +135,14 @@ fn collect() -> TypeCollection {
         .register_mut::<ListAssistantMessagesArgs>()
         .register_mut::<ListAssistantMessagesResult>()
         .register_mut::<AppendAssistantMessageArgs>()
-        .register_mut::<AppendAssistantMessageResult>();
+        .register_mut::<AppendAssistantMessageResult>()
+        .register_mut::<AssistantAction>()
+        .register_mut::<AssistantActionStatus>()
+        .register_mut::<AssistantActionCard>()
+        .register_mut::<ConfirmAssistantActionArgs>()
+        .register_mut::<ConfirmAssistantActionResult>()
+        .register_mut::<CancelAssistantActionArgs>()
+        .register_mut::<CancelAssistantActionResult>();
     types
 }
 

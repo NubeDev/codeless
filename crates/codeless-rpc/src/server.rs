@@ -4,20 +4,21 @@ use codeless_types::{Job, Repo, Review};
 use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, CancelChatTaskArgs, CommentReviewArgs,
-    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs,
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
+    DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
+    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
+    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -331,4 +332,30 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: AppendAssistantMessageArgs,
     ) -> RpcResult<AppendAssistantMessageResult>;
+
+    /// Dispatch the tool call carried on a pending action card. The
+    /// runtime executes the underlying `RpcServer` method, flips the
+    /// proposal's `meta_json.status` to `Confirmed` or `Failed`, and
+    /// appends a `Tool`-role message carrying the structured result.
+    /// Capabilities are derived **server-side** from the proposal row,
+    /// never trusted from the client (see SCOPE.md — the `kind` prop on
+    /// `CommonChat` is UI-only).
+    ///
+    /// `NotFound` for an unknown message; `InvalidArgument` when the
+    /// row is not an action card or is no longer pending; downstream
+    /// errors (`Conflict`, `NotFound`, …) propagate after the status
+    /// flip so the UI can render the failure inline.
+    async fn confirm_assistant_action(
+        &self,
+        args: ConfirmAssistantActionArgs,
+    ) -> RpcResult<ConfirmAssistantActionResult>;
+
+    /// Decline a pending action card. Flips `meta_json.status` to
+    /// `Cancelled` and does nothing else — no RPC is dispatched, no
+    /// trailing `Tool` message is appended. The card row stays in the
+    /// transcript as a record of the declined proposal.
+    async fn cancel_assistant_action(
+        &self,
+        args: CancelAssistantActionArgs,
+    ) -> RpcResult<CancelAssistantActionResult>;
 }

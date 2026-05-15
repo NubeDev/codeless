@@ -211,6 +211,27 @@ export type AssistantThread = {
 export type AssistantThreadId = string;
 
 /**
+ *  `assistant.cancelAction`. Flip a pending action card's status to
+ *  `cancelled` and do **nothing else** — no RPC is dispatched, no
+ *  `Tool` message appended. The card row stays in the transcript so
+ *  the user can see what they declined, but its confirm/cancel
+ *  buttons retire.
+ * 
+ *  `NotFound` for an unknown `message_id`; `InvalidArgument` when
+ *  the row is not an action card or is no longer pending. The empty
+ *  success case returns the updated card so the UI can re-render
+ *  without a follow-up list.
+ */
+export type CancelAssistantActionArgs = {
+	thread_id: AssistantThreadId,
+	message_id: AssistantMessageId,
+};
+
+export type CancelAssistantActionResult = {
+	card: AssistantMessage,
+};
+
+/**
  *  Fire the cancellation token registered for a chat turn so the
  *  in-flight CLI runner exits at its next `await` boundary. Idempotent
  *  — a missing entry (the turn already completed) is `Ok(())`, not a
@@ -314,6 +335,40 @@ export type ClaudeStatus = {
 export type CommentReviewArgs = {
 	review_id: ReviewId,
 	comment: string,
+};
+
+/**
+ *  `assistant.confirmAction`. Dispatch the tool call proposed by a
+ *  prior `Assistant`-role message whose `meta_json` carries an
+ *  `AssistantActionCard`. The runtime executes the same `RpcServer`
+ *  method a direct caller would invoke, then writes a trailing
+ *  `Tool`-role message with a structured result summary so the
+ *  transcript captures both the proposal and what happened. The
+ *  proposal row's `meta_json.status` is flipped to `confirmed` or
+ *  `failed` in the same transaction so the UI does not have to keep
+ *  confirm/cancel buttons live after the click.
+ * 
+ *  `NotFound` for an unknown `message_id`; `InvalidArgument` when the
+ *  message is not an action card or is no longer pending (already
+ *  confirmed/cancelled — confirming twice is a no-op the UI shouldn't
+ *  be able to trigger, but the server is the source of truth).
+ */
+export type ConfirmAssistantActionArgs = {
+	thread_id: AssistantThreadId,
+	message_id: AssistantMessageId,
+};
+
+/**
+ *  Result of an action confirmation. `card` is the proposal row after
+ *  the status flip — the UI swaps it in place to retire the buttons.
+ *  `tool_message` is the newly-appended `Tool`-role row carrying the
+ *  structured outcome (`content` is the human summary; `meta_json`
+ *  carries the original action + a serde-tagged result payload so the
+ *  renderer can show e.g. a list of jobs without re-querying).
+ */
+export type ConfirmAssistantActionResult = {
+	card: AssistantMessage,
+	tool_message: AssistantMessage,
 };
 
 /**
