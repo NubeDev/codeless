@@ -9,12 +9,14 @@ use std::path::Path;
 use std::process::Command;
 
 use codeless_rpc::{
-    AddRepoArgs, AppendAssistantMessageArgs, DraftJobFromConversationArgs, GetJobArgs,
-    ReadJobFileArgs, RpcError, RpcServer, SubmitJobArgs, UpdateJobScopeArgs,
+    AddRepoArgs, AppendAssistantMessageArgs, ConfirmAssistantActionArgs,
+    DraftJobFromConversationArgs, GetJobArgs, ListJobsArgs, ReadJobFileArgs, RpcError, RpcServer,
+    SubmitJobArgs, UpdateJobScopeArgs,
 };
 use codeless_runtime::InProcessRpc;
 use codeless_types::{
-    AssistantThreadId, CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, WorkspaceMode,
+    AssistantActionCard, AssistantActionStatus, AssistantMessageRole, AssistantThreadId,
+    CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId, WorkspaceMode,
 };
 use tempfile::TempDir;
 
@@ -368,4 +370,199 @@ async fn draft_from_conversation_picks_most_recent_proposal() {
     // by submitting an unmoded job — explicit defaults match parse_draft.
     assert!(matches!(job.workspace_mode, WorkspaceMode::InRepo));
     assert_eq!(job.cost_cents, CostCents::ZERO);
+}
+
+// F3b — action-card dispatcher routing. Each test confirms a card from
+// a real assistant thread and asserts the resulting state came from
+// the named RPC, not from an inline submit/write. Per-action coverage
+// for `start/stop/pause/resume/restart/update` lives in the next
+// MockRunner stage; the wiring those arms hit is one-line and the
+// outer confirm_dispatches_list_jobs_and_writes_tool_message test in
+// `assistant.rs` already exercises that path.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_edit_scope_routes_through_update_job_scope() {
+    // Happy path: a /edit-scope card lands SCOPE.md on disk through
+    // `update_job_scope`. The tool message carries a diff and the
+    // round-trip read matches the dispatched body, which proves the
+    // dispatcher reached the new RPC rather than an inline write.
+    let (rpc, tmp, job_id) = fixture_with_template_job().await;
+    let thread = rpc
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .await
+        .unwrap();
+    // The slash parser trims trailing whitespace from the body so the
+    // expected on-disk content drops the surrounding newline. We assert
+    // on what the dispatcher actually wrote rather than the raw input.
+    let new_body = "# Rewritten\n\nstage 1: do the thing";
+    let appended = rpc
+        .append_assistant_message(AppendAssistantMessageArgs {
+            thread_id: thread.id,
+            content: format!("/edit-scope {job_id} -- {new_body}"),
+        })
+        .await
+        .unwrap();
+    let confirm = rpc
+        .confirm_assistant_action(ConfirmAssistantActionArgs {
+            thread_id: thread.id,
+            message_id: appended.assistant_message.id,
+        })
+        .await
+        .unwrap();
+    let card: AssistantActionCard =
+        serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+    assert!(matches!(card.status, AssistantActionStatus::Confirmed));
+    assert!(matches!(
+        confirm.tool_message.role,
+        AssistantMessageRole::Tool
+    ));
+    assert!(confirm.tool_message.content.contains("SCOPE.md"));
+
+    let on_disk =
+        std::fs::read_to_string(tmp.path().join(".codeless/jobs/scope-target/SCOPE.md")).unwrap();
+    assert_eq!(on_disk, new_body);
+    let read = rpc
+        .read_job_file(ReadJobFileArgs {
+            job_id,
+            filename: "SCOPE.md".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(read.content, new_body);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_edit_scope_rejects_running_job_with_pause_hint() {
+    // The paused-job guard now lives inside `update_job_scope`. The
+    // dispatcher must surface that typed Conflict as a Failed card
+    // whose tool message tells the user how to recover. A regression
+    // that dropped the guard (or bypassed `update_job_scope`) would
+    // either land the write or swallow the message — both visible
+    // here.
+    let (rpc, _tmp, job_id) = fixture_with_template_job().await;
+    set_status(&rpc, job_id, JobStatus::Running).await;
+    let thread = rpc
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .await
+        .unwrap();
+    let appended = rpc
+        .append_assistant_message(AppendAssistantMessageArgs {
+            thread_id: thread.id,
+            content: format!("/edit-scope {job_id} -- # rewritten\n"),
+        })
+        .await
+        .unwrap();
+    let confirm = rpc
+        .confirm_assistant_action(ConfirmAssistantActionArgs {
+            thread_id: thread.id,
+            message_id: appended.assistant_message.id,
+        })
+        .await
+        .unwrap();
+    let card: AssistantActionCard =
+        serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+    assert!(matches!(card.status, AssistantActionStatus::Failed));
+    assert!(
+        confirm.tool_message.content.contains("pause"),
+        "tool message should mention pause: {}",
+        confirm.tool_message.content,
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_edit_scope_rejects_non_scope_filename() {
+    // The chat surface contract is "edit_scope rewrites SCOPE.md only".
+    // The parser still accepts `filename=…` so a misuse from the model
+    // or a power user must surface as a typed Failed card rather than
+    // sneaking through to `write_job_file`.
+    let (rpc, _tmp, job_id) = fixture_with_template_job().await;
+    let thread = rpc
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .await
+        .unwrap();
+    let appended = rpc
+        .append_assistant_message(AppendAssistantMessageArgs {
+            thread_id: thread.id,
+            content: format!("/edit-scope {job_id} filename=WORKFLOW.md -- body"),
+        })
+        .await
+        .unwrap();
+    let confirm = rpc
+        .confirm_assistant_action(ConfirmAssistantActionArgs {
+            thread_id: thread.id,
+            message_id: appended.assistant_message.id,
+        })
+        .await
+        .unwrap();
+    let card: AssistantActionCard =
+        serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+    assert!(matches!(card.status, AssistantActionStatus::Failed));
+    assert!(
+        confirm.tool_message.content.contains("WORKFLOW.md")
+            || confirm.tool_message.content.contains("SCOPE.md"),
+        "tool message should name the offending filename: {}",
+        confirm.tool_message.content,
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirm_draft_routes_through_draft_job_from_conversation() {
+    // The dispatcher must consume the pending DraftJob card via the
+    // named RPC, not by calling `submit_job` directly. A regression to
+    // the inline call would still land a Draft row, but it would not
+    // exercise the thread-walk logic — so this test plants the card
+    // and then asserts the resulting Job's provenance (prompt +
+    // defaults) matches what `draft_job_from_conversation` produces.
+    let tmp = TempDir::new().unwrap();
+    init_repo(tmp.path());
+    let rpc = InProcessRpc::new().await.unwrap();
+    let repo = rpc
+        .add_repo(AddRepoArgs {
+            name: "demo".into(),
+            clone_url: "https://example.test/demo.git".into(),
+            default_branch: "main".into(),
+            local_path: tmp.path().to_string_lossy().into_owned(),
+            git_auth: GitAuth::Token {
+                env_var: "GITHUB_TOKEN".into(),
+            },
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .unwrap();
+    let thread = rpc
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .await
+        .unwrap();
+    let appended = rpc
+        .append_assistant_message(AppendAssistantMessageArgs {
+            thread_id: thread.id,
+            content: format!("/draft {} -- ship dark mode", repo.id),
+        })
+        .await
+        .unwrap();
+
+    let before = rpc.list_jobs(ListJobsArgs { repo_id: None }).await.unwrap();
+    assert!(before.jobs.is_empty(), "fixture should start with no jobs");
+
+    let confirm = rpc
+        .confirm_assistant_action(ConfirmAssistantActionArgs {
+            thread_id: thread.id,
+            message_id: appended.assistant_message.id,
+        })
+        .await
+        .unwrap();
+    let card: AssistantActionCard =
+        serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+    assert!(matches!(card.status, AssistantActionStatus::Confirmed));
+    assert!(confirm.tool_message.content.starts_with("Drafted job"));
+
+    let after = rpc.list_jobs(ListJobsArgs { repo_id: None }).await.unwrap();
+    assert_eq!(after.jobs.len(), 1, "exactly one draft job lands");
+    let job = &after.jobs[0];
+    assert_eq!(job.status, JobStatus::Draft);
+    assert_eq!(job.repo_id, repo.id);
+    assert_eq!(job.prompt.as_deref(), Some("ship dark mode"));
+    assert_eq!(job.runner, "claude");
+    assert_eq!(job.branch, "assistant/draft");
 }

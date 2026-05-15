@@ -860,7 +860,7 @@ pub(super) async fn resync_template_from_disk(
 /// in F3 stays trivial — the assistant action card carries no filename
 /// because the chat surface only ever rewrites `SCOPE.md`. Spec edits
 /// targeting other files go through `write_job_file` directly.
-const SCOPE_FILENAME: &str = "SCOPE.md";
+pub(super) const SCOPE_FILENAME: &str = "SCOPE.md";
 
 pub(super) async fn update_job_scope(
     rpc: &super::InProcessRpc,

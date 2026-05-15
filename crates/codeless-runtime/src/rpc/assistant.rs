@@ -1,16 +1,16 @@
 use codeless_rpc::{
     AppendAssistantMessageArgs, AppendAssistantMessageResult, CancelAssistantActionArgs,
     CancelAssistantActionResult, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
-    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, GetJobArgs, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobsArgs, PauseJobArgs, ReadJobFileArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult,
-    RpcServer, StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobArgs,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteJobFileArgs,
+    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DraftJobFromConversationArgs,
+    GetJobArgs, ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListJobsArgs, PauseJobArgs, ReadJobFileArgs, RerunJobArgs,
+    ResumeJobArgs, RpcError, RpcResult, RpcServer, StartJobArgs, StopJobArgs, UpdateJobArgs,
+    UpdateJobScopeArgs, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, JobId, JobStatus, RepoId, WorkspaceMode,
+    AssistantThread, AssistantThreadId, JobId, RepoId, WorkspaceMode,
 };
 
 use super::InProcessRpc;
@@ -733,6 +733,7 @@ fn build_tool_message(
 /// — the runtime never swallows the underlying RPC's typed error.
 async fn dispatch_action(
     rpc: &InProcessRpc,
+    thread_id: AssistantThreadId,
     action: &AssistantAction,
 ) -> RpcResult<(String, serde_json::Value)> {
     use serde_json::json;
@@ -821,37 +822,15 @@ async fn dispatch_action(
                 json!({ "tool": "update_job", "job": job }),
             ))
         }
-        AssistantAction::DraftJob {
-            repo_id,
-            prompt,
-            runner,
-            branch,
-            cost_cap_cents,
-            wall_clock_cap_ms,
-            workspace_mode,
-            model,
-            permission_mode,
-            effort,
-        } => {
-            // SCOPE.md Decisions §3 — no "just do it" path. The card
-            // is the confirmation; landing the row as `Draft` lets the
-            // user edit the spec / docs / handover before kicking off
-            // the runner, matching the regular submit-from-CLI flow.
+        AssistantAction::DraftJob { .. } => {
+            // F3: the chat surface route goes through the named RPC so
+            // the same path is reachable from the CLI and any future
+            // shell. `draft_job_from_conversation` walks the thread for
+            // the newest pending DraftJob card — which is precisely the
+            // one being confirmed here, since the status flip to
+            // Confirmed happens after dispatch returns.
             let job = rpc
-                .submit_job(SubmitJobArgs {
-                    repo_id: *repo_id,
-                    prompt: Some(prompt.clone()),
-                    template_yaml: None,
-                    runner: runner.clone(),
-                    branch: branch.clone(),
-                    workspace_mode: *workspace_mode,
-                    cost_cap_cents: *cost_cap_cents,
-                    wall_clock_cap_ms: *wall_clock_cap_ms,
-                    model: model.clone(),
-                    permission_mode: permission_mode.clone(),
-                    effort: effort.clone(),
-                    start_immediately: false,
-                })
+                .draft_job_from_conversation(DraftJobFromConversationArgs { thread_id })
                 .await?;
             Ok((
                 format!("Drafted job `{}` (status: {:?}).", job.id, job.status),
@@ -863,31 +842,26 @@ async fn dispatch_action(
             filename,
             new_content,
         } => {
-            // The paused-job rule: a chat-driven spec edit must not
-            // race the runner that is currently reading the same file
-            // off disk. Only non-running statuses go through; the user
-            // pauses (or stops, or waits for the job to finish) and
-            // re-confirms. `update_job_template` does not enforce this
-            // because the CLI surface accepts the risk of editing a
-            // live job; the assistant surface is the friendlier path
-            // and the gate lives here.
-            let job = rpc.get_job(GetJobArgs { job_id: *job_id }).await?;
-            if matches!(
-                job.status,
-                JobStatus::Running | JobStatus::Queued | JobStatus::AwaitingReview
-            ) {
-                return Err(RpcError::Conflict(format!(
-                    "job {job_id} is {:?}; pause it first with `/pause {job_id}` \
-                     before editing the spec",
-                    job.status
+            // F3: the chat surface only rewrites SCOPE.md via the named
+            // RPC, which owns the paused-job guard so the same rule
+            // holds for every caller. A non-SCOPE filename surviving
+            // through the parser surfaces as InvalidArgument here so
+            // the failure mode is typed rather than silently rerouted.
+            if filename != super::jobs::SCOPE_FILENAME {
+                return Err(RpcError::InvalidArgument(format!(
+                    "chat-surface edit_scope only rewrites `{}`; got `{filename}`",
+                    super::jobs::SCOPE_FILENAME,
                 )));
             }
 
-            // Read the current body so we can emit a diff in the
-            // tool message. NotFound means the file does not exist
-            // yet — treat that as an empty current body so the diff
-            // shows the whole new content as additions, matching
-            // what `git diff` would say about a brand-new file.
+            // Read the current body before the write so the tool
+            // message carries an honest diff. NotFound means the file
+            // does not exist yet — render that as an empty current
+            // body so the diff shows the whole new content as
+            // additions, matching what `git diff` would say about a
+            // brand-new file. A NotFound on the job itself is left to
+            // `update_job_scope` to surface so the typed error matches
+            // the call that actually mutates.
             let current = match rpc
                 .read_job_file(ReadJobFileArgs {
                     job_id: *job_id,
@@ -901,24 +875,23 @@ async fn dispatch_action(
             };
 
             let result = rpc
-                .write_job_file(WriteJobFileArgs {
+                .update_job_scope(UpdateJobScopeArgs {
                     job_id: *job_id,
-                    filename: filename.clone(),
                     content: new_content.clone(),
                 })
                 .await?;
-            let diff = unified_diff(&current, new_content, &result.name);
+            let diff = unified_diff(&current, new_content, &result.filename);
             Ok((
                 format!(
                     "Wrote `{}` on job `{job_id}` ({} → {} bytes).",
-                    result.name,
+                    result.filename,
                     current.len(),
                     new_content.len(),
                 ),
                 json!({
                     "tool": "edit_scope",
                     "job_id": job_id,
-                    "filename": result.name,
+                    "filename": result.filename,
                     "diff": diff,
                 }),
             ))
@@ -940,7 +913,7 @@ pub(super) async fn confirm_assistant_action(
     // companion, and a failure on the way appears as `Failed` plus a
     // tool message describing the error.
     let now = now_ms();
-    match dispatch_action(rpc, &card.action).await {
+    match dispatch_action(rpc, args.thread_id, &card.action).await {
         Ok((summary, result_json)) => {
             let card_row =
                 write_card_status(rpc, &message, card, AssistantActionStatus::Confirmed).await?;
@@ -1004,6 +977,7 @@ pub(super) async fn cancel_assistant_action(
 mod tests {
     use super::*;
     use codeless_rpc::RpcServer;
+    use codeless_types::JobStatus;
     use tempfile::TempDir;
 
     async fn rpc_with_data_dir() -> (InProcessRpc, TempDir) {
