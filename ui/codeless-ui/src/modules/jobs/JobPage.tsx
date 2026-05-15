@@ -199,6 +199,27 @@ export function JobPage({
     specRefreshRef.current?.();
   }, [refetchJob]);
 
+  // Track which stage chats are currently streaming so JobTabs can show
+  // the ● indicator without subscribing to each stage's chat session.
+  const [chatStreamingStages, setChatStreamingStages] = useState<
+    ReadonlySet<string>
+  >(new Set());
+
+  const handleStageChatActive = useCallback(
+    (stageId: string, active: boolean) => {
+      setChatStreamingStages((prev) => {
+        const next = new Set(prev);
+        if (active) {
+          next.add(stageId);
+        } else {
+          next.delete(stageId);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
   if (loading) {
     return (
       <div
@@ -247,6 +268,7 @@ export function JobPage({
         onActivate={setActiveTab}
         onClose={handleCloseStageTab}
         onTogglePin={handleTogglePin}
+        chatStreamingStages={chatStreamingStages}
       />
 
       {/* Tab content */}
@@ -274,6 +296,9 @@ export function JobPage({
             jobId={jobId}
             stageId={activeTab.stageId}
             stageName={activeTab.stageName}
+            onChatActive={(active) =>
+              handleStageChatActive(activeTab.stageId, active)
+            }
           />
         )}
       </div>

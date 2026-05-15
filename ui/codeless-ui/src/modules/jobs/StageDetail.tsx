@@ -12,6 +12,8 @@ import {
   type StageRollup,
 } from "@/lib/rpc";
 
+import { StageChat } from "./StageChat";
+
 // ------------------------------------------------------------------ types
 
 type StageStatus = "pending" | "running" | "passed" | "failed";
@@ -280,18 +282,21 @@ interface Props {
   jobId: JobId;
   stageId: string;
   stageName: string;
+  // Called when the stage's chat transitions between idle and streaming.
+  // The parent uses this to drive the tab's ● indicator.
+  onChatActive?: (active: boolean) => void;
 }
 
 // Full detail view for one stage tab. Shows the stage goal (name),
 // a compact TICKS strip of each task and verify step, a FAILURE block
-// when any verify step failed, and three action buttons that map to
-// existing job-control RPCs.
+// when any verify step failed, three action buttons, and a live chat
+// panel wired to the stage's warm session.
 //
 // Data model: seeds from list_stages (authoritative for completed stages)
 // then layers live events on top. The children list (ticks / verify steps)
 // is built purely from events because the list_stages rollup does not
 // carry per-step rows.
-export function StageDetail({ jobId, stageId, stageName }: Props) {
+export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) {
   const rpc = useRpc();
 
   const [stage, setStage] = useState<StageState>({
@@ -358,55 +363,73 @@ export function StageDetail({ jobId, stageId, stageName }: Props) {
     (c): c is VerifyStepRow => c.kind === "verify-step" && c.status === "failed",
   );
 
+  const capturedSessionId = rollup?.stage.session_id ?? null;
+
   return (
-    <ScrollArea className="h-full">
-      <div className="space-y-5 p-5">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
-              {ordinalLabel}
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Stage detail — scrollable, capped at half the panel height so
+          the chat always has room even for stages with long failure output. */}
+      <ScrollArea className="max-h-[50%] shrink-0">
+        <div className="space-y-5 p-5">
+          {/* Header */}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-muted-foreground text-[10px] uppercase tracking-wide">
+                {ordinalLabel}
+              </div>
+              <h2 className="mt-0.5 text-base font-semibold leading-tight">
+                {displayName}
+              </h2>
             </div>
-            <h2 className="mt-0.5 text-base font-semibold leading-tight">
-              {displayName}
-            </h2>
+            <StatusBadge status={status} />
           </div>
-          <StatusBadge status={status} />
+
+          {fetchError && (
+            <div className="text-destructive text-xs">{fetchError}</div>
+          )}
+
+          {/* GOAL */}
+          <Section label="Goal">
+            <p className="text-sm">
+              {rollup?.stage.name || stageName || (
+                <span className="text-muted-foreground italic">
+                  no goal recorded
+                </span>
+              )}
+            </p>
+          </Section>
+
+          {/* TICKS */}
+          {stage.children.length > 0 && (
+            <Section label="Ticks">
+              <TicksStrip children={stage.children} />
+            </Section>
+          )}
+
+          {/* FAILURE */}
+          {status === "failed" && failedVerifySteps.length > 0 && (
+            <Section label="Failure">
+              <FailureBlock steps={failedVerifySteps} />
+            </Section>
+          )}
+
+          {/* Action buttons */}
+          <ActionBar jobId={jobId} hasWarmSession={capturedSessionId !== null} />
         </div>
+      </ScrollArea>
 
-        {fetchError && (
-          <div className="text-destructive text-xs">{fetchError}</div>
-        )}
-
-        {/* GOAL */}
-        <Section label="Goal">
-          <p className="text-sm">
-            {rollup?.stage.name || stageName || (
-              <span className="text-muted-foreground italic">
-                no goal recorded
-              </span>
-            )}
-          </p>
-        </Section>
-
-        {/* TICKS */}
-        {stage.children.length > 0 && (
-          <Section label="Ticks">
-            <TicksStrip children={stage.children} />
-          </Section>
-        )}
-
-        {/* FAILURE */}
-        {status === "failed" && failedVerifySteps.length > 0 && (
-          <Section label="Failure">
-            <FailureBlock steps={failedVerifySteps} />
-          </Section>
-        )}
-
-        {/* Action buttons */}
-        <ActionBar jobId={jobId} />
+      {/* Live chat — takes the remaining vertical space so the user can
+          talk to the agent that ran this stage without leaving the tab. */}
+      <div className="min-h-0 flex-1 px-5 pb-5">
+        <StageChat
+          jobId={jobId}
+          stageId={stageId}
+          stageName={displayName}
+          capturedSessionId={capturedSessionId}
+          onChatActive={onChatActive}
+        />
       </div>
-    </ScrollArea>
+    </div>
   );
 }
 
@@ -493,13 +516,24 @@ function FailureBlock({ steps }: { steps: VerifyStepRow[] }) {
 //   rerun now            — resumes the job via the captured session_id
 //                          so the runner passes --continue on next tick.
 //   new session+handover — creates a fresh job copy seeded from handover.md.
+//                          Prompts once when the stage has a warm session so
+//                          the user knows the session will be discarded.
 //   stop                 — terminates the job; stage stays at failed.
-function ActionBar({ jobId }: { jobId: JobId }) {
+function ActionBar({
+  jobId,
+  hasWarmSession,
+}: {
+  jobId: JobId;
+  hasWarmSession: boolean;
+}) {
   const rpc = useRpc();
   const [busy, setBusy] = useState<"rerun" | "new-session" | "stop" | null>(
     null,
   );
   const [err, setErr] = useState<string | null>(null);
+  // True while waiting for the user to confirm discarding the warm session.
+  // Resets to false once the user confirms or cancels.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   const rerunNow = async () => {
     setBusy("rerun");
@@ -516,6 +550,7 @@ function ActionBar({ jobId }: { jobId: JobId }) {
   const newSession = async () => {
     setBusy("new-session");
     setErr(null);
+    setConfirmDiscard(false);
     try {
       await rpc.call("rerun_job", { source_job_id: jobId });
     } catch (e) {
@@ -553,7 +588,13 @@ function ActionBar({ jobId }: { jobId: JobId }) {
           size="sm"
           variant="outline"
           className="h-7 px-3 text-xs"
-          onClick={() => void newSession()}
+          onClick={() => {
+            if (hasWarmSession && !confirmDiscard) {
+              setConfirmDiscard(true);
+            } else {
+              void newSession();
+            }
+          }}
           disabled={busy !== null}
         >
           {busy === "new-session" ? "creating…" : "new session + handover"}
@@ -568,6 +609,25 @@ function ActionBar({ jobId }: { jobId: JobId }) {
           {busy === "stop" ? "stopping…" : "stop"}
         </Button>
       </div>
+      {confirmDiscard && (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground">
+            this will discard the current session — continue?
+          </span>
+          <button
+            className="text-destructive underline"
+            onClick={() => void newSession()}
+          >
+            yes
+          </button>
+          <button
+            className="text-muted-foreground underline"
+            onClick={() => setConfirmDiscard(false)}
+          >
+            cancel
+          </button>
+        </div>
+      )}
       {err !== null && (
         <div className="text-destructive text-[11px]">{err}</div>
       )}

@@ -32,6 +32,10 @@ interface Props {
   onClose: (stageId: string) => void;
   // Toggle the pinned state of a stage tab.
   onTogglePin: (stageId: string) => void;
+  // Stage ids whose chat is currently streaming. The parent tracks this
+  // via the onChatActive callback from StageDetail so we don't need a
+  // second event subscription here.
+  chatStreamingStages?: ReadonlySet<string>;
 }
 
 // ------------------------------------------------------------------ indicator derivation
@@ -136,8 +140,10 @@ export function JobTabs({
   onActivate,
   onClose,
   onTogglePin,
+  chatStreamingStages,
 }: Props) {
   const indicators = useTabIndicators(jobId, active);
+  const activeKey = active.kind === "system" ? active.id : active.stageId;
 
   return (
     <div
@@ -163,7 +169,16 @@ export function JobTabs({
       {stageTabs.map((tab) => {
         const isActive =
           active.kind === "stage" && active.stageId === tab.stageId;
-        const indicator = indicators.get(tab.stageId) ?? null;
+        // Merge event-derived indicator with chat streaming signal.
+        // Chat streaming only shows ● when the tab is not active (the
+        // user can see the streaming chat directly when they're on it).
+        const eventIndicator = indicators.get(tab.stageId) ?? null;
+        const chatStreaming =
+          !isActive &&
+          activeKey !== tab.stageId &&
+          (chatStreamingStages?.has(tab.stageId) ?? false);
+        const indicator: TabIndicator =
+          eventIndicator ?? (chatStreaming ? "running" : null);
         return (
           <StageTabButton
             key={tab.stageId}
