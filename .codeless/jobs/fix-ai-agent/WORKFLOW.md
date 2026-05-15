@@ -24,6 +24,37 @@ Within F3, the sub-stages are also ordered:
 Do not batch F3a+F3b+F3c into one commit. Each is one stage, one
 commit, one `mani run commit`.
 
+## Commit + push after every stage — non-negotiable
+
+At the end of every stage — including stages that precede a REVIEW
+gate, including stages that only edit docs, including the final
+verification stage — the agent MUST:
+
+1. Stage every change the stage produced (`git add -A` from the
+   worktree root, or specific paths if the stage was surgical).
+2. Commit with the message `stage N: <one-line title from
+   template.yaml>` so history mirrors the template stages
+   one-for-one.
+3. Push to `codeless/fix-ai-agent` so the work is recoverable even
+   if the worktree is wiped.
+
+Use mani, never raw git:
+
+```sh
+./bin/mani --config mani.yaml run commit --projects codeless \
+  MSG='stage N: <title>'
+./bin/mani --config mani.yaml run push --projects codeless
+```
+
+A stage is **not** "done" until the push succeeds. If the commit
+or push fails, fix the cause and retry — do not mark the stage
+`[x]`, do not advance to the next stage, and never `--force` or
+`--no-verify`. REVIEW gates still commit + push the preceding
+stage; they only pause the *next* stage. If a stage genuinely
+produced no change, say so in the handover and skip the commit,
+but the next stage's commit must include any side-effect files
+the previous stage touched.
+
 ## Per-stage discipline
 
 Before writing in any stage:
@@ -48,12 +79,8 @@ Before committing in any stage:
   works in the browser; no console errors.
 - The session doc in `DOCS/sessions/` (open the active one) marks
   the stage `[x]` in the same commit as the code change.
-- Commit and push via mani, never raw git:
-  ```sh
-  ./bin/mani --config mani.yaml run commit --projects codeless \
-    MSG='stage N: <title>'
-  ./bin/mani --config mani.yaml run push --projects codeless
-  ```
+- Then run the commit + push block from the section above. The
+  stage is not closed until both succeed.
 
 ## REVIEW gate behaviour
 
