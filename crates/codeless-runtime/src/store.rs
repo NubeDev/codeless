@@ -222,8 +222,8 @@ impl SqliteStore {
         sqlx::query(
             "INSERT OR REPLACE INTO stages \
              (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at, session_id, \
-              goal, acceptance, last_activity_at, archived) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              goal, acceptance, last_activity_at, archived, persona_id) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(stage.id.to_string())
         .bind(stage.job_id.to_string())
@@ -238,6 +238,7 @@ impl SqliteStore {
         .bind(&acceptance_json)
         .bind(stage.last_activity_at.map(|t| t.0))
         .bind(stage.archived as i64)
+        .bind(&stage.persona_id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -450,7 +451,7 @@ impl SqliteStore {
         let rows = sqlx::query(
             "SELECT s.id, s.ordinal, s.name, s.status, s.verify_cmd, \
                     s.started_at, s.ended_at, s.session_id, s.goal, s.acceptance, \
-                    s.last_activity_at, s.archived, \
+                    s.last_activity_at, s.archived, s.persona_id, \
                     COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
                     COUNT(t.id) AS task_count \
              FROM stages s \
@@ -496,6 +497,7 @@ impl SqliteStore {
                             .try_get::<Option<i64>, _>("last_activity_at")?
                             .map(codeless_types::UnixMillis),
                         archived: row.try_get::<i64, _>("archived")? != 0,
+                        persona_id: row.try_get("persona_id")?,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,
@@ -514,7 +516,7 @@ impl SqliteStore {
         let row = sqlx::query(
             "SELECT id, job_id, ordinal, name, status, verify_cmd, \
                     started_at, ended_at, session_id, goal, acceptance, \
-                    last_activity_at, archived \
+                    last_activity_at, archived, persona_id \
              FROM stages WHERE id = ?",
         )
         .bind(id.to_string())
@@ -546,6 +548,7 @@ impl SqliteStore {
                 .try_get::<Option<i64>, _>("last_activity_at")?
                 .map(codeless_types::UnixMillis),
             archived: row.try_get::<i64, _>("archived")? != 0,
+            persona_id: row.try_get("persona_id")?,
         }))
     }
 

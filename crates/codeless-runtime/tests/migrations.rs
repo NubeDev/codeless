@@ -328,3 +328,43 @@ async fn stages_table_includes_goal_and_acceptance() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stages_table_carries_persona_id_with_fk_to_personas() {
+    let pool = fresh_db().await;
+    let cols = columns(&pool, "stages").await;
+    assert!(
+        cols.contains(&"persona_id".to_string()),
+        "stages table missing persona_id; got {cols:?}"
+    );
+
+    let fks: Vec<(String, String)> = sqlx::query("PRAGMA foreign_key_list(stages)")
+        .fetch_all(&pool)
+        .await
+        .expect("fk list")
+        .into_iter()
+        .map(|r| (r.get::<String, _>("table"), r.get::<String, _>("from")))
+        .collect();
+    assert!(
+        fks.iter()
+            .any(|(t, f)| t == "personas" && f == "persona_id"),
+        "stages.persona_id missing FK to personas; got {fks:?}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jobs_persona_id_was_promoted_to_personas_fk() {
+    let pool = fresh_db().await;
+    let fks: Vec<(String, String)> = sqlx::query("PRAGMA foreign_key_list(jobs)")
+        .fetch_all(&pool)
+        .await
+        .expect("fk list")
+        .into_iter()
+        .map(|r| (r.get::<String, _>("table"), r.get::<String, _>("from")))
+        .collect();
+    assert!(
+        fks.iter()
+            .any(|(t, f)| t == "personas" && f == "persona_id"),
+        "jobs.persona_id missing FK to personas; got {fks:?}",
+    );
+}

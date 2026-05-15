@@ -1,21 +1,26 @@
 ## Done
 
-- migration 0011_personas.sql with table, index, and built-in seed rows
-- tests/migrations.rs: added personas to table list, added personas_table_matches_schema_sketch_and_seeds_built_ins test
-- commit 7ff63b5 "SQLite personas table" on codeless/agent-personas
+- Added `Persona` wire type (`crates/codeless-types/src/persona.rs`) re-exported from `codeless-types` and `codeless-rpc`.
+- Added `ListPersonasArgs/Result`, `GetPersonaArgs`, `UpsertPersonaArgs`, `DeletePersonaArgs` to `codeless-rpc/src/methods.rs` and four corresponding `RpcServer` trait methods in `server.rs`.
+- Implemented persona store CRUD in `codeless-runtime/src/store.rs` (`list_personas`, `get_persona`, `upsert_persona`, `delete_persona` with `built_in`/`created_at` preservation across upsert) plus a `persona_from_row` helper.
+- Added runtime RPC dispatch module `crates/codeless-runtime/src/rpc/personas.rs` (with validation, NotFound mapping, built-in delete refusal as `Conflict`) and wired it through `rpc/mod.rs`.
+- Added HTTP client trait impls in `codeless-client/src/http_client.rs` and POST routes/handlers in `codeless-server/src/routes.rs`.
+- Added integration test `crates/codeless-runtime/tests/personas_rpc.rs` (5 tests, all pass): seeded built-ins listed in order, get/404, upsert create+update preserving built_in and created_at, validation rejection, delete refuses built-ins and removes user rows.
+- UI: extended `RpcMethodMap` with the four methods (`ui/.../lib/rpc/methods.ts`), added in-memory persona seed + 4 handlers to `mock-client.ts`, and made `ai-agents` KV a cache that mirrors SQLite — `loadAgentsFromRpc`, `upsertPersonaViaRpc`, `deletePersonaViaRpc` in `modules/ai/lib/agents.ts`; the `agentsStore.hydrate/upsert/remove` now accept an optional `RpcClient` and are wired through `AgentsSection.tsx` via `useRpc()`. KV fallback preserved for the RPC-offline path.
+- `cargo build`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, the new persona tests, `pnpm typecheck`, `pnpm test` (vitest) all pass.
+- Committed (`stage 7: RpcClient surface for personas`) and pushed to `codeless/agent-personas`.
 
 ## Next
 
-- Stage 7: add RpcClient surface (list_personas / get_persona / upsert_persona / delete_persona) backed by the new table; convert the UI ai-agents KV store into a read-through cache mirroring SQLite via these methods. Built-in rows must remain non-deletable (enforce at the RPC layer per the column comment).
+- Stage 8: promote `jobs.persona_id` to a real FK, add `stages.persona_id` with the same FK, and record the persona on each stage's handover.
 
 ## What you need to know
 
-- Seeded built-in rows use created_at=0 / updated_at=0 to keep the migration content-hash stable; the upsert path stamps real wall-clock millis.
-- allowed_subagents is seeded as the full registry set ["explore","code-review","security","general"] for every built-in, matching the current UI default. default_snippets is "[]".
-- use_for_jobs starts 0 on every built-in per SCOPE.md; the user flips it on per persona / clone (and that flag is the single MCP gate per D3).
-- I had to repoint /home/user/.codeless/worktrees/ai-runner/Cargo.toml's `workspace = "../job-..."` to this worktree to get cargo to compile (the sibling crate had a stale pointer to job-01KRNRQ6...). That edit is outside this repo and not part of the commit.
-- Pre-existing failing test `rpc_in_process::job_filtered_subscription_drops_unrelated_events` is unrelated to this stage — confirmed via git stash + retest. Do not chase it as part of stage 7.
-- sqlx::migrate! is compile-time embedded; if migrations look stale during testing, `touch crates/codeless-runtime/src/migrations.rs` to force a rebuild.
+- Pre-existing flaky test `rpc_in_process::job_filtered_subscription_drops_unrelated_events` fails before and after this stage — verified via `git stash`. Not caused by this change; flag for separate triage.
+- `Persona.built_in` is preserved by `SqliteStore::upsert_persona` (explicit INSERT/UPDATE branches instead of REPLACE) so a user-edited built-in stays a built-in and the RPC's delete-refusal of built-ins still bites.
+- The UI's `agentsStore.upsert(agent, rpc)` writes through to SQLite first, then updates the in-memory list and KV from the *returned* row, so the three layers stay coherent. Built-ins remain absent from `customAgents` even after an edit echoes them back.
+- `loadAgentsFromRpc` falls back to the KV cache on transport error, so a brief outage does not blank the persona rail — but R4 still holds (SQLite is the source of truth; a successful refresh overwrites the cache).
+- `BUILTIN_AGENTS` (the local TS constant) and the seeded SQLite built-ins both ship with `use_for_jobs = false` and all four registry subagents allowed.
 
 ## Open questions
 

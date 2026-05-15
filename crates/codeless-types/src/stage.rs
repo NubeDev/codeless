@@ -68,4 +68,13 @@ pub struct Stage {
     /// audit / UI labelling of the archived turn.
     #[serde(default)]
     pub archived: bool,
+    /// Persona id this stage runs under. NULL means the stage
+    /// inherits the job-level persona (`jobs.persona_id`); a populated
+    /// value is the result of the per-stage `persona:` YAML override
+    /// resolved at job-submit time (AGENT-DECISIONS.md D1). The column
+    /// is recorded on the row so a re-run reproduces the same persona
+    /// the stage originally ran under even if the user later edited
+    /// the template or the persona row.
+    #[serde(default)]
+    pub persona_id: Option<String>,
 }

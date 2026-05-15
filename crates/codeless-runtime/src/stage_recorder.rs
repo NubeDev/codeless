@@ -90,6 +90,10 @@ async fn handle_event(
                     // values when first writing the stage row.
                     last_activity_at: Some(env.created_at),
                     archived: false,
+                    // Set lazily by the per-stage override path when it
+                    // lands; an unset value means the stage inherits
+                    // the job-level persona at read time.
+                    persona_id: None,
                 })
                 .await?;
         }
