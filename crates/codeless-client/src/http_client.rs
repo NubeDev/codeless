@@ -4,20 +4,21 @@ use codeless_rpc::{
     AppendAssistantMessageResult, ApproveReviewArgs, AttachWorkspaceArgs, AttachWorkspaceResult,
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
     ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
-    DeleteAssistantThreadArgs, DeleteJobFileArgs, DetachWorkspaceArgs, EventFilter, EventStream,
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListStagesArgs, ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
-    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    DeleteAssistantThreadArgs, DeleteJobFileArgs, DetachWorkspaceArgs,
+    DraftJobFromConversationArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Repo, Review};
 use futures_util::StreamExt;
@@ -431,6 +432,17 @@ impl RpcServer for HttpRpcClient {
         args: CancelAssistantActionArgs,
     ) -> RpcResult<CancelAssistantActionResult> {
         self.call("cancel_assistant_action", &args).await
+    }
+
+    async fn update_job_scope(&self, args: UpdateJobScopeArgs) -> RpcResult<UpdateJobScopeResult> {
+        self.call("update_job_scope", &args).await
+    }
+
+    async fn draft_job_from_conversation(
+        &self,
+        args: DraftJobFromConversationArgs,
+    ) -> RpcResult<Job> {
+        self.call("draft_job_from_conversation", &args).await
     }
 }
 

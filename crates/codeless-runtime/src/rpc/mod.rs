@@ -8,19 +8,19 @@ use codeless_rpc::{
     AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
     CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
-    DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult,
-    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
-    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
-    JobDiffArgs, JobDiffResult, JobReportArgs, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
-    RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    DeleteJobFileArgs, DraftJobFromConversationArgs, EventFilter, EventStream, FsCreateDirArgs,
+    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult,
+    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
+    RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Repo, Review, TaskId};
 use sqlx::SqlitePool;
@@ -466,5 +466,16 @@ impl RpcServer for InProcessRpc {
         args: CancelAssistantActionArgs,
     ) -> RpcResult<CancelAssistantActionResult> {
         assistant::cancel_assistant_action(self, args).await
+    }
+
+    async fn update_job_scope(&self, args: UpdateJobScopeArgs) -> RpcResult<UpdateJobScopeResult> {
+        jobs::update_job_scope(self, args).await
+    }
+
+    async fn draft_job_from_conversation(
+        &self,
+        args: DraftJobFromConversationArgs,
+    ) -> RpcResult<Job> {
+        jobs::draft_job_from_conversation(self, args).await
     }
 }

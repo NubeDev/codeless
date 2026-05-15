@@ -15,16 +15,17 @@ use codeless_rpc::methods::{
     AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
     CancelAssistantActionResult, CancelChatTaskArgs, ClaudeStatus, CommentReviewArgs,
     ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
-    DeleteAssistantThreadArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
-    JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RunnerInfo, ServerInfo, StageRollup, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    DeleteAssistantThreadArgs, DeleteJobFileArgs, DraftJobFromConversationArgs, FsCwdResult,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RunnerInfo, ServerInfo, StageRollup,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -94,7 +95,10 @@ fn collect() -> TypeCollection {
         .register_mut::<ConfirmAssistantActionArgs>()
         .register_mut::<ConfirmAssistantActionResult>()
         .register_mut::<CancelAssistantActionArgs>()
-        .register_mut::<CancelAssistantActionResult>();
+        .register_mut::<CancelAssistantActionResult>()
+        .register_mut::<UpdateJobScopeArgs>()
+        .register_mut::<UpdateJobScopeResult>()
+        .register_mut::<DraftJobFromConversationArgs>();
     types
 }
 

@@ -407,6 +407,18 @@ export type DeleteJobFileArgs = {
 };
 
 /**
+ *  Mint a fresh `Draft` job from the latest pending `DraftJob` action
+ *  card in an assistant thread. The runtime walks the thread's
+ *  transcript newest-to-oldest, pulls the proposal out of the card's
+ *  `meta_json`, and dispatches `submit_job` with `start_immediately =
+ *  false` so the row lands in `Draft` for the user to edit before
+ *  queueing. Returns the new `Job`.
+ */
+export type DraftJobFromConversationArgs = {
+	thread_id: AssistantThreadId,
+};
+
+/**
  *  Filter passed to `RpcServer::subscribe`. Variants stay coarse on
  *  purpose — per-stage / per-task filtering happens client-side from
  *  the same event stream so the server doesn't need to multiplex N
@@ -1091,6 +1103,28 @@ export type TaskId = string;
  *  `INTEGER` round-trips with `sqlx` (which surfaces signed integers).
  */
 export type UnixMillis = number;
+
+/**
+ *  Rewrite a job's `SCOPE.md` from chat. The assistant surface
+ *  dispatches a confirmed `EditScope` action card through this RPC so
+ *  the paused-job guard lives behind a single named entry point; the
+ *  raw `write_job_file` path stays unchanged for callers that opt into
+ *  editing a live job. `content` is taken verbatim and written through
+ *  the same commit pipeline as a Spec-pane save.
+ */
+export type UpdateJobScopeArgs = {
+	job_id: JobId,
+	content: string,
+};
+
+/**
+ *  Result of `jobs.updateScope`. `filename` is the basename the runtime
+ *  wrote (`SCOPE.md`) so the UI can re-select the file without a
+ *  `list_job_files` round trip — same shape as `WriteJobFileResult`.
+ */
+export type UpdateJobScopeResult = {
+	filename: string,
+};
 
 /**
  *  Replace a job's spec. The new YAML is validated through the same
