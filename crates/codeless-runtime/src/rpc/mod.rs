@@ -31,6 +31,7 @@ use crate::store::SqliteStore;
 use crate::time::now_ms;
 
 pub(crate) mod assistant;
+pub(crate) mod assistant_planner;
 pub(crate) mod chat;
 pub(crate) mod fs;
 pub(crate) mod job_files;

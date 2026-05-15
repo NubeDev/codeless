@@ -175,12 +175,13 @@ pub(super) async fn list_assistant_messages(
     Ok(ListAssistantMessagesResult { messages })
 }
 
-/// Body of the no-op stage-6 responder. Wrapping the text in a const
-/// (rather than inlining) makes it trivial for tests to assert on the
-/// exact reply and for later stages to grep-and-replace the responder
-/// with the planner output.
-const NOOP_ASSISTANT_REPLY: &str = "Assistant responder is not wired yet — message recorded. \
-     The real planner lands in a later stage.";
+/// Fallback used when the runtime is booted without an `agent_chat`
+/// registry — typically tests and `codeless run --once`. The CLI's
+/// `serve` path always wires the registry so the live product never
+/// hits this branch; it exists so unit tests that don't care about
+/// model dispatch keep round-tripping rows without spawning a fake.
+const NOOP_ASSISTANT_REPLY: &str = "Assistant planner is not configured on this runtime; \
+     boot with `with_agent_chat` to receive a model reply.";
 
 pub(super) async fn append_assistant_message(
     rpc: &InProcessRpc,
@@ -221,18 +222,36 @@ pub(super) async fn append_assistant_message(
     // coarse on some hosts; bumping by one millisecond is enough and
     // does not skew real-world timing telemetry.
     let assistant_now = codeless_types::UnixMillis(user_now.0.saturating_add(1));
-    // Slash-command parser stands in for the planner: stage 7 lands
-    // the action-card surface before the planner is wired, so a
-    // user can drive view/manage tools by typing `/start <job_id>`
-    // (etc.) and confirming the proposal. Anything that does not
-    // match falls through to the no-op acknowledgement so the
-    // transcript stays useful while the planner is still missing.
+    // Slash-command parser intercepts the typed action-card grammar;
+    // anything else falls through to the F2 planner which streams a
+    // model-generated reply. The planner is skipped (NOOP fallback) when
+    // the runtime was booted without `with_agent_chat` so unit tests
+    // that don't wire a fake registry still exercise the row plumbing.
     let (content, meta_json) = match parse_action(trimmed) {
         Some((action, summary)) => {
             let card = AssistantActionCard::new(action);
             let meta = serde_json::to_string(&card)
                 .map_err(|e| RpcError::Internal(format!("serialise action card: {e}")))?;
             (summary, Some(meta))
+        }
+        None if super::assistant_planner::planner_configured(rpc) => {
+            // History fold deliberately excludes the user row we just
+            // inserted: the planner takes the new turn as its `Current
+            // user message` trailer so the model treats it as the
+            // message it is replying to, not as another historical entry.
+            let history = rpc
+                .store
+                .list_assistant_messages(args.thread_id)
+                .await
+                .map_err(super::db_err)?;
+            let prior: Vec<_> = history
+                .into_iter()
+                .filter(|m| m.id != user_message.id)
+                .collect();
+            let turn =
+                super::assistant_planner::run_planner_turn(rpc, args.thread_id, &prior, trimmed)
+                    .await?;
+            (turn.content, None)
         }
         None => (NOOP_ASSISTANT_REPLY.to_owned(), None),
     };
@@ -1233,6 +1252,51 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::InvalidArgument(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_with_planner_persists_streamed_reply_with_empty_meta() {
+        use super::super::assistant_planner::tests::FakeChatRunner;
+        use std::sync::Arc;
+
+        let runner = Arc::new(FakeChatRunner::new(vec!["streamed ", "reply"]));
+        let registry = ai_runner::Registry::new();
+        registry.register(runner);
+        let rpc = InProcessRpc::new()
+            .await
+            .unwrap()
+            .with_agent_chat(Arc::new(registry), std::env::temp_dir());
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: "what jobs are running?".into(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(res.user_message.role, AssistantMessageRole::User);
+        assert_eq!(res.assistant_message.role, AssistantMessageRole::Assistant);
+        assert_eq!(res.assistant_message.content, "streamed reply");
+        // F2 chat replies are not action cards: meta_json must be NULL
+        // so the UI's CommonChat renderer treats the row as plain prose.
+        assert!(res.assistant_message.meta_json.is_none());
+
+        // Slash commands keep their action-card path even with the
+        // planner wired — `meta_json` must carry the card payload.
+        let job_id = JobId::new();
+        let card_res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: format!("/start {job_id}"),
+            })
+            .await
+            .unwrap();
+        assert!(card_res.assistant_message.meta_json.is_some());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
