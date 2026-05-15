@@ -41,6 +41,7 @@ pub(crate) mod jobs;
 pub(crate) mod personas;
 pub(crate) mod repos;
 pub(crate) mod reviews;
+pub(crate) mod scope_patches;
 pub(crate) mod workspaces;
 
 /// In-process `RpcServer`. The CLI's `codeless run --once` path talks
@@ -500,5 +501,26 @@ impl RpcServer for InProcessRpc {
 
     async fn delete_persona(&self, args: DeletePersonaArgs) -> RpcResult<()> {
         personas::delete_persona(self, args).await
+    }
+
+    async fn approve_scope_patch(
+        &self,
+        args: codeless_rpc::ApproveScopePatchArgs,
+    ) -> RpcResult<codeless_rpc::ScopePatchActionResult> {
+        scope_patches::approve_scope_patch(self, args).await
+    }
+
+    async fn reject_scope_patch(
+        &self,
+        args: codeless_rpc::RejectScopePatchArgs,
+    ) -> RpcResult<codeless_rpc::ScopePatchActionResult> {
+        scope_patches::reject_scope_patch(self, args).await
+    }
+
+    async fn edit_scope_patch(
+        &self,
+        args: codeless_rpc::EditScopePatchArgs,
+    ) -> RpcResult<codeless_rpc::ScopePatchActionResult> {
+        scope_patches::edit_scope_patch(self, args).await
     }
 }

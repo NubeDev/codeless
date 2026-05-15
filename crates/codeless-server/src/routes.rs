@@ -7,11 +7,12 @@ use axum::{
 };
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, AttachWorkspaceArgs, AttachWorkspaceResult,
-    CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
-    ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
-    DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs,
-    DetachWorkspaceArgs, DraftJobFromConversationArgs, FsCreateDirArgs, FsCreateFileArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs, AttachWorkspaceArgs,
+    AttachWorkspaceResult, CancelAssistantActionArgs, CancelAssistantActionResult,
+    CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
+    DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs,
+    DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs,
     FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
@@ -19,14 +20,14 @@ use codeless_rpc::{
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
-    ResumeJobArgs, RpcError, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs,
+    RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError, ScopePatchActionResult, ServerInfo,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use serde_json::Value;
@@ -123,6 +124,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/get_persona", post(get_persona))
         .route("/rpc/upsert_persona", post(upsert_persona))
         .route("/rpc/delete_persona", post(delete_persona))
+        .route("/rpc/approve_scope_patch", post(approve_scope_patch))
+        .route("/rpc/reject_scope_patch", post(reject_scope_patch))
+        .route("/rpc/edit_scope_patch", post(edit_scope_patch))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -716,5 +720,38 @@ async fn delete_persona(
         .delete_persona(args)
         .await
         .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn approve_scope_patch(
+    State(st): State<AppState>,
+    Json(args): Json<ApproveScopePatchArgs>,
+) -> HandlerResult<ScopePatchActionResult> {
+    st.rpc
+        .approve_scope_patch(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn reject_scope_patch(
+    State(st): State<AppState>,
+    Json(args): Json<RejectScopePatchArgs>,
+) -> HandlerResult<ScopePatchActionResult> {
+    st.rpc
+        .reject_scope_patch(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn edit_scope_patch(
+    State(st): State<AppState>,
+    Json(args): Json<EditScopePatchArgs>,
+) -> HandlerResult<ScopePatchActionResult> {
+    st.rpc
+        .edit_scope_patch(args)
+        .await
+        .map(Json)
         .map_err(map_err)
 }

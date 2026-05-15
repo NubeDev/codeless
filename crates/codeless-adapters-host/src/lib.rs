@@ -24,7 +24,9 @@ pub use claude::probe as probe_claude;
 pub use editor::{invoke_editor, pick_editor, EditorError};
 pub use fs::{FsError, HostFs};
 pub use git_changed::{changed_files, GitChangedError};
-pub use git_commit::{commit_paths, GitCommitError};
+pub use git_commit::{
+    commit_paths, find_patch_resolution, head_sha, GitCommitError, PriorPatchResolution,
+};
 pub use git_diff::{diff_against, DiffFile, GitDiffError};
 pub use secrets::{SecretError, SecretStore};
 pub use worktree::{OnDiskWorktree, WorktreeError, WorktreeHandle, WorktreeManager};

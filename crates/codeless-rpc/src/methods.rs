@@ -1,8 +1,8 @@
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
     AssistantMessageId, AssistantThread, AssistantThreadId, FsEntry, FsEntryKind, GitAuth, Job,
-    JobId, Persona, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, TaskId,
-    UnixMillis, WorkspaceMode,
+    JobId, Persona, Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatchId, Stage, StageId,
+    TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1286,4 +1286,116 @@ pub struct UpsertPersonaArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct DeletePersonaArgs {
     pub id: String,
+}
+
+/// Approve a proposed scope patch through the UI. Wraps the
+/// `codeless patches approve` workflow: removes the entry from
+/// `<repo>/DOCS/SCOPE-PROPOSED.md`, stages the queue file plus the
+/// proposal's `target_path` plus any `include`d paths, and creates a
+/// human-authored commit using the repo-local `git config
+/// user.{name,email}` identity. A `Codeless-Approved-By: ui` trailer
+/// distinguishes UI-driven approvals from CLI ones in `git log`.
+///
+/// Idempotent. A second call against an already-resolved patch returns
+/// `AlreadyResolved` rather than an error, so a stale UI window can
+/// recover its view without surfacing a red toast — see
+/// `DOCS/SCOPE-MUTABLE-UI.md` Dependency #3.
+///
+/// The human must have edited the rulebook target on disk before the
+/// call; the RPC does not interpret the proposal body. `target_path`
+/// missing from the worktree returns `InvalidArgument` so the UI can
+/// guide the user toward editing the file first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ApproveScopePatchArgs {
+    pub repo_id: RepoId,
+    pub patch_id: ScopePatchId,
+    /// Optional override for the commit subject. Defaults to
+    /// `scope-patch <kind>: <rationale>` — the same subject the CLI's
+    /// `codeless patches approve` produces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Extra repo-relative paths to commit alongside the queue edit and
+    /// the proposal's `target_path` (e.g. a paired predicate file and
+    /// its fixture). Each path must live inside the worktree root;
+    /// outside paths return `InvalidArgument`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+}
+
+/// Reject a proposed scope patch through the UI. Mirrors `codeless
+/// patches reject`: removes the entry from `DOCS/SCOPE-PROPOSED.md` and
+/// commits the queue edit with a rejection commit body. No rulebook
+/// file is touched. Same idempotence semantics as
+/// `approve_scope_patch`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct RejectScopePatchArgs {
+    pub repo_id: RepoId,
+    pub patch_id: ScopePatchId,
+    /// Optional free-form rejection reason recorded in the commit body.
+    /// Audit trail only — the runtime does not act on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Edit the body of a proposed scope patch in-place. Mirrors `codeless
+/// patches edit` but without the `$EDITOR` round-trip — the UI submits
+/// the new markdown directly. The runtime re-parses the supplied
+/// payload as a single proposal block; the parsed proposal must have
+/// the same `id` as `patch_id`. `body` is the *complete* rendered
+/// proposal as it would appear in `DOCS/SCOPE-PROPOSED.md` (i.e.
+/// `Proposal::render`'s output), so the round-trip stays loss-free.
+///
+/// Editing does not produce a commit — the operator typically follows
+/// up with `approve_scope_patch`. Idempotency applies in the same
+/// shape: editing an already-resolved patch returns `AlreadyResolved`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct EditScopePatchArgs {
+    pub repo_id: RepoId,
+    pub patch_id: ScopePatchId,
+    /// Full rendered proposal block as it would appear in the queue
+    /// file (heading + bulleted metadata + `### Rationale` + `### Body`
+    /// sections). Validated server-side; an unparseable buffer returns
+    /// `InvalidArgument`.
+    pub rendered: String,
+}
+
+/// Which terminal state a previously-acted-on patch ended up in. Used
+/// by `ScopePatchActionResult::AlreadyResolved` so a stale UI window
+/// can render the right "this patch was {approved,rejected} by another
+/// window" message without a follow-up RPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopePatchResolution {
+    Approved,
+    Rejected,
+}
+
+/// Outcome of an `approve_scope_patch` / `reject_scope_patch` /
+/// `edit_scope_patch` call. The same wire shape is returned by all
+/// three so the UI's idempotency handling code path stays uniform:
+/// `AlreadyResolved` is a successful response, not an error, and the
+/// UI swaps its row to the resolved view without a toast.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ScopePatchActionResult {
+    /// `approve_scope_patch` produced a human-authored approval commit.
+    /// `commit_sha` is the SHA of the new commit, suitable for linking
+    /// to a `commit/<sha>` route.
+    Approved { commit_sha: String },
+    /// `reject_scope_patch` produced a rejection commit.
+    Rejected { commit_sha: String },
+    /// `edit_scope_patch` rewrote the queue entry. No commit is
+    /// produced — `edit` is a pre-approval ergonomic.
+    Edited,
+    /// The patch had already been resolved by a previous call (possibly
+    /// from another window, possibly from the CLI). `resolution`
+    /// distinguishes approved vs rejected; `commit_sha` carries the
+    /// SHA of the existing resolution commit when the runtime could
+    /// locate it in `git log`, `None` when the commit predates the
+    /// markers the runtime greps for (legacy approvals).
+    AlreadyResolved {
+        resolution: ScopePatchResolution,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit_sha: Option<String>,
+    },
 }

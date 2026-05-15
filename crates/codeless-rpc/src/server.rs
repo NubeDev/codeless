@@ -7,23 +7,25 @@ use codeless_types::{
 use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
-    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
-    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
-    DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs, DraftJobFromConversationArgs,
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult,
-    JobReportArgs, JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs,
+    CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
+    ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
+    DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs,
+    DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs,
+    ResetJobArgs, ResumeJobArgs, ScopePatchActionResult, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -465,4 +467,36 @@ pub trait RpcServer: Send + Sync + 'static {
     /// `Conflict` so the seeded `Coder` / `Architect` / … cannot be
     /// removed by the user; `NotFound` for an unknown id.
     async fn delete_persona(&self, args: DeletePersonaArgs) -> RpcResult<()>;
+
+    /// Approve a proposed scope patch through the UI. Wraps the
+    /// `codeless patches approve` workflow and produces a human-authored
+    /// commit signed with the repo-local `git config user.{name,email}`
+    /// identity plus a `Codeless-Approved-By: ui` trailer. Idempotent:
+    /// a second call against an already-resolved patch returns
+    /// `ScopePatchActionResult::AlreadyResolved` rather than an error so
+    /// a stale UI window can recover its view without a red toast.
+    /// Emits `ScopePatchApproved` on the event bus so cross-window
+    /// subscribers can invalidate their inbox caches.
+    async fn approve_scope_patch(
+        &self,
+        args: ApproveScopePatchArgs,
+    ) -> RpcResult<ScopePatchActionResult>;
+
+    /// Reject a proposed scope patch through the UI. Same idempotence
+    /// and identity semantics as `approve_scope_patch`; emits
+    /// `ScopePatchRejected` on the event bus.
+    async fn reject_scope_patch(
+        &self,
+        args: RejectScopePatchArgs,
+    ) -> RpcResult<ScopePatchActionResult>;
+
+    /// Edit the body of a proposed scope patch in-place. The UI submits
+    /// the full rendered proposal block (matching `Proposal::render`'s
+    /// output); the runtime re-parses and replaces the queue entry
+    /// without producing a commit — the operator typically follows up
+    /// with `approve_scope_patch`. Same idempotence semantics as the
+    /// resolve RPCs: editing an already-resolved patch returns
+    /// `AlreadyResolved` rather than an error.
+    async fn edit_scope_patch(&self, args: EditScopePatchArgs)
+        -> RpcResult<ScopePatchActionResult>;
 }

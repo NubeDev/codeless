@@ -215,6 +215,50 @@ fn scope_patch_proposed_event_wire_shape() {
 }
 
 #[test]
+fn scope_patch_approved_event_wire_shape() {
+    let stage = StageId::new();
+    let review = ReviewId::new();
+    let patch = ScopePatchId::new();
+    let ev = Event::ScopePatchApproved {
+        stage_id: stage,
+        review_id: review,
+        patch_id: patch,
+        kind: ScopePatchKind::Tighten,
+        target: ScopePatchTarget::ClaudeMd,
+        target_path: "CLAUDE.md".into(),
+        commit_sha: "deadbeef".repeat(5),
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["type"], "scope-patch-approved");
+    assert_eq!(v["kind"], "tighten");
+    assert_eq!(v["target"], "claude-md");
+    assert_eq!(v["commit_sha"], "deadbeef".repeat(5));
+    let back: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(back, ev);
+}
+
+#[test]
+fn scope_patch_rejected_event_wire_shape() {
+    let stage = StageId::new();
+    let review = ReviewId::new();
+    let patch = ScopePatchId::new();
+    let ev = Event::ScopePatchRejected {
+        stage_id: stage,
+        review_id: review,
+        patch_id: patch,
+        kind: ScopePatchKind::Loosen,
+        target: ScopePatchTarget::JobScopeMd,
+        target_path: ".codeless/jobs/foo/SCOPE.md".into(),
+        commit_sha: "cafebabe".repeat(5),
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["type"], "scope-patch-rejected");
+    assert_eq!(v["target_path"], ".codeless/jobs/foo/SCOPE.md");
+    let back: Event = serde_json::from_value(v).unwrap();
+    assert_eq!(back, ev);
+}
+
+#[test]
 fn review_pre_check_event_wire_shape() {
     let stage = StageId::new();
     let ev = Event::ReviewPreCheck {
