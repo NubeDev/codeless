@@ -1,6 +1,6 @@
-# Scope — fix-jobs (multi-jobpage tab regression)
+# Scope — fix-jobs (multi-jobpage tab regression + spec-mode chat persistence)
 
-## Bug
+## Bug 1 — blank second job-detail tab
 
 Open two job-detail tabs at once (e.g. `/jobs/<A>` and `/jobs/<B>`
 both in the workspace tab strip). Switching to the **second** tab
@@ -17,6 +17,35 @@ Reproduction:
 3. Click between the two tabs. One renders, the other is blank. The
    URL bar of the blank tab still reads its path; the workspace tab
    strip still highlights the right tab.
+
+## Bug 2 — spec-mode chat persistence (verify, may already work)
+
+**Status: unconfirmed.** This may already work correctly. The stage is
+to verify rather than assume it is broken.
+
+When a job's CHAT panel is open while the job is in spec mode, confirm
+that messages sent in that chat survive a page reload. Normal chat
+history is known to persist correctly; spec-mode turns should behave
+identically.
+
+If verification shows persistence is broken, investigate in order:
+
+1. **Backend not writing spec-mode turns to SQLite.** The spec-mode
+   handler may respond in-memory and never call `job_event` / the
+   chat-persist path. Check `codeless-runtime` event handling for
+   a spec-mode branch that bypasses the store.
+2. **Frontend sending to a different RPC method.** The spec-mode chat
+   component may call a different `RpcClient` method that the server
+   processes but doesn't persist.
+3. **SSE event arrives but is not written to the DB.** The message
+   appears live (via SSE) but the "persist this turn" write is
+   skipped.
+
+If verification shows it already works, record that in
+§"Spec-mode chat fix verification" and close the stage — no fix
+needed. If broken and the root cause is Rust-side, document it in
+§"Spec-mode chat root cause" and stop; a narrowly targeted persistence
+fix is in scope but a chat-architecture overhaul is not.
 
 ## Goal
 
@@ -35,15 +64,22 @@ the `JobDetailStack` comment:
 - The fix at the actual shared-state site. Minimal, scoped, one commit
   per distinct root cause if there are several.
 - Manual verification recorded in this file before the final REVIEW.
+- Investigation of spec-mode chat persistence: trace the message
+  lifecycle from the UI send through to SQLite. If the root cause is
+  in the Rust backend, a narrowly targeted persistence fix is in
+  scope; a full chat-architecture rewrite is not.
 
 ## Out of scope
 
 - Anything in `DOCS/WORKSPACE-ATTACH.md`. Different job.
 - Draft-job UX (start button, default tab, planned-stages preview).
   Different job.
-- Backend / Rust changes. The bug reproduces against `master`'s live
-  backend; if you find a server-side cause, document it and stop —
-  do not expand scope.
+- Backend / Rust changes for Bug 1. The blank-tab bug reproduces
+  against `master`'s live backend; if you find a server-side cause,
+  document it and stop — do not expand scope.
+- A full rewrite of chat persistence or the runtime event system for
+  Bug 2. The fix must be the minimum change that makes spec-mode turns
+  durable.
 
 ## Investigation entry points (verify before fixing)
 
@@ -94,12 +130,15 @@ one.
 ## Deliverables
 
 1. Branch `codeless/fix-jobs` off `master` (already set on the job).
-2. Failing RTL test on `master`, passing after the fix.
-3. One fix commit per distinct root cause.
+2. Failing RTL test on `master`, passing after the fix (Bug 1).
+3. One fix commit per distinct root cause (Bug 1).
 4. **Manual verification recorded in this file** under §"Manual
    verification": two tabs open, both render, switching instant, both
    receive their own live events.
-5. PR to `master` linked from the final REVIEW handover.
+5. Root cause documented in §"Spec-mode chat root cause" with
+   file:line references (Bug 2).
+6. Fix commit (or backend-only note if Rust-side) for Bug 2.
+7. PR to `master` linked from the final REVIEW handover.
 
 ## Reproduction
 
@@ -118,9 +157,22 @@ instances, with file:line references.]
 sequence of clicks, and a one-line note on whether both jobs continue
 to receive their own SSE events.]
 
+## Spec-mode chat root cause
+
+[Stage 8 fills this in: trace the message from UI send → RPC method →
+runtime handler → SQLite write. Name the exact call site where
+persistence is skipped, with file:line references. If the root cause
+is in the Rust backend, record it here and note whether it is in
+scope to fix or needs a separate job.]
+
+## Spec-mode chat fix verification
+
+[Stage 9 fills this in: send a message in spec-mode chat, reload the
+page, confirm the message reappears. Dated, with the job ID used.]
+
 ## References
 
-- Bug originally reported live during the
+- Bug 1 originally reported live during the
   `01KRMM8EVDP2AACA3Y9Q7WR244` / `01KRMRHE7NX75PR1YJ8K49GV41`
   session — two tabs were both in the strip, one rendered, the other
   blank with `?tab=spec` in URL.
@@ -129,3 +181,7 @@ to receive their own SSE events.]
 - `codeless/ui/codeless-ui/src/modules/jobs/JobPage.tsx` — the
   per-instance state owner. The `active` prop is what gates the
   URL-mirror effect.
+- Bug 2 reported by user: spec-mode chat messages disappear on reload;
+  normal chat history persists. Start investigation at
+  `codeless-runtime` event/persist path and the UI RPC method used by
+  the spec-mode chat panel.

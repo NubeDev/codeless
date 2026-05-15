@@ -17,6 +17,7 @@ ego-tree = "0.10"
 flate2 = "1"
 futures-util = { workspace = true }
 hex = "0.4"
+octocrab = { version = "0.43", default-features = false, features = ["default-client", "rustls", "rustls-ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "gzip", "brotli", "deflate", "stream"] }
 scraper = "0.22"
 serde = { workspace = true }
