@@ -147,15 +147,200 @@ state for both jobIds, screenshots if useful.]
 
 ## Root cause
 
-[Stage 2 fills this in after reading the rpc/SSE/chat-store code.
-Name the exact module-level state that is shared across JobPage
-instances, with file:line references.]
+Audit of `codeless/ui/codeless-ui/src/lib/rpc/` (`hooks.ts`,
+`http-sse-client.ts`, `provider.tsx`, `client.ts`) and
+`codeless/ui/codeless-ui/src/modules/ai/store/chatStore.ts`, plus a
+walk of the `JobPage` subtree (`JobPage.tsx`, `JobDetailStack.tsx`,
+`StagesOverview.tsx`, `StageDetail.tsx`, `RunPane.tsx`/`JobChat`):
+
+The three named suspects (SSE subscription, chat store, `useJob`
+cache) are **not** the shared singleton causing the bug. The only
+module-level state that is shared across `JobPage` instances and
+demonstrably drives blank content is `window.location` — read by
+every `JobPage`'s `activeTab` lazy initialiser regardless of `active`.
+
+### Cleared suspects
+
+- **SSE subscription cache** —
+  `codeless/ui/codeless-ui/src/lib/rpc/hooks.ts:237`:
+  ```ts
+  const SHARED_SUBSCRIPTIONS = new WeakMap<
+    RpcClient,
+    Map<string, SharedSubscription>
+  >();
+  ```
+  The inner map is keyed by `JSON.stringify({ filter, since })` and
+  `filter` for a `JobPage` is `{ scope: "job", job_id: <jobId> }`
+  (`JobPage.tsx:155-173`, `RunPane.tsx:1125-1154` for the chat
+  variant, `StagesOverview.tsx:497`). Different `jobId` ⇒ different
+  key ⇒ distinct `SharedSubscription` with its own `buffer`,
+  `listeners`, `stateListeners`, `lastStatus`, and `cancel`. Sharing
+  inside a single `jobId` (page-level + `StagesOverview` +
+  `JobChat`) is the deliberate connection-pooling design and is
+  correct. Verified by reading `joinSubscription`
+  (`hooks.ts:242-374`) and the disconnect cleanup path
+  (`hooks.ts:298-300`): two parallel `JobPage`s do not collide here.
+- **`HttpSseClient`** — `http-sse-client.ts:54-118` is stateless on
+  the instance; each `subscribeWithState` call creates a fresh
+  `openManagedSse` closure (`http-sse-client.ts:128-262`) with its
+  own `EventSource`, stale/reconnect timers, cursor, and attempt
+  counter. No module-level mutables.
+- **`chatStore`** —
+  `codeless/ui/codeless-ui/src/modules/ai/store/chatStore.ts:146-159`:
+  module-level `chats: Map<sessionId, Chat>`, `seedMessages`, and
+  `pendingPersist` Maps, plus the zustand store at line 238. Keys are
+  AI-sidebar chat-session ids, **not** job ids. `JobChat` inside
+  `RunPane.tsx:956+` owns its own `useState` for `history`,
+  `streaming`, `liveItems`, and persists via
+  `read_job_file`/`write_job_file` to `CHAT.md` inside the worktree
+  (`RunPane.tsx:1062-1080`). It never touches `chatStore`. Two
+  `JobPage`s cannot collide on this store.
+- **`useJob`** — `hooks.ts:111-152`: per-component `useState` plus a
+  `tick` counter for refetch. No module-level cache, no in-flight
+  request map. Two parallel calls produce two independent `get_job`
+  RPCs into two independent state slots.
+- **`useRepos` / `useAsyncOnce`** — `hooks.ts:20-59`: per-component
+  state only.
+
+### Confirmed singleton — `window.location.search`
+
+`codeless/ui/codeless-ui/src/modules/jobs/JobPage.tsx:70-90`:
+
+```ts
+const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+  if (typeof window !== "undefined") {
+    const param = new URLSearchParams(window.location.search).get("tab");
+    ...
+    if (param?.startsWith("stage:")) {
+      const stageId = param.slice("stage:".length);
+      if (stageId) {
+        return { kind: "stage", stageId, stageName: stageId, pinned: false };
+      }
+    }
+  }
+  return { kind: "system", id: "Stages" };
+});
+```
+
+`window.location` is a process-wide singleton. The initialiser runs
+on every `JobPage` mount unconditionally — it does **not** check the
+`active` prop. The URL-mirror effect at `JobPage.tsx:96-107`
+correctly gates writes on `if (!active) return;`, but there is no
+matching read-gate. Sequence:
+
+1. Open job A → its `JobPage` mounts active, initialises `activeTab`
+   from URL (`?tab=stages` by default → `Stages`). The user clicks a
+   Stage row; `handleOpenStageTab` (`JobPage.tsx:191-203`) sets
+   `activeTab` to `{ kind: "stage", stageId: "<A-stage>", ... }`,
+   and the URL-mirror effect writes `?tab=stage:<A-stage>` into the
+   address bar.
+2. Open job B → a fresh `JobPage` mounts with `jobId=B`, and on this
+   first render the lazy initialiser reads the **same**
+   `window.location.search` that job A wrote. It returns
+   `{ kind: "stage", stageId: "<A-stage>", stageName: "<A-stage>", pinned: false }`
+   into job B's local state.
+3. User activates job B's tab. `StageDetail` (`JobPage.tsx:332-341`)
+   renders with `jobId=B, stageId="<A-stage>"`. Inside `StageDetail`,
+   the `list_stages` lookup for an `<A-stage>` id against job B's
+   stages returns `null`; `rollup` stays `null`; the right-pane
+   content area renders empty.
+
+The active-prop gate is the wrong direction: only the **active**
+`JobPage` is allowed to read or write `window.location`. Inactive
+mounts must initialise to a safe default.
+
+### Layout amplifier (not module state, but co-causal)
+
+`codeless/ui/codeless-ui/src/modules/jobs/JobDetailStack.tsx:31-38`
+wraps every `JobPage` in `<div className="h-full w-full">` without
+any `hidden` class on the wrapper. The child `JobPage` applies
+`!active && "hidden"` to its own root (`JobPage.tsx:289`), but the
+outer wrapper still claims `height: 100%` per child. With N tabs
+open the wrappers stack and the active one is pushed below the
+viewport. This is a layout bug, not a state-sharing bug, but it
+prints the same "blank pane" symptom as the URL singleton above and
+masks it during reproduction. Both have to be fixed for the bug to
+disappear; the URL singleton is the part that matches the goal's
+"module-level state shared across JobPage instances" framing.
+
+### File:line summary
+
+| Site                                                     | Verdict                                |
+| -------------------------------------------------------- | -------------------------------------- |
+| `src/lib/rpc/hooks.ts:237` `SHARED_SUBSCRIPTIONS`        | per-jobId keys, not shared             |
+| `src/lib/rpc/http-sse-client.ts:54+` `HttpSseClient`     | stateless on instance                  |
+| `src/modules/ai/store/chatStore.ts:146-159`              | sessionId-keyed, unrelated to jobs     |
+| `src/lib/rpc/hooks.ts:111-152` `useJob`                  | per-component, no cache                |
+| `src/modules/jobs/JobPage.tsx:70-90` `activeTab` init    | **root cause** — reads window.location |
+| `src/modules/jobs/JobDetailStack.tsx:31-38` wrapper      | layout amplifier, see above            |
 
 ## Manual verification
 
-[Stage 6 fills this in: dated, with the two job IDs used, the
-sequence of clicks, and a one-line note on whether both jobs continue
-to receive their own SSE events.]
+Stage 6, 2026-05-15.
+
+**Headless constraint.** This stage runs inside an isolated git
+worktree with no interactive user and no running app — a click-through
+of two live job-detail tabs is not possible in this environment. The
+verification recorded below is the strongest signal achievable
+headlessly; an interactive pass against a live server is still
+required at the stage-7 REVIEW gate before the PR merges (see
+"Pending" below).
+
+### Automated verification (performed this stage)
+
+- `pnpm -C ui/codeless-ui test` — 1 file / 1 test passing.
+  `ui/codeless-ui/src/modules/jobs/__tests__/JobDetailStack.parallel.test.tsx`
+  mounts two `JobPage` instances inside one `JobDetailStack` against
+  distinct jobIds (`A` and `B`) with `MockRpcClient`. After
+  `?tab=stage:a-stage-1` is written into `window.location.search` by
+  job A (the active mount), job B's lazy `activeTab` initialiser no
+  longer inherits that stageId; both panes show their own `Stages`
+  tab, and the test's `selectedStagesTabs.toHaveLength(2)` assertion
+  passes. This test failed on `master` (commit 4e4225e, stage 3)
+  and passes on `627f097` (stage 5, the fix).
+- `pnpm -C ui/codeless-ui lint` — no eslint configured; trivially
+  passes.
+- `pnpm -C ui/codeless-ui test` confirms the parallel-mount harness
+  exercises both:
+  - independent `useJob(jobId)` resolution (each `JobPage` renders
+    its own job title without cross-contamination), and
+  - independent SSE subscription scope (the test's `MockRpcClient`
+    records `subscribe({ scope: "job", job_id })` calls keyed by
+    jobId and asserts both are present).
+  Live SSE delivery against a real backend is the remaining piece
+  the headless suite cannot exercise; that is the only item below.
+
+### Build status note (pre-existing, not caused by this fix)
+
+`pnpm -C ui/codeless-ui typecheck` fails with
+`src/app/App.tsx(155,9): error TS2552: Cannot find name 'path'.` This
+error is present on the stage-3 parent commit (4e4225e) and on
+`master` — it is unrelated to the `activeTab`/`window.location` gate
+introduced in stage 5. Flagged in the stage-5 handover; out of scope
+for this job per §"Out of scope" and the "no drive-by refactors"
+rule.
+
+### Pending — must be done by the stage-7 reviewer
+
+The following requires the running app and a human at the keyboard:
+
+1. Boot `codeless serve` against a sqlite store with at least two
+   real jobs.
+2. Open `/jobs/<A>` in one workspace tab and `/jobs/<B>` in another.
+3. In tab A, click a Stage row so the URL becomes
+   `?tab=stage:<A-stage>`.
+4. Switch to tab B. Confirm:
+   - tab B's right pane is **not blank** — `Stages` overview renders
+     (the safe default for the freshly-mounted, inactive-then-active
+     sibling whose pathname did not match `window.location.pathname`
+     at mount time);
+   - switching A↔B is instant (no remount flicker, no network
+     refetch of `get_job`);
+   - emitting a `job_event` for job A surfaces only in tab A's
+     event-driven UI, and similarly for B (each `JobPage`'s
+     `SHARED_SUBSCRIPTIONS` entry is keyed by its own jobId).
+5. Record the jobIds used and a one-line pass/fail in this section
+   before approving the stage-7 REVIEW.
 
 ## Spec-mode chat root cause
 

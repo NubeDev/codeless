@@ -67,8 +67,19 @@ export function JobPage({
   // back to "Stages" (the default overview per JOB-UI.md). The query
   // param is mirrored back to the URL on every change so a reload or
   // shared link lands on the same inner surface.
+  //
+  // JobDetailStack keeps every job-detail tab mounted simultaneously,
+  // so a freshly-opened JobPage runs this initialiser while the URL
+  // still belongs to the previously-active sibling. Gating on the
+  // pathname matching `/jobs/<this jobId>` prevents the new instance
+  // from inheriting that sibling's `?tab=stage:...` hint (which would
+  // resolve to a stageId belonging to a different job and render a
+  // blank pane). The active JobPage still picks up the URL on reload
+  // because App.tsx mirrors its jobId into the pathname before this
+  // mounts.
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
-    if (typeof window !== "undefined") {
+    if (typeof window !== "undefined" &&
+        window.location.pathname === `/jobs/${jobId}`) {
       const param = new URLSearchParams(window.location.search).get("tab");
       const normalized = param?.toLowerCase();
       if (normalized === "chat") return { kind: "system", id: "CHAT" };

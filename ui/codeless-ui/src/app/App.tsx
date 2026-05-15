@@ -152,7 +152,7 @@ export default function App() {
       newJobsTab();
       return;
     }
-    if (path.startsWith("/assistant")) {
+    if (typeof window !== "undefined" && window.location.pathname.startsWith("/assistant")) {
       newAssistantTab();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
