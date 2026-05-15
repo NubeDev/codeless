@@ -8,9 +8,9 @@ that wraps the bare `cargo run …` invocations, and how to add a repo.
 
 For the deeper docs see:
 
-- [`DOCS/SCOPE.md`](../DOCS/SCOPE.md) — overall architecture (R5: single trust boundary, many concurrent jobs, one SQLite DB).
-- [`DOCS/START-SERVER-UI.md`](../DOCS/START-SERVER-UI.md) — raw flag-by-flag invocation; what this script wraps.
-- [`DOCS/HACKLINE-DEV.md`](../DOCS/HACKLINE-DEV.md) — pointing the server at a target repo + branch control per job.
+- [`DOCS/SCOPE.md`](../../DOCS/SCOPE.md) — overall architecture (R5: single trust boundary, many concurrent jobs, one SQLite DB).
+- [`DOCS/START-SERVER-UI.md`](../../DOCS/START-SERVER-UI.md) — raw flag-by-flag invocation; what this script wraps.
+- [`DOCS/HACKLINE-DEV.md`](../../DOCS/HACKLINE-DEV.md) — pointing the server at a target repo + branch control per job.
 
 ## Layout
 
@@ -83,7 +83,7 @@ All paths are derived from `CODELESS_HOME` (defaults to
 | `CODELESS_HOME` | `~/.codeless` | root for db, worktrees, logs, pid |
 | `CODELESS_BIND` | `127.0.0.1:7777` | server bind addr |
 | `CODELESS_FS_ROOT` | unset | passes `--fs-root`; see below |
-| `CODELESS_RUNNERS` | `claude` | comma list: `claude,anthropic` (or `mock` to disable both) |
+| `CODELESS_RUNNERS` | `claude` | comma list: `claude,anthropic,codex,copilot` (or `mock` to disable all) |
 | `CODELESS_DRIVER_CONCURRENCY` | `4` | parallel jobs in the background driver |
 
 ### About `--fs-root`
@@ -116,7 +116,7 @@ target. The wrapper has a thin convenience for the common case:
 That hits `POST /rpc/add_repo` with sensible defaults
 (`default_branch=master`, `default_runner=claude`,
 `git_auth=token:GITHUB_TOKEN`). For non-defaults, call the RPC by
-hand — see [`DOCS/HACKLINE-DEV.md`](../DOCS/HACKLINE-DEV.md) for the
+hand — see [`DOCS/HACKLINE-DEV.md`](../../DOCS/HACKLINE-DEV.md) for the
 JSON shape and the full set of `SubmitJobArgs` knobs (workspace_mode,
 branch, cost cap, etc.).
 
