@@ -329,6 +329,9 @@ function ActionCardView({
           </span>
         </div>
         <div className="whitespace-pre-wrap">{message.content}</div>
+        {card.action.tool === "draft_job" && (
+          <DraftJobPreview action={card.action} />
+        )}
         {isPending && (
           <div className="mt-1 flex justify-end gap-2">
             <Button
@@ -349,6 +352,48 @@ function ActionCardView({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Structured preview for the `draft_job` action card. The card's
+// `content` already carries a human summary, but the draft-review card
+// is the one place the user is committing to a multi-field mutation —
+// rendering the proposed fields as a table makes the review honest.
+// Optional fields (`workspace_mode`, `model`, …) are omitted when
+// `null` so the table reflects exactly what `submit_job` will see.
+function DraftJobPreview({
+  action,
+}: {
+  action: Extract<AssistantAction, { tool: "draft_job" }>;
+}) {
+  const rows: Array<[string, string]> = [
+    ["repo", action.repo_id],
+    ["runner", action.runner],
+    ["branch", action.branch],
+    ["cost cap", `${action.cost_cap_cents}¢`],
+    ["wall clock cap", `${action.wall_clock_cap_ms}ms`],
+  ];
+  if (action.workspace_mode) rows.push(["workspace", action.workspace_mode]);
+  if (action.model) rows.push(["model", action.model]);
+  if (action.permission_mode) rows.push(["permission", action.permission_mode]);
+  if (action.effort) rows.push(["effort", action.effort]);
+  return (
+    <div className="mt-1 flex flex-col gap-1 rounded border border-border/40 bg-background/40 p-2 text-xs">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+        {rows.map(([k, v]) => (
+          <div key={k} className="contents">
+            <dt className="font-mono text-muted-foreground">{k}</dt>
+            <dd className="truncate font-mono">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <details className="text-muted-foreground">
+        <summary className="cursor-pointer select-none">prompt</summary>
+        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-2">
+          {action.prompt}
+        </pre>
+      </details>
     </div>
   );
 }

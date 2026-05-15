@@ -167,7 +167,22 @@ export type AssistantAction = { tool: "list_jobs"; repo_id?: RepoId | null } | {
  *  fields the user mentioned, so a confirmation card stays a thin
  *  patch instead of a full echo of the job row.
  */
-{ tool: "update_job"; job_id: JobId; runner?: string | null; model?: string | null; permission_mode?: string | null; effort?: string | null; cost_cap_cents?: number | null; wall_clock_cap_ms?: number | null; branch?: string | null };
+{ tool: "update_job"; job_id: JobId; runner?: string | null; model?: string | null; permission_mode?: string | null; effort?: string | null; cost_cap_cents?: number | null; wall_clock_cap_ms?: number | null; branch?: string | null } | 
+/**
+ *  Propose a new job. Stage-8 "draft from conversation": the
+ *  planner (or its slash-command stand-in) folds the user's
+ *  request into a fully-specified `submit_job` payload that the
+ *  user reviews and confirms. Confirmation dispatches `submit_job`
+ *  with `start_immediately = false` so the row lands in `Draft`
+ *  (SCOPE.md Decisions §3 — no "just do it" path).
+ * 
+ *  Every field that drives `SubmitJobArgs` is captured explicitly
+ *  here so the confirmation card is a complete review of what
+ *  will be created. Defaults applied by the parser are still
+ *  surfaced on the card — the user sees exactly what they are
+ *  approving instead of guessing what is implicit.
+ */
+{ tool: "draft_job"; repo_id: RepoId; prompt: string; runner: string; branch: string; cost_cap_cents: number; wall_clock_cap_ms: number; workspace_mode?: WorkspaceMode | null; model?: string | null; permission_mode?: string | null; effort?: string | null };
 
 /**
  *  The structured payload of an `Assistant`-role message that

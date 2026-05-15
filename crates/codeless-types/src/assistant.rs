@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::id::{AssistantAttachmentId, AssistantMessageId, AssistantThreadId, JobId, RepoId};
+use crate::job::WorkspaceMode;
 use crate::time::UnixMillis;
 
 /// One conversational thread on the `/assistant` surface — see
@@ -127,6 +128,34 @@ pub enum AssistantAction {
         #[serde(default)]
         branch: Option<String>,
     },
+    /// Propose a new job. Stage-8 "draft from conversation": the
+    /// planner (or its slash-command stand-in) folds the user's
+    /// request into a fully-specified `submit_job` payload that the
+    /// user reviews and confirms. Confirmation dispatches `submit_job`
+    /// with `start_immediately = false` so the row lands in `Draft`
+    /// (SCOPE.md Decisions §3 — no "just do it" path).
+    ///
+    /// Every field that drives `SubmitJobArgs` is captured explicitly
+    /// here so the confirmation card is a complete review of what
+    /// will be created. Defaults applied by the parser are still
+    /// surfaced on the card — the user sees exactly what they are
+    /// approving instead of guessing what is implicit.
+    DraftJob {
+        repo_id: RepoId,
+        prompt: String,
+        runner: String,
+        branch: String,
+        cost_cap_cents: i64,
+        wall_clock_cap_ms: i64,
+        #[serde(default)]
+        workspace_mode: Option<WorkspaceMode>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        permission_mode: Option<String>,
+        #[serde(default)]
+        effort: Option<String>,
+    },
 }
 
 impl AssistantAction {
@@ -144,7 +173,8 @@ impl AssistantAction {
             | AssistantAction::PauseJob { .. }
             | AssistantAction::ResumeJob { .. }
             | AssistantAction::RestartJob { .. }
-            | AssistantAction::UpdateJob { .. } => true,
+            | AssistantAction::UpdateJob { .. }
+            | AssistantAction::DraftJob { .. } => true,
         }
     }
 }

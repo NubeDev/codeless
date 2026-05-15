@@ -4,13 +4,13 @@ use codeless_rpc::{
     CreateAssistantThreadArgs, DeleteAssistantThreadArgs, GetJobArgs, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
     ListJobsArgs, PauseJobArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
-    StartJobArgs, StopJobArgs, UpdateJobArgs, UploadAssistantAttachmentArgs,
+    StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobArgs, UploadAssistantAttachmentArgs,
     UploadAssistantAttachmentResult,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, JobId, RepoId,
+    AssistantThread, AssistantThreadId, JobId, RepoId, WorkspaceMode,
 };
 
 use super::InProcessRpc;
@@ -289,6 +289,16 @@ pub(super) async fn append_assistant_message(
 fn parse_action(input: &str) -> Option<(AssistantAction, String)> {
     let line = input.trim();
     let rest = line.strip_prefix('/')?;
+    // `/draft` is parsed up-front because its grammar is the only one
+    // that carries a free-form prompt with whitespace; routing through
+    // `split_whitespace` first would shred it. Every other branch is
+    // whitespace-tokenised below and follows the same shape.
+    if let Some(after) = rest
+        .strip_prefix("draft ")
+        .or_else(|| rest.strip_prefix("new "))
+    {
+        return parse_draft(after);
+    }
     let mut parts = rest.split_whitespace();
     let cmd = parts.next()?;
     match cmd {
@@ -389,6 +399,89 @@ fn parse_action(input: &str) -> Option<(AssistantAction, String)> {
         }
         _ => None,
     }
+}
+
+/// Stage-8 draft-from-conversation parser. Format:
+///
+/// ```text
+/// /draft <repo_id> [key=value …] -- <prompt>
+/// ```
+///
+/// Keys: `runner`, `branch`, `cost_cap_cents`, `wall_clock_cap_ms`,
+/// `workspace_mode` (`in-repo` | `worktree`), `model`, `permission_mode`,
+/// `effort`. Anything unrecognised fails the parse so the user sees the
+/// no-op responder rather than a card with a silently-dropped knob.
+///
+/// Sensible defaults fill in for unprovided fields so a one-liner like
+/// `/draft <repo_id> -- add dark mode` still produces a complete,
+/// reviewable proposal. The defaults are surfaced on the card itself
+/// (every field is stored, none implicit) so the confirmation is an
+/// honest preview of what will be submitted.
+fn parse_draft(after: &str) -> Option<(AssistantAction, String)> {
+    let (head, prompt) = after.split_once("--")?;
+    let prompt = prompt.trim().to_owned();
+    if prompt.is_empty() {
+        return None;
+    }
+    let mut toks = head.split_whitespace();
+    let repo_id = toks.next()?.parse::<RepoId>().ok()?;
+
+    let mut runner: Option<String> = None;
+    let mut branch: Option<String> = None;
+    let mut cost_cap_cents: Option<i64> = None;
+    let mut wall_clock_cap_ms: Option<i64> = None;
+    let mut workspace_mode: Option<WorkspaceMode> = None;
+    let mut model: Option<String> = None;
+    let mut permission_mode: Option<String> = None;
+    let mut effort: Option<String> = None;
+    for tok in toks {
+        let (k, v) = tok.split_once('=')?;
+        match k {
+            "runner" => runner = Some(v.to_owned()),
+            "branch" => branch = Some(v.to_owned()),
+            "cost_cap_cents" => cost_cap_cents = Some(v.parse().ok()?),
+            "wall_clock_cap_ms" => wall_clock_cap_ms = Some(v.parse().ok()?),
+            "workspace_mode" => {
+                workspace_mode = Some(match v {
+                    "in-repo" | "in_repo" => WorkspaceMode::InRepo,
+                    "worktree" => WorkspaceMode::Worktree,
+                    _ => return None,
+                });
+            }
+            "model" => model = Some(v.to_owned()),
+            "permission_mode" => permission_mode = Some(v.to_owned()),
+            "effort" => effort = Some(v.to_owned()),
+            _ => return None,
+        }
+    }
+
+    let runner = runner.unwrap_or_else(|| "claude".to_owned());
+    let branch = branch.unwrap_or_else(|| "assistant/draft".to_owned());
+    // 30-minute / $5.00 caps as a placeholder that errs on the side of
+    // "small enough to be safe to confirm". Real planners override.
+    let cost_cap_cents = cost_cap_cents.unwrap_or(500);
+    let wall_clock_cap_ms = wall_clock_cap_ms.unwrap_or(30 * 60 * 1000);
+
+    let summary = format!(
+        "Draft job in repo `{repo_id}` on branch `{branch}` \
+         (runner `{runner}`, caps {cost_cap_cents}¢ / {wall_clock_cap_ms}ms).\n\n\
+         Prompt:\n{prompt}",
+    );
+    Some((
+        AssistantAction::DraftJob {
+            repo_id,
+            prompt,
+            runner,
+            branch,
+            cost_cap_cents,
+            wall_clock_cap_ms,
+            workspace_mode,
+            model,
+            permission_mode,
+            effort,
+        },
+        summary,
+    ))
 }
 
 /// Internal helper: load the proposal row and re-deserialise the card
@@ -578,6 +671,43 @@ async fn dispatch_action(
             Ok((
                 format!("Updated job `{job_id}`."),
                 json!({ "tool": "update_job", "job": job }),
+            ))
+        }
+        AssistantAction::DraftJob {
+            repo_id,
+            prompt,
+            runner,
+            branch,
+            cost_cap_cents,
+            wall_clock_cap_ms,
+            workspace_mode,
+            model,
+            permission_mode,
+            effort,
+        } => {
+            // SCOPE.md Decisions §3 — no "just do it" path. The card
+            // is the confirmation; landing the row as `Draft` lets the
+            // user edit the spec / docs / handover before kicking off
+            // the runner, matching the regular submit-from-CLI flow.
+            let job = rpc
+                .submit_job(SubmitJobArgs {
+                    repo_id: *repo_id,
+                    prompt: Some(prompt.clone()),
+                    template_yaml: None,
+                    runner: runner.clone(),
+                    branch: branch.clone(),
+                    workspace_mode: *workspace_mode,
+                    cost_cap_cents: *cost_cap_cents,
+                    wall_clock_cap_ms: *wall_clock_cap_ms,
+                    model: model.clone(),
+                    permission_mode: permission_mode.clone(),
+                    effort: effort.clone(),
+                    start_immediately: false,
+                })
+                .await?;
+            Ok((
+                format!("Drafted job `{}` (status: {:?}).", job.id, job.status),
+                json!({ "tool": "draft_job", "job": job }),
             ))
         }
     }
@@ -1166,6 +1296,188 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::NotFound(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn parser_draft_extracts_prompt_and_defaults() {
+        let repo_id = RepoId::new();
+        let line = format!("/draft {repo_id} -- add dark mode");
+        let (action, summary) = parse_action(&line).expect("parse draft");
+        match action {
+            AssistantAction::DraftJob {
+                repo_id: r,
+                prompt,
+                runner,
+                branch,
+                cost_cap_cents,
+                wall_clock_cap_ms,
+                workspace_mode,
+                model,
+                permission_mode,
+                effort,
+            } => {
+                assert_eq!(r, repo_id);
+                assert_eq!(prompt, "add dark mode");
+                // Defaults are surfaced explicitly on the card so the
+                // confirmation preview is honest about what gets submitted.
+                assert_eq!(runner, "claude");
+                assert_eq!(branch, "assistant/draft");
+                assert_eq!(cost_cap_cents, 500);
+                assert_eq!(wall_clock_cap_ms, 30 * 60 * 1000);
+                assert!(workspace_mode.is_none());
+                assert!(model.is_none());
+                assert!(permission_mode.is_none());
+                assert!(effort.is_none());
+            }
+            other => panic!("expected DraftJob, got {other:?}"),
+        }
+        assert!(summary.contains("Draft job"));
+        assert!(summary.contains("add dark mode"));
+    }
+
+    #[test]
+    fn parser_draft_honours_overrides() {
+        let repo_id = RepoId::new();
+        let line = format!(
+            "/draft {repo_id} runner=copilot branch=feat/x cost_cap_cents=1234 \
+             wall_clock_cap_ms=99 workspace_mode=worktree model=gpt-5 \
+             permission_mode=plan effort=high -- do the thing"
+        );
+        let (action, _) = parse_action(&line).expect("parse draft");
+        match action {
+            AssistantAction::DraftJob {
+                runner,
+                branch,
+                cost_cap_cents,
+                wall_clock_cap_ms,
+                workspace_mode,
+                model,
+                permission_mode,
+                effort,
+                prompt,
+                ..
+            } => {
+                assert_eq!(runner, "copilot");
+                assert_eq!(branch, "feat/x");
+                assert_eq!(cost_cap_cents, 1234);
+                assert_eq!(wall_clock_cap_ms, 99);
+                assert!(matches!(workspace_mode, Some(WorkspaceMode::Worktree)));
+                assert_eq!(model.as_deref(), Some("gpt-5"));
+                assert_eq!(permission_mode.as_deref(), Some("plan"));
+                assert_eq!(effort.as_deref(), Some("high"));
+                assert_eq!(prompt, "do the thing");
+            }
+            other => panic!("expected DraftJob, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_draft_rejects_missing_prompt_or_unknown_key() {
+        let repo_id = RepoId::new();
+        // Missing `--` separator → no prompt → no card.
+        assert!(parse_action(&format!("/draft {repo_id} add dark mode")).is_none());
+        // Empty prompt after `--` likewise drops to the no-op reply.
+        assert!(parse_action(&format!("/draft {repo_id} --   ")).is_none());
+        // Unknown key fails the parse rather than silently dropping the field.
+        assert!(parse_action(&format!("/draft {repo_id} weird=1 -- p")).is_none());
+        // Bad repo id → unparseable, no card.
+        assert!(parse_action("/draft not-a-ulid -- p").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_with_draft_command_emits_pending_card() {
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+        let repo_id = RepoId::new();
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: format!("/draft {repo_id} -- ship it"),
+            })
+            .await
+            .unwrap();
+        let card: AssistantActionCard =
+            serde_json::from_str(res.assistant_message.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(card.status, AssistantActionStatus::Pending));
+        assert!(matches!(
+            card.action,
+            AssistantAction::DraftJob { repo_id: r, .. } if r == repo_id
+        ));
+        // The mutates() guard is the only place that knows blast radius;
+        // a new variant flowing through without an arm in the match is a
+        // compile error, but the bool itself is what the UI keys off of.
+        assert!(card.action.mutates());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirm_draft_against_unknown_repo_records_failed() {
+        // submit_job hits the repo lookup before any filesystem work,
+        // so a phantom repo_id surfaces as a typed NotFound from the
+        // inner RPC. The confirm path turns that into status=Failed plus
+        // a Tool message describing the error — the contract we want
+        // the UI to be able to rely on.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+        let phantom_repo = RepoId::new();
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: format!("/draft {phantom_repo} -- ship it"),
+            })
+            .await
+            .unwrap();
+        let confirm = rpc
+            .confirm_assistant_action(ConfirmAssistantActionArgs {
+                thread_id: thread.id,
+                message_id: res.assistant_message.id,
+            })
+            .await
+            .unwrap();
+        let card: AssistantActionCard =
+            serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(card.status, AssistantActionStatus::Failed));
+        assert!(matches!(
+            confirm.tool_message.role,
+            AssistantMessageRole::Tool
+        ));
+        assert!(confirm.tool_message.content.starts_with("Action failed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_draft_card_writes_no_job() {
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+        let repo_id = RepoId::new();
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: format!("/draft {repo_id} -- nope"),
+            })
+            .await
+            .unwrap();
+        let cancel = rpc
+            .cancel_assistant_action(CancelAssistantActionArgs {
+                thread_id: thread.id,
+                message_id: res.assistant_message.id,
+            })
+            .await
+            .unwrap();
+        let card: AssistantActionCard =
+            serde_json::from_str(cancel.card.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(card.status, AssistantActionStatus::Cancelled));
+        // Cancel must not have leaked a job row — the rejected proposal
+        // is recorded in the transcript and nothing else.
+        let jobs = rpc.list_jobs(ListJobsArgs { repo_id: None }).await.unwrap();
+        assert!(jobs.jobs.is_empty(), "no job should land on cancel");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
