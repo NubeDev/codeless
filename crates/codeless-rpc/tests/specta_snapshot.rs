@@ -12,14 +12,17 @@ use std::path::PathBuf;
 
 use codeless_rpc::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    ClaudeStatus, CommentReviewArgs, DeleteJobFileArgs, FsCwdResult, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListJobFilesArgs,
-    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult,
-    RemoveRepoArgs, RunnerInfo, ServerInfo, StageRollup, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ClaudeStatus, CommentReviewArgs, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
+    DeleteJobFileArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs,
+    JobDiffFile, JobDiffResult, JobFileEntry, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
+    RunnerInfo, ServerInfo, StageRollup, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -75,7 +78,14 @@ fn collect() -> TypeCollection {
         .register_mut::<AgentChatResult>()
         .register_mut::<CancelChatTaskArgs>()
         .register_mut::<StopActiveArgs>()
-        .register_mut::<StopActiveResult>();
+        .register_mut::<StopActiveResult>()
+        .register_mut::<ListAssistantThreadsArgs>()
+        .register_mut::<ListAssistantThreadsResult>()
+        .register_mut::<CreateAssistantThreadArgs>()
+        .register_mut::<DeleteAssistantThreadArgs>()
+        .register_mut::<UploadAssistantAttachmentArgs>()
+        .register_mut::<UploadAssistantAttachmentResult>()
+        .register_mut::<ListAssistantMessagesResult>();
     types
 }
 

@@ -4,6 +4,7 @@
 //! `codeless-client`, and adding host-only deps (tokio, std::process,
 //! sqlx, ...) here would break that path.
 
+pub mod assistant;
 pub mod event;
 pub mod fs;
 pub mod git_auth;
@@ -17,11 +18,15 @@ pub mod stage;
 pub mod task;
 pub mod time;
 
+pub use assistant::{AssistantAttachment, AssistantMessage, AssistantMessageRole, AssistantThread};
 pub use event::{Event, EventCursor, EventEnvelope};
 pub use fs::{FsEntry, FsEntryKind};
 pub use git_auth::GitAuth;
 pub use handover::{Handover, HandoverParseError};
-pub use id::{JobId, RepoId, ReviewId, StageId, TaskId};
+pub use id::{
+    AssistantAttachmentId, AssistantMessageId, AssistantThreadId, JobId, RepoId, ReviewId, StageId,
+    TaskId,
+};
 pub use job::{Job, JobStatus, StopReason, WorkspaceMode};
 pub use money::CostCents;
 pub use repo::Repo;

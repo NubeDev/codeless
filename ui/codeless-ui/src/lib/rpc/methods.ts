@@ -31,6 +31,13 @@ import type {
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
   ShellSessionRunOutput,
+  AssistantThread,
+  ListAssistantThreadsArgs,
+  ListAssistantThreadsResult,
+  CreateAssistantThreadArgs,
+  DeleteAssistantThreadArgs,
+  UploadAssistantAttachmentArgs,
+  UploadAssistantAttachmentResult,
 } from "./wire";
 
 export interface AddRepoArgs {
@@ -496,6 +503,25 @@ export interface RpcMethodMap {
     result: UploadChatAttachmentResult;
   };
   cancel_chat_task: { args: CancelChatTaskArgs; result: null };
+
+  // Assistant surface (DOCS/ASSISTANT-SCOPE.md). Persistence-only in
+  // stage 5; later stages add listMessages / subscribe / actions.
+  list_assistant_threads: {
+    args: ListAssistantThreadsArgs;
+    result: ListAssistantThreadsResult;
+  };
+  create_assistant_thread: {
+    args: CreateAssistantThreadArgs;
+    result: AssistantThread;
+  };
+  delete_assistant_thread: {
+    args: DeleteAssistantThreadArgs;
+    result: null;
+  };
+  upload_assistant_attachment: {
+    args: UploadAssistantAttachmentArgs;
+    result: UploadAssistantAttachmentResult;
+  };
 }
 
 export type {
@@ -506,6 +532,13 @@ export type {
   StopActiveResult,
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
+  AssistantThread,
+  ListAssistantThreadsArgs,
+  ListAssistantThreadsResult,
+  CreateAssistantThreadArgs,
+  DeleteAssistantThreadArgs,
+  UploadAssistantAttachmentArgs,
+  UploadAssistantAttachmentResult,
 };
 
 // Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,

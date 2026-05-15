@@ -56,6 +56,9 @@ async fn migrator_creates_all_tables_from_appendix_a() {
     assert_eq!(
         tables,
         vec![
+            "assistant_attachments".to_string(),
+            "assistant_messages".to_string(),
+            "assistant_threads".to_string(),
             "events".to_string(),
             "jobs".to_string(),
             "pty_sessions".to_string(),
@@ -65,6 +68,50 @@ async fn migrator_creates_all_tables_from_appendix_a() {
             "tasks".to_string(),
         ]
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assistant_tables_match_stage_5_schema() {
+    let pool = fresh_db().await;
+    assert_eq!(
+        columns(&pool, "assistant_threads").await,
+        vec!["id", "title", "created_at", "updated_at"],
+    );
+    assert_eq!(
+        columns(&pool, "assistant_messages").await,
+        vec![
+            "id",
+            "thread_id",
+            "role",
+            "content",
+            "meta_json",
+            "created_at",
+        ],
+    );
+    assert_eq!(
+        columns(&pool, "assistant_attachments").await,
+        vec![
+            "id",
+            "thread_id",
+            "original_name",
+            "stored_filename",
+            "mime_type",
+            "size_bytes",
+            "created_at",
+        ],
+    );
+
+    let idx = index_names(&pool).await;
+    for required in [
+        "assistant_threads_updated_idx",
+        "assistant_messages_thread_idx",
+        "assistant_attachments_thread_idx",
+    ] {
+        assert!(
+            idx.contains(&required.to_string()),
+            "missing assistant index {required}; got {idx:?}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -111,6 +158,7 @@ async fn jobs_columns_match_appendix_a() {
             "model",
             "permission_mode",
             "effort",
+            "workspace_mode",
         ],
     );
 }

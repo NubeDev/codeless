@@ -1,6 +1,7 @@
 use codeless_types::{
-    FsEntry, FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
-    StageId, TaskId, UnixMillis, WorkspaceMode,
+    AssistantAttachment, AssistantMessage, AssistantThread, AssistantThreadId, FsEntry,
+    FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId,
+    TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -930,4 +931,81 @@ pub struct StopActiveResult {
     /// Per-turn `TaskId`s whose cancel tokens were fired. Empty when
     /// no chat turn was scoped to this job at call time.
     pub cancelled_chat_task_ids: Vec<TaskId>,
+}
+
+/// `assistant.listThreads`. No filters in v1 — threads are unscoped
+/// (no per-repo / per-job FK by design, see `AssistantThread`), so the
+/// list is just "every thread the operator has on this host". Returned
+/// rows are ordered by `updated_at` descending so the most recently
+/// touched conversation lands at the top of the rail without the UI
+/// having to re-sort.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListAssistantThreadsArgs {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListAssistantThreadsResult {
+    pub threads: Vec<AssistantThread>,
+}
+
+/// `assistant.createThread`. The title is optional at create time so
+/// the UI can mint a thread on first message and let the assistant
+/// pick a title later (or leave the default). Empty / all-whitespace
+/// titles are normalised to the default "New thread" so listings
+/// never render a blank rail entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct CreateAssistantThreadArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// `assistant.deleteThread`. Cascades through `assistant_messages` and
+/// `assistant_attachments` via the SQLite FK; the on-disk
+/// `<codeless-data>/threads/<thread_id>/` directory is removed in the
+/// same call so attachments do not outlive the row. Idempotent —
+/// `NotFound` is returned for an unknown id so the UI can distinguish
+/// "already deleted" from "delete failed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct DeleteAssistantThreadArgs {
+    pub thread_id: AssistantThreadId,
+}
+
+/// `assistant.uploadAttachment`. Drop a binary blob into a thread's
+/// attachments directory under
+/// `<codeless-data>/threads/<thread_id>/attachments/<id>-<filename>`
+/// and insert the index row. The UI references the returned
+/// `AssistantAttachment.id` in subsequent turns; the model reads the
+/// file from a path the runtime resolves server-side, so the wire
+/// never carries a host filesystem path.
+///
+/// `NotFound` for an unknown thread; `InvalidArgument` for a filename
+/// that fails the basename sanitiser or an undecodable base64 body;
+/// `Internal` when the runtime has no `<codeless-data>` root
+/// configured (tests that omit `with_assistant_data_dir`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UploadAssistantAttachmentArgs {
+    pub thread_id: AssistantThreadId,
+    /// Basename only — directory components are stripped server-side.
+    pub filename: String,
+    /// Standard base64 (with or without padding). Decoded server-side;
+    /// invalid input returns `InvalidArgument`.
+    pub content_b64: String,
+    /// Optional MIME type the UI sniffed at drop time. Surfaced back
+    /// to the model in the chat preamble so it can pick the right
+    /// reading strategy when the runner supports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UploadAssistantAttachmentResult {
+    pub attachment: AssistantAttachment,
+}
+
+/// `assistant.listMessages`. Not exposed on the trait yet (stage 5 is
+/// persistence-only) but the row shape is part of the wire contract
+/// so downstream stages can subscribe through the same type. Stage 6
+/// adds the RPC method that returns this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListAssistantMessagesResult {
+    pub messages: Vec<AssistantMessage>,
 }

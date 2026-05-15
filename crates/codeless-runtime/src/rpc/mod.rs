@@ -5,20 +5,21 @@ use async_trait::async_trait;
 use codeless_adapters_host::{HostFs, WorktreeManager};
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs,
-    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    ListJobFilesArgs,
-    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
-    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    CommentReviewArgs, CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobFileArgs,
+    EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
+    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
+    JobDiffResult, JobReportArgs, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
+    RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
 };
-use codeless_types::{Job, Repo, Review, TaskId};
+use codeless_types::{AssistantThread, Job, Repo, Review, TaskId};
 use sqlx::SqlitePool;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
@@ -26,6 +27,7 @@ use crate::migrations::MIGRATOR;
 use crate::store::SqliteStore;
 use crate::time::now_ms;
 
+pub(crate) mod assistant;
 pub(crate) mod chat;
 pub(crate) mod fs;
 pub(crate) mod job_files;
@@ -68,6 +70,13 @@ pub struct InProcessRpc {
     /// behind a `parking_lot::Mutex` because every access is a brief
     /// map operation — never crosses an `await`.
     pub(crate) chat_cancels: ChatCancels,
+    /// Filesystem root the assistant surface writes attachments under
+    /// (per `ASSISTANT-SCOPE.md` Decisions §1). Threads land in
+    /// `<root>/threads/<thread_id>/attachments/`. `None` matches a
+    /// runtime built without `with_assistant_data_dir`; in that mode
+    /// `upload_assistant_attachment` returns `Internal` so the UI
+    /// surfaces a typed error rather than a panic.
+    pub(crate) assistant_data_dir: Option<std::path::PathBuf>,
 }
 
 /// One entry in the chat-cancel registry. `job_id` is the
@@ -134,6 +143,7 @@ impl InProcessRpc {
             agent_chat_registry: None,
             agent_chat_cwd: None,
             chat_cancels: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            assistant_data_dir: None,
         })
     }
 
@@ -163,6 +173,16 @@ impl InProcessRpc {
     ) -> Self {
         self.agent_chat_registry = Some(registry);
         self.agent_chat_cwd = Some(cwd);
+        self
+    }
+
+    /// Configure the filesystem root the `assistant.*` RPCs write
+    /// attachments under. The caller (the CLI / desktop shell) decides
+    /// the actual location — typically the same `<codeless-data>` root
+    /// the SQLite file lives in. Without this, attachment uploads
+    /// return `Internal`; threads still create and delete.
+    pub fn with_assistant_data_dir(mut self, root: std::path::PathBuf) -> Self {
+        self.assistant_data_dir = Some(root);
         self
     }
 
@@ -366,5 +386,30 @@ impl RpcServer for InProcessRpc {
 
     async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult> {
         chat::stop_active(self, args).await
+    }
+
+    async fn list_assistant_threads(
+        &self,
+        args: ListAssistantThreadsArgs,
+    ) -> RpcResult<ListAssistantThreadsResult> {
+        assistant::list_assistant_threads(self, args).await
+    }
+
+    async fn create_assistant_thread(
+        &self,
+        args: CreateAssistantThreadArgs,
+    ) -> RpcResult<AssistantThread> {
+        assistant::create_assistant_thread(self, args).await
+    }
+
+    async fn delete_assistant_thread(&self, args: DeleteAssistantThreadArgs) -> RpcResult<()> {
+        assistant::delete_assistant_thread(self, args).await
+    }
+
+    async fn upload_assistant_attachment(
+        &self,
+        args: UploadAssistantAttachmentArgs,
+    ) -> RpcResult<UploadAssistantAttachmentResult> {
+        assistant::upload_assistant_attachment(self, args).await
     }
 }

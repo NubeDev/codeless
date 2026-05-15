@@ -4,21 +4,21 @@ use codeless_types::{Job, Repo, Review};
 use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
-    FsCwdResult,
-    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
-    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
-    JobReportArgs, JobReportResult, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    CommentReviewArgs, CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobArgs,
+    DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
+    JobReportArgs, JobReportResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
     WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
+use codeless_types::AssistantThread;
 
 /// The single typed entry point every transport adapts. Browser SSE/REST,
 /// Tauri IPC, and the CLI's in-process call site all reach the runtime
@@ -271,4 +271,39 @@ pub trait RpcServer: Send + Sync + 'static {
     /// instead of `stop_job` so it works on chat-turns over a
     /// terminal job too.
     async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult>;
+
+    /// List every assistant thread on this host, newest-touched first.
+    /// Unfiltered by design — see `AssistantThread`: threads are not
+    /// scoped to a repo or job. Empty list when the operator has never
+    /// opened the assistant surface.
+    async fn list_assistant_threads(
+        &self,
+        args: ListAssistantThreadsArgs,
+    ) -> RpcResult<ListAssistantThreadsResult>;
+
+    /// Mint a new assistant thread row. The returned `AssistantThread`
+    /// carries the freshly-minted ULID id and `created_at` / `updated_at`
+    /// stamped at the same instant; the UI uses the id to select the
+    /// thread in the rail without a round-trip back to `list_assistant_threads`.
+    async fn create_assistant_thread(
+        &self,
+        args: CreateAssistantThreadArgs,
+    ) -> RpcResult<AssistantThread>;
+
+    /// Delete an assistant thread row and cascade through its messages
+    /// and attachments. The on-disk attachments directory is removed
+    /// in the same call so blobs do not outlive the row. `NotFound`
+    /// for an unknown id — the UI surfaces this as "already deleted".
+    async fn delete_assistant_thread(&self, args: DeleteAssistantThreadArgs) -> RpcResult<()>;
+
+    /// Upload a binary blob into an assistant thread's attachments
+    /// directory. The runtime decodes the base64 body, writes the file
+    /// under `<codeless-data>/threads/<thread_id>/attachments/`, and
+    /// inserts the index row. Returns the persisted
+    /// `AssistantAttachment` so the UI can render the entry without a
+    /// follow-up list.
+    async fn upload_assistant_attachment(
+        &self,
+        args: UploadAssistantAttachmentArgs,
+    ) -> RpcResult<UploadAssistantAttachmentResult>;
 }

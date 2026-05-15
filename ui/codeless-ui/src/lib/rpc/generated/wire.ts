@@ -111,6 +111,81 @@ export type ApproveReviewArgs = {
 };
 
 /**
+ *  One file uploaded into a thread. The blob lives under
+ *  `<codeless-data>/threads/<thread_id>/attachments/<stored_filename>`
+ *  (SCOPE.md Decisions §1); this row is the durable index the UI
+ *  renders and the cascade target when `assistant.deleteThread` runs.
+ *  `stored_filename` is the on-disk basename (id-prefixed for
+ *  collision-resistance); `original_name` is what the user dropped.
+ */
+export type AssistantAttachment = {
+	id: AssistantAttachmentId,
+	thread_id: AssistantThreadId,
+	original_name: string,
+	stored_filename: string,
+	mime_type: string | null,
+	size_bytes: number,
+	created_at: UnixMillis,
+};
+
+//Identity of one file uploaded into an assistant thread (`<codeless-data>/threads/<thread_id>/attachments/`).
+export type AssistantAttachmentId = string;
+
+/**
+ *  One persisted turn on a thread. `meta_json` mirrors the shape of
+ *  the `chat-message` event payload so the assistant transcript and
+ *  the in-job chat can share one renderer (see SCOPE.md Stage 3 —
+ *  `CommonChat`). NULL meta is the bare-text case the UI renders as
+ *  plain markdown.
+ */
+export type AssistantMessage = {
+	id: AssistantMessageId,
+	thread_id: AssistantThreadId,
+	role: AssistantMessageRole,
+	content: string,
+	meta_json: string | null,
+	created_at: UnixMillis,
+};
+
+//Identity of one persisted turn (user, assistant, system, or tool) in an assistant thread.
+export type AssistantMessageId = string;
+
+/**
+ *  Who said the message. Kebab-case on the wire to match the rest of
+ *  the codebase's status enums and the `chat-message` event payload
+ *  that the CommonChat renderer shares with the live job chat.
+ */
+export type AssistantMessageRole = "user" | "assistant" | 
+/**
+ *  Runtime-injected context (thread rename, attachment added). The
+ *  UI renders these as muted dividers rather than chat bubbles.
+ */
+"system" | 
+/**
+ *  Tool call surface from an action card. The structured payload
+ *  lives in `AssistantMessage.meta_json`; `content` is the
+ *  human-readable summary the UI falls back to when it cannot
+ *  render the card.
+ */
+"tool";
+
+/**
+ *  One conversational thread on the `/assistant` surface — see
+ *  `DOCS/ASSISTANT-SCOPE.md`. Threads outlive any single job/worktree
+ *  and therefore have no foreign key onto `repos` or `jobs`; the
+ *  assistant is allowed to span jobs by design (Decisions §1).
+ */
+export type AssistantThread = {
+	id: AssistantThreadId,
+	title: string,
+	created_at: UnixMillis,
+	updated_at: UnixMillis,
+};
+
+//Identity of one conversational thread on the /assistant surface.
+export type AssistantThreadId = string;
+
+/**
  *  Fire the cancellation token registered for a chat turn so the
  *  in-flight CLI runner exits at its next `await` boundary. Idempotent
  *  — a missing entry (the turn already completed) is `Ok(())`, not a
@@ -222,6 +297,29 @@ export type CommentReviewArgs = {
  *  to display strings live in the UI layer, not here.
  */
 export type CostCents = number;
+
+/**
+ *  `assistant.createThread`. The title is optional at create time so
+ *  the UI can mint a thread on first message and let the assistant
+ *  pick a title later (or leave the default). Empty / all-whitespace
+ *  titles are normalised to the default "New thread" so listings
+ *  never render a blank rail entry.
+ */
+export type CreateAssistantThreadArgs = {
+	title?: string | null,
+};
+
+/**
+ *  `assistant.deleteThread`. Cascades through `assistant_messages` and
+ *  `assistant_attachments` via the SQLite FK; the on-disk
+ *  `<codeless-data>/threads/<thread_id>/` directory is removed in the
+ *  same call so attachments do not outlive the row. Idempotent —
+ *  `NotFound` is returned for an unknown id so the UI can distinguish
+ *  "already deleted" from "delete failed".
+ */
+export type DeleteAssistantThreadArgs = {
+	thread_id: AssistantThreadId,
+};
 
 /**
  *  One row from the `events` table. Variants are tagged by the
@@ -669,6 +767,30 @@ export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "co
  */
 "paused";
 
+/**
+ *  `assistant.listMessages`. Not exposed on the trait yet (stage 5 is
+ *  persistence-only) but the row shape is part of the wire contract
+ *  so downstream stages can subscribe through the same type. Stage 6
+ *  adds the RPC method that returns this.
+ */
+export type ListAssistantMessagesResult = {
+	messages: AssistantMessage[],
+};
+
+/**
+ *  `assistant.listThreads`. No filters in v1 — threads are unscoped
+ *  (no per-repo / per-job FK by design, see `AssistantThread`), so the
+ *  list is just "every thread the operator has on this host". Returned
+ *  rows are ordered by `updated_at` descending so the most recently
+ *  touched conversation lands at the top of the rail without the UI
+ *  having to re-sort.
+ */
+export type ListAssistantThreadsArgs = Record<string, never>;
+
+export type ListAssistantThreadsResult = {
+	threads: AssistantThread[],
+};
+
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
 	repo_id: RepoId | null,
@@ -978,6 +1100,41 @@ export type TaskStatus = "enqueued" | "running" | "completed" | "failed" | "canc
  *  `INTEGER` round-trips with `sqlx` (which surfaces signed integers).
  */
 export type UnixMillis = number;
+
+/**
+ *  `assistant.uploadAttachment`. Drop a binary blob into a thread's
+ *  attachments directory under
+ *  `<codeless-data>/threads/<thread_id>/attachments/<id>-<filename>`
+ *  and insert the index row. The UI references the returned
+ *  `AssistantAttachment.id` in subsequent turns; the model reads the
+ *  file from a path the runtime resolves server-side, so the wire
+ *  never carries a host filesystem path.
+ * 
+ *  `NotFound` for an unknown thread; `InvalidArgument` for a filename
+ *  that fails the basename sanitiser or an undecodable base64 body;
+ *  `Internal` when the runtime has no `<codeless-data>` root
+ *  configured (tests that omit `with_assistant_data_dir`).
+ */
+export type UploadAssistantAttachmentArgs = {
+	thread_id: AssistantThreadId,
+	// Basename only — directory components are stripped server-side.
+	filename: string,
+	/**
+	 *  Standard base64 (with or without padding). Decoded server-side;
+	 *  invalid input returns `InvalidArgument`.
+	 */
+	content_b64: string,
+	/**
+	 *  Optional MIME type the UI sniffed at drop time. Surfaced back
+	 *  to the model in the chat preamble so it can pick the right
+	 *  reading strategy when the runner supports it.
+	 */
+	mime_type?: string | null,
+};
+
+export type UploadAssistantAttachmentResult = {
+	attachment: AssistantAttachment,
+};
 
 /**
  *  Drop a binary blob (image, PDF, csv, …) into the job worktree

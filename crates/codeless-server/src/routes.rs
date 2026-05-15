@@ -7,21 +7,21 @@ use axum::{
 };
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
-    FsCwdResult,
-    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
-    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
-    ListJobFilesArgs,
-    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    CommentReviewArgs, CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobArgs,
+    DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
+    JobReportArgs, JobReportResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
+    ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
 };
-use codeless_types::{Job, Repo, Review};
+use codeless_types::{AssistantThread, Job, Repo, Review};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -70,6 +70,19 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/upload_chat_attachment", post(upload_chat_attachment))
         .route("/rpc/cancel_chat_task", post(cancel_chat_task))
         .route("/rpc/stop_active", post(stop_active))
+        .route("/rpc/list_assistant_threads", post(list_assistant_threads))
+        .route(
+            "/rpc/create_assistant_thread",
+            post(create_assistant_thread),
+        )
+        .route(
+            "/rpc/delete_assistant_thread",
+            post(delete_assistant_thread),
+        )
+        .route(
+            "/rpc/upload_assistant_attachment",
+            post(upload_assistant_attachment),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -354,10 +367,7 @@ async fn fs_create_dir(
         .map_err(map_err)
 }
 
-async fn fs_move(
-    State(st): State<AppState>,
-    Json(args): Json<FsMoveArgs>,
-) -> HandlerResult<Value> {
+async fn fs_move(State(st): State<AppState>, Json(args): Json<FsMoveArgs>) -> HandlerResult<Value> {
     st.rpc
         .fs_move(args)
         .await
@@ -468,4 +478,48 @@ async fn stop_active(
     Json(args): Json<StopActiveArgs>,
 ) -> HandlerResult<StopActiveResult> {
     st.rpc.stop_active(args).await.map(Json).map_err(map_err)
+}
+
+async fn list_assistant_threads(
+    State(st): State<AppState>,
+    Json(args): Json<ListAssistantThreadsArgs>,
+) -> HandlerResult<ListAssistantThreadsResult> {
+    st.rpc
+        .list_assistant_threads(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn create_assistant_thread(
+    State(st): State<AppState>,
+    Json(args): Json<CreateAssistantThreadArgs>,
+) -> HandlerResult<AssistantThread> {
+    st.rpc
+        .create_assistant_thread(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn delete_assistant_thread(
+    State(st): State<AppState>,
+    Json(args): Json<DeleteAssistantThreadArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .delete_assistant_thread(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn upload_assistant_attachment(
+    State(st): State<AppState>,
+    Json(args): Json<UploadAssistantAttachmentArgs>,
+) -> HandlerResult<UploadAssistantAttachmentResult> {
+    st.rpc
+        .upload_assistant_attachment(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
 }
