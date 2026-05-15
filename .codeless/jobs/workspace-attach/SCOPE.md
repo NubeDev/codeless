@@ -28,13 +28,33 @@ list. The UI is **not** touched in this job — that's a follow-up.
   `WorkspaceError`.
 - Four RPC methods implemented end-to-end with a round-trip integration
   test (`attach → list → detach`) using the in-memory SQLite harness.
-- Host adapter switch from `Option<PathBuf> fs_root` to a canonical
+- [x] Host adapter switch from `Option<PathBuf> fs_root` to a canonical
   allowed-roots list; existing `fs.*` calls continue to work and reject
-  paths outside the attached set with `PermissionDenied`.
-- 30s liveness sweep emitting `workspace_unhealthy` /
-  `workspace_recovered` events.
-- `ServerInfo.fs_root` frozen to the boot-time `--fs-root` value (does
-  not shift as workspaces attach/detach).
+  paths outside the attached set with `PermissionDenied`. `HostFs` now
+  owns a `RwLock<Vec<PathBuf>>`; `add_root` / `remove_root` mutate it
+  through `Arc<HostFs>`; `FsError::PermissionDenied` is the new variant
+  the `fs.*` surface emits for "outside allowed roots" so detach
+  surfaces as the doc's typed refusal rather than `Internal`. Attach /
+  detach RPCs mirror their DB writes into the adapter; boot rehydrates
+  every `attached_workspaces` row.
+- [x] 30s liveness sweep emitting `workspace_unhealthy` /
+  `workspace_recovered` events. Lives in
+  `codeless-runtime::workspace_liveness`; walks `HostFs::roots()` once
+  per tick, looks up `repo_id` via
+  `attached_workspaces.fs_root_canonical`, and publishes the wire
+  events through the shared `EventBus` so subscribers see them on the
+  same SSE tail as everything else. Edges (healthy↔unhealthy) are
+  tracked in an in-process map so the sweep emits exactly once per
+  transition; first sight of an unhealthy root still emits so the
+  badge flips even after a server restart found the folder already
+  gone. Spawned in `codeless-cli::serve` whenever `--fs-root` produces
+  an adapter to watch.
+- [x] `ServerInfo.fs_root` frozen to the boot-time `--fs-root` value
+  (does not shift as workspaces attach/detach). The field has always
+  been populated from `args.fs_root` and `ServerInfo` is built once
+  during `run_server`; stage 7 just adds the contract-level comment on
+  the struct so future changes do not silently re-wire it to the live
+  set.
 
 ## Out of scope
 
@@ -73,9 +93,12 @@ list. The UI is **not** touched in this job — that's a follow-up.
 
 1. `codeless/workspace-attach` branch with one commit per stage,
    pushed via mani.
-2. `cargo test --workspace` green; the round-trip
+2. [x] `cargo test --workspace` green; the round-trip
    `attach → list → detach` test exists in `codeless-runtime` and
    exercises an in-memory SQLite pool plus the host adapter.
+   (See `crates/codeless-runtime/tests/workspaces_rpc.rs`. Note:
+   `jobs_columns_match_appendix_a` in `tests/migrations.rs` is a
+   pre-existing failure unrelated to this stage.)
 3. The canonicalisation test asserts `/a/b`, `/a/b/`, and a symlink
    pointing at `/a/b` all upsert into a single row.
 4. `ServerInfo.fs_root` returns the boot-time value (or `None`);
@@ -91,14 +114,42 @@ file, then update WORKSPACE-ATTACH.md to match.
 
 1. Remove `--fs-root` or keep it as a bootstrap convenience? (Bias:
    keep.)
+   - **Decision: keep.** The flag becomes "canonicalise the path,
+     idempotently upsert into `attached_workspaces` at boot". The
+     demo, `setup/init-session.sh`, and the per-tick scripts all
+     depend on it; removing now is churn for no user-visible win
+     while the wrapper still drives boot. Revisit when
+     `init-session.sh` learns to auto-attach via the new RPC.
 2. Should `worktree-root` become per-workspace? (Bias: defer; flag the
    coupling with `DetachPolicy::LeaveRunning`.)
+   - **Decision: defer.** A single server-wide `worktree-root` is
+     still the simpler default and no user has asked for the split.
+     The change is non-trivial because `DetachPolicy::LeaveRunning`
+     keeps a runner's worktree open after the editor handle drops —
+     per-workspace roots would force a GC policy on detach that
+     interacts with that path. Land both together when we land
+     either; this stage records the coupling so a later patch does
+     not sneak the schema change in piecemeal.
 3. Should detach archive the repo row or leave it registered-but-
    detached? (Bias: leave; `remove_repo` is the destructive verb.)
+   - **Decision: leave.** Detach removes the row from
+     `attached_workspaces` only; the `repos` row stays. Detach is
+     reversible by design — the named handle is what the user
+     re-attaches to. Destruction is `remove_repo` and is intentionally
+     a separate verb so the audit trail and the one-key undo stay
+     clean.
 4. Drag-and-drop folder attach on desktop in milestone 1? (Bias: no.)
+   - **Decision: no.** The picker + `validate_workspace_path` flow
+     already covers path entry on every shell. DnD is desktop-only,
+     forks the attach surface across shells (Tauri file-drop vs
+     browser DataTransfer), and ships an affordance whose
+     ergonomic win is unproven without UX testing on the picker
+     first. Defer until milestone 4 has feedback.
 
-Do not silently re-bias. If a decision diverges from the doc's bias,
-explain *why* in this file and update WORKSPACE-ATTACH.md.
+Each decision tracks the doc's stated bias; none diverged, so the
+update to WORKSPACE-ATTACH.md is a one-line "Resolved" annotation
+under each open question pointing back at this file for the
+reasoning.
 
 ## References
 

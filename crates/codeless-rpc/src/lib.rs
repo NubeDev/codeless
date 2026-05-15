@@ -13,6 +13,11 @@ pub mod methods;
 pub mod server;
 pub mod subscribe;
 
+pub use codeless_types::{
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, DetachPolicy,
+    DetachWorkspaceArgs, ListWorkspacesResult, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
+};
 pub use error::{RpcError, RpcResult};
 pub use methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,

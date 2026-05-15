@@ -17,6 +17,7 @@ pub mod review;
 pub mod stage;
 pub mod task;
 pub mod time;
+pub mod workspace;
 
 pub use assistant::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
@@ -37,3 +38,8 @@ pub use review::{Review, ReviewStatus};
 pub use stage::{Stage, StageStatus};
 pub use task::{Task, TaskStatus};
 pub use time::UnixMillis;
+pub use workspace::{
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, DetachPolicy,
+    DetachWorkspaceArgs, ListWorkspacesResult, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
+};

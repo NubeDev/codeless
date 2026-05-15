@@ -7,22 +7,23 @@ use axum::{
 };
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
-    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
-    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
-    DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
-    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
-    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
-    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
-    ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    AppendAssistantMessageResult, ApproveReviewArgs, AttachWorkspaceArgs, AttachWorkspaceResult,
+    CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
+    ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
+    DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DetachWorkspaceArgs,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, ServerInfo,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Repo, Review};
 use serde_json::Value;
@@ -73,6 +74,13 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/upload_chat_attachment", post(upload_chat_attachment))
         .route("/rpc/cancel_chat_task", post(cancel_chat_task))
         .route("/rpc/stop_active", post(stop_active))
+        .route("/rpc/attach_workspace", post(attach_workspace))
+        .route("/rpc/detach_workspace", post(detach_workspace))
+        .route("/rpc/list_workspaces", post(list_workspaces))
+        .route(
+            "/rpc/validate_workspace_path",
+            post(validate_workspace_path),
+        )
         .route("/rpc/list_assistant_threads", post(list_assistant_threads))
         .route(
             "/rpc/create_assistant_thread",
@@ -149,11 +157,21 @@ pub(crate) fn router(state: AppState) -> Router {
 /// client decodes in `RpcError.fromHttpStatus`. The mapping is
 /// wire-stable: renaming a variant on the Rust side or changing the
 /// status here is a breaking change for the UI.
+///
+/// `Workspace(WorkspaceError)` rides on the existing 409 channel but
+/// carries a JSON body the client parses into the typed variant — the
+/// UI then branches on `WorkspaceError` directly rather than string-
+/// matching on a `Conflict` message.
 fn map_err(err: RpcError) -> (StatusCode, String) {
     match err {
         RpcError::NotFound(m) => (StatusCode::NOT_FOUND, m),
         RpcError::InvalidArgument(m) => (StatusCode::BAD_REQUEST, m),
         RpcError::Conflict(m) => (StatusCode::CONFLICT, m),
+        RpcError::Workspace(payload) => (
+            StatusCode::CONFLICT,
+            serde_json::to_string(&payload)
+                .expect("WorkspaceError always serialises (derive Serialize)"),
+        ),
         RpcError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
     }
 }
@@ -497,6 +515,46 @@ async fn stop_active(
     Json(args): Json<StopActiveArgs>,
 ) -> HandlerResult<StopActiveResult> {
     st.rpc.stop_active(args).await.map(Json).map_err(map_err)
+}
+
+async fn attach_workspace(
+    State(st): State<AppState>,
+    Json(args): Json<AttachWorkspaceArgs>,
+) -> HandlerResult<AttachWorkspaceResult> {
+    st.rpc
+        .attach_workspace(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn detach_workspace(
+    State(st): State<AppState>,
+    Json(args): Json<DetachWorkspaceArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .detach_workspace(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn list_workspaces(
+    State(st): State<AppState>,
+    _body: Option<Json<Value>>,
+) -> HandlerResult<ListWorkspacesResult> {
+    st.rpc.list_workspaces().await.map(Json).map_err(map_err)
+}
+
+async fn validate_workspace_path(
+    State(st): State<AppState>,
+    Json(args): Json<ValidateWorkspacePathArgs>,
+) -> HandlerResult<ValidateWorkspacePathResult> {
+    st.rpc
+        .validate_workspace_path(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
 }
 
 async fn list_assistant_threads(

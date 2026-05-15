@@ -1,22 +1,23 @@
 use async_trait::async_trait;
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
-    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
-    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
-    DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult,
-    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
-    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
-    JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
-    RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    AppendAssistantMessageResult, ApproveReviewArgs, AttachWorkspaceArgs, AttachWorkspaceResult,
+    CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
+    ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
+    DeleteAssistantThreadArgs, DeleteJobFileArgs, DetachWorkspaceArgs, EventFilter, EventStream,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
+    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Repo, Review};
 use futures_util::StreamExt;
@@ -128,7 +129,13 @@ fn status_to_rpc(status: StatusCode, body: String) -> RpcError {
     match status {
         StatusCode::NOT_FOUND => RpcError::NotFound(msg),
         StatusCode::BAD_REQUEST => RpcError::InvalidArgument(msg),
-        StatusCode::CONFLICT => RpcError::Conflict(msg),
+        StatusCode::CONFLICT => match serde_json::from_str::<WorkspaceError>(&msg) {
+            // A 409 body that parses as the structured payload came
+            // from `attach_workspace` / `detach_workspace` — surface
+            // the typed variant so callers can branch on it.
+            Ok(payload) => RpcError::Workspace(payload),
+            Err(_) => RpcError::Conflict(msg),
+        },
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
             RpcError::Internal(format!("unauthorized ({}): {msg}", status.as_u16()))
         }
@@ -349,6 +356,28 @@ impl RpcServer for HttpRpcClient {
 
     async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult> {
         self.call("stop_active", &args).await
+    }
+
+    async fn attach_workspace(
+        &self,
+        args: AttachWorkspaceArgs,
+    ) -> RpcResult<AttachWorkspaceResult> {
+        self.call("attach_workspace", &args).await
+    }
+
+    async fn detach_workspace(&self, args: DetachWorkspaceArgs) -> RpcResult<()> {
+        self.call_void("detach_workspace", &args).await
+    }
+
+    async fn list_workspaces(&self) -> RpcResult<ListWorkspacesResult> {
+        self.call("list_workspaces", &EmptyArgs {}).await
+    }
+
+    async fn validate_workspace_path(
+        &self,
+        args: ValidateWorkspacePathArgs,
+    ) -> RpcResult<ValidateWorkspacePathResult> {
+        self.call("validate_workspace_path", &args).await
     }
 
     async fn list_assistant_threads(

@@ -11,9 +11,12 @@ use std::path::PathBuf;
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, CostCents, Event, EventCursor, EventEnvelope, FsEntry,
-    FsEntryKind, GitAuth, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus,
-    Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
+    AssistantThread, AssistantThreadId, AttachWorkspaceArgs, AttachWorkspaceResult,
+    AttachedWorkspace, CostCents, DetachPolicy, DetachWorkspaceArgs, Event, EventCursor,
+    EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId, JobStatus, ListWorkspacesResult,
+    Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task,
+    TaskId, TaskStatus, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -44,6 +47,16 @@ fn collect() -> TypeCollection {
         .register_mut::<EventEnvelope>()
         .register_mut::<FsEntry>()
         .register_mut::<FsEntryKind>()
+        .register_mut::<AttachedWorkspace>()
+        .register_mut::<AttachWorkspaceArgs>()
+        .register_mut::<AttachWorkspaceResult>()
+        .register_mut::<ListWorkspacesResult>()
+        .register_mut::<DetachWorkspaceArgs>()
+        .register_mut::<DetachPolicy>()
+        .register_mut::<ValidateWorkspacePathArgs>()
+        .register_mut::<ValidateWorkspacePathResult>()
+        .register_mut::<WorkspaceProblem>()
+        .register_mut::<WorkspaceError>()
         .register_mut::<AssistantThreadId>()
         .register_mut::<AssistantMessageId>()
         .register_mut::<AssistantAttachmentId>()

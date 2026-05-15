@@ -196,20 +196,67 @@ async fn run_server(
     // UI's Handover pane errors with `path escapes root` because the
     // worktree root sits outside `--fs-root` (the source repo).
     let worktree_root_effective = effective_worktree_root(&args);
+    let mut host_fs_for_liveness: Option<Arc<codeless_adapters_host::HostFs>> = None;
     if let Some(root) = &args.fs_root {
-        let mut host_fs = codeless_adapters_host::HostFs::new(root)
+        // WORKSPACE-ATTACH milestone 2 — `--fs-root` is now a
+        // bootstrap convenience: canonicalise the path and upsert it
+        // into `attached_workspaces`. Repeated boots with `/a/b`,
+        // `/a/b/`, or a symlink resolving to `/a/b` all collapse to
+        // the one row keyed on canonical (see migration 0007).
+        match codeless_runtime::attached_workspaces::upsert_boot_workspace(
+            runtime.pool(),
+            root,
+        )
+        .await
+        {
+            Ok(outcome) => eprintln!(
+                "codeless-server: attached_workspaces upsert ok (canonical={}, created_repo={}, created_attachment={})",
+                outcome.canonical, outcome.created_repo, outcome.created_attachment,
+            ),
+            Err(e) => eprintln!(
+                "codeless-server: attached_workspaces upsert for {} failed: {e}",
+                root.display(),
+            ),
+        }
+        let host_fs = codeless_adapters_host::HostFs::new(root)
             .map_err(|e| anyhow!("fs root {}: {e}", root.display()))?;
+        // Rehydrate every other `attached_workspaces` row into the
+        // adapter so previously-attached workspaces remain reachable
+        // through `fs.*` across a restart without an explicit
+        // re-attach. The bootstrap `--fs-root` already lives in
+        // `host_fs.roots()` as the first entry; canonical equality is
+        // how `add_root` collapses duplicates.
+        match codeless_runtime::attached_workspaces::list_canonical_roots(runtime.pool()).await {
+            Ok(rows) => {
+                for canonical in rows {
+                    if let Err(e) = host_fs.add_root(std::path::PathBuf::from(&canonical)) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %canonical,
+                            "skipping stale attached_workspaces row at boot",
+                        );
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not rehydrate attached_workspaces"),
+        }
         if let Some(wt) = &worktree_root_effective {
             // The worktree root may not exist yet on first boot —
-            // create it so `HostFs::with_extra_root` finds a directory
-            // to canonicalize. Subsequent boots are no-ops.
+            // create it so `add_root` finds a directory to
+            // canonicalize. Subsequent boots are no-ops.
             std::fs::create_dir_all(wt).ok();
-            host_fs = host_fs
-                .with_extra_root(wt)
+            host_fs
+                .add_root(wt)
                 .map_err(|e| anyhow!("worktree fs root {}: {e}", wt.display()))?;
             eprintln!("codeless-server: fs extra root = {}", wt.display());
         }
-        runtime = runtime.with_fs(Arc::new(host_fs));
+        let host_fs_arc = Arc::new(host_fs);
+        // Keep a clone aside so the liveness sweep (spawned after the
+        // runtime is sealed into an Arc) can stat the same allowed-roots
+        // set the `fs.*` surface serves. The runtime holds the
+        // authoritative reference; this is a peer handle, not a fork.
+        host_fs_for_liveness = Some(Arc::clone(&host_fs_arc));
+        runtime = runtime.with_fs(host_fs_arc);
         eprintln!("codeless-server: fs root = {}", root.display());
     }
     // Same `WorktreeManager` Arc is given to both the runtime (so
@@ -321,6 +368,27 @@ async fn run_server(
         .await
         .map_err(|e| anyhow!("spawn_stage_recorder: {e}"))?;
     eprintln!("codeless-server: stage recorder enabled");
+
+    // 30 s liveness sweep: every tick stats the canonical roots the host
+    // adapter is serving and publishes `workspace-unhealthy` /
+    // `workspace-recovered` envelopes on the event bus when state flips.
+    // Without an adapter (no `--fs-root`, nothing rehydrated from
+    // `attached_workspaces`) there is nothing to watch, so the sweep is
+    // only spawned when at least one root is registered. The handle
+    // stays alive in this scope — process exit is the teardown path.
+    let _liveness_sweep = host_fs_for_liveness.map(|fs| {
+        let handle = codeless_runtime::spawn_workspace_liveness_sweep(
+            fs,
+            rpc.bus().clone(),
+            rpc.pool().clone(),
+            codeless_runtime::WORKSPACE_LIVENESS_PERIOD,
+        );
+        eprintln!(
+            "codeless-server: workspace liveness sweep enabled (period={}s)",
+            codeless_runtime::WORKSPACE_LIVENESS_PERIOD.as_secs(),
+        );
+        handle
+    });
 
     // Background driver: pick up every `Queued` job and run it
     // through the in-process runtime. Default factory only enables
