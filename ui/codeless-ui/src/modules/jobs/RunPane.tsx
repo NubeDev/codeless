@@ -1042,6 +1042,27 @@ export function JobChat({
   // `InvalidArgument`.
   const [worktreeMissing, setWorktreeMissing] = useState<boolean | null>(null);
 
+  const scrollRef = useRef<HTMLUListElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+  // Whenever auto-scroll is enabled and feed content changes, pin to
+  // the bottom. We watch the merged feed length and the streaming
+  // buffer so token-by-token updates also keep scroll glued.
+  useEffect(() => {
+    if (!autoScroll) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [autoScroll, history, liveItems, streaming?.text]);
+  // Auto-grow the composer textarea up to a sensible cap so a long
+  // multi-line message doesn't get clipped behind a small fixed box.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+  }, [input]);
+
   // Load prior chat on mount / job change.
   useEffect(() => {
     let cancelled = false;
@@ -1346,6 +1367,24 @@ export function JobChat({
           <span className="text-muted-foreground font-mono text-[10px]">
             {loaded ? `${history.length} message${history.length === 1 ? "" : "s"}` : "loading…"}
           </span>
+          <label
+            className="text-muted-foreground hover:text-foreground flex shrink-0 cursor-pointer items-center gap-1 text-[10px] uppercase tracking-wide"
+            title="Stick to the bottom as new messages arrive"
+          >
+            <input
+              type="checkbox"
+              className="h-3 w-3 cursor-pointer"
+              checked={autoScroll}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setAutoScroll(on);
+                if (on && scrollRef.current) {
+                  scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                }
+              }}
+            />
+            auto-scroll
+          </label>
         </div>
       </div>
 
@@ -1362,7 +1401,10 @@ export function JobChat({
         <WorktreeMissingBanner worktreePath={job.worktree_path ?? ""} />
       )}
 
-      <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+      <ul
+        ref={scrollRef}
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1"
+      >
         {mergeChatFeed(history, liveItems).map((row, i) => {
           if (row.kind === "message") {
             return <ChatBubble key={`m-${i}`} message={row.message} />;
@@ -1522,6 +1564,7 @@ export function JobChat({
       />
 
       <textarea
+        ref={textareaRef}
         value={input}
         onChange={(e) => setInput(e.target.value)}
         rows={2}
@@ -1530,7 +1573,7 @@ export function JobChat({
             ? "spec mode: describe the spec change — agent edits .codeless/jobs/<name>/* only"
             : "message claude about this job…"
         }
-        className="border-border/60 bg-background w-full resize-none rounded border px-2 py-1.5 text-xs"
+        className="border-border/60 bg-background max-h-60 w-full resize-none overflow-y-auto rounded border px-2 py-1.5 text-xs"
         disabled={busy}
         onPaste={(e) => {
           // Pull files (typically clipboard images) out of the paste.

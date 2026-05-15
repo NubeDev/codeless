@@ -12,6 +12,7 @@ import {
   type SseConnectionStatus,
 } from "@/lib/rpc";
 
+import { EditJobDialog } from "./EditJobDialog";
 import { CostCell, WallClockCell } from "./JobRow";
 import { CommonChat } from "../chat";
 import { SpecPane } from "./spec/SpecPane";
@@ -62,11 +63,48 @@ export function JobPage({
   const { data: job, error, loading, refetch: refetchJob } = useJob(jobId);
   const { data: repos } = useRepos();
 
-  // Active tab: starts on "Stages" (the default overview per JOB-UI.md).
-  const [activeTab, setActiveTab] = useState<ActiveTab>({
-    kind: "system",
-    id: "Stages",
+  // Active tab: starts on whatever the URL ?tab= query says, falling
+  // back to "Stages" (the default overview per JOB-UI.md). The query
+  // param is mirrored back to the URL on every change so a reload or
+  // shared link lands on the same inner surface.
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+    if (typeof window !== "undefined") {
+      const param = new URLSearchParams(window.location.search).get("tab");
+      const normalized = param?.toLowerCase();
+      if (normalized === "chat") return { kind: "system", id: "CHAT" };
+      if (normalized === "spec") return { kind: "system", id: "SPEC" };
+      if (normalized === "stages") return { kind: "system", id: "Stages" };
+      if (param?.startsWith("stage:")) {
+        const stageId = param.slice("stage:".length);
+        if (stageId) {
+          return {
+            kind: "stage",
+            stageId,
+            stageName: stageId,
+            pinned: false,
+          };
+        }
+      }
+    }
+    return { kind: "system", id: "Stages" };
   });
+
+  // Mirror the active inner tab into the URL's ?tab= so a reload
+  // restores it. Only fires when this JobPage is the active workspace
+  // tab — otherwise switching inner tabs on a background job-detail
+  // would yank the URL away from the foreground tab.
+  useEffect(() => {
+    if (!active) return;
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const want =
+      activeTab.kind === "system"
+        ? activeTab.id.toLowerCase()
+        : `stage:${activeTab.stageId}`;
+    if (url.searchParams.get("tab") === want) return;
+    url.searchParams.set("tab", want);
+    window.history.replaceState(null, "", url.pathname + url.search);
+  }, [activeTab, active]);
 
   // Stage tabs opened by the user. Pinned tabs are persisted in
   // localStorage so they survive page reload. The key is scoped by
@@ -333,11 +371,32 @@ function PageHeader({
   refetchJob: () => void;
 }) {
   const rpc = useRpc();
-  const [busy, setBusy] = useState<"stop" | "rerun" | null>(null);
+  const [busy, setBusy] = useState<"stop" | "rerun" | "delete" | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const isTerminal = TERMINAL_STATUSES.has(job.status);
   const isRunning =
     job.status === "running" || job.status === "awaiting-review";
+  const canEdit =
+    job.status === "draft" ||
+    job.status === "queued" ||
+    job.status === "stopped" ||
+    job.status === "failed" ||
+    job.status === "completed";
+  const canDelete = canEdit && job.status !== "queued";
+
+  const deleteJob = async () => {
+    setBusy("delete");
+    setErr(null);
+    try {
+      await rpc.call("delete_job", { job_id: job.id });
+      window.location.assign("/jobs");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+    }
+  };
 
   const stop = async () => {
     setBusy("stop");
@@ -415,6 +474,74 @@ function PageHeader({
               {busy === "rerun" ? "queuing…" : "re-run"}
             </Button>
           )}
+          {canEdit && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => setEditOpen(true)}
+              disabled={busy !== null}
+              title="Edit runner, caps, branch"
+            >
+              edit
+            </Button>
+          )}
+          {canDelete && !confirmDelete && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-destructive hover:text-destructive h-7 px-2.5 text-xs"
+              onClick={() => setConfirmDelete(true)}
+              disabled={busy !== null}
+              title="Delete job permanently"
+            >
+              delete
+            </Button>
+          )}
+          {canDelete && confirmDelete && (
+            <>
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7 px-2.5 text-xs"
+                onClick={() => void deleteJob()}
+                disabled={busy !== null}
+              >
+                {busy === "delete" ? "deleting…" : "confirm delete"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2.5 text-xs"
+                onClick={() => setConfirmDelete(false)}
+                disabled={busy !== null}
+              >
+                cancel
+              </Button>
+            </>
+          )}
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground rounded p-1.5 transition-colors disabled:opacity-50"
+            onClick={refetchJob}
+            disabled={busy !== null}
+            aria-label="Refresh"
+            title="Refresh"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M1.5 2v4.5H6" />
+              <path d="M2.5 10A5.5 5.5 0 1 0 3.52 5.5" />
+            </svg>
+          </button>
         </div>
       </div>
       {err && (
@@ -422,6 +549,12 @@ function PageHeader({
           {err}
         </div>
       )}
+      <EditJobDialog
+        job={job}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        onSaved={refetchJob}
+      />
     </div>
   );
 }
