@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { CommonChat } from "@/modules/chat";
+import { useAssistantFocus } from "./focusStore";
 
 // Stage-6 `/assistant` surface. Two-pane layout: a thread-list rail on
 // the left, the selected thread's `CommonChat` on the right. Threads
@@ -16,9 +17,25 @@ export function AssistantPage() {
   const rpc = useRpc();
   const [threads, setThreads] = useState<AssistantThread[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const focusThreadId = useAssistantFocus((s) => s.currentThreadId);
+  const setFocusThreadId = useAssistantFocus((s) => s.setCurrentThreadId);
+  const refreshTick = useAssistantFocus((s) => s.refreshTick);
+  const [selectedId, setSelectedId] = useState<string | null>(focusThreadId);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // The rail's selection and the footer's bound thread are two views
+  // of the same pointer (focusStore.currentThreadId). Pushing the
+  // selection out keeps the footer in sync with the rail without the
+  // rail owning the focus store; the footer is the one that persists
+  // the choice across launches.
+  const selectThread = useCallback(
+    (id: string | null) => {
+      setSelectedId(id);
+      setFocusThreadId(id);
+    },
+    [setFocusThreadId],
+  );
 
   const refresh = useCallback(
     async (preferSelectId?: string) => {
@@ -27,22 +44,30 @@ export function AssistantPage() {
         const res = await rpc.call("list_assistant_threads", {});
         setThreads(res.threads);
         setLoaded(true);
-        setSelectedId((prev) => {
-          if (preferSelectId) return preferSelectId;
-          if (prev && res.threads.some((t) => t.id === prev)) return prev;
-          return res.threads[0]?.id ?? null;
-        });
+        const fallback = res.threads[0]?.id ?? null;
+        const next =
+          preferSelectId && res.threads.some((t) => t.id === preferSelectId)
+            ? preferSelectId
+            : selectedId && res.threads.some((t) => t.id === selectedId)
+              ? selectedId
+              : focusThreadId && res.threads.some((t) => t.id === focusThreadId)
+                ? focusThreadId
+                : fallback;
+        if (next !== selectedId) selectThread(next);
       } catch (e: unknown) {
         setErr(e instanceof Error ? e.message : String(e));
         setLoaded(true);
       }
     },
-    [rpc],
+    [rpc, selectedId, focusThreadId, selectThread],
   );
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    // `refreshTick` bumps after a footer submission — re-listing
+    // surfaces the touched thread's `updated_at` change so the rail
+    // re-sorts without the user clicking refresh.
+  }, [refresh, refreshTick]);
 
   const onNew = useCallback(async () => {
     if (busy) return;
@@ -67,7 +92,7 @@ export function AssistantPage() {
         await rpc.call("delete_assistant_thread", { thread_id: id });
         // After delete, drop selection if we just removed it; the
         // refresh will pick whichever thread now sits at the top.
-        setSelectedId((prev) => (prev === id ? null : prev));
+        if (selectedId === id) selectThread(null);
         await refresh();
       } catch (e: unknown) {
         setErr(e instanceof Error ? e.message : String(e));
@@ -75,7 +100,7 @@ export function AssistantPage() {
         setBusy(false);
       }
     },
-    [busy, rpc, refresh],
+    [busy, rpc, refresh, selectedId, selectThread],
   );
 
   const selected = threads.find((t) => t.id === selectedId) ?? null;
@@ -110,7 +135,7 @@ export function AssistantPage() {
                 >
                   <button
                     type="button"
-                    onClick={() => setSelectedId(t.id)}
+                    onClick={() => selectThread(t.id)}
                     className="flex-1 truncate text-left text-sm hover:underline"
                   >
                     {t.title}

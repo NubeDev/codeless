@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
+import { useAssistantFocus } from "./focusStore";
 
 // Stage-6 assistant view. Renders the persisted transcript for one
 // thread plus a composer that appends a user turn and the no-op
@@ -36,6 +37,7 @@ export function AssistantThreadView({
   onThreadTouched,
 }: AssistantThreadViewProps) {
   const rpc = useRpc();
+  const refreshTick = useAssistantFocus((s) => s.refreshTick);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [input, setInput] = useState("");
@@ -43,7 +45,11 @@ export function AssistantThreadView({
   const [err, setErr] = useState<string | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
-  // Reload when the parent rail swaps in a different thread.
+  // Reload when the parent rail swaps in a different thread, *or*
+  // when `refreshTick` bumps — the footer composer increments the
+  // tick after a successful `append_assistant_message`, so a
+  // message sent from the footer surfaces in this view on the next
+  // render without a per-thread subscription channel.
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
@@ -63,7 +69,7 @@ export function AssistantThreadView({
     return () => {
       cancelled = true;
     };
-  }, [rpc, thread.id]);
+  }, [rpc, thread.id, refreshTick]);
 
   // Scroll to the bottom on new messages — matches every other chat
   // surface and keeps the latest turn in view without the user having
