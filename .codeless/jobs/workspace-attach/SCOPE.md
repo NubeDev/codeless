@@ -91,14 +91,42 @@ file, then update WORKSPACE-ATTACH.md to match.
 
 1. Remove `--fs-root` or keep it as a bootstrap convenience? (Bias:
    keep.)
+   - **Decision: keep.** The flag becomes "canonicalise the path,
+     idempotently upsert into `attached_workspaces` at boot". The
+     demo, `setup/init-session.sh`, and the per-tick scripts all
+     depend on it; removing now is churn for no user-visible win
+     while the wrapper still drives boot. Revisit when
+     `init-session.sh` learns to auto-attach via the new RPC.
 2. Should `worktree-root` become per-workspace? (Bias: defer; flag the
    coupling with `DetachPolicy::LeaveRunning`.)
+   - **Decision: defer.** A single server-wide `worktree-root` is
+     still the simpler default and no user has asked for the split.
+     The change is non-trivial because `DetachPolicy::LeaveRunning`
+     keeps a runner's worktree open after the editor handle drops —
+     per-workspace roots would force a GC policy on detach that
+     interacts with that path. Land both together when we land
+     either; this stage records the coupling so a later patch does
+     not sneak the schema change in piecemeal.
 3. Should detach archive the repo row or leave it registered-but-
    detached? (Bias: leave; `remove_repo` is the destructive verb.)
+   - **Decision: leave.** Detach removes the row from
+     `attached_workspaces` only; the `repos` row stays. Detach is
+     reversible by design — the named handle is what the user
+     re-attaches to. Destruction is `remove_repo` and is intentionally
+     a separate verb so the audit trail and the one-key undo stay
+     clean.
 4. Drag-and-drop folder attach on desktop in milestone 1? (Bias: no.)
+   - **Decision: no.** The picker + `validate_workspace_path` flow
+     already covers path entry on every shell. DnD is desktop-only,
+     forks the attach surface across shells (Tauri file-drop vs
+     browser DataTransfer), and ships an affordance whose
+     ergonomic win is unproven without UX testing on the picker
+     first. Defer until milestone 4 has feedback.
 
-Do not silently re-bias. If a decision diverges from the doc's bias,
-explain *why* in this file and update WORKSPACE-ATTACH.md.
+Each decision tracks the doc's stated bias; none diverged, so the
+update to WORKSPACE-ATTACH.md is a one-line "Resolved" annotation
+under each open question pointing back at this file for the
+reasoning.
 
 ## References
 
