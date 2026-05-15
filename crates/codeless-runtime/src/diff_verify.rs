@@ -132,6 +132,14 @@ fn looks_path_like(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
+    // Whitespace inside the token means we are looking at quoted prose,
+    // not a path. Commit subjects with a trailing `.py` / `.rs` /
+    // `.md` are the realistic false positive: a `Done` bullet that
+    // reads ``committed as `WORK fix bar.rs` `` should not extract
+    // the whole quoted phrase as a claimed path.
+    if s.chars().any(char::is_whitespace) {
+        return false;
+    }
     // Reject anything that starts with punctuation; real paths start
     // with an ASCII letter, digit, dot (`./foo`) or slash. The model
     // never produces a leading slash in our examples but we accept it
@@ -302,6 +310,24 @@ mod tests {
         let done = vec!["seeded `crates/codeless-predicates/` as a new member".into()];
         let paths = extract_paths_from_done(&done);
         assert_eq!(paths, vec!["crates/codeless-predicates".to_string()]);
+    }
+
+    #[test]
+    fn rejects_backticked_commit_subjects_that_end_in_a_filename() {
+        // Realistic worker output: a bullet that says
+        // ``committed as `WORK add foo: add bar.py` `` should NOT
+        // surface `WORK add foo: add bar.py` as a claimed path.
+        // The whitespace inside the backtick disqualifies the token.
+        let done = vec![
+            "created `bar.py` exporting `bar(name)`".into(),
+            "committed as `WORK add greet: add bar.py`".into(),
+        ];
+        let paths = extract_paths_from_done(&done);
+        assert_eq!(
+            paths,
+            vec!["bar.py".to_string()],
+            "quoted commit subject must not be extracted as a path"
+        );
     }
 
     #[test]
