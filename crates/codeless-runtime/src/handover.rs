@@ -427,6 +427,37 @@ trailing prose";
     }
 
     #[test]
+    fn validate_rejects_whitespace_only_next() {
+        let mut h = default_handover("mock", JobStatus::Completed);
+        h.next = vec!["   ".into(), "\t\n".into()];
+        assert_eq!(
+            validate_handover(&h),
+            Err(HandoverValidationError::EmptyNext)
+        );
+    }
+
+    #[tokio::test]
+    async fn write_handover_rejects_empty_next_without_touching_fs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_id = JobId::new();
+        let stage_id = StageId::new();
+        let mut h = default_handover("mock", JobStatus::Completed);
+        h.next.clear();
+        let err = write_handover(tmp.path(), job_id, stage_id, &h)
+            .await
+            .expect_err("empty next rejected");
+        match err {
+            HandoverWriteError::Validation(HandoverValidationError::EmptyNext) => {}
+            other => panic!("expected EmptyNext, got {other:?}"),
+        }
+        let target = handover_path(tmp.path(), job_id, stage_id);
+        assert!(
+            !target.exists(),
+            "handover file must not be created on validation failure"
+        );
+    }
+
+    #[test]
     fn validate_accepts_populated_handover() {
         let h = default_handover("mock", JobStatus::Completed);
         assert!(validate_handover(&h).is_ok());
