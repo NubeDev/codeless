@@ -64,8 +64,14 @@ impl std::error::Error for VerdictParseError {}
 /// parser. A bullet prefix (`- PASS: …`, `* PASS: …`) is permitted
 /// and stripped.
 ///
-/// Exactly one sentinel must be present. Zero ⇒ `Missing`. Two or
-/// more ⇒ `Multiple` (including a `PASS:` and a `FAIL:` together).
+/// At least one sentinel must be present. Zero ⇒ `Missing`. Multiple
+/// sentinels of the **same kind** (e.g. two `PASS:` lines, one in
+/// `## Next` and one in `## What you need to know`) are accepted —
+/// agents commonly restate the verdict in multiple sections, and
+/// rejecting that is a false-fail that wastes tokens on retries that
+/// produce the same shape. The first sentinel's reason wins; later
+/// duplicates are ignored. A `PASS:` and a `FAIL:` together is still
+/// `Multiple` — that is a real ambiguity the runtime cannot resolve.
 pub fn parse_review_verdict(body: &str) -> Result<ReviewVerdict, VerdictParseError> {
     let mut found: Option<ReviewVerdict> = None;
     for line in body.lines() {
@@ -83,12 +89,26 @@ pub fn parse_review_verdict(body: &str) -> Result<ReviewVerdict, VerdictParseErr
         } else {
             ReviewVerdict::Fail { reason }
         };
-        if found.is_some() {
-            return Err(VerdictParseError::Multiple);
+        match &found {
+            Some(prior) if same_kind(prior, &next) => {
+                // Duplicate of the same verdict — keep the first and
+                // ignore. The audit trail (the full handover) still
+                // shows every sentinel the model wrote.
+                continue;
+            }
+            Some(_) => return Err(VerdictParseError::Multiple),
+            None => found = Some(next),
         }
-        found = Some(next);
     }
     found.ok_or(VerdictParseError::Missing)
+}
+
+fn same_kind(a: &ReviewVerdict, b: &ReviewVerdict) -> bool {
+    matches!(
+        (a, b),
+        (ReviewVerdict::Pass { .. }, ReviewVerdict::Pass { .. })
+            | (ReviewVerdict::Fail { .. }, ReviewVerdict::Fail { .. })
+    )
 }
 
 /// Strip a leading markdown bullet marker (`- `, `* `, `+ `) so the
@@ -155,9 +175,25 @@ mod tests {
     }
 
     #[test]
-    fn two_pass_lines_rejected() {
-        let body = "PASS: first\nPASS: second\n";
-        assert_eq!(parse_review_verdict(body), Err(VerdictParseError::Multiple));
+    fn two_pass_lines_accepted_first_wins() {
+        // Agents commonly restate the verdict across sections (a PASS
+        // bullet in `## Next` plus a recap in `## What you need to
+        // know`). Accepting the duplicate avoids the false-fail
+        // class; the first sentinel's reason is the canonical one.
+        let body = "PASS: first reason\nPASS: second reason that elaborates\n";
+        match parse_review_verdict(body).unwrap() {
+            ReviewVerdict::Pass { reason } => assert_eq!(reason, "first reason"),
+            other => panic!("expected Pass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_fail_lines_accepted_first_wins() {
+        let body = "FAIL: original cause\nFAIL: same cause restated\n";
+        match parse_review_verdict(body).unwrap() {
+            ReviewVerdict::Fail { reason } => assert_eq!(reason, "original cause"),
+            other => panic!("expected Fail, got {other:?}"),
+        }
     }
 
     #[test]
