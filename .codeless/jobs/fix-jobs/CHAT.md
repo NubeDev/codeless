@@ -1,29 +1,28 @@
 # Chat for this job
 
-## user @ 2026-05-15T04:29:42Z
+## user @ 2026-05-15T04:29:59Z
 
 let me know rough idea of the scope
 
-## assistant @ 2026-05-15T04:29:55Z
+## assistant @ 2026-05-15T04:30:10Z
 
-Here's the rough scope:
+The job is narrowly scoped — a single UI regression fix, no backend changes, no architectural rewrites.
 
-**What this job is fixing:** A regression where opening two job-detail tabs simultaneously leaves one blank. The design intent of `JobDetailStack` is to mount all job-detail `JobPage` instances in parallel and toggle visibility — so switching is instant. Something is breaking that.
+**What it is:** Two job-detail tabs mounted simultaneously by `JobDetailStack`, but one renders blank. The fix must preserve the "all mounted, toggle visibility" design.
 
-**Investigation targets (3 likely culprits):**
-1. SSE/event stream singleton keyed by connection instead of `(connection, jobId)` — second mount swaps the server-side scope
-2. Zustand chat/session store with a "current job" slice not keyed by `jobId` — second mount clobbers first's pointer
-3. `useJob(jobId)` cache with a shared in-flight-request map not keyed by `jobId`
-
-**Size of the job:** Small-to-medium. All changes are in `codeless/ui/codeless-ui/src/` — no Rust, no backend. The constraint list is tight: no remount workaround, no collapsing to one active `JobPage`, no `key={jobId}` trick.
+**Investigation targets (pick 1-2, likely):**
+- SSE subscription manager — module-level singleton not keyed by `(connection, jobId)`
+- Zustand chat store — a "current job/session" slice clobbered by the second mount
+- `useJob` query cache — shared in-flight map resolving into the wrong instance
 
 **Deliverables:**
-- SCOPE.md §Reproduction + §Root cause filled in
-- One failing RTL test (mounts two `JobPage` instances against different `jobId`s with `MockRpcClient`)
-- One fix commit per distinct root cause (could be one, could be two or three)
-- SCOPE.md §Manual verification filled in
-- PR to `master`
+1. Failing RTL test (two `JobPage` instances, `MockRpcClient`, both must resolve independently)
+2. Minimal fix at the shared-state site — one commit per root cause
+3. Manual verification note in `SCOPE.md`
+4. PR to `master`
 
-**Two REVIEW gates** — one before the fix lands (to validate the root cause + failing test), one before the PR merges.
+**Two REVIEW gates** (human approval required before fixing, and before merging).
 
-Rough effort: 2–4 hours of agent time spread across 7 stages, assuming the root cause is a single shared singleton. If two or three independent sites are involved, add a fix commit per site but the investigation cost is the same.
+**Explicit out of scope:** Rust/backend, draft-job UX, workspace-attach work, any "serialize to one tab" workaround, `key={jobId}` remount hack.
+
+Rough effort: stages 1–2 are read-only investigation (~S each), stage 3 is the failing test (~M), stage 5 is the fix (~M), stage 6 is verification (~S). Total wall-clock with reviews gating between them: probably 2–3 sessions.
