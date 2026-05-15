@@ -9,9 +9,11 @@
 use std::path::PathBuf;
 
 use codeless_types::{
-    CostCents, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId,
-    JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus,
-    StopReason, Task, TaskId, TaskStatus, UnixMillis,
+    AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
+    AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
+    AssistantThread, AssistantThreadId, CostCents, Event, EventCursor, EventEnvelope, FsEntry,
+    FsEntryKind, GitAuth, Job, JobId, JobStatus, Repo, RepoId, Review, ReviewId, ReviewStatus,
+    Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -41,7 +43,17 @@ fn collect() -> TypeCollection {
         .register_mut::<Event>()
         .register_mut::<EventEnvelope>()
         .register_mut::<FsEntry>()
-        .register_mut::<FsEntryKind>();
+        .register_mut::<FsEntryKind>()
+        .register_mut::<AssistantThreadId>()
+        .register_mut::<AssistantMessageId>()
+        .register_mut::<AssistantAttachmentId>()
+        .register_mut::<AssistantThread>()
+        .register_mut::<AssistantMessage>()
+        .register_mut::<AssistantMessageRole>()
+        .register_mut::<AssistantAttachment>()
+        .register_mut::<AssistantAction>()
+        .register_mut::<AssistantActionStatus>()
+        .register_mut::<AssistantActionCard>();
     types
 }
 

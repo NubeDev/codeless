@@ -14,7 +14,7 @@ import {
 
 import { EditJobDialog } from "./EditJobDialog";
 import { CostCell, WallClockCell } from "./JobRow";
-import { JobChat } from "./RunPane";
+import { CommonChat } from "../chat";
 import { SpecPane } from "./spec/SpecPane";
 import { StageDetail } from "./StageDetail";
 import { StagesOverview } from "./StagesOverview";
@@ -313,7 +313,8 @@ export function JobPage({
       <div className="min-h-0 flex-1 overflow-hidden">
         {activeTab.kind === "system" && activeTab.id === "CHAT" && (
           <div className="flex h-full flex-col px-4 py-4 md:px-8">
-            <JobChat
+            <CommonChat
+              kind="job"
               job={job}
               uiLocation={`jobs/${job.id}`}
               refetchJob={refetchJob}

@@ -1,6 +1,8 @@
 use codeless_types::{
-    FsEntry, FsEntryKind, GitAuth, Job, JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage,
-    StageId, TaskId, UnixMillis, WorkspaceMode,
+    AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
+    AssistantMessageId, AssistantThread, AssistantThreadId, FsEntry, FsEntryKind, GitAuth, Job,
+    JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, TaskId, UnixMillis,
+    WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -931,3 +933,179 @@ pub struct StopActiveResult {
     /// no chat turn was scoped to this job at call time.
     pub cancelled_chat_task_ids: Vec<TaskId>,
 }
+
+/// `assistant.listThreads`. No filters in v1 — threads are unscoped
+/// (no per-repo / per-job FK by design, see `AssistantThread`), so the
+/// list is just "every thread the operator has on this host". Returned
+/// rows are ordered by `updated_at` descending so the most recently
+/// touched conversation lands at the top of the rail without the UI
+/// having to re-sort.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListAssistantThreadsArgs {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListAssistantThreadsResult {
+    pub threads: Vec<AssistantThread>,
+}
+
+/// `assistant.createThread`. The title is optional at create time so
+/// the UI can mint a thread on first message and let the assistant
+/// pick a title later (or leave the default). Empty / all-whitespace
+/// titles are normalised to the default "New thread" so listings
+/// never render a blank rail entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct CreateAssistantThreadArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// `assistant.deleteThread`. Cascades through `assistant_messages` and
+/// `assistant_attachments` via the SQLite FK; the on-disk
+/// `<codeless-data>/threads/<thread_id>/` directory is removed in the
+/// same call so attachments do not outlive the row. Idempotent —
+/// `NotFound` is returned for an unknown id so the UI can distinguish
+/// "already deleted" from "delete failed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct DeleteAssistantThreadArgs {
+    pub thread_id: AssistantThreadId,
+}
+
+/// `assistant.uploadAttachment`. Drop a binary blob into a thread's
+/// attachments directory under
+/// `<codeless-data>/threads/<thread_id>/attachments/<id>-<filename>`
+/// and insert the index row. The UI references the returned
+/// `AssistantAttachment.id` in subsequent turns; the model reads the
+/// file from a path the runtime resolves server-side, so the wire
+/// never carries a host filesystem path.
+///
+/// `NotFound` for an unknown thread; `InvalidArgument` for a filename
+/// that fails the basename sanitiser or an undecodable base64 body;
+/// `Internal` when the runtime has no `<codeless-data>` root
+/// configured (tests that omit `with_assistant_data_dir`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UploadAssistantAttachmentArgs {
+    pub thread_id: AssistantThreadId,
+    /// Basename only — directory components are stripped server-side.
+    pub filename: String,
+    /// Standard base64 (with or without padding). Decoded server-side;
+    /// invalid input returns `InvalidArgument`.
+    pub content_b64: String,
+    /// Optional MIME type the UI sniffed at drop time. Surfaced back
+    /// to the model in the chat preamble so it can pick the right
+    /// reading strategy when the runner supports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UploadAssistantAttachmentResult {
+    pub attachment: AssistantAttachment,
+}
+
+/// `assistant.listMessages`. The full transcript for one thread,
+/// ordered by `created_at` ascending so the UI can render top-to-bottom
+/// without an extra sort. Empty result for a freshly-minted thread —
+/// callers distinguish that from a missing thread by issuing the
+/// list against a known id; this method itself does not 404 because
+/// the alternative ("which is empty, the rail entry or this list?")
+/// is the same response for the renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListAssistantMessagesArgs {
+    pub thread_id: AssistantThreadId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListAssistantMessagesResult {
+    pub messages: Vec<AssistantMessage>,
+}
+
+/// `assistant.appendMessage`. Persist a user turn into a thread and
+/// synthesise an assistant reply in the same round-trip. Stage 6 ships
+/// a no-op responder — the assistant message is a fixed acknowledgement
+/// — so the surface is end-to-end testable before the planner / tool
+/// loop lands. Later stages swap the responder for the real runner
+/// without changing the wire shape; the UI keeps treating
+/// `AppendAssistantMessageResult` as "two rows the rail should
+/// re-render."
+///
+/// The thread's `updated_at` is bumped so a chat-only interaction
+/// re-sorts the rail to the top, matching the touch semantics
+/// `upload_assistant_attachment` already established.
+///
+/// `NotFound` for an unknown `thread_id`; `InvalidArgument` for an
+/// empty / all-whitespace `content` (rejecting it server-side keeps
+/// the rail from filling with blank rows when the UI accidentally
+/// fires send on an empty composer).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct AppendAssistantMessageArgs {
+    pub thread_id: AssistantThreadId,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct AppendAssistantMessageResult {
+    pub user_message: AssistantMessage,
+    pub assistant_message: AssistantMessage,
+}
+
+/// `assistant.confirmAction`. Dispatch the tool call proposed by a
+/// prior `Assistant`-role message whose `meta_json` carries an
+/// `AssistantActionCard`. The runtime executes the same `RpcServer`
+/// method a direct caller would invoke, then writes a trailing
+/// `Tool`-role message with a structured result summary so the
+/// transcript captures both the proposal and what happened. The
+/// proposal row's `meta_json.status` is flipped to `confirmed` or
+/// `failed` in the same transaction so the UI does not have to keep
+/// confirm/cancel buttons live after the click.
+///
+/// `NotFound` for an unknown `message_id`; `InvalidArgument` when the
+/// message is not an action card or is no longer pending (already
+/// confirmed/cancelled — confirming twice is a no-op the UI shouldn't
+/// be able to trigger, but the server is the source of truth).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ConfirmAssistantActionArgs {
+    pub thread_id: AssistantThreadId,
+    pub message_id: AssistantMessageId,
+}
+
+/// Result of an action confirmation. `card` is the proposal row after
+/// the status flip — the UI swaps it in place to retire the buttons.
+/// `tool_message` is the newly-appended `Tool`-role row carrying the
+/// structured outcome (`content` is the human summary; `meta_json`
+/// carries the original action + a serde-tagged result payload so the
+/// renderer can show e.g. a list of jobs without re-querying).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ConfirmAssistantActionResult {
+    pub card: AssistantMessage,
+    pub tool_message: AssistantMessage,
+}
+
+/// `assistant.cancelAction`. Flip a pending action card's status to
+/// `cancelled` and do **nothing else** — no RPC is dispatched, no
+/// `Tool` message appended. The card row stays in the transcript so
+/// the user can see what they declined, but its confirm/cancel
+/// buttons retire.
+///
+/// `NotFound` for an unknown `message_id`; `InvalidArgument` when
+/// the row is not an action card or is no longer pending. The empty
+/// success case returns the updated card so the UI can re-render
+/// without a follow-up list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct CancelAssistantActionArgs {
+    pub thread_id: AssistantThreadId,
+    pub message_id: AssistantMessageId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct CancelAssistantActionResult {
+    pub card: AssistantMessage,
+}
+
+/// Re-exported here so wire-snapshot consumers see the action-card
+/// types in the same module they see the other assistant args. The
+/// proposal lives on `AssistantMessage.meta_json` as a JSON-encoded
+/// `AssistantActionCard`; exposing the type at the methods boundary
+/// keeps the TS bindings honest — without this, `meta_json` would
+/// remain an opaque string on the wire surface generated for the UI.
+pub type AssistantActionCardPayload = AssistantActionCard;
+pub type AssistantActionPayload = AssistantAction;

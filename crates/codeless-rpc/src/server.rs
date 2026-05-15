@@ -3,22 +3,25 @@ use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
-    FsCwdResult,
-    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
-    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, ListJobFilesArgs,
-    JobReportArgs, JobReportResult, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
+    DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
+    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
+    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
     WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
+use codeless_types::AssistantThread;
 
 /// The single typed entry point every transport adapts. Browser SSE/REST,
 /// Tauri IPC, and the CLI's in-process call site all reach the runtime
@@ -271,4 +274,88 @@ pub trait RpcServer: Send + Sync + 'static {
     /// instead of `stop_job` so it works on chat-turns over a
     /// terminal job too.
     async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult>;
+
+    /// List every assistant thread on this host, newest-touched first.
+    /// Unfiltered by design — see `AssistantThread`: threads are not
+    /// scoped to a repo or job. Empty list when the operator has never
+    /// opened the assistant surface.
+    async fn list_assistant_threads(
+        &self,
+        args: ListAssistantThreadsArgs,
+    ) -> RpcResult<ListAssistantThreadsResult>;
+
+    /// Mint a new assistant thread row. The returned `AssistantThread`
+    /// carries the freshly-minted ULID id and `created_at` / `updated_at`
+    /// stamped at the same instant; the UI uses the id to select the
+    /// thread in the rail without a round-trip back to `list_assistant_threads`.
+    async fn create_assistant_thread(
+        &self,
+        args: CreateAssistantThreadArgs,
+    ) -> RpcResult<AssistantThread>;
+
+    /// Delete an assistant thread row and cascade through its messages
+    /// and attachments. The on-disk attachments directory is removed
+    /// in the same call so blobs do not outlive the row. `NotFound`
+    /// for an unknown id — the UI surfaces this as "already deleted".
+    async fn delete_assistant_thread(&self, args: DeleteAssistantThreadArgs) -> RpcResult<()>;
+
+    /// Upload a binary blob into an assistant thread's attachments
+    /// directory. The runtime decodes the base64 body, writes the file
+    /// under `<codeless-data>/threads/<thread_id>/attachments/`, and
+    /// inserts the index row. Returns the persisted
+    /// `AssistantAttachment` so the UI can render the entry without a
+    /// follow-up list.
+    async fn upload_assistant_attachment(
+        &self,
+        args: UploadAssistantAttachmentArgs,
+    ) -> RpcResult<UploadAssistantAttachmentResult>;
+
+    /// Read every persisted turn for one thread. Returned messages are
+    /// ordered by `created_at` ascending so the UI renders the conversation
+    /// top-to-bottom without sorting. An unknown thread returns an empty
+    /// list rather than `NotFound` — the rail row that pointed at it is
+    /// authoritative for "does this thread exist", and the chat view's
+    /// only sensible response to a missing thread is the same empty
+    /// canvas it shows on a freshly-minted one.
+    async fn list_assistant_messages(
+        &self,
+        args: ListAssistantMessagesArgs,
+    ) -> RpcResult<ListAssistantMessagesResult>;
+
+    /// Persist the user's turn and synthesise an assistant response in
+    /// the same call. The thread's `updated_at` is bumped so the rail
+    /// re-sorts to put the conversation at the top. The stage-6
+    /// responder is a fixed no-op acknowledgement so the surface is
+    /// end-to-end testable before the real planner / tool loop lands;
+    /// later stages swap the body without changing this wire shape.
+    async fn append_assistant_message(
+        &self,
+        args: AppendAssistantMessageArgs,
+    ) -> RpcResult<AppendAssistantMessageResult>;
+
+    /// Dispatch the tool call carried on a pending action card. The
+    /// runtime executes the underlying `RpcServer` method, flips the
+    /// proposal's `meta_json.status` to `Confirmed` or `Failed`, and
+    /// appends a `Tool`-role message carrying the structured result.
+    /// Capabilities are derived **server-side** from the proposal row,
+    /// never trusted from the client (see SCOPE.md — the `kind` prop on
+    /// `CommonChat` is UI-only).
+    ///
+    /// `NotFound` for an unknown message; `InvalidArgument` when the
+    /// row is not an action card or is no longer pending; downstream
+    /// errors (`Conflict`, `NotFound`, …) propagate after the status
+    /// flip so the UI can render the failure inline.
+    async fn confirm_assistant_action(
+        &self,
+        args: ConfirmAssistantActionArgs,
+    ) -> RpcResult<ConfirmAssistantActionResult>;
+
+    /// Decline a pending action card. Flips `meta_json.status` to
+    /// `Cancelled` and does nothing else — no RPC is dispatched, no
+    /// trailing `Tool` message is appended. The card row stays in the
+    /// transcript as a record of the declined proposal.
+    async fn cancel_assistant_action(
+        &self,
+        args: CancelAssistantActionArgs,
+    ) -> RpcResult<CancelAssistantActionResult>;
 }

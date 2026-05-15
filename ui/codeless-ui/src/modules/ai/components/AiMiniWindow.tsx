@@ -35,7 +35,7 @@ import { useAgentsStore } from "../store/agentsStore";
 import { getOrCreateChat, useChatStore } from "../store/chatStore";
 import { usePlanStore } from "../store/planStore";
 import { AgentSwitcher } from "./AgentSwitcher";
-import { AiChatView } from "./AiChat";
+import { CommonChat } from "../../chat";
 import { PlanDiffReview } from "./PlanDiffReview";
 import { TodoStrip } from "./TodoStrip";
 
@@ -147,7 +147,8 @@ function Body({
           <EmptyState onPick={focusInput} />
         ) : (
           <div className="flex min-h-0 flex-1 flex-col [&_.text-sm]:text-[12px] [&_p]:leading-relaxed">
-            <AiChatView
+            <CommonChat
+              kind="ai"
               messages={helpers.messages}
               status={helpers.status}
               error={helpers.error}

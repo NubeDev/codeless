@@ -106,8 +106,238 @@ export type AgentChatResult = {
 	task_id: TaskId,
 };
 
+/**
+ *  `assistant.appendMessage`. Persist a user turn into a thread and
+ *  synthesise an assistant reply in the same round-trip. Stage 6 ships
+ *  a no-op responder — the assistant message is a fixed acknowledgement
+ *  — so the surface is end-to-end testable before the planner / tool
+ *  loop lands. Later stages swap the responder for the real runner
+ *  without changing the wire shape; the UI keeps treating
+ *  `AppendAssistantMessageResult` as "two rows the rail should
+ *  re-render."
+ * 
+ *  The thread's `updated_at` is bumped so a chat-only interaction
+ *  re-sorts the rail to the top, matching the touch semantics
+ *  `upload_assistant_attachment` already established.
+ * 
+ *  `NotFound` for an unknown `thread_id`; `InvalidArgument` for an
+ *  empty / all-whitespace `content` (rejecting it server-side keeps
+ *  the rail from filling with blank rows when the UI accidentally
+ *  fires send on an empty composer).
+ */
+export type AppendAssistantMessageArgs = {
+	thread_id: AssistantThreadId,
+	content: string,
+};
+
+export type AppendAssistantMessageResult = {
+	user_message: AssistantMessage,
+	assistant_message: AssistantMessage,
+};
+
 export type ApproveReviewArgs = {
 	review_id: ReviewId,
+};
+
+/**
+ *  Proposed view/manage tool call, stored inside an assistant turn's
+ *  `meta_json` as a JSON document (see `AssistantActionCard::META_KIND`).
+ *  Each variant corresponds 1:1 to the `RpcServer` method the runtime
+ *  will dispatch on confirmation; only the args the tool actually
+ *  needs are captured here so the wire form stays narrow enough for a
+ *  human to read in a diff.
+ * 
+ *  The `restart` alias maps to `rerun_job` because there is no separate
+ *  `restart_job` RPC — the project uses "rerun" for the clean-attempt
+ *  flow, but the assistant scope (stage 7) and chat UX speak in terms
+ *  of "restart". The alias lives here, not in the RPC layer, so the
+ *  server surface stays unsurprising for non-assistant callers.
+ */
+export type AssistantAction = { tool: "list_jobs"; repo_id?: RepoId | null } | { tool: "get_job"; job_id: JobId } | { tool: "start_job"; job_id: JobId } | { tool: "stop_job"; job_id: JobId } | { tool: "pause_job"; job_id: JobId } | { tool: "resume_job"; job_id: JobId } | 
+/**
+ *  "Restart" in chat is "rerun" in the RPC surface — same caps and
+ *  prompt, fresh `JobId` and branch. Naming preserved so the UI
+ *  can keep the user-facing verb without the back-end gaining a
+ *  duplicate method.
+ */
+{ tool: "restart_job"; job_id: JobId } | 
+/**
+ *  Partial-update of a non-running job. Every field is optional;
+ *  `None` means "leave unchanged". The chat parser only fills the
+ *  fields the user mentioned, so a confirmation card stays a thin
+ *  patch instead of a full echo of the job row.
+ */
+{ tool: "update_job"; job_id: JobId; runner?: string | null; model?: string | null; permission_mode?: string | null; effort?: string | null; cost_cap_cents?: number | null; wall_clock_cap_ms?: number | null; branch?: string | null } | 
+/**
+ *  Propose a new job. Stage-8 "draft from conversation": the
+ *  planner (or its slash-command stand-in) folds the user's
+ *  request into a fully-specified `submit_job` payload that the
+ *  user reviews and confirms. Confirmation dispatches `submit_job`
+ *  with `start_immediately = false` so the row lands in `Draft`
+ *  (SCOPE.md Decisions §3 — no "just do it" path).
+ * 
+ *  Every field that drives `SubmitJobArgs` is captured explicitly
+ *  here so the confirmation card is a complete review of what
+ *  will be created. Defaults applied by the parser are still
+ *  surfaced on the card — the user sees exactly what they are
+ *  approving instead of guessing what is implicit.
+ */
+{ tool: "draft_job"; repo_id: RepoId; prompt: string; runner: string; branch: string; cost_cap_cents: number; wall_clock_cap_ms: number; workspace_mode?: WorkspaceMode | null; model?: string | null; permission_mode?: string | null; effort?: string | null } | 
+/**
+ *  Rewrite one of the job's spec files (default `SCOPE.md`) with
+ *  new content. Stage-9 "edit-scope": the chat surface proposes
+ *  the full new file body; confirmation dispatches `write_job_file`
+ *  after the paused-job guard runs (Running / Queued /
+ *  AwaitingReview rows refuse the edit — the user pauses the job
+ *  first). The card stores the full proposed body so the
+ *  renderer can compute a unified diff against the current file
+ *  on the fly; only the filename and body cross the wire, so
+ *  `meta_json` stays a flat document a human can read in `git log`.
+ */
+{ tool: "edit_scope"; job_id: JobId; 
+/**
+ *  Target file under `<repo>/.codeless/jobs/<name>/`. Defaults
+ *  to `SCOPE.md` at the parser layer; carried explicitly here
+ *  so a future planner can target `WORKFLOW.md` (or another
+ *  non-template file) without a second action variant. The
+ *  server rejects `template.yaml` — `update_job_template` is
+ *  the correct path for the spec (renames refused there too).
+ */
+filename: string; new_content: string };
+
+/**
+ *  The structured payload of an `Assistant`-role message that
+ *  proposes a tool call. Serialised into `AssistantMessage.meta_json`
+ *  with `kind == META_KIND` so the renderer can discriminate between
+ *  a plain markdown reply (NULL meta or unknown kind) and an action
+ *  card without a separate column on the row.
+ */
+export type AssistantActionCard = {
+	/**
+	 *  Discriminator. Always [`AssistantActionCard::META_KIND`]; the
+	 *  field exists so a future `meta_json` variant (e.g. attachment
+	 *  preview, draft-job card) can coexist on the same column.
+	 */
+	kind: string,
+	status: AssistantActionStatus,
+	action: AssistantAction,
+};
+
+/**
+ *  Lifecycle of an action card. Stored as the `status` field inside
+ *  the card's `meta_json` document so the chat history captures both
+ *  the original proposal and what the user did with it.
+ */
+export type AssistantActionStatus = 
+// Awaiting the user's confirm/cancel click.
+"pending" | 
+/**
+ *  Confirmed and dispatched; a subsequent `Tool` message carries
+ *  the structured result.
+ */
+"confirmed" | 
+// User cancelled — no RPC fired, no state changed.
+"cancelled" | 
+/**
+ *  Confirmed but the dispatched RPC returned an error. The error
+ *  summary lives on the trailing `Tool` message.
+ */
+"failed";
+
+/**
+ *  One file uploaded into a thread. The blob lives under
+ *  `<codeless-data>/threads/<thread_id>/attachments/<stored_filename>`
+ *  (SCOPE.md Decisions §1); this row is the durable index the UI
+ *  renders and the cascade target when `assistant.deleteThread` runs.
+ *  `stored_filename` is the on-disk basename (id-prefixed for
+ *  collision-resistance); `original_name` is what the user dropped.
+ */
+export type AssistantAttachment = {
+	id: AssistantAttachmentId,
+	thread_id: AssistantThreadId,
+	original_name: string,
+	stored_filename: string,
+	mime_type: string | null,
+	size_bytes: number,
+	created_at: UnixMillis,
+};
+
+//Identity of one file uploaded into an assistant thread (`<codeless-data>/threads/<thread_id>/attachments/`).
+export type AssistantAttachmentId = string;
+
+/**
+ *  One persisted turn on a thread. `meta_json` mirrors the shape of
+ *  the `chat-message` event payload so the assistant transcript and
+ *  the in-job chat can share one renderer (see SCOPE.md Stage 3 —
+ *  `CommonChat`). NULL meta is the bare-text case the UI renders as
+ *  plain markdown.
+ */
+export type AssistantMessage = {
+	id: AssistantMessageId,
+	thread_id: AssistantThreadId,
+	role: AssistantMessageRole,
+	content: string,
+	meta_json: string | null,
+	created_at: UnixMillis,
+};
+
+//Identity of one persisted turn (user, assistant, system, or tool) in an assistant thread.
+export type AssistantMessageId = string;
+
+/**
+ *  Who said the message. Kebab-case on the wire to match the rest of
+ *  the codebase's status enums and the `chat-message` event payload
+ *  that the CommonChat renderer shares with the live job chat.
+ */
+export type AssistantMessageRole = "user" | "assistant" | 
+/**
+ *  Runtime-injected context (thread rename, attachment added). The
+ *  UI renders these as muted dividers rather than chat bubbles.
+ */
+"system" | 
+/**
+ *  Tool call surface from an action card. The structured payload
+ *  lives in `AssistantMessage.meta_json`; `content` is the
+ *  human-readable summary the UI falls back to when it cannot
+ *  render the card.
+ */
+"tool";
+
+/**
+ *  One conversational thread on the `/assistant` surface — see
+ *  `DOCS/ASSISTANT-SCOPE.md`. Threads outlive any single job/worktree
+ *  and therefore have no foreign key onto `repos` or `jobs`; the
+ *  assistant is allowed to span jobs by design (Decisions §1).
+ */
+export type AssistantThread = {
+	id: AssistantThreadId,
+	title: string,
+	created_at: UnixMillis,
+	updated_at: UnixMillis,
+};
+
+//Identity of one conversational thread on the /assistant surface.
+export type AssistantThreadId = string;
+
+/**
+ *  `assistant.cancelAction`. Flip a pending action card's status to
+ *  `cancelled` and do **nothing else** — no RPC is dispatched, no
+ *  `Tool` message appended. The card row stays in the transcript so
+ *  the user can see what they declined, but its confirm/cancel
+ *  buttons retire.
+ * 
+ *  `NotFound` for an unknown `message_id`; `InvalidArgument` when
+ *  the row is not an action card or is no longer pending. The empty
+ *  success case returns the updated card so the UI can re-render
+ *  without a follow-up list.
+ */
+export type CancelAssistantActionArgs = {
+	thread_id: AssistantThreadId,
+	message_id: AssistantMessageId,
+};
+
+export type CancelAssistantActionResult = {
+	card: AssistantMessage,
 };
 
 /**
@@ -217,11 +447,68 @@ export type CommentReviewArgs = {
 };
 
 /**
+ *  `assistant.confirmAction`. Dispatch the tool call proposed by a
+ *  prior `Assistant`-role message whose `meta_json` carries an
+ *  `AssistantActionCard`. The runtime executes the same `RpcServer`
+ *  method a direct caller would invoke, then writes a trailing
+ *  `Tool`-role message with a structured result summary so the
+ *  transcript captures both the proposal and what happened. The
+ *  proposal row's `meta_json.status` is flipped to `confirmed` or
+ *  `failed` in the same transaction so the UI does not have to keep
+ *  confirm/cancel buttons live after the click.
+ * 
+ *  `NotFound` for an unknown `message_id`; `InvalidArgument` when the
+ *  message is not an action card or is no longer pending (already
+ *  confirmed/cancelled — confirming twice is a no-op the UI shouldn't
+ *  be able to trigger, but the server is the source of truth).
+ */
+export type ConfirmAssistantActionArgs = {
+	thread_id: AssistantThreadId,
+	message_id: AssistantMessageId,
+};
+
+/**
+ *  Result of an action confirmation. `card` is the proposal row after
+ *  the status flip — the UI swaps it in place to retire the buttons.
+ *  `tool_message` is the newly-appended `Tool`-role row carrying the
+ *  structured outcome (`content` is the human summary; `meta_json`
+ *  carries the original action + a serde-tagged result payload so the
+ *  renderer can show e.g. a list of jobs without re-querying).
+ */
+export type ConfirmAssistantActionResult = {
+	card: AssistantMessage,
+	tool_message: AssistantMessage,
+};
+
+/**
  *  USD amount in integer cents. Per SCOPE.md "All money is stored as
  *  `INTEGER` cents-USD (no floats, no rounding surprises)." Conversions
  *  to display strings live in the UI layer, not here.
  */
 export type CostCents = number;
+
+/**
+ *  `assistant.createThread`. The title is optional at create time so
+ *  the UI can mint a thread on first message and let the assistant
+ *  pick a title later (or leave the default). Empty / all-whitespace
+ *  titles are normalised to the default "New thread" so listings
+ *  never render a blank rail entry.
+ */
+export type CreateAssistantThreadArgs = {
+	title?: string | null,
+};
+
+/**
+ *  `assistant.deleteThread`. Cascades through `assistant_messages` and
+ *  `assistant_attachments` via the SQLite FK; the on-disk
+ *  `<codeless-data>/threads/<thread_id>/` directory is removed in the
+ *  same call so attachments do not outlive the row. Idempotent —
+ *  `NotFound` is returned for an unknown id so the UI can distinguish
+ *  "already deleted" from "delete failed".
+ */
+export type DeleteAssistantThreadArgs = {
+	thread_id: AssistantThreadId,
+};
 
 /**
  *  One row from the `events` table. Variants are tagged by the
@@ -669,6 +956,37 @@ export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "co
  */
 "paused";
 
+/**
+ *  `assistant.listMessages`. The full transcript for one thread,
+ *  ordered by `created_at` ascending so the UI can render top-to-bottom
+ *  without an extra sort. Empty result for a freshly-minted thread —
+ *  callers distinguish that from a missing thread by issuing the
+ *  list against a known id; this method itself does not 404 because
+ *  the alternative ("which is empty, the rail entry or this list?")
+ *  is the same response for the renderer.
+ */
+export type ListAssistantMessagesArgs = {
+	thread_id: AssistantThreadId,
+};
+
+export type ListAssistantMessagesResult = {
+	messages: AssistantMessage[],
+};
+
+/**
+ *  `assistant.listThreads`. No filters in v1 — threads are unscoped
+ *  (no per-repo / per-job FK by design, see `AssistantThread`), so the
+ *  list is just "every thread the operator has on this host". Returned
+ *  rows are ordered by `updated_at` descending so the most recently
+ *  touched conversation lands at the top of the rail without the UI
+ *  having to re-sort.
+ */
+export type ListAssistantThreadsArgs = Record<string, never>;
+
+export type ListAssistantThreadsResult = {
+	threads: AssistantThread[],
+};
+
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
 	repo_id: RepoId | null,
@@ -978,6 +1296,41 @@ export type TaskStatus = "enqueued" | "running" | "completed" | "failed" | "canc
  *  `INTEGER` round-trips with `sqlx` (which surfaces signed integers).
  */
 export type UnixMillis = number;
+
+/**
+ *  `assistant.uploadAttachment`. Drop a binary blob into a thread's
+ *  attachments directory under
+ *  `<codeless-data>/threads/<thread_id>/attachments/<id>-<filename>`
+ *  and insert the index row. The UI references the returned
+ *  `AssistantAttachment.id` in subsequent turns; the model reads the
+ *  file from a path the runtime resolves server-side, so the wire
+ *  never carries a host filesystem path.
+ * 
+ *  `NotFound` for an unknown thread; `InvalidArgument` for a filename
+ *  that fails the basename sanitiser or an undecodable base64 body;
+ *  `Internal` when the runtime has no `<codeless-data>` root
+ *  configured (tests that omit `with_assistant_data_dir`).
+ */
+export type UploadAssistantAttachmentArgs = {
+	thread_id: AssistantThreadId,
+	// Basename only — directory components are stripped server-side.
+	filename: string,
+	/**
+	 *  Standard base64 (with or without padding). Decoded server-side;
+	 *  invalid input returns `InvalidArgument`.
+	 */
+	content_b64: string,
+	/**
+	 *  Optional MIME type the UI sniffed at drop time. Surfaced back
+	 *  to the model in the chat preamble so it can pick the right
+	 *  reading strategy when the runner supports it.
+	 */
+	mime_type?: string | null,
+};
+
+export type UploadAssistantAttachmentResult = {
+	attachment: AssistantAttachment,
+};
 
 /**
  *  Drop a binary blob (image, PDF, csv, …) into the job worktree

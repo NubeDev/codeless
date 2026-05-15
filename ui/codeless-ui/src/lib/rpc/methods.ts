@@ -31,6 +31,25 @@ import type {
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
   ShellSessionRunOutput,
+  AssistantThread,
+  AssistantMessage,
+  ListAssistantThreadsArgs,
+  ListAssistantThreadsResult,
+  CreateAssistantThreadArgs,
+  DeleteAssistantThreadArgs,
+  UploadAssistantAttachmentArgs,
+  UploadAssistantAttachmentResult,
+  ListAssistantMessagesArgs,
+  ListAssistantMessagesResult,
+  AppendAssistantMessageArgs,
+  AppendAssistantMessageResult,
+  AssistantAction,
+  AssistantActionCard,
+  AssistantActionStatus,
+  ConfirmAssistantActionArgs,
+  ConfirmAssistantActionResult,
+  CancelAssistantActionArgs,
+  CancelAssistantActionResult,
 } from "./wire";
 
 export interface AddRepoArgs {
@@ -496,6 +515,41 @@ export interface RpcMethodMap {
     result: UploadChatAttachmentResult;
   };
   cancel_chat_task: { args: CancelChatTaskArgs; result: null };
+
+  // Assistant surface (DOCS/ASSISTANT-SCOPE.md). Persistence-only in
+  // stage 5; later stages add listMessages / subscribe / actions.
+  list_assistant_threads: {
+    args: ListAssistantThreadsArgs;
+    result: ListAssistantThreadsResult;
+  };
+  create_assistant_thread: {
+    args: CreateAssistantThreadArgs;
+    result: AssistantThread;
+  };
+  delete_assistant_thread: {
+    args: DeleteAssistantThreadArgs;
+    result: null;
+  };
+  upload_assistant_attachment: {
+    args: UploadAssistantAttachmentArgs;
+    result: UploadAssistantAttachmentResult;
+  };
+  list_assistant_messages: {
+    args: ListAssistantMessagesArgs;
+    result: ListAssistantMessagesResult;
+  };
+  append_assistant_message: {
+    args: AppendAssistantMessageArgs;
+    result: AppendAssistantMessageResult;
+  };
+  confirm_assistant_action: {
+    args: ConfirmAssistantActionArgs;
+    result: ConfirmAssistantActionResult;
+  };
+  cancel_assistant_action: {
+    args: CancelAssistantActionArgs;
+    result: CancelAssistantActionResult;
+  };
 }
 
 export type {
@@ -506,6 +560,25 @@ export type {
   StopActiveResult,
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
+  AssistantThread,
+  AssistantMessage,
+  ListAssistantThreadsArgs,
+  ListAssistantThreadsResult,
+  CreateAssistantThreadArgs,
+  DeleteAssistantThreadArgs,
+  UploadAssistantAttachmentArgs,
+  UploadAssistantAttachmentResult,
+  ListAssistantMessagesArgs,
+  ListAssistantMessagesResult,
+  AppendAssistantMessageArgs,
+  AppendAssistantMessageResult,
+  AssistantAction,
+  AssistantActionCard,
+  AssistantActionStatus,
+  ConfirmAssistantActionArgs,
+  ConfirmAssistantActionResult,
+  CancelAssistantActionArgs,
+  CancelAssistantActionResult,
 };
 
 // Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,

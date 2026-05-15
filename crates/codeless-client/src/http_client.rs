@@ -1,20 +1,24 @@
 use async_trait::async_trait;
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs,
-    FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListJobFilesArgs,
-    ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
-    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadChatAttachmentArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
+    DeleteJobFileArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult,
+    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
+    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
+    JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError,
+    RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
     WriteJobFileResult,
 };
-use codeless_types::{Job, Repo, Review};
+use codeless_types::{AssistantThread, Job, Repo, Review};
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde::Serialize;
@@ -345,6 +349,59 @@ impl RpcServer for HttpRpcClient {
 
     async fn stop_active(&self, args: StopActiveArgs) -> RpcResult<StopActiveResult> {
         self.call("stop_active", &args).await
+    }
+
+    async fn list_assistant_threads(
+        &self,
+        args: ListAssistantThreadsArgs,
+    ) -> RpcResult<ListAssistantThreadsResult> {
+        self.call("list_assistant_threads", &args).await
+    }
+
+    async fn create_assistant_thread(
+        &self,
+        args: CreateAssistantThreadArgs,
+    ) -> RpcResult<AssistantThread> {
+        self.call("create_assistant_thread", &args).await
+    }
+
+    async fn delete_assistant_thread(&self, args: DeleteAssistantThreadArgs) -> RpcResult<()> {
+        self.call_void("delete_assistant_thread", &args).await
+    }
+
+    async fn upload_assistant_attachment(
+        &self,
+        args: UploadAssistantAttachmentArgs,
+    ) -> RpcResult<UploadAssistantAttachmentResult> {
+        self.call("upload_assistant_attachment", &args).await
+    }
+
+    async fn list_assistant_messages(
+        &self,
+        args: ListAssistantMessagesArgs,
+    ) -> RpcResult<ListAssistantMessagesResult> {
+        self.call("list_assistant_messages", &args).await
+    }
+
+    async fn append_assistant_message(
+        &self,
+        args: AppendAssistantMessageArgs,
+    ) -> RpcResult<AppendAssistantMessageResult> {
+        self.call("append_assistant_message", &args).await
+    }
+
+    async fn confirm_assistant_action(
+        &self,
+        args: ConfirmAssistantActionArgs,
+    ) -> RpcResult<ConfirmAssistantActionResult> {
+        self.call("confirm_assistant_action", &args).await
+    }
+
+    async fn cancel_assistant_action(
+        &self,
+        args: CancelAssistantActionArgs,
+    ) -> RpcResult<CancelAssistantActionResult> {
+        self.call("cancel_assistant_action", &args).await
     }
 }
 

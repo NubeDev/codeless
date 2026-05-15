@@ -66,6 +66,16 @@ export type JobsTab = {
   title: string;
 };
 
+// The `/assistant` surface is a singleton tab — like `JobsTab`, the
+// underlying page is the global cross-thread rail, so a second tab
+// would render identical content. Threads are not modelled as their
+// own tab kind in stage 6; the rail handles selection in-page.
+export type AssistantTab = {
+  id: number;
+  kind: "assistant";
+  title: string;
+};
+
 // Per-job workspace tab. Distinct from `JobsTab` (the global list) so
 // the user can have several jobs open in parallel — the natural read
 // of "I want to watch run A finish while I drive run B". Title is
@@ -84,7 +94,8 @@ export type Tab =
   | PreviewTab
   | AiDiffTab
   | JobsTab
-  | JobDetailTab;
+  | JobDetailTab
+  | AssistantTab;
 
 export type TabPatch = Partial<{
   title: string;
@@ -430,6 +441,27 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   // existing tab rather than appending a duplicate. The `title` is
   // re-derived from the job by `JobPage` after fetch; the initial
   // value the caller passes is what shows up until that lands.
+  // Singleton: the `/assistant` rail is global across threads, so a
+  // second tab would duplicate identical content. Mirrors `newJobsTab`.
+  const newAssistantTab = useCallback(() => {
+    let targetId = -1;
+    setTabs((curr) => {
+      const existing = curr.find((t) => t.kind === "assistant");
+      if (existing) {
+        targetId = existing.id;
+        return curr;
+      }
+      const id = nextIdRef.current++;
+      targetId = id;
+      return [
+        ...curr,
+        { id, kind: "assistant", title: "Assistant" } satisfies AssistantTab,
+      ];
+    });
+    setActiveId(targetId);
+    return targetId;
+  }, []);
+
   const newJobDetailTab = useCallback((jobId: string, initialTitle: string) => {
     let targetId = -1;
     setTabs((curr) => {
@@ -647,6 +679,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     pinTab,
     newPreviewTab,
     newJobsTab,
+    newAssistantTab,
     newJobDetailTab,
     openAiDiffTab,
     setAiDiffStatus,
