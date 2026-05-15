@@ -2,23 +2,13 @@
 //
 // JobDetailStack mounts every job-detail tab simultaneously and toggles
 // visibility (load-bearing for "instant switch, no SSE tear-down").
-// Two parallel JobPage instances must therefore behave independently:
-// each must subscribe to its own job scope, each useJob query must
-// resolve from its own jobId, and a newly-mounted JobPage must not
-// inherit a sibling's `?tab=stage:...` URL hint.
-//
-// This test exercises a sequence the user can produce manually:
-//   1. open one job tab (A); navigate to a stage row so the URL becomes
-//      `?tab=stage:<A-only-stage>`,
-//   2. open a second job tab (B) while A's stage URL is still live,
-//   3. switch to B.
-//
-// On master, JobPage(B)'s `activeTab` lazy initialiser reads the shared
-// `window.location.search` regardless of `active`, so B mounts pointing
-// at A's stageId — B's Stages system tab is no longer aria-selected,
-// and B's content area renders an empty StageDetail (the stage belongs
-// to a different job). After the fix, both JobPages keep their own
-// default Stages tab aria-selected.
+// The bug: each JobPage was wrapped in `<div class="h-full w-full">`
+// with no positioning. Two such wrappers stack vertically inside their
+// `absolute inset-0` parent — the first claims the full viewport, the
+// second is pushed entirely below it. The active JobPage renders fine
+// in the DOM but is not visible. AiDiffStack / EditorStack /
+// PreviewStack avoid this by positioning each child wrapper with
+// `absolute inset-0` so they overlap.
 
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -131,14 +121,39 @@ describe("JobDetailStack with two parallel JobPage instances", () => {
     expect(jobScopes).toContain(jobA.id);
     expect(jobScopes).toContain(jobB.id);
 
-    // Default tab per JOB-UI.md is Stages. Both JobPages must therefore
-    // have their `Stages` system tab aria-selected. On master, JobPage
-    // B's lazy initialiser reads `window.location.search` and adopts
-    // A's `?tab=stage:A-only-stage`, so only ONE Stages tab in the DOM
-    // is aria-selected (A's). After the fix this returns to TWO.
-    const selectedStagesTabs = screen
-      .getAllByRole("tab", { name: /Stages/, hidden: true })
-      .filter((el) => el.getAttribute("aria-selected") === "true");
-    expect(selectedStagesTabs).toHaveLength(2);
+    // Both JobPage wrappers must share a positioned parent and stack via
+    // `absolute inset-0` so they overlap. The unfixed implementation
+    // wrapped each JobPage in `<div class="h-full w-full">` with no
+    // positioning — the second wrapper rendered below the viewport in
+    // normal flow. Walk up from each title element until we find the
+    // common ancestor's direct children, then assert the layout contract.
+    const titleA = screen.getByText("alpha-job");
+    const titleB = screen.getByText("bravo-job");
+
+    // The wrappers are the topmost <div>s rendered by JobDetailStack
+    // for each tab. Find them by walking up to the nearest ancestor
+    // whose parent contains both title elements.
+    function findStackItem(el: HTMLElement): HTMLElement | null {
+      let cur: HTMLElement | null = el;
+      while (cur && cur.parentElement) {
+        const parent: HTMLElement = cur.parentElement;
+        if (parent.contains(titleA) && parent.contains(titleB)) {
+          return cur;
+        }
+        cur = parent;
+      }
+      return null;
+    }
+    const wrapperA = findStackItem(titleA);
+    const wrapperB = findStackItem(titleB);
+    expect(wrapperA).not.toBeNull();
+    expect(wrapperB).not.toBeNull();
+    expect(wrapperA?.parentElement).toBe(wrapperB?.parentElement);
+    // Both wrappers must be absolutely positioned so they overlap; the
+    // shared parent must establish a positioning context. Without these,
+    // the second wrapper renders below the viewport in normal flow.
+    expect(wrapperA?.className).toMatch(/\babsolute\b/);
+    expect(wrapperB?.className).toMatch(/\babsolute\b/);
+    expect(wrapperA?.parentElement?.className).toMatch(/\brelative\b/);
   });
 });

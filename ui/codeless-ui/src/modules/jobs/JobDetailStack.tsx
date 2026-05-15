@@ -1,3 +1,4 @@
+import { cn } from "@/lib/utils";
 import type { JobDetailTab, TabPatch } from "@/modules/tabs";
 import type { JobId } from "@/lib/rpc";
 
@@ -27,16 +28,29 @@ export function JobDetailStack({ tabs, activeId }: Props) {
   );
 
   return (
-    <>
-      {jobTabs.map((t) => (
-        // JobPage owns visibility via its `active` prop (hidden class when
-        // not active). The outer wrapper stays mounted so the per-job event
-        // subscription doesn't tear down on every tab switch.
-        <div key={t.id} className="h-full w-full">
-          <JobPage jobId={t.jobId as JobId} active={t.id === activeId} />
-        </div>
-      ))}
-    </>
+    // Sibling wrappers must overlap rather than stack: the inactive
+    // JobPage hides its inner content but its wrapper would still
+    // consume `h-full` of the parent in normal flow, pushing every
+    // later sibling out of the viewport. Mirror AiDiffStack /
+    // EditorStack / PreviewStack: a positioned parent with each child
+    // pinned via `absolute inset-0`.
+    <div className="relative h-full w-full">
+      {jobTabs.map((t) => {
+        const visible = t.id === activeId;
+        return (
+          <div
+            key={t.id}
+            className={cn(
+              "absolute inset-0",
+              !visible && "invisible pointer-events-none",
+            )}
+            aria-hidden={!visible}
+          >
+            <JobPage jobId={t.jobId as JobId} active={visible} />
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
