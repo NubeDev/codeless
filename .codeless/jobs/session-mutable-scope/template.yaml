@@ -8,6 +8,8 @@ goal: |
   ramp's Steps 0-6; stop at Step 6 per the doc's explicit stopping
   point (no TEST-emitted patches, no auto-merge).
 
+docs:
+  - CHAT.md
 stages:
   - Step 0 docs-only — tighten JOB-MODEL.md handover spec with worked example + anti-example per section; add JOB-LOOP rules for ack-then-code and verify-before-handover. Resolve open questions in the scope's "Open questions" section in this stage; do not silently guess.
   - H1/H3/H7 handover correctness — per-stage handover (not per-job), keyed handover discovery (not mtime-ranked), write-time validation that done/next are non-empty. Ship in this window per the doc's dependency note.
