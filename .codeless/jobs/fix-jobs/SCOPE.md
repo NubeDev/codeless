@@ -147,9 +147,132 @@ state for both jobIds, screenshots if useful.]
 
 ## Root cause
 
-[Stage 2 fills this in after reading the rpc/SSE/chat-store code.
-Name the exact module-level state that is shared across JobPage
-instances, with file:line references.]
+Audit of `codeless/ui/codeless-ui/src/lib/rpc/` (`hooks.ts`,
+`http-sse-client.ts`, `provider.tsx`, `client.ts`) and
+`codeless/ui/codeless-ui/src/modules/ai/store/chatStore.ts`, plus a
+walk of the `JobPage` subtree (`JobPage.tsx`, `JobDetailStack.tsx`,
+`StagesOverview.tsx`, `StageDetail.tsx`, `RunPane.tsx`/`JobChat`):
+
+The three named suspects (SSE subscription, chat store, `useJob`
+cache) are **not** the shared singleton causing the bug. The only
+module-level state that is shared across `JobPage` instances and
+demonstrably drives blank content is `window.location` — read by
+every `JobPage`'s `activeTab` lazy initialiser regardless of `active`.
+
+### Cleared suspects
+
+- **SSE subscription cache** —
+  `codeless/ui/codeless-ui/src/lib/rpc/hooks.ts:237`:
+  ```ts
+  const SHARED_SUBSCRIPTIONS = new WeakMap<
+    RpcClient,
+    Map<string, SharedSubscription>
+  >();
+  ```
+  The inner map is keyed by `JSON.stringify({ filter, since })` and
+  `filter` for a `JobPage` is `{ scope: "job", job_id: <jobId> }`
+  (`JobPage.tsx:155-173`, `RunPane.tsx:1125-1154` for the chat
+  variant, `StagesOverview.tsx:497`). Different `jobId` ⇒ different
+  key ⇒ distinct `SharedSubscription` with its own `buffer`,
+  `listeners`, `stateListeners`, `lastStatus`, and `cancel`. Sharing
+  inside a single `jobId` (page-level + `StagesOverview` +
+  `JobChat`) is the deliberate connection-pooling design and is
+  correct. Verified by reading `joinSubscription`
+  (`hooks.ts:242-374`) and the disconnect cleanup path
+  (`hooks.ts:298-300`): two parallel `JobPage`s do not collide here.
+- **`HttpSseClient`** — `http-sse-client.ts:54-118` is stateless on
+  the instance; each `subscribeWithState` call creates a fresh
+  `openManagedSse` closure (`http-sse-client.ts:128-262`) with its
+  own `EventSource`, stale/reconnect timers, cursor, and attempt
+  counter. No module-level mutables.
+- **`chatStore`** —
+  `codeless/ui/codeless-ui/src/modules/ai/store/chatStore.ts:146-159`:
+  module-level `chats: Map<sessionId, Chat>`, `seedMessages`, and
+  `pendingPersist` Maps, plus the zustand store at line 238. Keys are
+  AI-sidebar chat-session ids, **not** job ids. `JobChat` inside
+  `RunPane.tsx:956+` owns its own `useState` for `history`,
+  `streaming`, `liveItems`, and persists via
+  `read_job_file`/`write_job_file` to `CHAT.md` inside the worktree
+  (`RunPane.tsx:1062-1080`). It never touches `chatStore`. Two
+  `JobPage`s cannot collide on this store.
+- **`useJob`** — `hooks.ts:111-152`: per-component `useState` plus a
+  `tick` counter for refetch. No module-level cache, no in-flight
+  request map. Two parallel calls produce two independent `get_job`
+  RPCs into two independent state slots.
+- **`useRepos` / `useAsyncOnce`** — `hooks.ts:20-59`: per-component
+  state only.
+
+### Confirmed singleton — `window.location.search`
+
+`codeless/ui/codeless-ui/src/modules/jobs/JobPage.tsx:70-90`:
+
+```ts
+const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+  if (typeof window !== "undefined") {
+    const param = new URLSearchParams(window.location.search).get("tab");
+    ...
+    if (param?.startsWith("stage:")) {
+      const stageId = param.slice("stage:".length);
+      if (stageId) {
+        return { kind: "stage", stageId, stageName: stageId, pinned: false };
+      }
+    }
+  }
+  return { kind: "system", id: "Stages" };
+});
+```
+
+`window.location` is a process-wide singleton. The initialiser runs
+on every `JobPage` mount unconditionally — it does **not** check the
+`active` prop. The URL-mirror effect at `JobPage.tsx:96-107`
+correctly gates writes on `if (!active) return;`, but there is no
+matching read-gate. Sequence:
+
+1. Open job A → its `JobPage` mounts active, initialises `activeTab`
+   from URL (`?tab=stages` by default → `Stages`). The user clicks a
+   Stage row; `handleOpenStageTab` (`JobPage.tsx:191-203`) sets
+   `activeTab` to `{ kind: "stage", stageId: "<A-stage>", ... }`,
+   and the URL-mirror effect writes `?tab=stage:<A-stage>` into the
+   address bar.
+2. Open job B → a fresh `JobPage` mounts with `jobId=B`, and on this
+   first render the lazy initialiser reads the **same**
+   `window.location.search` that job A wrote. It returns
+   `{ kind: "stage", stageId: "<A-stage>", stageName: "<A-stage>", pinned: false }`
+   into job B's local state.
+3. User activates job B's tab. `StageDetail` (`JobPage.tsx:332-341`)
+   renders with `jobId=B, stageId="<A-stage>"`. Inside `StageDetail`,
+   the `list_stages` lookup for an `<A-stage>` id against job B's
+   stages returns `null`; `rollup` stays `null`; the right-pane
+   content area renders empty.
+
+The active-prop gate is the wrong direction: only the **active**
+`JobPage` is allowed to read or write `window.location`. Inactive
+mounts must initialise to a safe default.
+
+### Layout amplifier (not module state, but co-causal)
+
+`codeless/ui/codeless-ui/src/modules/jobs/JobDetailStack.tsx:31-38`
+wraps every `JobPage` in `<div className="h-full w-full">` without
+any `hidden` class on the wrapper. The child `JobPage` applies
+`!active && "hidden"` to its own root (`JobPage.tsx:289`), but the
+outer wrapper still claims `height: 100%` per child. With N tabs
+open the wrappers stack and the active one is pushed below the
+viewport. This is a layout bug, not a state-sharing bug, but it
+prints the same "blank pane" symptom as the URL singleton above and
+masks it during reproduction. Both have to be fixed for the bug to
+disappear; the URL singleton is the part that matches the goal's
+"module-level state shared across JobPage instances" framing.
+
+### File:line summary
+
+| Site                                                     | Verdict                                |
+| -------------------------------------------------------- | -------------------------------------- |
+| `src/lib/rpc/hooks.ts:237` `SHARED_SUBSCRIPTIONS`        | per-jobId keys, not shared             |
+| `src/lib/rpc/http-sse-client.ts:54+` `HttpSseClient`     | stateless on instance                  |
+| `src/modules/ai/store/chatStore.ts:146-159`              | sessionId-keyed, unrelated to jobs     |
+| `src/lib/rpc/hooks.ts:111-152` `useJob`                  | per-component, no cache                |
+| `src/modules/jobs/JobPage.tsx:70-90` `activeTab` init    | **root cause** — reads window.location |
+| `src/modules/jobs/JobDetailStack.tsx:31-38` wrapper      | layout amplifier, see above            |
 
 ## Manual verification
 
