@@ -27,8 +27,7 @@ use std::time::{Duration, Instant};
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{AddRepoArgs, RpcServer, SubmitJobArgs};
 use codeless_runtime::{
-    spawn_job_driver_loop, InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory,
-    RunnerOutcome,
+    spawn_job_driver_loop, InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome,
 };
 use codeless_types::{GitAuth, Job, JobStatus, WorkspaceMode};
 use tempfile::TempDir;
