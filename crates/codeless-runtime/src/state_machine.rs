@@ -45,6 +45,14 @@ pub fn transition_job(from: JobStatus, to: JobStatus) -> Result<(), TransitionEr
             | (Draft, Stopped)
             | (Queued, Running)
             | (Queued, Stopped)
+            // Driver give-up edge. Used by `job_driver_loop` when
+            // `drive_job` keeps erroring before the row ever reaches
+            // Running — the retry budget is exhausted (retryable
+            // failures) or the error is unrecoverable (runner not
+            // enabled, template parse). `stop_reason = RunnerCrash`
+            // is recorded on the row so the UI distinguishes this
+            // from a clean user-driven Failed state.
+            | (Queued, Failed)
             | (Running, AwaitingReview)
             | (Running, Completed)
             | (Running, Failed)
@@ -72,7 +80,18 @@ pub fn transition_job(from: JobStatus, to: JobStatus) -> Result<(), TransitionEr
             | (Running, Paused)
             | (AwaitingReview, Paused)
             | (Paused, Queued)
-            | (Paused, Stopped),
+            | (Paused, Stopped)
+            // Reset paths (user-driven `reset_job` recovery hatch).
+            // Stuck states (`Queued` the driver could not move,
+            // `Failed`, `Stopped`) collapse back to `Draft` so the
+            // operator can edit the spec or re-`start_job` without
+            // the resume cap dance. `Running`, `Paused`, and
+            // `AwaitingReview` are deliberately excluded — those are
+            // not stuck-states; they go through `stop_job` /
+            // `pause_job` first.
+            | (Queued, Draft)
+            | (Failed, Draft)
+            | (Stopped, Draft),
     );
     if ok {
         Ok(())
@@ -128,4 +147,39 @@ pub fn is_terminal_job(s: JobStatus) -> bool {
         s,
         JobStatus::Completed | JobStatus::Failed | JobStatus::Stopped
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codeless_types::JobStatus;
+
+    #[test]
+    fn reset_allows_queued_to_draft() {
+        transition_job(JobStatus::Queued, JobStatus::Draft).expect("queued -> draft is allowed");
+    }
+
+    #[test]
+    fn reset_allows_failed_to_draft() {
+        transition_job(JobStatus::Failed, JobStatus::Draft).expect("failed -> draft is allowed");
+    }
+
+    #[test]
+    fn reset_allows_stopped_to_draft() {
+        transition_job(JobStatus::Stopped, JobStatus::Draft).expect("stopped -> draft is allowed");
+    }
+
+    #[test]
+    fn reset_refuses_running_to_draft() {
+        let err = transition_job(JobStatus::Running, JobStatus::Draft)
+            .expect_err("running -> draft must be refused");
+        assert_eq!(err.kind, "job");
+    }
+
+    #[test]
+    fn reset_refuses_paused_and_awaiting_review_to_draft() {
+        assert!(transition_job(JobStatus::Paused, JobStatus::Draft).is_err());
+        assert!(transition_job(JobStatus::AwaitingReview, JobStatus::Draft).is_err());
+        assert!(transition_job(JobStatus::Completed, JobStatus::Draft).is_err());
+    }
 }

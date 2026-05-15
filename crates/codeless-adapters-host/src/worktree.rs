@@ -68,9 +68,23 @@ impl WorktreeManager {
     /// to `codeless/job-<job_id>`. The fallback covers callers that
     /// don't track per-job branch preferences (e.g. test harnesses)
     /// while letting `submit_job` honour the user-typed branch from
-    /// the wizard. Errors with `AlreadyExists` rather than
-    /// overwriting — the caller should pick a new job id or remove
-    /// the stale tree first.
+    /// the wizard.
+    ///
+    /// Self-healing on path collision: a prior crashed run can leave
+    /// either a stale admin entry under `.git/worktrees/` (working
+    /// tree gone, git still tracks it) or a real tree on disk. Both
+    /// wedge a naive `git worktree add` and previously bubbled up as
+    /// `AlreadyExists`, blocking driver-loop retries. So `create`
+    /// now:
+    /// 1. runs `git worktree prune` first to clear admin records for
+    ///    trees that vanished from disk;
+    /// 2. if the target path still exists and is a worktree on the
+    ///    requested branch, adopts it and returns the handle —
+    ///    re-running `create` for an already-set-up job is a no-op;
+    /// 3. only errors with `AlreadyExists` when the path holds
+    ///    something incompatible (non-worktree directory, or
+    ///    worktree on a different branch). The caller has to clear
+    ///    that out of band.
     pub fn create(
         &self,
         repo_path: &Path,
@@ -78,21 +92,41 @@ impl WorktreeManager {
         requested_branch: Option<&str>,
     ) -> Result<WorktreeHandle, WorktreeError> {
         let path = self.path_for(job_id);
-        if path.exists() {
-            return Err(WorktreeError::AlreadyExists(path));
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let branch = match requested_branch.map(str::trim) {
             Some(b) if !b.is_empty() => b.to_owned(),
             _ => format!("codeless/job-{job_id}"),
         };
-        run_git(
-            repo_path,
-            "worktree add",
-            ["worktree", "add", "-b", &branch, path.to_str().unwrap()],
-        )?;
+
+        run_git(repo_path, "worktree prune", ["worktree", "prune"])?;
+
+        if path.exists() {
+            return match worktree_branch_at(&path) {
+                Some(existing) if existing == branch => Ok(WorktreeHandle { path, branch }),
+                _ => Err(WorktreeError::AlreadyExists(path)),
+            };
+        }
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // After pruning a stale admin entry the branch ref typically
+        // survives — `git worktree add -b` would then bail with
+        // "branch already exists". Reattach to it in that case so a
+        // crashed-tree-but-live-branch state is recoverable; only
+        // create the branch fresh when nothing references it.
+        if branch_exists(repo_path, &branch)? {
+            run_git(
+                repo_path,
+                "worktree add",
+                ["worktree", "add", path.to_str().unwrap(), &branch],
+            )?;
+        } else {
+            run_git(
+                repo_path,
+                "worktree add",
+                ["worktree", "add", "-b", &branch, path.to_str().unwrap()],
+            )?;
+        }
         Ok(WorktreeHandle { path, branch })
     }
 
@@ -201,6 +235,56 @@ fn dir_size_bytes(path: &Path) -> std::io::Result<i64> {
         }
     }
     Ok(total)
+}
+
+/// Identify the branch of an existing worktree at `path`, or `None`
+/// when `path` is not a usable worktree (plain directory, detached
+/// HEAD, git not installed, etc.). Used by `create` to decide between
+/// adopting a prior tree and surfacing `AlreadyExists`. Errors from
+/// `git` collapse to `None` deliberately — the caller's contract is
+/// "is this thing compatible?" and any non-yes answer means no.
+fn worktree_branch_at(path: &Path) -> Option<String> {
+    let inside = Command::new("git")
+        .current_dir(path)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .ok()?;
+    if !inside.status.success() {
+        return None;
+    }
+    if String::from_utf8_lossy(&inside.stdout).trim() != "true" {
+        return None;
+    }
+    let head = Command::new("git")
+        .current_dir(path)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !head.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
+/// Cheap existence check for a local branch. Used by `create` to
+/// decide between `worktree add -b <branch>` (new ref) and
+/// `worktree add <path> <branch>` (attach to existing ref).
+fn branch_exists(repo_path: &Path, branch: &str) -> Result<bool, WorktreeError> {
+    let out = Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .output()?;
+    Ok(out.status.success())
 }
 
 fn run_git<I, S>(cwd: &Path, op: &'static str, args: I) -> Result<(), WorktreeError>
