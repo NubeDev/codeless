@@ -93,6 +93,22 @@ pub struct Job {
     /// disables the prompt-trigger prefix that maps to claude's
     /// "think" / "think hard" / "ultrathink" cues.
     pub effort: Option<String>,
+    /// Optional persona-derived system prompt composed at submit time.
+    /// When set, the runner factory uses this as the agent's system
+    /// prompt for every stage of the job, overriding the server's
+    /// default. `None` keeps the server-configured default in place so
+    /// jobs submitted without a persona run unchanged. Stored on the
+    /// row so a reboot, resume, or rerun reproduces the same prompt;
+    /// `rerun_job` carries the value forward verbatim.
+    pub system_prompt: Option<String>,
+    /// Persona the user picked at submit time. The composed prompt
+    /// rides on `system_prompt`; this column preserves the lookup key
+    /// so a rerun can reproduce the same agent posture even if the
+    /// persona's body is edited later. `None` means the user submitted
+    /// without picking a persona — the server default applies and a
+    /// rerun keeps that posture. Free TEXT until personas move to a
+    /// server-side table; the FK lands in a later stage.
+    pub persona_id: Option<String>,
     pub started_at: Option<UnixMillis>,
     pub ended_at: Option<UnixMillis>,
     pub created_at: UnixMillis,

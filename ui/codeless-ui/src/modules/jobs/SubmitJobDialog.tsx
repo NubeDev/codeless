@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +20,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useRpc, type Repo, type RunnerInfo, type ServerInfo } from "@/lib/rpc";
+import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
+import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+
+// Sentinel for "no persona" in the dropdown. `useForJobs`-filtered
+// personas appear below this option; the job runs with the server's
+// default system prompt and the form's manually-picked model.
+const NO_PERSONA = "__no_persona__";
 
 interface Props {
   repo: Repo;
@@ -126,6 +133,23 @@ const SERVER_PICK = "__server_default__";
 
 export function SubmitJobDialog({ repo, trigger }: Props) {
   const rpc = useRpc();
+  // Personas live in the same KV store the chat panel reads. We pull
+  // through the zustand store so a cross-window edit (Settings →
+  // Agents) refreshes the dropdown without remounting the dialog.
+  const customAgents = useAgentsStore((s) => s.customAgents);
+  const hydrateAgents = useAgentsStore((s) => s.hydrate);
+  useEffect(() => {
+    void hydrateAgents();
+  }, [hydrateAgents]);
+  const personasForJobs = useMemo(
+    () => [...BUILTIN_AGENTS, ...customAgents].filter((a) => a.useForJobs),
+    [customAgents],
+  );
+  const [personaId, setPersonaId] = useState<string>(NO_PERSONA);
+  const selectedPersona =
+    personaId === NO_PERSONA
+      ? null
+      : (personasForJobs.find((a) => a.id === personaId) ?? null);
   const [open, setOpen] = useState(false);
   // The job's name is the only required field. It becomes the
   // `.codeless/jobs/<name>/` folder, so it has to be a slug — letters,
@@ -200,6 +224,18 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
     setEffort(SERVER_PICK);
     setPermissionMode(caps?.defaultPermissionMode ?? SERVER_PICK);
   }, [runner, caps]);
+
+  // Seed the Model dropdown from the persona's `defaultModel` when the
+  // user picks a persona AND the runner exposes that exact model id.
+  // We leave the user free to override afterwards — the seed only fires
+  // when the persona changes. A persona id that has no defaultModel
+  // (or whose preferred model isn't in the current runner's catalogue)
+  // leaves the field on whatever the user last picked.
+  useEffect(() => {
+    if (!selectedPersona?.defaultModel || !caps?.supportsModel) return;
+    const match = caps.models.find((m) => m.id === selectedPersona.defaultModel);
+    if (match) setModel(match.id);
+  }, [selectedPersona, caps]);
 
   // Fetch /server/info once per dialog-open. Re-running on each open
   // is cheap (a single unauthenticated GET) and reflects post-boot
@@ -282,6 +318,18 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
             ? permissionMode
             : null,
         effort: caps?.supportsEffort && effort !== SERVER_PICK ? effort : null,
+        // The selected persona's `instructions` become the per-job
+        // system prompt the runtime applies on top of the server's
+        // baseline. Personas are pure config: the UI just hands the
+        // composed text to the runtime, which composes the final
+        // prompt server-side. `null` (no persona picked) keeps the
+        // server's configured default unchanged.
+        system_prompt: selectedPersona ? selectedPersona.instructions : null,
+        // Persist the lookup key alongside the composed text so a
+        // rerun reproduces the same posture even when the persona's
+        // body is edited later. `null` when the user submitted with
+        // no persona picked.
+        persona_id: selectedPersona ? selectedPersona.id : null,
         start_immediately: runImmediately,
       });
       // eslint-disable-next-line no-console
@@ -376,6 +424,32 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
               </Select>
             </div>
           </div>
+          {personasForJobs.length > 0 && (
+            <div className="grid gap-1.5">
+              <Label htmlFor="persona">Persona</Label>
+              <Select value={personaId} onValueChange={setPersonaId}>
+                <SelectTrigger id="persona">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_PERSONA}>None — use server default</SelectItem>
+                  {personasForJobs.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                      {p.builtIn ? " (built-in)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedPersona && (
+                <span className="text-muted-foreground text-[10px]">
+                  Persona instructions are appended to the runner system
+                  prompt for every stage. Toggle a persona's “Use for
+                  jobs” in Settings → Agents to add or remove it here.
+                </span>
+              )}
+            </div>
+          )}
           {info && onlyMockEnabled(info.runners) && (
             <div className="rounded border border-yellow-500/40 bg-yellow-500/10 px-2 py-1.5 text-[11px] text-yellow-700 dark:text-yellow-300">
               Only the demo `mock` runner is enabled. Restart the server

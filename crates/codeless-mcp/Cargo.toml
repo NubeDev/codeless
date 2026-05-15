@@ -16,9 +16,12 @@ path = "src/main.rs"
 
 [dependencies]
 codeless-tools = { path = "../codeless-tools" }
+codeless-types = { path = "../codeless-types" }
+codeless-runtime = { path = "../codeless-runtime" }
 async-trait = { workspace = true }
 rmcp = { version = "1.6", default-features = false, features = ["server", "transport-io"] }
 serde_json = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "sync", "signal"] }
 tokio-util = { version = "0.7", default-features = false }

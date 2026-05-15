@@ -47,7 +47,10 @@ pub use copilot_runner::CopilotRunnerAdapter;
 pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};
 pub use heartbeat::spawn_heartbeat;
-pub use job_driver_loop::{spawn_job_driver_loop, DriverLoopHandle, RunnerFactory};
+pub use job_driver_loop::{
+    spawn_job_driver_loop, spawn_job_driver_loop_with_retry, DriverLoopHandle, RetryPolicy,
+    RunnerFactory,
+};
 pub use migrations::MIGRATOR;
 pub use mock_runner::{MockRunner, MockStep};
 pub use notifier::{

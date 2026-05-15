@@ -2,8 +2,8 @@ use std::str::FromStr;
 
 use codeless_types::{
     AssistantAttachment, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, CostCents, GitAuth, Job, JobId, JobStatus, Repo, RepoId,
-    Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId,
+    AssistantThread, AssistantThreadId, CostCents, GitAuth, Job, JobId, JobStatus, Persona, Repo,
+    RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId,
     TaskStatus, UnixMillis, WorkspaceMode,
 };
 use sqlx::sqlite::SqliteRow;
@@ -93,9 +93,9 @@ impl SqliteStore {
             "INSERT INTO jobs \
              (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
               workspace_mode, worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
-              model, permission_mode, effort, \
+              model, permission_mode, effort, system_prompt, persona_id, \
               started_at, ended_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(job.id.to_string())
         .bind(job.repo_id.to_string())
@@ -113,6 +113,8 @@ impl SqliteStore {
         .bind(&job.model)
         .bind(&job.permission_mode)
         .bind(&job.effort)
+        .bind(&job.system_prompt)
+        .bind(&job.persona_id)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -136,8 +138,8 @@ impl SqliteStore {
             "UPDATE jobs SET \
                 repo_id=?, status=?, stop_reason=?, template_yaml=?, prompt=?, runner=?, \
                 branch=?, workspace_mode=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
-                cost_cents=?, model=?, permission_mode=?, effort=?, \
-                started_at=?, ended_at=?, created_at=? \
+                cost_cents=?, model=?, permission_mode=?, effort=?, system_prompt=?, \
+                persona_id=?, started_at=?, ended_at=?, created_at=? \
              WHERE id=?",
         )
         .bind(job.repo_id.to_string())
@@ -155,6 +157,8 @@ impl SqliteStore {
         .bind(&job.model)
         .bind(&job.permission_mode)
         .bind(&job.effort)
+        .bind(&job.system_prompt)
+        .bind(&job.persona_id)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -218,8 +222,8 @@ impl SqliteStore {
         sqlx::query(
             "INSERT OR REPLACE INTO stages \
              (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at, session_id, \
-              goal, acceptance, last_activity_at, archived) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              goal, acceptance, last_activity_at, archived, persona_id) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(stage.id.to_string())
         .bind(stage.job_id.to_string())
@@ -234,6 +238,7 @@ impl SqliteStore {
         .bind(&acceptance_json)
         .bind(stage.last_activity_at.map(|t| t.0))
         .bind(stage.archived as i64)
+        .bind(&stage.persona_id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -446,7 +451,7 @@ impl SqliteStore {
         let rows = sqlx::query(
             "SELECT s.id, s.ordinal, s.name, s.status, s.verify_cmd, \
                     s.started_at, s.ended_at, s.session_id, s.goal, s.acceptance, \
-                    s.last_activity_at, s.archived, \
+                    s.last_activity_at, s.archived, s.persona_id, \
                     COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
                     COUNT(t.id) AS task_count \
              FROM stages s \
@@ -492,6 +497,7 @@ impl SqliteStore {
                             .try_get::<Option<i64>, _>("last_activity_at")?
                             .map(codeless_types::UnixMillis),
                         archived: row.try_get::<i64, _>("archived")? != 0,
+                        persona_id: row.try_get("persona_id")?,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,
@@ -510,7 +516,7 @@ impl SqliteStore {
         let row = sqlx::query(
             "SELECT id, job_id, ordinal, name, status, verify_cmd, \
                     started_at, ended_at, session_id, goal, acceptance, \
-                    last_activity_at, archived \
+                    last_activity_at, archived, persona_id \
              FROM stages WHERE id = ?",
         )
         .bind(id.to_string())
@@ -542,6 +548,7 @@ impl SqliteStore {
                 .try_get::<Option<i64>, _>("last_activity_at")?
                 .map(codeless_types::UnixMillis),
             archived: row.try_get::<i64, _>("archived")? != 0,
+            persona_id: row.try_get("persona_id")?,
         }))
     }
 
@@ -1019,6 +1026,115 @@ impl SqliteStore {
             .map(assistant_attachment_from_row)
             .collect()
     }
+
+    /// Snapshot every persona row. Built-ins (`built_in = 1`) come
+    /// first, ordered by id for a stable rail; user rows follow in
+    /// `created_at` order so a freshly minted row lands at the bottom.
+    /// JSON columns (`allowed_subagents`, `default_snippets`) are
+    /// decoded here so the caller does not have to know the column
+    /// shape — the wire type is `Vec<String>` either way.
+    pub async fn list_personas(&self) -> sqlx::Result<Vec<Persona>> {
+        let rows = sqlx::query(
+            "SELECT * FROM personas \
+             ORDER BY built_in DESC, \
+                      CASE WHEN built_in = 1 THEN id END ASC, \
+                      created_at ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(persona_from_row).collect()
+    }
+
+    pub async fn get_persona(&self, id: &str) -> sqlx::Result<Option<Persona>> {
+        let row = sqlx::query("SELECT * FROM personas WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(persona_from_row).transpose()
+    }
+
+    /// Upsert into the personas table. Caller supplies `now` so the
+    /// runtime can hold a single timestamp across the surrounding
+    /// publish; built-in rows preserve their seeded `created_at` (the
+    /// `INSERT OR REPLACE` is replaced with explicit insert/update so
+    /// the historical timestamp is not clobbered).
+    ///
+    /// `built_in` is *not* a parameter — new rows always land with
+    /// `built_in = 0`, and existing rows keep whatever value they had.
+    /// The runtime enforces "user cannot mint a built-in" without the
+    /// schema growing a CHECK constraint.
+    pub async fn upsert_persona(&self, persona: &Persona) -> sqlx::Result<Persona> {
+        let allowed = serde_json::to_string(&persona.allowed_subagents).map_err(serde_err)?;
+        let snippets = serde_json::to_string(&persona.default_snippets).map_err(serde_err)?;
+        let existing = self.get_persona(&persona.id).await?;
+        match existing {
+            Some(prev) => {
+                sqlx::query(
+                    "UPDATE personas SET \
+                        name=?, description=?, icon=?, instructions=?, \
+                        use_for_jobs=?, default_model=?, allowed_subagents=?, \
+                        default_snippets=?, updated_at=? \
+                     WHERE id=?",
+                )
+                .bind(&persona.name)
+                .bind(&persona.description)
+                .bind(&persona.icon)
+                .bind(&persona.instructions)
+                .bind(persona.use_for_jobs as i64)
+                .bind(&persona.default_model)
+                .bind(&allowed)
+                .bind(&snippets)
+                .bind(persona.updated_at.0)
+                .bind(&persona.id)
+                .execute(&self.pool)
+                .await?;
+                Ok(Persona {
+                    built_in: prev.built_in,
+                    created_at: prev.created_at,
+                    ..persona.clone()
+                })
+            }
+            None => {
+                sqlx::query(
+                    "INSERT INTO personas \
+                        (id, name, description, icon, instructions, use_for_jobs, \
+                         default_model, allowed_subagents, default_snippets, built_in, \
+                         created_at, updated_at) \
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                )
+                .bind(&persona.id)
+                .bind(&persona.name)
+                .bind(&persona.description)
+                .bind(&persona.icon)
+                .bind(&persona.instructions)
+                .bind(persona.use_for_jobs as i64)
+                .bind(&persona.default_model)
+                .bind(&allowed)
+                .bind(&snippets)
+                .bind(0_i64)
+                .bind(persona.created_at.0)
+                .bind(persona.updated_at.0)
+                .execute(&self.pool)
+                .await?;
+                Ok(Persona {
+                    built_in: false,
+                    ..persona.clone()
+                })
+            }
+        }
+    }
+
+    /// Delete one persona row by id. Returns `true` when a row was
+    /// removed. Refusing built-ins is the RPC layer's responsibility
+    /// — the store happily removes whatever id it is given so tests
+    /// and migrations can clean up freely.
+    pub async fn delete_persona(&self, id: &str) -> sqlx::Result<bool> {
+        let res = sqlx::query("DELETE FROM personas WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
 }
 
 fn assistant_thread_from_row(row: SqliteRow) -> sqlx::Result<AssistantThread> {
@@ -1082,6 +1198,29 @@ fn parse_assistant_role(s: &str) -> sqlx::Result<AssistantMessageRole> {
     })
 }
 
+fn persona_from_row(row: SqliteRow) -> sqlx::Result<Persona> {
+    let allowed_raw: String = row.try_get("allowed_subagents")?;
+    let snippets_raw: String = row.try_get("default_snippets")?;
+    let allowed_subagents: Vec<String> = serde_json::from_str(&allowed_raw).map_err(serde_err)?;
+    let default_snippets: Vec<String> = serde_json::from_str(&snippets_raw).map_err(serde_err)?;
+    let use_for_jobs: i64 = row.try_get("use_for_jobs")?;
+    let built_in: i64 = row.try_get("built_in")?;
+    Ok(Persona {
+        id: row.try_get("id")?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        icon: row.try_get("icon")?,
+        instructions: row.try_get("instructions")?,
+        use_for_jobs: use_for_jobs != 0,
+        default_model: row.try_get("default_model")?,
+        allowed_subagents,
+        default_snippets,
+        built_in: built_in != 0,
+        created_at: UnixMillis(row.try_get("created_at")?),
+        updated_at: UnixMillis(row.try_get("updated_at")?),
+    })
+}
+
 fn repo_from_row(row: SqliteRow) -> sqlx::Result<Repo> {
     let id: String = row.try_get("id")?;
     let git_auth: String = row.try_get("git_auth")?;
@@ -1125,6 +1264,8 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
         model: row.try_get("model")?,
         permission_mode: row.try_get("permission_mode")?,
         effort: row.try_get("effort")?,
+        system_prompt: row.try_get("system_prompt")?,
+        persona_id: row.try_get("persona_id")?,
         started_at: started_at.map(UnixMillis),
         ended_at: ended_at.map(UnixMillis),
         created_at: UnixMillis(row.try_get("created_at")?),

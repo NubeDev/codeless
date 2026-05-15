@@ -47,6 +47,8 @@ async fn fresh_job(rpc: &InProcessRpc, runner: &str) -> JobId {
         model: None,
         permission_mode: None,
         effort: None,
+        system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .await
@@ -69,6 +71,7 @@ async fn fresh_stage(rpc: &InProcessRpc, job_id: JobId, ordinal: u32) -> StageId
         acceptance: None,
         last_activity_at: None,
         archived: false,
+        persona_id: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
     stage.id

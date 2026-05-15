@@ -40,6 +40,8 @@ async fn fresh_job(rpc: &InProcessRpc, cost_cap: i64, wall_clock_ms: i64) -> cod
         model: None,
         permission_mode: None,
         effort: None,
+        system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .await
@@ -134,6 +136,7 @@ async fn cost_cap_pauses_when_stage_has_captured_session() {
         acceptance: None,
         last_activity_at: None,
         archived: false,
+        persona_id: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
 

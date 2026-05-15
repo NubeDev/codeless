@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Span;
 
 use crate::handler::CodelessMcpHandler;
+use crate::personas::{EmptyPersonaSource, PersonaSource};
 
 /// Per-invocation context for the server. Owns the `ToolRegistry`
 /// and the policy / worktree state every `Tool::call` receives via
@@ -30,6 +31,12 @@ pub struct ServerContext {
     pub network_mode: NetworkMode,
     pub allowlist: AllowlistFile,
     pub cancel: CancellationToken,
+    /// Catalogue the MCP prompts surface reads from. Defaults to
+    /// `EmptyPersonaSource` so a server constructed without a DB
+    /// simply advertises an empty prompt list (stage 10 / D3 —
+    /// `use_for_jobs = 1` is the sole gate, but a missing catalogue
+    /// behaves the same as "no personas qualify").
+    pub personas: Arc<dyn PersonaSource>,
 }
 
 impl ServerContext {
@@ -40,12 +47,18 @@ impl ServerContext {
             network_mode: NetworkMode::default(),
             allowlist: AllowlistFile::new(),
             cancel: CancellationToken::new(),
+            personas: Arc::new(EmptyPersonaSource),
         }
     }
 
     pub fn with_network(mut self, mode: NetworkMode, allowlist: AllowlistFile) -> Self {
         self.network_mode = mode;
         self.allowlist = allowlist;
+        self
+    }
+
+    pub fn with_personas(mut self, personas: Arc<dyn PersonaSource>) -> Self {
+        self.personas = personas;
         self
     }
 

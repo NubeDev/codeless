@@ -256,13 +256,20 @@ async fn write_archive_handover(
         .last_activity_at
         .map(|t| t.0.to_string())
         .unwrap_or_else(|| "<unknown>".into());
+    // Persona id is captured here so a reader of the archived handover
+    // can tell whether the run was shaped by a per-stage override
+    // (D1) or inherited the job's persona. `<inherited>` means the
+    // stage row carried no override and the job-level persona was in
+    // force; the resolution itself lives on `jobs.persona_id`.
+    let persona = stage.persona_id.as_deref().unwrap_or("<inherited>");
     let body = format!(
         "# Archived session handover\n\n\
          The warm session for stage `{stage_name}` (`{stage_id}`) was \
          archived after exceeding its `session_idle_timeout`.\n\n\
          - prior_session_id: `{prior_session}`\n\
          - last_activity_at_ms: `{last_activity}`\n\
-         - job_id: `{job_id}`\n\n\
+         - job_id: `{job_id}`\n\
+         - persona_id: `{persona}`\n\n\
          The next user message against this stage opens a fresh \
          session. Read this file before resuming so the new session \
          knows what the prior one did.\n",
@@ -359,6 +366,8 @@ mod tests {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             started_at: None,
             ended_at: None,
             created_at: UnixMillis(0),
@@ -382,6 +391,7 @@ mod tests {
             acceptance: None,
             last_activity_at: Some(UnixMillis(last_activity_ms)),
             archived: false,
+            persona_id: None,
         }
     }
 
@@ -531,5 +541,74 @@ mod tests {
             env.event,
             Event::SessionArchivedThenResumed { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn archive_handover_records_per_stage_persona_id() {
+        let (store, bus) = setup().await;
+        let (_repo_id, job_id) = seed_repo_and_job(&store).await;
+        let mut stage = make_stage(job_id, 1_000);
+        stage.persona_id = Some("builtin:reviewer".into());
+        let stage_id = stage.id;
+        store.insert_stage(&stage).await.unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let worktree = tmp.path();
+
+        let now = UnixMillis(1_000 + (DEFAULT_SESSION_IDLE_TIMEOUT.as_millis() as i64) + 1);
+        let decision = resolve_stage_resume(
+            &store,
+            &bus,
+            job_id,
+            stage_id,
+            Some(worktree),
+            DEFAULT_SESSION_IDLE_TIMEOUT,
+            now,
+        )
+        .await;
+
+        let path = match decision {
+            ResumeDecision::FreshAfterArchive { handover_path, .. } => handover_path,
+            other => panic!("expected FreshAfterArchive, got {other:?}"),
+        };
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            body.contains("persona_id: `builtin:reviewer`"),
+            "archive handover should name the per-stage persona; body={body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_handover_marks_persona_as_inherited_when_unset() {
+        let (store, bus) = setup().await;
+        let (_repo_id, job_id) = seed_repo_and_job(&store).await;
+        let stage = make_stage(job_id, 1_000);
+        let stage_id = stage.id;
+        store.insert_stage(&stage).await.unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let worktree = tmp.path();
+
+        let now = UnixMillis(1_000 + (DEFAULT_SESSION_IDLE_TIMEOUT.as_millis() as i64) + 1);
+        let decision = resolve_stage_resume(
+            &store,
+            &bus,
+            job_id,
+            stage_id,
+            Some(worktree),
+            DEFAULT_SESSION_IDLE_TIMEOUT,
+            now,
+        )
+        .await;
+
+        let path = match decision {
+            ResumeDecision::FreshAfterArchive { handover_path, .. } => handover_path,
+            other => panic!("expected FreshAfterArchive, got {other:?}"),
+        };
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            body.contains("persona_id: `<inherited>`"),
+            "archive handover should mark inherited persona; body={body}",
+        );
     }
 }

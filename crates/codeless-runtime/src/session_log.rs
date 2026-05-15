@@ -211,6 +211,8 @@ mod tests {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             cost_cents: CostCents(42),
             started_at: Some(UnixMillis(1_778_000_000_000)),
             ended_at: Some(UnixMillis(1_778_000_060_000)),

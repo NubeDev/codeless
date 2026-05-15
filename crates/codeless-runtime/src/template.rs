@@ -103,6 +103,14 @@ pub struct StageSpec {
     /// YAML omits both keys, so `verify.is_empty()` is the wire
     /// signal for "no verify gate".
     pub verify: Vec<VerifyStep>,
+    /// Per-stage persona override (D1). `Some("builtin:reviewer")`
+    /// or `Some("persona_01J...")` resolves to a row in the
+    /// `personas` table at job-submit time; `None` inherits the
+    /// job-level persona (and, lacking that, the runner default).
+    /// Bare-string stage entries cannot carry this — only the
+    /// structured map form does — by design: the field is opt-in
+    /// metadata and the bare form is the shorthand.
+    pub persona: Option<String>,
 }
 
 /// One layer of a stage's verify gate. Named so the UI can render a
@@ -126,6 +134,7 @@ impl StageSpec {
                 goal: None,
                 acceptance: None,
                 verify: Vec::new(),
+                persona: None,
             }
         } else if trimmed == "REVIEW" {
             Self {
@@ -135,6 +144,7 @@ impl StageSpec {
                 goal: None,
                 acceptance: None,
                 verify: Vec::new(),
+                persona: None,
             }
         } else {
             Self {
@@ -144,6 +154,7 @@ impl StageSpec {
                 goal: None,
                 acceptance: None,
                 verify: Vec::new(),
+                persona: None,
             }
         }
     }
@@ -184,6 +195,11 @@ impl<'de> Deserialize<'de> for StageSpec {
             verify_cmd: Option<String>,
             #[serde(default)]
             verify: Option<Vec<VerifyStep>>,
+            // Per-stage persona override. Empty string collapses to
+            // `None` so a YAML author who left the field blank gets
+            // the same inheritance path as one who omitted the key.
+            #[serde(default)]
+            persona: Option<String>,
         }
 
         match Raw::deserialize(d)? {
@@ -209,6 +225,7 @@ impl<'de> Deserialize<'de> for StageSpec {
                     goal: s.goal,
                     acceptance: s.acceptance,
                     verify,
+                    persona: s.persona.filter(|p| !p.trim().is_empty()),
                 })
             }
         }
@@ -243,6 +260,7 @@ impl JobTemplate {
                 title: s.title.as_str(),
                 is_review: s.review,
                 docs: s.docs.as_deref().unwrap_or(&[]),
+                persona: s.persona.as_deref(),
             })
             .collect()
     }
@@ -257,6 +275,11 @@ pub struct PlannedStage<'a> {
     /// concatenates these after the template's global `docs` for the
     /// specific stage being run.
     pub docs: &'a [String],
+    /// Per-stage persona id (D1) — `builtin:<slug>` or a user
+    /// persona row id. `None` inherits the job-level persona.
+    /// Resolution to the actual `Persona` row happens at job-submit;
+    /// the runner reads the row again at stage-run time.
+    pub persona: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -498,6 +521,44 @@ stages:
         assert_eq!(t.stages[0].verify[0].run, "cargo check");
         assert_eq!(t.stages[0].verify[1].name, "test");
         assert_eq!(t.stages[0].verify[1].run, "cargo test");
+    }
+
+    #[test]
+    fn parses_per_stage_persona_override_on_structured_form() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - title: implement
+    persona: "builtin:coder"
+  - title: review
+    persona: "builtin:reviewer"
+  - title: ship
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert_eq!(t.stages[0].persona.as_deref(), Some("builtin:coder"));
+        assert_eq!(t.stages[1].persona.as_deref(), Some("builtin:reviewer"));
+        assert!(t.stages[2].persona.is_none());
+        let planned = t.planned_stages();
+        assert_eq!(planned[0].persona, Some("builtin:coder"));
+        assert_eq!(planned[1].persona, Some("builtin:reviewer"));
+        assert_eq!(planned[2].persona, None);
+    }
+
+    #[test]
+    fn empty_persona_string_collapses_to_none() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - title: implement
+    persona: ""
+  - title: also
+    persona: "   "
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert!(t.stages[0].persona.is_none());
+        assert!(t.stages[1].persona.is_none());
     }
 
     #[test]

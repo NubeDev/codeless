@@ -209,6 +209,8 @@ async fn submit_job_unknown_repo_maps_to_404() {
         model: None,
         permission_mode: None,
         effort: None,
+        system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .unwrap();
@@ -253,6 +255,8 @@ async fn submit_then_get_job_round_trip() {
         model: None,
         permission_mode: None,
         effort: None,
+        system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .unwrap();

@@ -62,6 +62,8 @@ async fn fresh_queued_job(rpc: &InProcessRpc) -> codeless_types::JobId {
         model: None,
         permission_mode: None,
         effort: None,
+        system_prompt: None,
+        persona_id: None,
         start_immediately: true,
     })
     .await
@@ -123,6 +125,7 @@ async fn drive_job_failure_outcome_lands_as_failed() {
             job_id,
             ordinal: 0,
             name: "scripted stage".into(),
+            persona_id: None,
         }),
         MockStep::Finish(RunnerOutcome::Failed {
             reason: "scripted failure".into(),

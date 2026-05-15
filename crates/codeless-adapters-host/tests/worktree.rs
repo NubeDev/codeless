@@ -83,16 +83,91 @@ fn create_falls_back_when_requested_branch_is_blank() {
 }
 
 #[test]
-fn create_refuses_if_path_already_exists() {
+fn create_refuses_when_path_holds_a_non_worktree_directory() {
+    // A plain directory at the target path is incompatible: not a
+    // git worktree, so adoption would be unsafe. `create` must
+    // refuse rather than blow it away.
     let (_repo_dir, repo) = fresh_repo();
     let base = TempDir::new().unwrap();
     let mgr = WorktreeManager::new(base.path());
 
-    mgr.create(&repo, "dup", None).expect("first");
+    let path = base.path().join("job-dup");
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("foreign.txt"), "user data\n").unwrap();
+
     match mgr.create(&repo, "dup", None) {
+        Err(WorktreeError::AlreadyExists(p)) => assert_eq!(p, path),
+        other => panic!("expected AlreadyExists, got {other:?}"),
+    }
+}
+
+#[test]
+fn create_refuses_when_existing_worktree_is_on_a_different_branch() {
+    // Adoption only fires when the existing worktree's branch
+    // matches what the caller asked for; otherwise the wedged job
+    // would silently inherit unrelated history.
+    let (_repo_dir, repo) = fresh_repo();
+    let base = TempDir::new().unwrap();
+    let mgr = WorktreeManager::new(base.path());
+
+    mgr.create(&repo, "dup", Some("feature/alpha"))
+        .expect("first");
+    match mgr.create(&repo, "dup", Some("feature/beta")) {
         Err(WorktreeError::AlreadyExists(p)) => assert_eq!(p, base.path().join("job-dup")),
         other => panic!("expected AlreadyExists, got {other:?}"),
     }
+}
+
+#[test]
+fn create_adopts_existing_worktree_on_the_same_branch() {
+    // Re-running `create` for a job that's already set up — e.g. a
+    // driver-loop retry after a transient failure — must succeed
+    // and return the same handle rather than wedge on AlreadyExists.
+    let (_repo_dir, repo) = fresh_repo();
+    let base = TempDir::new().unwrap();
+    let mgr = WorktreeManager::new(base.path());
+
+    let first = mgr.create(&repo, "dup", None).expect("first");
+    let adopted = mgr.create(&repo, "dup", None).expect("adopt");
+    assert_eq!(first, adopted);
+
+    // The branch stays attached: only one admin entry, not two.
+    let out = Command::new("git")
+        .current_dir(&repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    let count = listed.matches("codeless/job-dup").count();
+    assert_eq!(count, 1, "expected exactly one admin entry, got: {listed}");
+}
+
+#[test]
+fn create_prunes_stale_admin_entry_then_succeeds() {
+    // Crash scenario: working tree vanished from disk while git
+    // still tracks it under .git/worktrees/. A naive `worktree add`
+    // would fail; `create` must prune first and proceed.
+    let (_repo_dir, repo) = fresh_repo();
+    let base = TempDir::new().unwrap();
+    let mgr = WorktreeManager::new(base.path());
+
+    let first = mgr.create(&repo, "ghost", None).expect("first");
+    std::fs::remove_dir_all(&first.path).unwrap();
+    // Confirm the admin entry is still there so the test is honest
+    // about what `create` has to clean up.
+    let pre = Command::new("git")
+        .current_dir(&repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&pre.stdout).contains("codeless/job-ghost"),
+        "precondition: stale admin entry should still be tracked"
+    );
+
+    let second = mgr.create(&repo, "ghost", None).expect("recreate");
+    assert_eq!(second.path, first.path);
+    assert!(second.path.join("seed.txt").exists());
 }
 
 #[test]

@@ -1,6 +1,13 @@
 import { getStore } from "@/lib/shell";
+import type { RpcClient } from "@/lib/rpc";
+import type { Persona } from "@/lib/rpc/methods";
+import { SUBAGENTS, type SubagentType } from "../agents/registry";
 
 const STORE_NAME = "ai-agents";
+
+export const ALL_SUBAGENT_TYPES: readonly SubagentType[] = Object.keys(
+  SUBAGENTS,
+) as SubagentType[];
 
 export type AgentIconId =
   | "coder"
@@ -17,7 +24,26 @@ export type Agent = {
   instructions: string;
   icon: AgentIconId;
   builtIn: boolean;
+  // Surfaces this persona to the job-submit picker (stage 2 lays the field
+  // down; job-submit wiring lands in a later stage).
+  useForJobs: boolean;
+  // Per-persona narrowing of the subagent registry. The registry already
+  // caps each subagent's toolset to READ_ONLY_TOOLS; this list further
+  // restricts WHICH subagents this persona may spawn at all. Empty array
+  // means "none allowed"; the field being absent (legacy KV data) means
+  // "all allowed", handled at the read site.
+  allowedSubagents: SubagentType[];
+  // Persona-preferred runner model id; the job-submit form seeds its
+  // Model dropdown from this when the user picks the persona, but the
+  // user is free to override before submit. Free-form string because
+  // each runner has its own catalogue (claude-opus-4-7, gpt-5.x, …);
+  // `null` means "no preference, fall through to the runner default".
+  defaultModel: string | null;
 };
+
+// Built-ins ship with all subagents allowed and useForJobs off; the
+// job-submit picker (later stage) is what flips useForJobs on per persona.
+const ALL: SubagentType[] = Object.keys(SUBAGENTS) as SubagentType[];
 
 export const BUILTIN_AGENTS: readonly Agent[] = [
   {
@@ -26,6 +52,9 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "General-purpose coding assistant. Writes, edits, and runs.",
     icon: "coder",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are an expert software engineer pair-programming inside the user's terminal.
 - Read files before editing them. Match existing patterns and naming.
 - Prefer the smallest correct change. Don't refactor adjacent code unprompted.
@@ -38,6 +67,9 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "Design and tradeoffs. Plans before code.",
     icon: "architect",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are a senior software architect.
 - Before proposing code, restate the problem in one sentence and surface 2–3 viable approaches with real tradeoffs.
 - Recommend one with reasoning. Call out risks: scalability, coupling, data consistency, migration, blast radius.
@@ -50,6 +82,9 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "Reviews diffs for correctness, perf, security.",
     icon: "reviewer",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are a meticulous code reviewer.
 - Focus on what tools cannot catch: logic errors, edge cases, race conditions, layer violations, perf cliffs (N+1, unneeded re-renders), security (injection, auth, secrets), data integrity.
 - Skip formatting / naming / inferred-type nits — linters handle those.
@@ -62,6 +97,9 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "Threat-models changes and flags vulns.",
     icon: "security",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are an application-security engineer.
 - Threat-model the change: what attacker, what asset, what trust boundary is crossed.
 - Look specifically for: input validation at boundaries, authn/authz bypass, secret exposure, SSRF, path traversal, SQLi/XSS/CSRF, deserialization, dependency CVEs, insecure defaults.
@@ -74,12 +112,15 @@ export const BUILTIN_AGENTS: readonly Agent[] = [
     description: "UI/UX critique and refinement.",
     icon: "designer",
     builtIn: true,
+    useForJobs: false,
+    allowedSubagents: [...ALL],
+    defaultModel: null,
     instructions: `You are a senior product designer with a strong taste for restrained, modern UI.
 - Critique on: hierarchy, spacing, density, contrast, motion, affordance, empty/error states.
 - Propose concrete changes, with Tailwind/CSS values when helpful. Keep consistent with the surrounding design system.
 - Avoid generic "make it pop" advice. Be specific about what's wrong and why.`,
   },
-] as const;
+];
 
 const KEY_CUSTOM = "customAgents";
 const KEY_ACTIVE = "activeAgentId";
@@ -98,7 +139,23 @@ export async function loadAgents(): Promise<LoadedAgents> {
     if (k === KEY_CUSTOM) custom = v as Agent[];
     else if (k === KEY_ACTIVE) activeId = v as string;
   }
-  return { custom: custom ?? [], activeId: activeId ?? BUILTIN_AGENTS[0].id };
+  return {
+    custom: (custom ?? []).map(migrateAgent),
+    activeId: activeId ?? BUILTIN_AGENTS[0].id,
+  };
+}
+
+// Existing KV-stored custom agents predate useForJobs / allowedSubagents.
+// Treat a missing allowedSubagents as "no narrowing yet" (= all subagents
+// permitted) so upgrading a workspace doesn't suddenly break agents that
+// were spawning subagents before the field existed.
+function migrateAgent(a: Agent): Agent {
+  return {
+    ...a,
+    useForJobs: a.useForJobs ?? false,
+    allowedSubagents: a.allowedSubagents ?? [...ALL],
+    defaultModel: a.defaultModel ?? null,
+  };
 }
 
 export async function saveCustomAgents(custom: Agent[]): Promise<void> {
@@ -111,6 +168,92 @@ export async function saveActiveAgentId(id: string): Promise<void> {
 
 export function newAgentId(): string {
   return `a-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// Wire-to-UI shape conversion. The runtime's `Persona` is snake_case
+// and uses `string[]` for `allowed_subagents`; the UI's `Agent` is
+// camelCase and types `allowedSubagents` against the registry's
+// `SubagentType`. Unknown ids returned by the wire are dropped so a
+// future runtime that adds a subagent the UI does not know yet does
+// not crash the chat panel's spawn path.
+export function personaToAgent(p: Persona): Agent {
+  const allowed = p.allowed_subagents.filter(
+    (s): s is SubagentType => s in SUBAGENTS,
+  );
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    instructions: p.instructions,
+    icon: (p.icon as AgentIconId) ?? "spark",
+    builtIn: p.built_in,
+    useForJobs: p.use_for_jobs,
+    allowedSubagents: allowed,
+    defaultModel: p.default_model,
+  };
+}
+
+// Inverse — used when the store writes through `upsert_persona`. The
+// runtime ignores `built_in` on the wire (it is preserved server-side)
+// so the conversion drops it.
+function agentToUpsertArgs(a: Agent) {
+  return {
+    id: a.id,
+    name: a.name,
+    description: a.description,
+    icon: a.icon,
+    instructions: a.instructions,
+    use_for_jobs: a.useForJobs,
+    default_model: a.defaultModel,
+    allowed_subagents: [...a.allowedSubagents],
+    default_snippets: [] as string[],
+  };
+}
+
+// Load personas through the RPC, mirror into the KV cache, and return
+// them in the same `LoadedAgents` shape as the legacy KV-only path so
+// the store does not branch on transport. Built-ins are filtered out
+// of `custom` because the UI keeps `BUILTIN_AGENTS` as a separate
+// constant for now; later stages collapse the two when the built-in
+// fallback is no longer needed for offline boot.
+//
+// On RPC failure the call falls back to the KV cache. R4 still holds
+// — SQLite is the source of truth and a fresh load with a healthy
+// RPC will overwrite the cache — but during a brief outage the UI
+// keeps rendering the last good snapshot rather than going blank.
+export async function loadAgentsFromRpc(
+  rpc: RpcClient,
+): Promise<LoadedAgents> {
+  try {
+    const { personas } = await rpc.call("list_personas", {});
+    const all = personas.map(personaToAgent);
+    const custom = all.filter((a) => !a.builtIn);
+    const store = getStore(STORE_NAME);
+    await store.set(KEY_CUSTOM, custom);
+    const entries = await store.loadAll();
+    let activeId: string | undefined;
+    for (const [k, v] of entries) {
+      if (k === KEY_ACTIVE) activeId = v as string;
+    }
+    return { custom, activeId: activeId ?? BUILTIN_AGENTS[0].id };
+  } catch {
+    return loadAgents();
+  }
+}
+
+export async function upsertPersonaViaRpc(
+  rpc: RpcClient,
+  agent: Agent,
+): Promise<Agent> {
+  const persona = await rpc.call("upsert_persona", agentToUpsertArgs(agent));
+  return personaToAgent(persona);
+}
+
+export async function deletePersonaViaRpc(
+  rpc: RpcClient,
+  id: string,
+): Promise<void> {
+  await rpc.call("delete_persona", { id });
 }
 
 export function findAgent(

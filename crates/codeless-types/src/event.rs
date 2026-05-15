@@ -91,6 +91,22 @@ pub enum Event {
         previous_reason: Option<StopReason>,
     },
 
+    /// `reset_job` returned a stuck job (`Queued` whose driver kept
+    /// failing, or a terminal `Failed` / `Stopped`) to an editable
+    /// `Draft`. The captured worktree was reaped (best-effort) and
+    /// `worktree_path` / `stop_reason` / `ended_at` were cleared.
+    /// Distinct from `JobQueued` and `JobPromoted` so the dashboard
+    /// can render a "reset to draft" divider rather than treating the
+    /// row as a new submission. `previous_status` is the state the
+    /// row held immediately before the reset so subscribers can
+    /// distinguish a driver-give-up recovery from a manual rewind of
+    /// a completed-but-failed run.
+    #[serde(rename = "job-reset")]
+    JobReset {
+        job_id: JobId,
+        previous_status: crate::job::JobStatus,
+    },
+
     #[serde(rename = "stage-started")]
     StageStarted {
         stage_id: StageId,
@@ -105,6 +121,14 @@ pub enum Event {
         /// already uses; persisted on the `Stage` row.
         #[serde(default)]
         name: String,
+        /// Per-stage persona override resolved at job-submit
+        /// (D1, D5). `None` means the stage inherits the job-level
+        /// persona; the StageRecorder writes this verbatim onto
+        /// `stages.persona_id` so a per-stage handover and a re-run
+        /// reproduce the same binding. Defaults to `None` so older
+        /// events from the persisted bus replay still decode.
+        #[serde(default)]
+        persona_id: Option<String>,
     },
     #[serde(rename = "verify-started")]
     VerifyStarted { stage_id: StageId },

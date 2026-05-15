@@ -1,8 +1,8 @@
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
     AssistantMessageId, AssistantThread, AssistantThreadId, FsEntry, FsEntryKind, GitAuth, Job,
-    JobId, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, TaskId, UnixMillis,
-    WorkspaceMode,
+    JobId, Persona, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, TaskId,
+    UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +64,25 @@ pub struct SubmitJobArgs {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Persona-derived system prompt composed by the caller (UI, CLI)
+    /// and applied to every stage of the job. The UI fills this from
+    /// the selected persona's `instructions` when the user picks one
+    /// from the job-submit dropdown; `None` keeps the server's
+    /// configured default. A future stage replaces this with a
+    /// `persona_id` lookup against a server-side persona table; until
+    /// then the composed text travels on the submit args and is
+    /// persisted on the job row so reruns and resumes reproduce it.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// Persona the user picked at submit time. The composed prompt
+    /// still travels on `system_prompt`; this is the lookup key that
+    /// produced it. The runtime persists it verbatim onto the job row
+    /// so a rerun can reproduce the same agent posture. `None` means
+    /// the user submitted without picking a persona. Personas live in
+    /// the UI KV store today, so the field is a free string; the FK
+    /// against a server-side persona table lands in a later stage.
+    #[serde(default)]
+    pub persona_id: Option<String>,
     /// `false` (default) lands the job in `Draft` status — the row
     /// exists, the user can edit the spec / docs / handover, but the
     /// driver does not pick it up. The user calls `start_job` to
@@ -232,6 +251,20 @@ pub struct JobReportResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct StopJobArgs {
+    pub job_id: JobId,
+}
+
+/// Argument shape for the `reset_job` recovery hatch. A job stuck in
+/// `Queued` (driver kept failing before reaching `Running`), `Failed`,
+/// or `Stopped` is moved back to `Draft` so the operator can edit the
+/// spec or simply re-`start_job` without the resume-cap dance. The
+/// captured worktree (if any) is reaped and `worktree_path` is
+/// cleared; `stop_reason` and `ended_at` are wiped so the row reads
+/// like a fresh draft. Refused for `Running`, `Paused`, `AwaitingReview`,
+/// and `Completed` — those go through `stop_job` / `pause_job` /
+/// `resume_job` instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ResetJobArgs {
     pub job_id: JobId,
 }
 
@@ -1164,3 +1197,61 @@ pub struct CancelAssistantActionResult {
 /// remain an opaque string on the wire surface generated for the UI.
 pub type AssistantActionCardPayload = AssistantActionCard;
 pub type AssistantActionPayload = AssistantAction;
+
+/// `list_personas`. Snapshot of the `personas` SQLite table, ordered
+/// with built-ins first (by id) and user rows after (by `created_at`
+/// ascending). Empty result is impossible in practice — migration
+/// 0011 seeds the five built-ins — but the wire shape tolerates it so
+/// a freshly migrated test database does not need a special case.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListPersonasArgs {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListPersonasResult {
+    pub personas: Vec<Persona>,
+}
+
+/// `get_persona`. Returns `NotFound` when the id does not resolve. The
+/// UI uses this for the per-stage / chat-side lookup once it migrates
+/// off the KV-only cache; the cache itself is hydrated by
+/// `list_personas`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct GetPersonaArgs {
+    pub id: String,
+}
+
+/// `upsert_persona`. Creates a row when `id` is unknown; replaces the
+/// editable fields (everything except `built_in`, `created_at`) when
+/// `id` already exists. Built-in rows accept body edits — the UI lets
+/// users tweak the seeded `Coder` prompt — but the `built_in` flag is
+/// preserved by the runtime so a built-in stays a built-in (it cannot
+/// be deleted; see `delete_persona`).
+///
+/// `id` is supplied by the caller. The UI mints user ids with its own
+/// prefix (`a-…`); the runtime treats them as opaque. `created_at`
+/// and `updated_at` are stamped server-side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UpsertPersonaArgs {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    pub instructions: String,
+    pub use_for_jobs: bool,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    pub allowed_subagents: Vec<String>,
+    #[serde(default)]
+    pub default_snippets: Vec<String>,
+}
+
+/// `delete_persona`. Removes one row. Built-in rows (`built_in = 1`,
+/// the `builtin:<slug>` ids seeded by migration 0011) are refused with
+/// `Conflict` so the UI cannot leave the user with no `Coder`
+/// fallback. `NotFound` for an unknown id; idempotent retries against
+/// an already-deleted user row return `NotFound` rather than `Ok` so
+/// the UI can distinguish "stale list" from "successfully removed".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct DeletePersonaArgs {
+    pub id: String,
+}

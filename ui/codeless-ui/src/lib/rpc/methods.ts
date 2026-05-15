@@ -90,6 +90,15 @@ export interface SubmitJobArgs {
   permission_mode?: string | null;
   /** Thinking-budget hint: `low | medium | high`. */
   effort?: string | null;
+  /** Persona-derived system prompt composed at submit time. The
+   * runtime applies this on top of the server's baseline system
+   * prompt for every stage; `null` keeps the server default. */
+  system_prompt?: string | null;
+  /** Id of the persona the user picked, persisted alongside the
+   * already-resolved `system_prompt` so a rerun reproduces the same
+   * agent posture even if the persona's body is edited later.
+   * `null` means no persona was picked. */
+  persona_id?: string | null;
   /** When `false` (default) the job lands in `Draft` status — the row
    * exists, the user can edit the spec / docs / handover, but the
    * driver does not pick it up. The user calls `start_job` to promote
@@ -225,6 +234,16 @@ export interface ResumeJobArgs {
 
 export interface RerunJobArgs {
   source_job_id: JobId;
+}
+
+// Recovery hatch for a stuck Queued (driver gave up after retry
+// budget exhausted) or a terminal Failed / Stopped row that the
+// operator wants to edit before resubmitting. Refused server-side
+// for Running / Paused / AwaitingReview / Completed — those have
+// their own transitions (stop_job / pause_job / resume_job /
+// rerun_job).
+export interface ResetJobArgs {
+  job_id: JobId;
 }
 
 export interface UpdateJobArgs {
@@ -452,6 +471,48 @@ export interface SecretsRmArgs {
   provider: string;
 }
 
+// Persona RPC surface (agent-personas stage 7). Personas live in
+// SQLite (`personas` table, migration 0011); this is the wire the
+// UI's `ai-agents` KV store mirrors. The KV stays as a cache so a
+// brief outage of the RPC does not lose the persona dropdown — but
+// the runtime is the source of truth (R4).
+export interface Persona {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  instructions: string;
+  use_for_jobs: boolean;
+  default_model: string | null;
+  allowed_subagents: string[];
+  default_snippets: string[];
+  built_in: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ListPersonasArgs {}
+export interface ListPersonasResult {
+  personas: Persona[];
+}
+export interface GetPersonaArgs {
+  id: string;
+}
+export interface UpsertPersonaArgs {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  instructions: string;
+  use_for_jobs: boolean;
+  default_model?: string | null;
+  allowed_subagents: string[];
+  default_snippets?: string[];
+}
+export interface DeletePersonaArgs {
+  id: string;
+}
+
 export interface RpcMethodMap {
   add_repo: { args: AddRepoArgs; result: Repo };
   remove_repo: { args: RemoveRepoArgs; result: null };
@@ -466,6 +527,11 @@ export interface RpcMethodMap {
   pause_job: { args: PauseJobArgs; result: null };
   start_job: { args: StartJobArgs; result: Job };
   resume_job: { args: ResumeJobArgs; result: Job };
+  // Manual recovery hatch — moves a wedged Queued / Failed / Stopped
+  // row back to Draft so the operator can edit and re-start. The
+  // captured worktree is reaped best-effort; the button surfaces this
+  // RPC only when the driver could not recover on its own.
+  reset_job: { args: ResetJobArgs; result: Job };
   rerun_job: { args: RerunJobArgs; result: Job };
   update_job: { args: UpdateJobArgs; result: Job };
   delete_job: { args: DeleteJobArgs; result: null };
@@ -554,6 +620,11 @@ export interface RpcMethodMap {
     args: CancelAssistantActionArgs;
     result: CancelAssistantActionResult;
   };
+
+  list_personas: { args: ListPersonasArgs; result: ListPersonasResult };
+  get_persona: { args: GetPersonaArgs; result: Persona };
+  upsert_persona: { args: UpsertPersonaArgs; result: Persona };
+  delete_persona: { args: DeletePersonaArgs; result: null };
 }
 
 export type {

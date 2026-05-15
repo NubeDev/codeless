@@ -73,6 +73,8 @@ async fn restart_preserves_repos_jobs_tasks_events_and_cursors() {
                 model: None,
                 permission_mode: None,
                 effort: None,
+                system_prompt: None,
+                persona_id: None,
                 start_immediately: true,
             })
             .await
@@ -93,6 +95,7 @@ async fn restart_preserves_repos_jobs_tasks_events_and_cursors() {
             acceptance: None,
             last_activity_at: None,
             archived: false,
+            persona_id: None,
         };
         store.insert_stage(&stage).await.unwrap();
 

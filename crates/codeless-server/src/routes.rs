@@ -10,23 +10,25 @@ use codeless_rpc::{
     AppendAssistantMessageResult, ApproveReviewArgs, AttachWorkspaceArgs, AttachWorkspaceResult,
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
     ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
-    DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DetachWorkspaceArgs,
-    DraftJobFromConversationArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
-    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
-    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
-    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
+    DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs,
+    DetachWorkspaceArgs, DraftJobFromConversationArgs, FsCreateDirArgs, FsCreateFileArgs,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
-    RpcError, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RpcError, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
-use codeless_types::{AssistantThread, Job, Repo, Review};
+use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -48,6 +50,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/start_job", post(start_job))
         .route("/rpc/resume_job", post(resume_job))
         .route("/rpc/rerun_job", post(rerun_job))
+        .route("/rpc/reset_job", post(reset_job))
         .route("/rpc/update_job", post(update_job))
         .route("/rpc/delete_job", post(delete_job))
         .route("/rpc/gc_worktrees", post(gc_worktrees))
@@ -116,6 +119,10 @@ pub(crate) fn router(state: AppState) -> Router {
             "/rpc/draft_job_from_conversation",
             post(draft_job_from_conversation),
         )
+        .route("/rpc/list_personas", post(list_personas))
+        .route("/rpc/get_persona", post(get_persona))
+        .route("/rpc/upsert_persona", post(upsert_persona))
+        .route("/rpc/delete_persona", post(delete_persona))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -280,6 +287,13 @@ async fn rerun_job(
     Json(args): Json<RerunJobArgs>,
 ) -> HandlerResult<Job> {
     st.rpc.rerun_job(args).await.map(Json).map_err(map_err)
+}
+
+async fn reset_job(
+    State(st): State<AppState>,
+    Json(args): Json<ResetJobArgs>,
+) -> HandlerResult<Job> {
+    st.rpc.reset_job(args).await.map(Json).map_err(map_err)
 }
 
 async fn update_job(
@@ -670,5 +684,37 @@ async fn draft_job_from_conversation(
         .draft_job_from_conversation(args)
         .await
         .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_personas(
+    State(st): State<AppState>,
+    Json(args): Json<ListPersonasArgs>,
+) -> HandlerResult<ListPersonasResult> {
+    st.rpc.list_personas(args).await.map(Json).map_err(map_err)
+}
+
+async fn get_persona(
+    State(st): State<AppState>,
+    Json(args): Json<GetPersonaArgs>,
+) -> HandlerResult<Persona> {
+    st.rpc.get_persona(args).await.map(Json).map_err(map_err)
+}
+
+async fn upsert_persona(
+    State(st): State<AppState>,
+    Json(args): Json<UpsertPersonaArgs>,
+) -> HandlerResult<Persona> {
+    st.rpc.upsert_persona(args).await.map(Json).map_err(map_err)
+}
+
+async fn delete_persona(
+    State(st): State<AppState>,
+    Json(args): Json<DeletePersonaArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .delete_persona(args)
+        .await
+        .map(|()| Json(Value::Null))
         .map_err(map_err)
 }

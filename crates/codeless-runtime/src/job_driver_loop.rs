@@ -19,12 +19,43 @@
 //! Runner selection goes through a `RunnerFactory` trait so the
 //! server binary can choose which adapters to wire in without
 //! depending on every implementation transitively.
+//!
+//! ## Retry-on-error
+//!
+//! `drive_job` is fallible — worktree creation, a transient DB
+//! failure, or a malformed runner factory call can all return Err
+//! before the row ever reaches Running. The naive event-only loop
+//! used to log such failures and move on, pinning the row in Queued
+//! with no recovery; this is the wedged-Queued failure mode the
+//! `runtime-driver-recovery` job is built around. The loop now
+//! classifies each `drive_job` error:
+//!
+//! - **Retryable** (worktree create, IO, transient db / git): the
+//!   loop re-publishes `Event::JobQueued` after a bounded backoff
+//!   (`RetryPolicy::default()` = 30s / 120s / 600s). After the last
+//!   backoff is consumed the row is transitioned to `Failed` with
+//!   `stop_reason = RunnerCrash` and `Event::JobFailed` is
+//!   published.
+//! - **Non-retryable** (runner not enabled at dispatch time,
+//!   template parse / argument shape errors surfaced via
+//!   `RpcError::Conflict` / `NotFound` / `InvalidArgument`): the
+//!   row moves to `Failed` immediately with the same
+//!   `stop_reason`.
+//!
+//! Retry state is per-`JobId` and lives in an in-memory map. SQLite
+//! reflects only the outcome — adding a `retry_count` column would
+//! over-fit MVP. If the server restarts mid-backoff the counter
+//! resets on backlog replay; this is the documented accepted
+//! trade-off (see `SCOPE.md` "Constraints" §R4).
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::RpcError;
-use codeless_types::{Event, Job, JobId, JobStatus, StageId, StageStatus};
+use codeless_types::{Event, Job, JobId, JobStatus, RepoId, StageId, StageStatus, StopReason};
 use futures_util::StreamExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -35,17 +66,74 @@ use crate::driver::drive_job;
 use crate::event_bus::SubscribeFilter;
 use crate::rpc::InProcessRpc;
 use crate::runner::Runner;
+use crate::state_machine::{is_terminal_job, transition_job};
+use crate::time::now_ms;
 
 /// Resolves a queued `Job` to a concrete `Runner` implementation.
 /// The factory sees the whole row so it can read `job.runner`,
 /// `job.prompt`, and (eventually) other per-job knobs without an
 /// extra DB round trip. Returning `None` means "this runner isn't
-/// enabled on this core"; the driver loop logs and the job remains
-/// `Queued` for an operator to fix (re-submit with a different
-/// runner, or restart the server with the runner enabled).
+/// enabled on this core"; the loop treats this as a non-retryable
+/// failure and transitions the job straight to `Failed`.
 pub trait RunnerFactory: Send + Sync + 'static {
     fn build(&self, job: &Job) -> Option<Arc<dyn Runner>>;
 }
+
+/// Bounded retry-with-backoff policy for `drive_job` failures.
+///
+/// `backoff[n]` is the delay applied before the `(n+1)`-th attempt.
+/// When `backoff` is exhausted the loop gives up: the job moves to
+/// `Failed` with `stop_reason = RunnerCrash` so the user can
+/// recover via `reset_job`. Production wiring uses
+/// `RetryPolicy::default()` (30s / 120s / 600s); the test harness
+/// passes shorter durations so unit tests do not sleep for real.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    backoff: Vec<Duration>,
+}
+
+impl RetryPolicy {
+    pub fn new(backoff: Vec<Duration>) -> Self {
+        Self { backoff }
+    }
+
+    /// Backoff applied to retryable failures, in order. The slice
+    /// length doubles as the retry budget — `len()` retries before
+    /// the job is transitioned to `Failed`.
+    pub fn backoff(&self) -> &[Duration] {
+        &self.backoff
+    }
+
+    /// Sub-second backoff for unit tests. Pinned in code so the
+    /// production default and the test harness cannot drift apart
+    /// silently.
+    pub fn test_fast() -> Self {
+        Self {
+            backoff: vec![
+                Duration::from_millis(5),
+                Duration::from_millis(5),
+                Duration::from_millis(5),
+            ],
+        }
+    }
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            backoff: vec![
+                Duration::from_secs(30),
+                Duration::from_secs(120),
+                Duration::from_secs(600),
+            ],
+        }
+    }
+}
+
+/// Shared retry-counter map. Keyed by `JobId`; the value is the
+/// number of `drive_job` attempts that have already failed. Cleared
+/// on success and on terminal give-up.
+type RetryAttempts = Arc<Mutex<HashMap<JobId, usize>>>;
 
 /// Handle to the running driver loop. Drop semantics: the loop runs
 /// until the underlying event-bus subscription closes or until
@@ -70,18 +158,28 @@ impl DriverLoopHandle {
     }
 }
 
-/// Spawn the driver. Replays existing `Queued` jobs once, then tails
-/// `JobQueued` events live until cancelled or the bus shuts down.
-///
-/// `concurrency` caps the number of in-flight `drive_job` tasks. A
-/// small bound is fine in MVP — each `drive_job` is a long-lived
-/// future that owns its own task, so 4 in-flight is plenty until the
-/// server gets a real scheduler.
+/// Spawn the driver with the default retry policy. Thin wrapper
+/// over `spawn_job_driver_loop_with_retry` so existing call sites
+/// stay unchanged.
 pub async fn spawn_job_driver_loop<F: RunnerFactory>(
     rpc: Arc<InProcessRpc>,
     factory: Arc<F>,
     worktrees: Option<Arc<WorktreeManager>>,
     concurrency: usize,
+) -> Result<DriverLoopHandle, RpcError> {
+    spawn_job_driver_loop_with_retry(rpc, factory, worktrees, concurrency, RetryPolicy::default())
+        .await
+}
+
+/// Spawn the driver loop with an explicit `RetryPolicy`. Tests
+/// pass `RetryPolicy::test_fast()` so the backoff path is
+/// exercised without parking the runtime for ten minutes.
+pub async fn spawn_job_driver_loop_with_retry<F: RunnerFactory>(
+    rpc: Arc<InProcessRpc>,
+    factory: Arc<F>,
+    worktrees: Option<Arc<WorktreeManager>>,
+    concurrency: usize,
+    retry: RetryPolicy,
 ) -> Result<DriverLoopHandle, RpcError> {
     let cancel = CancellationToken::new();
     let token_for_task = cancel.clone();
@@ -95,6 +193,7 @@ pub async fn spawn_job_driver_loop<F: RunnerFactory>(
         .map_err(|e| RpcError::Internal(format!("driver subscribe: {e}")))?;
 
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
+    let retries: RetryAttempts = Arc::new(Mutex::new(HashMap::new()));
 
     let join = tokio::spawn(
         async move {
@@ -102,7 +201,7 @@ pub async fn spawn_job_driver_loop<F: RunnerFactory>(
             // startup lease reaper has already converted abandoned
             // `Running` rows back to `Queued`, so a single pass here
             // covers crashes.
-            replay_backlog(&rpc, &factory, &worktrees, &semaphore).await;
+            replay_backlog(&rpc, &factory, &worktrees, &semaphore, &retries, &retry).await;
 
             // Live tail. `subscribe_since(All, None)` is live-only,
             // which is what we want — backlog was just handled above.
@@ -130,6 +229,8 @@ pub async fn spawn_job_driver_loop<F: RunnerFactory>(
                                 factory.clone(),
                                 worktrees.clone(),
                                 semaphore.clone(),
+                                retries.clone(),
+                                retry.clone(),
                                 job_id,
                             )
                             .await;
@@ -149,6 +250,8 @@ async fn replay_backlog<F: RunnerFactory>(
     factory: &Arc<F>,
     worktrees: &Option<Arc<WorktreeManager>>,
     semaphore: &Arc<Semaphore>,
+    retries: &RetryAttempts,
+    retry: &RetryPolicy,
 ) {
     let jobs = match rpc.store().list_jobs(None).await {
         Ok(jobs) => jobs,
@@ -163,17 +266,22 @@ async fn replay_backlog<F: RunnerFactory>(
             factory.clone(),
             worktrees.clone(),
             semaphore.clone(),
+            retries.clone(),
+            retry.clone(),
             job.id,
         )
         .await;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch<F: RunnerFactory>(
     rpc: Arc<InProcessRpc>,
     factory: Arc<F>,
     worktrees: Option<Arc<WorktreeManager>>,
     semaphore: Arc<Semaphore>,
+    retries: RetryAttempts,
+    retry: RetryPolicy,
     job_id: JobId,
 ) {
     let mut job = match rpc.store().get_job(job_id).await {
@@ -194,6 +302,7 @@ async fn dispatch<F: RunnerFactory>(
         // semaphore isn't pointlessly held.
         return;
     }
+    let repo_id = job.repo_id;
 
     // Prepend the prior session's handover and the user-authored job
     // docs (SCOPE.md / WORKFLOW.md / extras) to the prompt the runner
@@ -249,11 +358,20 @@ async fn dispatch<F: RunnerFactory>(
     let runner = match factory.build(&job) {
         Some(r) => r,
         None => {
+            // Runner not enabled on this core. Non-retryable —
+            // re-publishing JobQueued would loop forever against
+            // the same missing adapter. Move the row straight to
+            // Failed so the user sees the failure and can either
+            // re-submit with a different runner or restart the
+            // server with the runner wired in.
             tracing::warn!(
                 %job_id,
                 runner = %job.runner,
-                "driver: runner not enabled — job stays queued",
+                kind = "runner-not-enabled",
+                "driver: runner not enabled; failing job",
             );
+            retries.lock().unwrap().remove(&job_id);
+            mark_job_failed(&rpc, job_id).await;
             return;
         }
     };
@@ -267,10 +385,19 @@ async fn dispatch<F: RunnerFactory>(
             return;
         }
     };
+    let rpc_for_task = rpc.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        if let Err(e) = drive_job(&rpc, job_id, runner, worktrees).await {
-            tracing::warn!(%job_id, error = %e, "drive_job returned error");
+        match drive_job(&rpc_for_task, job_id, runner, worktrees).await {
+            Ok(()) => {
+                // Clear the retry counter on success so a future
+                // resubmit of the same JobId (rerun_job / resume)
+                // starts with a fresh budget.
+                retries.lock().unwrap().remove(&job_id);
+            }
+            Err(err) => {
+                handle_drive_error(&rpc_for_task, job_id, repo_id, &err, &retries, &retry).await;
+            }
         }
     });
 }
@@ -297,4 +424,202 @@ async fn latest_terminal_stage(rpc: &Arc<InProcessRpc>, job_id: JobId) -> Option
         .map(|s| (s.stage.ordinal, s.stage.id))
         .max_by_key(|(ordinal, _)| *ordinal)
         .map(|(_, id)| id)
+}
+
+/// Distinguishes retryable transient errors from terminal failures.
+/// The classifier reads error *shape* only — no process spawn, no
+/// IO — so it stays clean against R1 (process-spawn confinement) and
+/// can run in a hot path. Anything the runtime hasn't proved is
+/// retryable is treated as terminal so a wedged row is the loud
+/// failure mode rather than an infinite-retry loop.
+fn is_retryable(err: &RpcError) -> bool {
+    match err {
+        // The only error kind drive_job manufactures from a
+        // worktree / git / sqlx failure is RpcError::Internal with
+        // a `<kind>:` prefix the driver itself stamps in. Match on
+        // the prefix so the classifier is grep-able from the
+        // source of the failure.
+        RpcError::Internal(msg) => {
+            msg.starts_with("worktree ")
+                || msg.starts_with("db: ")
+                || msg.starts_with("git ")
+                || msg.starts_with("io: ")
+        }
+        // Conflict means the row moved out from under us (already
+        // Running, already terminal). Retrying re-races the same
+        // wall, so this is non-retryable by design.
+        RpcError::Conflict(_) => false,
+        // NotFound / InvalidArgument / Workspace are config or
+        // shape errors. Retry is futile.
+        RpcError::NotFound(_) | RpcError::InvalidArgument(_) | RpcError::Workspace(_) => false,
+    }
+}
+
+fn error_kind_label(err: &RpcError) -> &'static str {
+    match err {
+        RpcError::Internal(msg) if msg.starts_with("worktree ") => "worktree",
+        RpcError::Internal(msg) if msg.starts_with("db: ") => "db",
+        RpcError::Internal(msg) if msg.starts_with("git ") => "git",
+        RpcError::Internal(msg) if msg.starts_with("io: ") => "io",
+        RpcError::Internal(_) => "internal",
+        RpcError::Conflict(_) => "conflict",
+        RpcError::NotFound(_) => "not-found",
+        RpcError::InvalidArgument(_) => "invalid-argument",
+        RpcError::Workspace(_) => "workspace",
+    }
+}
+
+async fn handle_drive_error(
+    rpc: &Arc<InProcessRpc>,
+    job_id: JobId,
+    repo_id: RepoId,
+    err: &RpcError,
+    retries: &RetryAttempts,
+    retry: &RetryPolicy,
+) {
+    let kind = error_kind_label(err);
+    if !is_retryable(err) {
+        tracing::warn!(%job_id, %kind, error = %err, "drive_job non-retryable; failing job");
+        retries.lock().unwrap().remove(&job_id);
+        mark_job_failed(rpc, job_id).await;
+        return;
+    }
+
+    // Take the current attempt index and bump the counter under
+    // one short-held lock. Past-the-budget attempts give up;
+    // otherwise the delay is `backoff[attempt]`.
+    let (attempt, delay) = {
+        let mut map = retries.lock().unwrap();
+        let n = map.entry(job_id).or_insert(0);
+        let attempt = *n;
+        if attempt >= retry.backoff().len() {
+            map.remove(&job_id);
+            (attempt, None)
+        } else {
+            let d = retry.backoff()[attempt];
+            *n = attempt + 1;
+            (attempt, Some(d))
+        }
+    };
+
+    let Some(delay) = delay else {
+        tracing::warn!(
+            %job_id,
+            %kind,
+            attempt,
+            error = %err,
+            "drive_job retry budget exhausted; failing job",
+        );
+        mark_job_failed(rpc, job_id).await;
+        return;
+    };
+
+    tracing::warn!(
+        %job_id,
+        %kind,
+        attempt,
+        delay_ms = delay.as_millis() as u64,
+        error = %err,
+        "drive_job retryable; scheduling re-publish",
+    );
+
+    let rpc_for_retry = rpc.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        // The job may have been reset / deleted / completed during
+        // the backoff. Re-publishing JobQueued is harmless — the
+        // dispatch read of the row will skip non-Queued status.
+        let now = now_ms();
+        if let Err(e) = rpc_for_retry
+            .bus()
+            .publish(
+                Some(job_id),
+                None,
+                None,
+                Event::JobQueued { job_id, repo_id },
+                now,
+            )
+            .await
+        {
+            tracing::warn!(%job_id, error = %e, "retry re-publish JobQueued failed");
+        }
+    });
+}
+
+/// Move a non-terminal job row to `Failed` and publish
+/// `JobFailed`. Used by both the non-retryable error path and the
+/// retry-budget-exhausted path. `stop_reason = RunnerCrash`
+/// distinguishes a driver give-up from a clean user-driven
+/// terminal state.
+async fn mark_job_failed(rpc: &Arc<InProcessRpc>, job_id: JobId) {
+    let store = rpc.store();
+    let bus = rpc.bus();
+    let mut job = match store.get_job(job_id).await {
+        Ok(Some(j)) => j,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(%job_id, error = %e, "mark_job_failed: get_job");
+            return;
+        }
+    };
+    if is_terminal_job(job.status) || job.status == JobStatus::Paused {
+        return;
+    }
+    if let Err(e) = transition_job(job.status, JobStatus::Failed) {
+        tracing::warn!(%job_id, from = ?job.status, error = %e, "mark_job_failed: refused");
+        return;
+    }
+    let ended = now_ms();
+    job.status = JobStatus::Failed;
+    job.stop_reason = Some(StopReason::RunnerCrash);
+    job.ended_at = Some(ended);
+    if let Err(e) = store.update_job(&job).await {
+        tracing::warn!(%job_id, error = %e, "mark_job_failed: update_job");
+        return;
+    }
+    if let Err(e) = bus
+        .publish(Some(job_id), None, None, Event::JobFailed { job_id }, ended)
+        .await
+    {
+        tracing::warn!(%job_id, error = %e, "mark_job_failed: publish");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_retryable_errors() {
+        assert!(is_retryable(&RpcError::Internal(
+            "worktree create: boom".into()
+        )));
+        assert!(is_retryable(&RpcError::Internal("db: deadlock".into())));
+        assert!(is_retryable(&RpcError::Internal(
+            "git checkout -B: lock".into()
+        )));
+        assert!(is_retryable(&RpcError::Internal("io: stale handle".into())));
+    }
+
+    #[test]
+    fn classify_non_retryable_errors() {
+        assert!(!is_retryable(&RpcError::Conflict("already running".into())));
+        assert!(!is_retryable(&RpcError::NotFound("job".into())));
+        assert!(!is_retryable(&RpcError::InvalidArgument("shape".into())));
+        // Generic Internal that doesn't match any known retryable
+        // prefix is treated as terminal: better to fail loudly than
+        // loop forever against an unknown class.
+        assert!(!is_retryable(&RpcError::Internal(
+            "template parse: unexpected key".into()
+        )));
+    }
+
+    #[test]
+    fn test_fast_policy_has_three_attempts() {
+        // The retry-budget contract is "three retries before
+        // Failed." Pin it so a future tweak to the default policy
+        // doesn't silently change the test backoff.
+        assert_eq!(RetryPolicy::test_fast().backoff().len(), 3);
+        assert_eq!(RetryPolicy::default().backoff().len(), 3);
+    }
 }

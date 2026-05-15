@@ -82,6 +82,8 @@ async fn cursors_are_strictly_monotonic_across_publish_calls() {
             model: None,
             permission_mode: None,
             effort: None,
+            system_prompt: None,
+            persona_id: None,
             start_immediately: true,
         })
         .await

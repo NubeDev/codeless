@@ -1,3 +1,4 @@
+import { useRpc } from "@/lib/rpc";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -7,10 +8,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { SUBAGENTS } from "@/modules/ai/agents/registry";
 import { AGENT_ICONS } from "@/modules/ai/components/AgentSwitcher";
 import {
+  ALL_SUBAGENT_TYPES,
   BUILTIN_AGENTS,
   type Agent,
   type AgentIconId,
@@ -48,6 +52,7 @@ const ICON_OPTIONS: AgentIconId[] = [
 ];
 
 export function AgentsSection() {
+  const rpc = useRpc();
   const customInstructions = usePreferencesStore((s) => s.customInstructions);
   const customAgents = useAgentsStore((s) => s.customAgents);
   const activeAgentId = useAgentsStore((s) => s.activeId);
@@ -62,9 +67,9 @@ export function AgentsSection() {
   const hydrateSnippets = useSnippetsStore((s) => s.hydrate);
 
   useEffect(() => {
-    void hydrateAgents();
+    void hydrateAgents(rpc);
     void hydrateSnippets();
-  }, [hydrateAgents, hydrateSnippets]);
+  }, [hydrateAgents, hydrateSnippets, rpc]);
 
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
@@ -93,6 +98,9 @@ export function AgentsSection() {
                 instructions: "",
                 icon: "spark",
                 builtIn: false,
+                useForJobs: false,
+                allowedSubagents: [...ALL_SUBAGENT_TYPES],
+                defaultModel: null,
               })
             }
           >
@@ -108,7 +116,7 @@ export function AgentsSection() {
               active={a.id === activeAgentId}
               onActivate={() => setActiveAgentId(a.id)}
               onEdit={a.builtIn ? null : () => setEditingAgent(a)}
-              onDelete={a.builtIn ? null : () => removeAgent(a.id)}
+              onDelete={a.builtIn ? null : () => void removeAgent(a.id, rpc)}
             />
           ))}
         </div>
@@ -207,7 +215,7 @@ export function AgentsSection() {
         existing={customAgents}
         onClose={() => setEditingAgent(null)}
         onSave={(a) => {
-          upsertAgent(a);
+          void upsertAgent(a, rpc);
           setEditingAgent(null);
         }}
       />
@@ -398,6 +406,78 @@ function AgentEditorDialog({
               placeholder="Persona & rules. Appended to Codeless's core system prompt."
               className="min-h-40 resize-y text-[12px] leading-relaxed"
             />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-card/40 px-3 py-2">
+            <div className="flex min-w-0 flex-col">
+              <Label>Use for jobs</Label>
+              <span className="text-[10.5px] text-muted-foreground">
+                Surface this persona in the job-submit picker.
+              </span>
+            </div>
+            <Switch
+              checked={draft.useForJobs}
+              onCheckedChange={(v) =>
+                setDraft({ ...draft, useForJobs: v === true })
+              }
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label>Default model</Label>
+            <span className="text-[10.5px] text-muted-foreground">
+              Seeds the job-submit Model dropdown when this persona is
+              picked. Free-form — match a runner's catalogue id (e.g.{" "}
+              <code className="font-mono">claude-opus-4-7</code>). Empty
+              falls through to the runner default.
+            </span>
+            <Input
+              value={draft.defaultModel ?? ""}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  defaultModel:
+                    e.target.value.trim().length === 0
+                      ? null
+                      : e.target.value,
+                })
+              }
+              placeholder="claude-opus-4-7"
+              className="h-8 text-[12px]"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label>Allowed subagents</Label>
+            <span className="text-[10.5px] text-muted-foreground">
+              Which subagent types this persona may spawn. The registry still
+              caps each subagent to read-only tools — this list can only narrow.
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {ALL_SUBAGENT_TYPES.map((t) => {
+                const on = draft.allowedSubagents.includes(t);
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() =>
+                      setDraft({
+                        ...draft,
+                        allowedSubagents: on
+                          ? draft.allowedSubagents.filter((x) => x !== t)
+                          : [...draft.allowedSubagents, t],
+                      })
+                    }
+                    title={SUBAGENTS[t].description}
+                    className={cn(
+                      "rounded-md border px-2 py-1 text-[10.5px] transition-colors",
+                      on
+                        ? "border-foreground/40 bg-accent text-foreground"
+                        : "border-border/60 text-muted-foreground hover:bg-accent/40",
+                    )}
+                  >
+                    {SUBAGENTS[t].label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
         <DialogFooter>

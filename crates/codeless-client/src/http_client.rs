@@ -4,23 +4,25 @@ use codeless_rpc::{
     AppendAssistantMessageResult, ApproveReviewArgs, AttachWorkspaceArgs, AttachWorkspaceResult,
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
     ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
-    DeleteAssistantThreadArgs, DeleteJobFileArgs, DetachWorkspaceArgs,
+    DeleteAssistantThreadArgs, DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs,
     DraftJobFromConversationArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs,
     FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
-    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs,
-    RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
+    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
     UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
-    WorkspaceError, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
-use codeless_types::{AssistantThread, Job, Repo, Review};
+use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde::Serialize;
@@ -212,6 +214,10 @@ impl RpcServer for HttpRpcClient {
 
     async fn rerun_job(&self, args: RerunJobArgs) -> RpcResult<Job> {
         self.call("rerun_job", &args).await
+    }
+
+    async fn reset_job(&self, args: ResetJobArgs) -> RpcResult<Job> {
+        self.call("reset_job", &args).await
     }
 
     async fn gc_worktrees(&self, args: GcWorktreesArgs) -> RpcResult<GcWorktreesResult> {
@@ -443,6 +449,22 @@ impl RpcServer for HttpRpcClient {
         args: DraftJobFromConversationArgs,
     ) -> RpcResult<Job> {
         self.call("draft_job_from_conversation", &args).await
+    }
+
+    async fn list_personas(&self, args: ListPersonasArgs) -> RpcResult<ListPersonasResult> {
+        self.call("list_personas", &args).await
+    }
+
+    async fn get_persona(&self, args: GetPersonaArgs) -> RpcResult<Persona> {
+        self.call("get_persona", &args).await
+    }
+
+    async fn upsert_persona(&self, args: UpsertPersonaArgs) -> RpcResult<Persona> {
+        self.call("upsert_persona", &args).await
+    }
+
+    async fn delete_persona(&self, args: DeletePersonaArgs) -> RpcResult<()> {
+        self.call_void("delete_persona", &args).await
     }
 }
 
