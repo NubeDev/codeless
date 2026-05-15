@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { navigate } from "@/lib/route";
 
 // Stage-6 assistant view. Renders the persisted transcript for one
 // thread plus a composer that appends a user turn and the no-op
@@ -332,6 +333,9 @@ function ActionCardView({
         {card.action.tool === "draft_job" && (
           <DraftJobPreview action={card.action} />
         )}
+        {card.action.tool === "edit_scope" && (
+          <EditScopePreview action={card.action} />
+        )}
         {isPending && (
           <div className="mt-1 flex justify-end gap-2">
             <Button
@@ -402,6 +406,165 @@ function DraftJobPreview({
 // see what they are about to run without parsing the human summary.
 function actionLabel(action: AssistantAction): string {
   return `tool:${action.tool}`;
+}
+
+// Structured preview for the `edit_scope` action card. Fetches the
+// current on-disk file via `read_job_file` so the user can review the
+// unified diff (computed in the browser to avoid round-tripping the
+// proposed body twice) before confirming the rewrite. The diff is
+// presentation-only — the server recomputes its own diff when it
+// emits the trailing `Tool` message, which the user trusts because
+// the server is the one that actually wrote the file.
+function EditScopePreview({
+  action,
+}: {
+  action: Extract<AssistantAction, { tool: "edit_scope" }>;
+}) {
+  const rpc = useRpc();
+  const [current, setCurrent] = useState<string | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCurrent(null);
+    setLoadErr(null);
+    void rpc
+      .call("read_job_file", {
+        job_id: action.job_id,
+        filename: action.filename,
+      })
+      .then((res) => {
+        if (cancelled) return;
+        setCurrent(res.content);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        // NotFound is expected for first-time writes; render as an
+        // empty current body so the diff shows every line as an
+        // addition, mirroring how the server treats it.
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.toLowerCase().includes("not found")) {
+          setCurrent("");
+        } else {
+          setLoadErr(msg);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, action.job_id, action.filename]);
+
+  const diffLines =
+    current === null
+      ? null
+      : unifiedDiffLines(current, action.new_content);
+
+  return (
+    <div className="mt-1 flex flex-col gap-2 rounded border border-border/40 bg-background/40 p-2 text-xs">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+        <dt className="font-mono text-muted-foreground">job</dt>
+        <dd className="truncate font-mono">{action.job_id}</dd>
+        <dt className="font-mono text-muted-foreground">file</dt>
+        <dd className="truncate font-mono">{action.filename}</dd>
+        <dt className="font-mono text-muted-foreground">new size</dt>
+        <dd className="font-mono">{action.new_content.length} bytes</dd>
+      </dl>
+      <div className="flex items-center justify-end">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => navigate(`/jobs/${action.job_id}`)}
+          aria-label="Open in editor"
+        >
+          Open in editor
+        </Button>
+      </div>
+      {loadErr ? (
+        <div className="text-destructive">
+          Could not read current file: {loadErr}
+        </div>
+      ) : diffLines === null ? (
+        <div className="text-muted-foreground">Loading current file…</div>
+      ) : (
+        <details open className="text-muted-foreground">
+          <summary className="cursor-pointer select-none">unified diff</summary>
+          <pre className="mt-1 max-h-64 overflow-auto rounded bg-muted/40 p-2 font-mono text-[11px] leading-tight">
+            {diffLines.map((l, i) => (
+              <div
+                key={i}
+                className={cn(
+                  l.kind === "add" && "text-emerald-500",
+                  l.kind === "del" && "text-destructive",
+                  l.kind === "header" && "font-semibold text-muted-foreground",
+                )}
+              >
+                {l.text}
+              </div>
+            ))}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+type DiffLine = { kind: "add" | "del" | "eq" | "header"; text: string };
+
+// Browser-side LCS unified diff. Mirrors the Rust `unified_diff` so the
+// preview matches what the server emits on confirm; the runtime
+// recomputes its own diff for the `Tool` message rather than trusting
+// this one. Kept inside this file because nothing else needs it —
+// promoting to `@/lib/diff` would be premature.
+function unifiedDiffLines(oldText: string, newText: string): DiffLine[] {
+  const a = splitLines(oldText);
+  const b = splitLines(newText);
+  const n = a.length;
+  const m = b.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array(m + 1).fill(0),
+  );
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] =
+        a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out: DiffLine[] = [
+    { kind: "header", text: "--- current" },
+    { kind: "header", text: "+++ proposed" },
+  ];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push({ kind: "eq", text: " " + a[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push({ kind: "del", text: "-" + a[i] });
+      i++;
+    } else {
+      out.push({ kind: "add", text: "+" + b[j] });
+      j++;
+    }
+  }
+  while (i < n) {
+    out.push({ kind: "del", text: "-" + a[i++] });
+  }
+  while (j < m) {
+    out.push({ kind: "add", text: "+" + b[j++] });
+  }
+  return out;
+}
+
+function splitLines(s: string): string[] {
+  if (s.length === 0) return [];
+  const lines = s.split("\n");
+  // `split("\n")` leaves a trailing empty string when the source ends
+  // with a newline; drop it so the diff doesn't show a phantom blank
+  // addition at the end of every file.
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
 }
 
 // `Tool`-role messages carry the structured result of a confirmed

@@ -156,6 +156,26 @@ pub enum AssistantAction {
         #[serde(default)]
         effort: Option<String>,
     },
+    /// Rewrite one of the job's spec files (default `SCOPE.md`) with
+    /// new content. Stage-9 "edit-scope": the chat surface proposes
+    /// the full new file body; confirmation dispatches `write_job_file`
+    /// after the paused-job guard runs (Running / Queued /
+    /// AwaitingReview rows refuse the edit — the user pauses the job
+    /// first). The card stores the full proposed body so the
+    /// renderer can compute a unified diff against the current file
+    /// on the fly; only the filename and body cross the wire, so
+    /// `meta_json` stays a flat document a human can read in `git log`.
+    EditScope {
+        job_id: JobId,
+        /// Target file under `<repo>/.codeless/jobs/<name>/`. Defaults
+        /// to `SCOPE.md` at the parser layer; carried explicitly here
+        /// so a future planner can target `WORKFLOW.md` (or another
+        /// non-template file) without a second action variant. The
+        /// server rejects `template.yaml` — `update_job_template` is
+        /// the correct path for the spec (renames refused there too).
+        filename: String,
+        new_content: String,
+    },
 }
 
 impl AssistantAction {
@@ -174,7 +194,8 @@ impl AssistantAction {
             | AssistantAction::ResumeJob { .. }
             | AssistantAction::RestartJob { .. }
             | AssistantAction::UpdateJob { .. }
-            | AssistantAction::DraftJob { .. } => true,
+            | AssistantAction::DraftJob { .. }
+            | AssistantAction::EditScope { .. } => true,
         }
     }
 }

@@ -3,14 +3,14 @@ use codeless_rpc::{
     CancelAssistantActionResult, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
     CreateAssistantThreadArgs, DeleteAssistantThreadArgs, GetJobArgs, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobsArgs, PauseJobArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
-    StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobArgs, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult,
+    ListJobsArgs, PauseJobArgs, ReadJobFileArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult,
+    RpcServer, StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobArgs,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteJobFileArgs,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, JobId, RepoId, WorkspaceMode,
+    AssistantThread, AssistantThreadId, JobId, JobStatus, RepoId, WorkspaceMode,
 };
 
 use super::InProcessRpc;
@@ -299,6 +299,16 @@ fn parse_action(input: &str) -> Option<(AssistantAction, String)> {
     {
         return parse_draft(after);
     }
+    // `/edit-scope` carries a free-form body after `--`, same shape as
+    // `/draft`. Routed before the whitespace-tokenised branches for the
+    // same reason — the prompt would otherwise lose its embedded
+    // newlines.
+    if let Some(after) = rest
+        .strip_prefix("edit-scope ")
+        .or_else(|| rest.strip_prefix("scope "))
+    {
+        return parse_edit_scope(after);
+    }
     let mut parts = rest.split_whitespace();
     let cmd = parts.next()?;
     match cmd {
@@ -482,6 +492,125 @@ fn parse_draft(after: &str) -> Option<(AssistantAction, String)> {
         },
         summary,
     ))
+}
+
+/// Stage-9 edit-scope parser. Format:
+///
+/// ```text
+/// /edit-scope <job_id> [filename=SCOPE.md] -- <new body>
+/// ```
+///
+/// `filename` defaults to `SCOPE.md` — the common case is the user
+/// rewriting the high-level brief. `WORKFLOW.md` and other non-
+/// template files are reachable through the optional key. The body
+/// after `--` is taken verbatim (whitespace preserved); an empty body
+/// falls back to the no-op responder rather than emitting a card
+/// that would silently clobber the file with nothing.
+fn parse_edit_scope(after: &str) -> Option<(AssistantAction, String)> {
+    let (head, body) = after.split_once("--")?;
+    // Strip the single space (or newline) that typically follows the
+    // `--` separator. Trailing whitespace is preserved verbatim so the
+    // user can end the file with a deliberate blank line — a markdown
+    // convention some downstream renderers care about.
+    let new_content = body.trim_start().to_owned();
+    if new_content.is_empty() {
+        return None;
+    }
+    let mut toks = head.split_whitespace();
+    let job_id = toks.next()?.parse::<JobId>().ok()?;
+    let mut filename: Option<String> = None;
+    for tok in toks {
+        let (k, v) = tok.split_once('=')?;
+        match k {
+            "filename" | "file" => filename = Some(v.to_owned()),
+            _ => return None,
+        }
+    }
+    let filename = filename.unwrap_or_else(|| "SCOPE.md".to_owned());
+    let summary = format!(
+        "Edit `{filename}` on job `{job_id}` ({} bytes proposed). \
+         The card carries the full new body; confirm to write through \
+         `write_job_file` once the job is non-running.",
+        new_content.len(),
+    );
+    Some((
+        AssistantAction::EditScope {
+            job_id,
+            filename,
+            new_content,
+        },
+        summary,
+    ))
+}
+
+/// Tiny LCS-based unified diff over lines. Good enough for the card's
+/// "preview what `write_job_file` will land" — the runtime never
+/// promises this is byte-identical to `git diff` output. A real diff
+/// library would be heavier than the carry; the algorithm here is the
+/// textbook DP table walked twice (forward to fill, backward to emit).
+///
+/// Lines keep their newlines; the emitted `String` is plain
+/// `-`/`+`/` ` prefixed text with a synthetic `@@` header so the UI
+/// can render it inside a `<pre>` without parsing.
+fn unified_diff(old: &str, new: &str, label: &str) -> String {
+    let a: Vec<&str> = old.split_inclusive('\n').collect();
+    let b: Vec<&str> = new.split_inclusive('\n').collect();
+    let n = a.len();
+    let m = b.len();
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i][j] = if a[i] == b[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let mut out = format!("--- {label} (current)\n+++ {label} (proposed)\n");
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if a[i] == b[j] {
+            out.push(' ');
+            out.push_str(a[i]);
+            if !a[i].ends_with('\n') {
+                out.push('\n');
+            }
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            out.push('-');
+            out.push_str(a[i]);
+            if !a[i].ends_with('\n') {
+                out.push('\n');
+            }
+            i += 1;
+        } else {
+            out.push('+');
+            out.push_str(b[j]);
+            if !b[j].ends_with('\n') {
+                out.push('\n');
+            }
+            j += 1;
+        }
+    }
+    while i < n {
+        out.push('-');
+        out.push_str(a[i]);
+        if !a[i].ends_with('\n') {
+            out.push('\n');
+        }
+        i += 1;
+    }
+    while j < m {
+        out.push('+');
+        out.push_str(b[j]);
+        if !b[j].ends_with('\n') {
+            out.push('\n');
+        }
+        j += 1;
+    }
+    out
 }
 
 /// Internal helper: load the proposal row and re-deserialise the card
@@ -708,6 +837,71 @@ async fn dispatch_action(
             Ok((
                 format!("Drafted job `{}` (status: {:?}).", job.id, job.status),
                 json!({ "tool": "draft_job", "job": job }),
+            ))
+        }
+        AssistantAction::EditScope {
+            job_id,
+            filename,
+            new_content,
+        } => {
+            // The paused-job rule: a chat-driven spec edit must not
+            // race the runner that is currently reading the same file
+            // off disk. Only non-running statuses go through; the user
+            // pauses (or stops, or waits for the job to finish) and
+            // re-confirms. `update_job_template` does not enforce this
+            // because the CLI surface accepts the risk of editing a
+            // live job; the assistant surface is the friendlier path
+            // and the gate lives here.
+            let job = rpc.get_job(GetJobArgs { job_id: *job_id }).await?;
+            if matches!(
+                job.status,
+                JobStatus::Running | JobStatus::Queued | JobStatus::AwaitingReview
+            ) {
+                return Err(RpcError::Conflict(format!(
+                    "job {job_id} is {:?}; pause it first with `/pause {job_id}` \
+                     before editing the spec",
+                    job.status
+                )));
+            }
+
+            // Read the current body so we can emit a diff in the
+            // tool message. NotFound means the file does not exist
+            // yet — treat that as an empty current body so the diff
+            // shows the whole new content as additions, matching
+            // what `git diff` would say about a brand-new file.
+            let current = match rpc
+                .read_job_file(ReadJobFileArgs {
+                    job_id: *job_id,
+                    filename: filename.clone(),
+                })
+                .await
+            {
+                Ok(res) => res.content,
+                Err(RpcError::NotFound(_)) => String::new(),
+                Err(e) => return Err(e),
+            };
+
+            let result = rpc
+                .write_job_file(WriteJobFileArgs {
+                    job_id: *job_id,
+                    filename: filename.clone(),
+                    content: new_content.clone(),
+                })
+                .await?;
+            let diff = unified_diff(&current, new_content, &result.name);
+            Ok((
+                format!(
+                    "Wrote `{}` on job `{job_id}` ({} → {} bytes).",
+                    result.name,
+                    current.len(),
+                    new_content.len(),
+                ),
+                json!({
+                    "tool": "edit_scope",
+                    "job_id": job_id,
+                    "filename": result.name,
+                    "diff": diff,
+                }),
             ))
         }
     }
@@ -1503,5 +1697,194 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::InvalidArgument(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn parser_edit_scope_extracts_defaults_and_body() {
+        let job_id = JobId::new();
+        let line = format!("/edit-scope {job_id} -- # new scope\n\nlots of words");
+        let (action, summary) = parse_action(&line).expect("parse edit-scope");
+        match action {
+            AssistantAction::EditScope {
+                job_id: j,
+                filename,
+                new_content,
+            } => {
+                assert_eq!(j, job_id);
+                assert_eq!(filename, "SCOPE.md");
+                // Embedded newlines survive the parser — the body is taken
+                // verbatim past the `--` separator so multi-line spec
+                // rewrites round-trip without escaping.
+                assert!(new_content.starts_with("# new scope"));
+                assert!(new_content.contains("lots of words"));
+            }
+            other => panic!("expected EditScope, got {other:?}"),
+        }
+        assert!(summary.contains("SCOPE.md"));
+    }
+
+    #[test]
+    fn parser_edit_scope_honours_filename_override() {
+        let job_id = JobId::new();
+        let (action, _) = parse_action(&format!(
+            "/edit-scope {job_id} filename=WORKFLOW.md -- body"
+        ))
+        .expect("parse edit-scope");
+        match action {
+            AssistantAction::EditScope { filename, .. } => assert_eq!(filename, "WORKFLOW.md"),
+            other => panic!("expected EditScope, got {other:?}"),
+        }
+        // `/scope` alias mirrors the `/new` ↔ `/draft` shape so the user can
+        // shorthand the common path.
+        assert!(parse_action(&format!("/scope {job_id} -- body")).is_some());
+    }
+
+    #[test]
+    fn parser_edit_scope_rejects_missing_body_or_unknown_key() {
+        let job_id = JobId::new();
+        assert!(parse_action(&format!("/edit-scope {job_id} new content")).is_none());
+        assert!(parse_action(&format!("/edit-scope {job_id} --   \n  \t")).is_none());
+        assert!(parse_action(&format!("/edit-scope {job_id} weird=1 -- body")).is_none());
+        assert!(parse_action("/edit-scope not-a-ulid -- body").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirm_edit_scope_unknown_job_records_failed() {
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+        let phantom = JobId::new();
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: format!("/edit-scope {phantom} -- new body"),
+            })
+            .await
+            .unwrap();
+        let confirm = rpc
+            .confirm_assistant_action(ConfirmAssistantActionArgs {
+                thread_id: thread.id,
+                message_id: res.assistant_message.id,
+            })
+            .await
+            .unwrap();
+        let card: AssistantActionCard =
+            serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(card.status, AssistantActionStatus::Failed));
+        assert!(confirm.tool_message.content.starts_with("Action failed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirm_edit_scope_against_running_job_is_refused() {
+        // The paused-job rule lives on the dispatch arm, not on
+        // `write_job_file`. The CLI surface for `write_job_file`
+        // accepts the risk of editing a live job; the chat surface
+        // refuses so the runner does not race the user's spec rewrite.
+        // We can prove the guard fires without touching git by sitting
+        // the job at Running before the dispatch ever reaches
+        // `read_job_file` / `write_job_file`.
+        use codeless_types::{CostCents, GitAuth, Job, Repo};
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+
+        let repo_id = RepoId::new();
+        let now = now_ms();
+        rpc.store
+            .insert_repo(&Repo {
+                id: repo_id,
+                name: "test".into(),
+                clone_url: "ssh://x/y".into(),
+                default_branch: "main".into(),
+                // A non-existent path is fine: the Running guard short-
+                // circuits before any filesystem reach.
+                local_path: "/nonexistent/codeless-test-repo".into(),
+                git_auth: GitAuth::Token {
+                    env_var: "TOKEN".into(),
+                },
+                concurrency_cap: None,
+                default_runner: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let job_id = JobId::new();
+        rpc.store
+            .insert_job(&Job {
+                id: job_id,
+                repo_id,
+                status: JobStatus::Running,
+                stop_reason: None,
+                template_yaml: None,
+                prompt: Some("noop".into()),
+                runner: "claude".into(),
+                branch: "main".into(),
+                workspace_mode: WorkspaceMode::InRepo,
+                worktree_path: None,
+                cost_cap_cents: CostCents(100),
+                wall_clock_cap_ms: 1000,
+                cost_cents: CostCents::ZERO,
+                model: None,
+                permission_mode: None,
+                effort: None,
+                started_at: Some(now),
+                ended_at: None,
+                created_at: now,
+            })
+            .await
+            .unwrap();
+
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: format!("/edit-scope {job_id} -- # rewritten"),
+            })
+            .await
+            .unwrap();
+        let confirm = rpc
+            .confirm_assistant_action(ConfirmAssistantActionArgs {
+                thread_id: thread.id,
+                message_id: res.assistant_message.id,
+            })
+            .await
+            .unwrap();
+        let card: AssistantActionCard =
+            serde_json::from_str(confirm.card.meta_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(card.status, AssistantActionStatus::Failed));
+        // The tool message is the user-readable summary of the typed
+        // Conflict — it must mention the paused-job remedy so the user
+        // knows what to do next.
+        assert!(
+            confirm.tool_message.content.contains("pause"),
+            "tool message should mention pause: {}",
+            confirm.tool_message.content,
+        );
+    }
+
+    #[test]
+    fn unified_diff_marks_additions_and_deletions() {
+        let old = "one\ntwo\nthree\n";
+        let new = "one\nTWO\nthree\nfour\n";
+        let diff = unified_diff(old, new, "SCOPE.md");
+        assert!(diff.contains("--- SCOPE.md (current)"));
+        assert!(diff.contains("+++ SCOPE.md (proposed)"));
+        assert!(diff.contains("-two"));
+        assert!(diff.contains("+TWO"));
+        assert!(diff.contains("+four"));
+        // A pure addition (empty current) renders every line as `+`.
+        // Stripping the two-line synthetic header keeps the assertion
+        // honest — the header itself starts with `---` / `+++`, which
+        // is part of the diff format, not a deletion.
+        let only_adds = unified_diff("", "a\nb\n", "SCOPE.md");
+        let body: String = only_adds.lines().skip(2).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("+a"));
+        assert!(body.contains("+b"));
+        assert!(!body.contains('-'));
     }
 }

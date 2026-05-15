@@ -182,7 +182,28 @@ export type AssistantAction = { tool: "list_jobs"; repo_id?: RepoId | null } | {
  *  surfaced on the card — the user sees exactly what they are
  *  approving instead of guessing what is implicit.
  */
-{ tool: "draft_job"; repo_id: RepoId; prompt: string; runner: string; branch: string; cost_cap_cents: number; wall_clock_cap_ms: number; workspace_mode?: WorkspaceMode | null; model?: string | null; permission_mode?: string | null; effort?: string | null };
+{ tool: "draft_job"; repo_id: RepoId; prompt: string; runner: string; branch: string; cost_cap_cents: number; wall_clock_cap_ms: number; workspace_mode?: WorkspaceMode | null; model?: string | null; permission_mode?: string | null; effort?: string | null } | 
+/**
+ *  Rewrite one of the job's spec files (default `SCOPE.md`) with
+ *  new content. Stage-9 "edit-scope": the chat surface proposes
+ *  the full new file body; confirmation dispatches `write_job_file`
+ *  after the paused-job guard runs (Running / Queued /
+ *  AwaitingReview rows refuse the edit — the user pauses the job
+ *  first). The card stores the full proposed body so the
+ *  renderer can compute a unified diff against the current file
+ *  on the fly; only the filename and body cross the wire, so
+ *  `meta_json` stays a flat document a human can read in `git log`.
+ */
+{ tool: "edit_scope"; job_id: JobId; 
+/**
+ *  Target file under `<repo>/.codeless/jobs/<name>/`. Defaults
+ *  to `SCOPE.md` at the parser layer; carried explicitly here
+ *  so a future planner can target `WORKFLOW.md` (or another
+ *  non-template file) without a second action variant. The
+ *  server rejects `template.yaml` — `update_job_template` is
+ *  the correct path for the spec (renames refused there too).
+ */
+filename: string; new_content: string };
 
 /**
  *  The structured payload of an `Assistant`-role message that
