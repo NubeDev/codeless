@@ -95,40 +95,87 @@ pub fn extract_paths_from_done(done: &[String]) -> Vec<String> {
 
 fn path_candidates_in(s: &str) -> Vec<String> {
     let mut out = Vec::new();
-    // Backtick-wrapped tokens first; bullets that mix backticked and
-    // bare tokens (uncommon but legal) still see both branches.
+    // Backtick-wrapped tokens are the explicit, taught form. The
+    // JOB-MODEL.md worked examples teach the agent to wrap real paths
+    // in backticks; a backtick-wrapped path-shaped token is a strong
+    // claim from any bullet.
     let mut rest = s;
+    let mut any_backtick = false;
     while let Some(start) = rest.find('`') {
+        any_backtick = true;
         let after = &rest[start + 1..];
         let Some(end) = after.find('`') else {
             break;
         };
         let inner = after[..end].trim();
-        if looks_path_like(inner) {
+        let had_trailing_slash = inner.ends_with('/');
+        if looks_path_like(inner, had_trailing_slash) {
             out.push(strip_trailing_slash(inner));
         }
         rest = &after[end + 1..];
     }
 
-    // Bare tokens: split on whitespace and a handful of trailing-
-    // punctuation characters (`,`, `;`, `.` only when not part of an
-    // extension — handled by the looks_path_like filter).
-    for raw in s.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')')) {
-        // Strip a trailing sentence period only if the rest still has
-        // an internal dot (so `a.txt.` becomes `a.txt`, but `1.` is
-        // discarded by `looks_path_like`).
-        let mut tok = raw.trim_matches(|c: char| matches!(c, '"' | '`' | '\''));
-        if tok.ends_with('.') && tok[..tok.len() - 1].contains('.') {
-            tok = &tok[..tok.len() - 1];
-        }
-        if looks_path_like(tok) {
-            out.push(strip_trailing_slash(tok));
+    // Bare-token extraction is the fallback for bullets that did not
+    // bother with backticks. It runs ONLY when:
+    //   (1) the bullet contains no backtick tokens at all (the agent
+    //       did not use the taught wrapping form), AND
+    //   (2) the bullet opens with a modification verb (`Wrote`,
+    //       `Created`, `Edited`, …) so a verification or reading
+    //       bullet does not contribute bare claims.
+    // Both guards are needed: (1) prevents the "Wrote X with help
+    // from Y" double-claim when X is backticked; (2) prevents a
+    // "Verified X and Y" bullet from claiming either.
+    if !any_backtick && bullet_claims_modification(s) {
+        for raw in s.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')')) {
+            let mut tok = raw.trim_matches(|c: char| matches!(c, '"' | '`' | '\''));
+            if tok.ends_with('.') && tok[..tok.len() - 1].contains('.') {
+                tok = &tok[..tok.len() - 1];
+            }
+            let had_trailing_slash = tok.ends_with('/');
+            if looks_path_like(tok, had_trailing_slash) {
+                out.push(strip_trailing_slash(tok));
+            }
         }
     }
     out
 }
 
-fn looks_path_like(s: &str) -> bool {
+/// First non-blank word of `s` is one of the modification verbs we
+/// trust as a "this bullet claims to have changed something" signal.
+/// The list is finite and explicit — extending it is a deliberate
+/// choice the JOB-MODEL.md doc should also reflect.
+fn bullet_claims_modification(s: &str) -> bool {
+    let trimmed = s.trim_start();
+    let first_word: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    matches!(
+        first_word.as_str(),
+        "added"
+            | "wrote"
+            | "created"
+            | "edited"
+            | "modified"
+            | "touched"
+            | "renamed"
+            | "deleted"
+            | "updated"
+            | "refactored"
+            | "removed"
+            | "introduced"
+            | "extended"
+            | "ported"
+            | "moved"
+            | "split"
+            | "merged"
+            | "fixed"
+            | "applied"
+    )
+}
+
+fn looks_path_like(s: &str, had_trailing_slash: bool) -> bool {
     if s.is_empty() {
         return false;
     }
@@ -159,8 +206,22 @@ fn looks_path_like(s: &str) -> bool {
     // appear inside REVIEW prompts and bullet prose) without
     // excluding real codebase paths — every directory in this repo
     // contains lowercase letters.
+    //
+    // Branch-ref guard: a slash-bearing token with neither a dot
+    // (extension) anywhere in it nor a trailing slash (directory
+    // shape) is more likely a git ref (`codeless/scope-mutable-ui`,
+    // `feat/foo-bar`) than a path. Real directory references either
+    // include a file extension somewhere (`crates/codeless-runtime/src/x.rs`)
+    // or are emitted with a trailing slash (`crates/codeless-runtime/`).
+    // This rejects the branch-name case without losing real paths.
     if trimmed.contains('/') {
-        return trimmed.chars().any(|c| c.is_ascii_lowercase());
+        if !trimmed.chars().any(|c| c.is_ascii_lowercase()) {
+            return false;
+        }
+        if !had_trailing_slash && !trimmed.contains('.') {
+            return false;
+        }
+        return true;
     }
     // Filename rule: `name.ext` where `ext` is 1-5 ASCII alpha chars.
     // Rejects `1.5`, `R4.`, `etc.`, version-y strings, and bare
@@ -310,6 +371,49 @@ mod tests {
         let done = vec!["seeded `crates/codeless-predicates/` as a new member".into()];
         let paths = extract_paths_from_done(&done);
         assert_eq!(paths, vec!["crates/codeless-predicates".to_string()]);
+    }
+
+    #[test]
+    fn verification_bullets_do_not_claim_bare_paths() {
+        // A bullet that opens with a reading / verification verb is
+        // descriptive prose, not a claim of modification. The agent
+        // mentioning the design doc it read (`Y.md`) as a bare token
+        // alongside the file it wrote (`` `X.md` ``) must not surface
+        // Y.md as a claimed path.
+        let done = vec![
+            "Wrote `DOCS/SCOPE-MUTABLE-UI-DECISIONS.md` with resolutions for OQ#1-#6 from the workspace doc DOCS/SCOPE-MUTABLE-UI.md.".into(),
+            "Verified the design doc's Dependency table is consistent with each surface's Status block.".into(),
+            "Confirmed `DOCS/SCOPE-MUTABLE-UI-DECISIONS.md` exists and reconciles the dependency table.".into(),
+        ];
+        let paths = extract_paths_from_done(&done);
+        assert_eq!(
+            paths,
+            vec!["DOCS/SCOPE-MUTABLE-UI-DECISIONS.md".to_string()],
+            "only the modification-claim bullet should contribute; \
+             reading-verb bullets keep their backticked tokens but \
+             must not extract bare tokens"
+        );
+    }
+
+    #[test]
+    fn rejects_branch_ref_shaped_tokens() {
+        // A `Done` bullet that says ``committed as 79e32e9 on branch
+        // `codeless/scope-mutable-ui` `` should NOT surface the branch
+        // name as a claimed path. Branch refs are namespace/slug pairs
+        // with no extension and no trailing slash; real directory
+        // references either carry a trailing slash or include an
+        // extension somewhere in the token.
+        let done = vec![
+            "Wrote `DOCS/SCOPE-MUTABLE-UI-DECISIONS.md`".into(),
+            "committed as 79e32e9 on branch `codeless/scope-mutable-ui`".into(),
+            "remote tracking `origin/feat/foo-bar`".into(),
+        ];
+        let paths = extract_paths_from_done(&done);
+        assert_eq!(
+            paths,
+            vec!["DOCS/SCOPE-MUTABLE-UI-DECISIONS.md".to_string()],
+            "branch-ref tokens must not be extracted as claimed paths"
+        );
     }
 
     #[test]
