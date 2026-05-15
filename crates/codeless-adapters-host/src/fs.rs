@@ -274,12 +274,7 @@ impl HostFs {
     /// Move (rename) a path. Both `from` and `to` must resolve within
     /// the sandbox. When `overwrite` is false and `to` already exists,
     /// returns `AlreadyExists`.
-    pub async fn rename(
-        &self,
-        from: &str,
-        to: &str,
-        overwrite: bool,
-    ) -> Result<(), FsError> {
+    pub async fn rename(&self, from: &str, to: &str, overwrite: bool) -> Result<(), FsError> {
         let abs_from = self.resolve(from)?;
         let abs_to = self.resolve(to)?;
         if !overwrite && abs_to.exists() {

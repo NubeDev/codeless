@@ -22,16 +22,17 @@
 use std::path::{Path, PathBuf};
 
 use codeless_rpc::methods::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    ChatAttachmentRef, ChatContext, ClaudeStatus, CommentReviewArgs, CreateAssistantThreadArgs,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelChatTaskArgs, ChatAttachmentRef,
+    ChatContext, ClaudeStatus, CommentReviewArgs, CreateAssistantThreadArgs,
     DeleteAssistantThreadArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs,
-    JobDiffFile, JobDiffResult, ListAssistantMessagesResult, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UserPromptSnippet,
+    JobDiffFile, JobDiffResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RemoveRepoArgs, RunnerInfo, ServerInfo,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
@@ -129,7 +130,10 @@ fn collect() -> TypeCollection {
         .register_mut::<DeleteAssistantThreadArgs>()
         .register_mut::<UploadAssistantAttachmentArgs>()
         .register_mut::<UploadAssistantAttachmentResult>()
-        .register_mut::<ListAssistantMessagesResult>();
+        .register_mut::<ListAssistantMessagesArgs>()
+        .register_mut::<ListAssistantMessagesResult>()
+        .register_mut::<AppendAssistantMessageArgs>()
+        .register_mut::<AppendAssistantMessageResult>();
     types
 }
 

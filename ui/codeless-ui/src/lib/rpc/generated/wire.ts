@@ -106,6 +106,35 @@ export type AgentChatResult = {
 	task_id: TaskId,
 };
 
+/**
+ *  `assistant.appendMessage`. Persist a user turn into a thread and
+ *  synthesise an assistant reply in the same round-trip. Stage 6 ships
+ *  a no-op responder — the assistant message is a fixed acknowledgement
+ *  — so the surface is end-to-end testable before the planner / tool
+ *  loop lands. Later stages swap the responder for the real runner
+ *  without changing the wire shape; the UI keeps treating
+ *  `AppendAssistantMessageResult` as "two rows the rail should
+ *  re-render."
+ * 
+ *  The thread's `updated_at` is bumped so a chat-only interaction
+ *  re-sorts the rail to the top, matching the touch semantics
+ *  `upload_assistant_attachment` already established.
+ * 
+ *  `NotFound` for an unknown `thread_id`; `InvalidArgument` for an
+ *  empty / all-whitespace `content` (rejecting it server-side keeps
+ *  the rail from filling with blank rows when the UI accidentally
+ *  fires send on an empty composer).
+ */
+export type AppendAssistantMessageArgs = {
+	thread_id: AssistantThreadId,
+	content: string,
+};
+
+export type AppendAssistantMessageResult = {
+	user_message: AssistantMessage,
+	assistant_message: AssistantMessage,
+};
+
 export type ApproveReviewArgs = {
 	review_id: ReviewId,
 };
@@ -768,11 +797,18 @@ export type JobStatus = "draft" | "queued" | "running" | "awaiting-review" | "co
 "paused";
 
 /**
- *  `assistant.listMessages`. Not exposed on the trait yet (stage 5 is
- *  persistence-only) but the row shape is part of the wire contract
- *  so downstream stages can subscribe through the same type. Stage 6
- *  adds the RPC method that returns this.
+ *  `assistant.listMessages`. The full transcript for one thread,
+ *  ordered by `created_at` ascending so the UI can render top-to-bottom
+ *  without an extra sort. Empty result for a freshly-minted thread —
+ *  callers distinguish that from a missing thread by issuing the
+ *  list against a known id; this method itself does not 404 because
+ *  the alternative ("which is empty, the rail entry or this list?")
+ *  is the same response for the renderer.
  */
+export type ListAssistantMessagesArgs = {
+	thread_id: AssistantThreadId,
+};
+
 export type ListAssistantMessagesResult = {
 	messages: AssistantMessage[],
 };

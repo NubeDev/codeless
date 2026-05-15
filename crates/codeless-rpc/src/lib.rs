@@ -15,14 +15,15 @@ pub mod subscribe;
 
 pub use error::{RpcError, RpcResult};
 pub use methods::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    ChatAttachmentRef, ChatContext, ChatMode, ClaudeStatus, CommentReviewArgs,
-    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs,
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobContextRef, JobDiffArgs,
-    JobDiffFile, JobDiffResult, JobFileEntry, JobReportArgs, JobReportEventTally, JobReportResult,
-    JobReportSpecChange, JobReportStage, JobReportToolCall, JobReportTurn,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelChatTaskArgs, ChatAttachmentRef,
+    ChatContext, ChatMode, ClaudeStatus, CommentReviewArgs, CreateAssistantThreadArgs,
+    DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreeEntry, GcWorktreesArgs,
+    GcWorktreesResult, GetJobArgs, JobContextRef, JobDiffArgs, JobDiffFile, JobDiffResult,
+    JobFileEntry, JobReportArgs, JobReportEventTally, JobReportResult, JobReportSpecChange,
+    JobReportStage, JobReportToolCall, JobReportTurn, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
     ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,

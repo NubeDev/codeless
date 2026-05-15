@@ -3,19 +3,21 @@ use codeless_types::{Job, Repo, Review};
 
 use crate::error::RpcResult;
 use crate::methods::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobArgs,
-    DeleteJobFileArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
-    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
-    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
-    JobReportArgs, JobReportResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelChatTaskArgs, CommentReviewArgs,
+    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
+    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
+    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -306,4 +308,27 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: UploadAssistantAttachmentArgs,
     ) -> RpcResult<UploadAssistantAttachmentResult>;
+
+    /// Read every persisted turn for one thread. Returned messages are
+    /// ordered by `created_at` ascending so the UI renders the conversation
+    /// top-to-bottom without sorting. An unknown thread returns an empty
+    /// list rather than `NotFound` — the rail row that pointed at it is
+    /// authoritative for "does this thread exist", and the chat view's
+    /// only sensible response to a missing thread is the same empty
+    /// canvas it shows on a freshly-minted one.
+    async fn list_assistant_messages(
+        &self,
+        args: ListAssistantMessagesArgs,
+    ) -> RpcResult<ListAssistantMessagesResult>;
+
+    /// Persist the user's turn and synthesise an assistant response in
+    /// the same call. The thread's `updated_at` is bumped so the rail
+    /// re-sorts to put the conversation at the top. The stage-6
+    /// responder is a fixed no-op acknowledgement so the surface is
+    /// end-to-end testable before the real planner / tool loop lands;
+    /// later stages swap the body without changing this wire shape.
+    async fn append_assistant_message(
+        &self,
+        args: AppendAssistantMessageArgs,
+    ) -> RpcResult<AppendAssistantMessageResult>;
 }

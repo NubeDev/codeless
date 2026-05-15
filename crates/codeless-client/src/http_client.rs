@@ -1,19 +1,20 @@
 use async_trait::async_trait;
 use codeless_rpc::{
-    AddRepoArgs, AgentChatArgs, AgentChatResult, ApproveReviewArgs, CancelChatTaskArgs,
-    CommentReviewArgs, CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobFileArgs,
-    EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs,
-    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
-    FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs,
-    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResumeJobArgs,
-    RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, CancelChatTaskArgs, CommentReviewArgs,
+    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobFileArgs, EventFilter,
+    EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs, JobDiffArgs, JobDiffResult,
+    JobReportArgs, JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListStagesArgs, ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
+    RemoveRepoArgs, RerunJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, Since,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Repo, Review};
 use futures_util::StreamExt;
@@ -371,6 +372,20 @@ impl RpcServer for HttpRpcClient {
         args: UploadAssistantAttachmentArgs,
     ) -> RpcResult<UploadAssistantAttachmentResult> {
         self.call("upload_assistant_attachment", &args).await
+    }
+
+    async fn list_assistant_messages(
+        &self,
+        args: ListAssistantMessagesArgs,
+    ) -> RpcResult<ListAssistantMessagesResult> {
+        self.call("list_assistant_messages", &args).await
+    }
+
+    async fn append_assistant_message(
+        &self,
+        args: AppendAssistantMessageArgs,
+    ) -> RpcResult<AppendAssistantMessageResult> {
+        self.call("append_assistant_message", &args).await
     }
 }
 

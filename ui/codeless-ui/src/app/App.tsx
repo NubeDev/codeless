@@ -36,6 +36,7 @@ import {
 } from "@/modules/editor";
 import { FileExplorer } from "@/modules/explorer";
 import { JobDetailStack, JobsDashboard } from "@/modules/jobs";
+import { AssistantPage } from "@/modules/assistant";
 import {
   Header,
   type SearchInlineHandle,
@@ -117,6 +118,7 @@ export default function App() {
     pinTab,
     newPreviewTab,
     newJobsTab,
+    newAssistantTab,
     newJobDetailTab,
     openAiDiffTab,
     setAiDiffStatus,
@@ -156,6 +158,10 @@ export default function App() {
     }
     if (path.startsWith("/jobs")) {
       newJobsTab();
+      return;
+    }
+    if (path.startsWith("/assistant")) {
+      newAssistantTab();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -302,12 +308,21 @@ export default function App() {
       target = `/jobs/${activeTab.jobId}`;
     } else if (activeTab?.kind === "jobs") {
       target = "/jobs";
+    } else if (activeTab?.kind === "assistant") {
+      target = "/assistant";
     }
     const current = window.location.pathname + window.location.search;
     if (current === target) return;
-    if (activeTab?.kind === "job-detail" || activeTab?.kind === "jobs") {
+    if (
+      activeTab?.kind === "job-detail" ||
+      activeTab?.kind === "jobs" ||
+      activeTab?.kind === "assistant"
+    ) {
       navigate(target, { replace: true });
-    } else if (current.startsWith("/jobs")) {
+    } else if (
+      current.startsWith("/jobs") ||
+      current.startsWith("/assistant")
+    ) {
       navigate(target, { replace: true });
     }
   }, [activeTab]);
@@ -318,6 +333,7 @@ export default function App() {
   const isAiDiffTab = activeTab?.kind === "ai-diff";
   const isJobsTab = activeTab?.kind === "jobs";
   const isJobDetailTab = activeTab?.kind === "job-detail";
+  const isAssistantTab = activeTab?.kind === "assistant";
 
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
@@ -849,6 +865,7 @@ export default function App() {
             onNewPreview={() => openPreviewTab("")}
             onNewEditor={() => setNewEditorOpen(true)}
             onNewJobs={() => newJobsTab()}
+            onNewAssistant={() => newAssistantTab()}
             onClose={handleClose}
             onPin={pinTab}
             onToggleSidebar={toggleSidebar}
@@ -971,6 +988,17 @@ export default function App() {
                             newJobDetailTab(job.id, friendlyTabTitle(job))
                           }
                         />
+                      ) : null}
+                    </div>
+                    <div
+                      className={cn(
+                        "absolute inset-0",
+                        !isAssistantTab && "invisible pointer-events-none",
+                      )}
+                      aria-hidden={!isAssistantTab}
+                    >
+                      {tabs.some((t) => t.kind === "assistant") ? (
+                        <AssistantPage />
                       ) : null}
                     </div>
                     <div

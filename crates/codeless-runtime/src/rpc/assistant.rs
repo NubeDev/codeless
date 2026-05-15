@@ -1,10 +1,12 @@
 use codeless_rpc::{
-    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, RpcError, RpcResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult,
+    AppendAssistantMessageArgs, AppendAssistantMessageResult, CreateAssistantThreadArgs,
+    DeleteAssistantThreadArgs, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, RpcError, RpcResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
 };
 use codeless_types::{
-    AssistantAttachment, AssistantAttachmentId, AssistantThread, AssistantThreadId,
+    AssistantAttachment, AssistantAttachmentId, AssistantMessage, AssistantMessageId,
+    AssistantMessageRole, AssistantThread, AssistantThreadId,
 };
 
 use super::InProcessRpc;
@@ -155,6 +157,89 @@ pub(super) async fn upload_assistant_attachment(
         .map_err(super::db_err)?;
 
     Ok(UploadAssistantAttachmentResult { attachment })
+}
+
+pub(super) async fn list_assistant_messages(
+    rpc: &InProcessRpc,
+    args: ListAssistantMessagesArgs,
+) -> RpcResult<ListAssistantMessagesResult> {
+    let messages = rpc
+        .store
+        .list_assistant_messages(args.thread_id)
+        .await
+        .map_err(super::db_err)?;
+    Ok(ListAssistantMessagesResult { messages })
+}
+
+/// Body of the no-op stage-6 responder. Wrapping the text in a const
+/// (rather than inlining) makes it trivial for tests to assert on the
+/// exact reply and for later stages to grep-and-replace the responder
+/// with the planner output.
+const NOOP_ASSISTANT_REPLY: &str = "Assistant responder is not wired yet — message recorded. \
+     The real planner lands in a later stage.";
+
+pub(super) async fn append_assistant_message(
+    rpc: &InProcessRpc,
+    args: AppendAssistantMessageArgs,
+) -> RpcResult<AppendAssistantMessageResult> {
+    let trimmed = args.content.trim();
+    if trimmed.is_empty() {
+        return Err(RpcError::InvalidArgument("content is empty".to_owned()));
+    }
+
+    // Existence check up front so an unknown thread fails fast without
+    // a half-written user row. The FK on `assistant_messages.thread_id`
+    // would catch this too, but a 404 here is the contract the UI
+    // wants — `Internal("db: …")` would be wrong for "the thread the
+    // user is staring at was just deleted in another window".
+    rpc.store
+        .get_assistant_thread(args.thread_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("assistant thread {}", args.thread_id)))?;
+
+    let user_now = now_ms();
+    let user_message = AssistantMessage {
+        id: AssistantMessageId::new(),
+        thread_id: args.thread_id,
+        role: AssistantMessageRole::User,
+        content: args.content.clone(),
+        meta_json: None,
+        created_at: user_now,
+    };
+    rpc.store
+        .insert_assistant_message(&user_message)
+        .await
+        .map_err(super::db_err)?;
+
+    // Distinct timestamp for the assistant turn so the ASC ordering
+    // is deterministic when the row IDs tie. `now_ms()` resolution is
+    // coarse on some hosts; bumping by one millisecond is enough and
+    // does not skew real-world timing telemetry.
+    let assistant_now = codeless_types::UnixMillis(user_now.0.saturating_add(1));
+    let assistant_message = AssistantMessage {
+        id: AssistantMessageId::new(),
+        thread_id: args.thread_id,
+        role: AssistantMessageRole::Assistant,
+        content: NOOP_ASSISTANT_REPLY.to_owned(),
+        meta_json: None,
+        created_at: assistant_now,
+    };
+    rpc.store
+        .insert_assistant_message(&assistant_message)
+        .await
+        .map_err(super::db_err)?;
+
+    let _ = rpc
+        .store
+        .touch_assistant_thread(args.thread_id, assistant_now)
+        .await
+        .map_err(super::db_err)?;
+
+    Ok(AppendAssistantMessageResult {
+        user_message,
+        assistant_message,
+    })
 }
 
 #[cfg(test)]
@@ -351,6 +436,94 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::InvalidArgument(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_persists_user_and_assistant_and_lists_them() {
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+
+        let res = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: "hi there".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(res.user_message.role, AssistantMessageRole::User);
+        assert_eq!(res.user_message.content, "hi there");
+        assert_eq!(res.assistant_message.role, AssistantMessageRole::Assistant);
+        assert_eq!(res.assistant_message.content, NOOP_ASSISTANT_REPLY);
+
+        // listMessages returns both rows in created_at-ascending order.
+        let listed = rpc
+            .list_assistant_messages(ListAssistantMessagesArgs {
+                thread_id: thread.id,
+            })
+            .await
+            .unwrap()
+            .messages;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, res.user_message.id);
+        assert_eq!(listed[1].id, res.assistant_message.id);
+
+        // Thread updated_at was touched (rail re-sort fan-out).
+        let after = rpc
+            .list_assistant_threads(ListAssistantThreadsArgs {})
+            .await
+            .unwrap();
+        assert_eq!(after.threads.len(), 1);
+        assert!(after.threads[0].updated_at >= thread.updated_at);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_rejects_empty_content() {
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+        let err = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: thread.id,
+                content: "   \n\t".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::InvalidArgument(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_for_unknown_thread_is_not_found() {
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let err = rpc
+            .append_assistant_message(AppendAssistantMessageArgs {
+                thread_id: codeless_types::AssistantThreadId::new(),
+                content: "hello".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::NotFound(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_messages_empty_thread() {
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .await
+            .unwrap();
+        let listed = rpc
+            .list_assistant_messages(ListAssistantMessagesArgs {
+                thread_id: thread.id,
+            })
+            .await
+            .unwrap()
+            .messages;
+        assert!(listed.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

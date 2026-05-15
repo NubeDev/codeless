@@ -32,12 +32,17 @@ import type {
   UploadChatAttachmentResult,
   ShellSessionRunOutput,
   AssistantThread,
+  AssistantMessage,
   ListAssistantThreadsArgs,
   ListAssistantThreadsResult,
   CreateAssistantThreadArgs,
   DeleteAssistantThreadArgs,
   UploadAssistantAttachmentArgs,
   UploadAssistantAttachmentResult,
+  ListAssistantMessagesArgs,
+  ListAssistantMessagesResult,
+  AppendAssistantMessageArgs,
+  AppendAssistantMessageResult,
 } from "./wire";
 
 export interface AddRepoArgs {
@@ -522,6 +527,14 @@ export interface RpcMethodMap {
     args: UploadAssistantAttachmentArgs;
     result: UploadAssistantAttachmentResult;
   };
+  list_assistant_messages: {
+    args: ListAssistantMessagesArgs;
+    result: ListAssistantMessagesResult;
+  };
+  append_assistant_message: {
+    args: AppendAssistantMessageArgs;
+    result: AppendAssistantMessageResult;
+  };
 }
 
 export type {
@@ -533,12 +546,17 @@ export type {
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
   AssistantThread,
+  AssistantMessage,
   ListAssistantThreadsArgs,
   ListAssistantThreadsResult,
   CreateAssistantThreadArgs,
   DeleteAssistantThreadArgs,
   UploadAssistantAttachmentArgs,
   UploadAssistantAttachmentResult,
+  ListAssistantMessagesArgs,
+  ListAssistantMessagesResult,
+  AppendAssistantMessageArgs,
+  AppendAssistantMessageResult,
 };
 
 // Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,
