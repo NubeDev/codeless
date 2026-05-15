@@ -6,6 +6,8 @@ goal: |
   then wire the assistant's view/manage/create/edit-scope capabilities
   on top, all flowing through RpcClient with SQLite as source of truth.
 
+docs:
+  - CHAT.md
 stages:
   - resolve open questions in ASSISTANT-SCOPE.md milestone 1 — pick the attachments-directory option (bias option 1, workspace-scoped dir) and decide the AiChat server-state migration shape; record both decisions in SCOPE.md before writing code
   - REVIEW prerequisite decisions before extraction begins
