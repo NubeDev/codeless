@@ -17,7 +17,9 @@
 use std::path::Path;
 use std::str::FromStr;
 
-use codeless_types::{ScopePatchId, ScopePatchKind, ScopePatchTarget, StageId};
+use codeless_types::{
+    ProposedScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget, StageId, UnixMillis,
+};
 
 /// One proposal as read from `DOCS/SCOPE-PROPOSED.md`. Mirrors the
 /// fields `render_proposal_markdown` writes; the parser-only fields
@@ -35,6 +37,12 @@ pub struct Proposal {
     pub evidence_stage_id: Option<StageId>,
     pub predicate_ref: Option<String>,
     pub fixture_ref: Option<String>,
+    /// Wall-clock time the proposal was appended to the queue file.
+    /// `None` when the on-disk entry predates the writer that started
+    /// stamping a `- proposed_at:` line — Surface C's 14-day-decay
+    /// sort treats `None` as "age unknown" and groups undated entries
+    /// after dated ones rather than failing the load.
+    pub proposed_at: Option<UnixMillis>,
     /// The exact span of the file the proposal occupies, from the
     /// leading blank line before its `## <id>` heading through to the
     /// last line of its body. [`remove_entry`] uses this to slice the
@@ -51,6 +59,26 @@ impl Proposal {
     /// not a re-formatted summary. Output starts with the `## <id>`
     /// heading (no leading blank line); the caller adds spacing as
     /// needed.
+    /// Project the queue-internal struct onto the mobile-safe wire DTO
+    /// returned by `list_proposed_patches`. The `span` is dropped — it
+    /// is a parser-internal artefact for `remove_entry` and has no
+    /// meaning to a UI subscriber.
+    pub fn to_dto(&self) -> ProposedScopePatch {
+        ProposedScopePatch {
+            id: self.id,
+            kind: self.kind,
+            target: self.target,
+            target_path: self.target_path.clone(),
+            rationale: self.rationale.clone(),
+            body: self.body.clone(),
+            has_predicate: self.has_predicate,
+            evidence_stage_id: self.evidence_stage_id,
+            predicate_ref: self.predicate_ref.clone(),
+            fixture_ref: self.fixture_ref.clone(),
+            proposed_at: self.proposed_at,
+        }
+    }
+
     pub fn render(&self) -> String {
         let kind = match self.kind {
             ScopePatchKind::Tighten => "tighten",
@@ -72,6 +100,9 @@ impl Proposal {
         ));
         if let Some(ev) = self.evidence_stage_id {
             out.push_str(&format!("- evidence_stage_id: {ev}\n"));
+        }
+        if let Some(ts) = self.proposed_at {
+            out.push_str(&format!("- proposed_at: {}\n", ts.as_i64()));
         }
         if let Some(pr) = &self.predicate_ref {
             out.push_str(&format!("- predicate-ref: {pr}\n"));
@@ -326,6 +357,7 @@ fn parse_block(text: &str, span: (usize, usize)) -> Result<Proposal, String> {
     let mut evidence_stage_id: Option<StageId> = None;
     let mut predicate_ref: Option<String> = None;
     let mut fixture_ref: Option<String> = None;
+    let mut proposed_at: Option<UnixMillis> = None;
     let mut section: Section = Section::Meta;
     let mut rationale = String::new();
     let mut body = String::new();
@@ -385,6 +417,12 @@ fn parse_block(text: &str, span: (usize, usize)) -> Result<Proposal, String> {
                     "fixture-ref" | "fixture_ref" => {
                         fixture_ref = Some(value.to_string());
                     }
+                    "proposed-at" | "proposed_at" => {
+                        let ms = value
+                            .parse::<i64>()
+                            .map_err(|e| format!("proposed_at in block {id} is not an i64: {e}"))?;
+                        proposed_at = Some(UnixMillis(ms));
+                    }
                     _ => {}
                 }
             }
@@ -418,6 +456,7 @@ fn parse_block(text: &str, span: (usize, usize)) -> Result<Proposal, String> {
         evidence_stage_id,
         predicate_ref,
         fixture_ref,
+        proposed_at,
         span,
     })
 }
@@ -680,6 +719,53 @@ mod tests {
             Err(e) => assert!(e.contains("kind")),
             Ok(_) => panic!("expected error"),
         }
+    }
+
+    #[test]
+    fn parse_carries_proposed_at_when_present() {
+        let p = make_patch(
+            ScopePatchKind::Tighten,
+            ScopePatchTarget::ClaudeMd,
+            "codeless/CLAUDE.md",
+        );
+        let body = format!(
+            "# header\n\n## {}\n\n- kind: tighten\n- target: claude-md\n- target-path: codeless/CLAUDE.md\n- has_predicate: false\n- proposed_at: 1700000000000\n\n### Rationale\n\nr\n\n### Body\n\nb\n",
+            p.id
+        );
+        let q = parse_queue(&body).unwrap();
+        assert_eq!(q.proposals.len(), 1);
+        assert_eq!(
+            q.proposals[0].proposed_at.map(|t| t.as_i64()),
+            Some(1700000000000)
+        );
+    }
+
+    #[test]
+    fn parse_legacy_block_without_proposed_at_yields_none() {
+        let p = make_patch(
+            ScopePatchKind::Tighten,
+            ScopePatchTarget::ClaudeMd,
+            "codeless/CLAUDE.md",
+        );
+        // Pre-timestamp writer never emitted a `proposed_at` line; the
+        // parser must tolerate that without failing.
+        let body = make_file(&[(&p, None, None)]);
+        let q = parse_queue(&body).unwrap();
+        assert_eq!(q.proposals.len(), 1);
+        assert!(q.proposals[0].proposed_at.is_none());
+    }
+
+    #[test]
+    fn proposed_at_round_trips_through_render() {
+        let id = ScopePatchId::new();
+        let body = format!(
+            "# header\n\n## {id}\n\n- kind: tighten\n- target: claude-md\n- target-path: codeless/CLAUDE.md\n- has_predicate: false\n- proposed_at: 42\n\n### Rationale\n\nr\n\n### Body\n\nb\n"
+        );
+        let q = parse_queue(&body).unwrap();
+        let rendered = q.to_markdown();
+        assert!(rendered.contains("- proposed_at: 42"));
+        let q2 = parse_queue(&rendered).unwrap();
+        assert_eq!(q2.proposals[0].proposed_at, q.proposals[0].proposed_at);
     }
 
     #[test]

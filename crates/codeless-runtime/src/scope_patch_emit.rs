@@ -390,7 +390,7 @@ async fn append_to_proposals_file(
              treat it as opaque (decisions Q1).\n",
         );
     }
-    record.push_str(&render_proposal_markdown(patch, parsed));
+    record.push_str(&render_proposal_markdown(patch, parsed, now_ms().as_i64()));
 
     use tokio::io::AsyncWriteExt;
     let mut f = tokio::fs::OpenOptions::new()
@@ -404,7 +404,11 @@ async fn append_to_proposals_file(
 }
 
 /// Render one proposal as the human-readable markdown record.
-fn render_proposal_markdown(patch: &ScopePatch, parsed: &ParsedPatch) -> String {
+fn render_proposal_markdown(
+    patch: &ScopePatch,
+    parsed: &ParsedPatch,
+    proposed_at_ms: i64,
+) -> String {
     let kind = match patch.kind {
         ScopePatchKind::Tighten => "tighten",
         ScopePatchKind::Loosen => "loosen",
@@ -426,6 +430,7 @@ fn render_proposal_markdown(patch: &ScopePatch, parsed: &ParsedPatch) -> String 
     if let Some(ev) = patch.evidence_stage_id {
         out.push_str(&format!("- evidence_stage_id: {ev}\n"));
     }
+    out.push_str(&format!("- proposed_at: {proposed_at_ms}\n"));
     if let Some(pr) = &parsed.predicate_ref {
         out.push_str(&format!("- predicate-ref: {pr}\n"));
     }

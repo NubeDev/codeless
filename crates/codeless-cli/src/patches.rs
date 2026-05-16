@@ -411,6 +411,7 @@ mod tests {
             evidence_stage_id: p.evidence_stage_id,
             predicate_ref: Some("no-emojis-in-source".into()),
             fixture_ref: None,
+            proposed_at: None,
             span: (0, 0),
         }
     }

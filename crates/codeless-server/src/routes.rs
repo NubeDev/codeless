@@ -18,17 +18,17 @@ use codeless_rpc::{
     GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
     JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
-    PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs,
-    RerunJobArgs, ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult,
-    RpcError, ScopePatchActionResult, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
+    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
+    ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
+    RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
+    RevertScopePatchArgs, RevertScopePatchResult, RpcError, ScopePatchActionResult, ServerInfo,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use serde_json::Value;
@@ -129,6 +129,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/reject_scope_patch", post(reject_scope_patch))
         .route("/rpc/edit_scope_patch", post(edit_scope_patch))
         .route("/rpc/revert_scope_patch", post(revert_scope_patch))
+        .route("/rpc/list_proposed_patches", post(list_proposed_patches))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -764,6 +765,17 @@ async fn revert_scope_patch(
 ) -> HandlerResult<RevertScopePatchResult> {
     st.rpc
         .revert_scope_patch(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_proposed_patches(
+    State(st): State<AppState>,
+    Json(args): Json<ListProposedPatchesArgs>,
+) -> HandlerResult<ListProposedPatchesResult> {
+    st.rpc
+        .list_proposed_patches(args)
         .await
         .map(Json)
         .map_err(map_err)

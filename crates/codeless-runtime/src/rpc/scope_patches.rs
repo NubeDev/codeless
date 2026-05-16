@@ -23,8 +23,9 @@ use codeless_adapters_host::{
     commit_paths, find_patch_resolution, git_revert, head_sha, PriorPatchResolution,
 };
 use codeless_rpc::{
-    ApproveScopePatchArgs, EditScopePatchArgs, RejectScopePatchArgs, RevertScopePatchArgs,
-    RevertScopePatchResult, RpcError, RpcResult, ScopePatchActionResult, ScopePatchResolution,
+    ApproveScopePatchArgs, EditScopePatchArgs, ListProposedPatchesArgs, ListProposedPatchesResult,
+    ProposedPatchListEntry, RejectScopePatchArgs, RevertScopePatchArgs, RevertScopePatchResult,
+    RpcError, RpcResult, ScopePatchActionResult, ScopePatchResolution,
 };
 use codeless_types::{Event, Repo, RepoId, ScopePatchId, ScopePatchKind, ScopePatchTarget};
 
@@ -249,6 +250,56 @@ pub(super) async fn revert_scope_patch(
     Ok(RevertScopePatchResult { commit_sha })
 }
 
+/// Walk one or every repo's `DOCS/SCOPE-PROPOSED.md`, parse it, and
+/// return the unresolved entries projected onto the mobile-safe
+/// `ProposedScopePatch` DTO. Missing queue files are not an error —
+/// they mean "this repo has zero pending proposals." Per-repo parse
+/// failures bubble as `Internal` so a corrupted queue does not yield
+/// a silently-truncated worklist.
+pub(super) async fn list_proposed_patches(
+    rpc: &InProcessRpc,
+    args: ListProposedPatchesArgs,
+) -> RpcResult<ListProposedPatchesResult> {
+    let repos: Vec<Repo> = match args.repo_id {
+        Some(id) => vec![resolve_repo(rpc, id).await?],
+        None => rpc.store.list_repos().await.map_err(super::db_err)?,
+    };
+
+    let mut entries: Vec<ProposedPatchListEntry> = Vec::new();
+    for repo in repos {
+        let repo_path = PathBuf::from(&repo.local_path);
+        let queue = match load_queue(&repo_path) {
+            Ok(q) => q,
+            Err(QueueError::Missing { .. }) => continue,
+            Err(e) => return Err(queue_err(e)),
+        };
+        for p in &queue.proposals {
+            entries.push(ProposedPatchListEntry {
+                repo_id: repo.id,
+                patch: p.to_dto(),
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        // Newest first by proposed_at; entries with no timestamp sort
+        // last (treated as "older than any dated entry"). Ties — and
+        // the legacy-undated tail — fall back to `ScopePatchId` order,
+        // which is itself ULID-monotonic, so the result is stable.
+        match (a.patch.proposed_at, b.patch.proposed_at) {
+            (Some(x), Some(y)) => y
+                .as_i64()
+                .cmp(&x.as_i64())
+                .then(b.patch.id.cmp(&a.patch.id)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => b.patch.id.cmp(&a.patch.id),
+        }
+    });
+
+    Ok(ListProposedPatchesResult { entries })
+}
+
 async fn resolve_repo(rpc: &InProcessRpc, repo_id: RepoId) -> RpcResult<Repo> {
     rpc.store
         .get_repo(repo_id)
@@ -446,7 +497,7 @@ mod tests {
         let now = now_ms();
         let repo = Repo {
             id,
-            name: "test".into(),
+            name: format!("test-{id}"),
             clone_url: "x".into(),
             default_branch: "main".into(),
             local_path: local_path.to_string_lossy().into_owned(),
@@ -668,6 +719,105 @@ mod tests {
         let updated = q.find(patch_id).unwrap();
         assert_eq!(updated.rationale, "Replaced rationale");
         assert_eq!(updated.body, "Replaced body");
+    }
+
+    #[tokio::test]
+    async fn list_proposed_patches_walks_all_repos_by_default() {
+        let rpc = InProcessRpc::new().await.unwrap();
+        let dir_a = init_repo();
+        let dir_b = init_repo();
+        let _repo_a = seed_repo_row(&rpc, dir_a.path()).await;
+        let _repo_b = seed_repo_row(&rpc, dir_b.path()).await;
+
+        let p_a = ScopePatchId::new();
+        let p_b1 = ScopePatchId::new();
+        let p_b2 = ScopePatchId::new();
+        write_queue_file(dir_a.path(), p_a, "CLAUDE.md");
+        // Two entries in repo B's queue, hand-written so we control
+        // their proposed_at to assert the newest-first sort.
+        std::fs::create_dir_all(dir_b.path().join("DOCS")).unwrap();
+        std::fs::write(
+            dir_b.path().join("DOCS").join("SCOPE-PROPOSED.md"),
+            format!(
+                "# Proposed scope patches\n\n\
+                 ## {p_b1}\n\n- kind: tighten\n- target: claude-md\n- target-path: CLAUDE.md\n\
+                 - has_predicate: false\n- proposed_at: 100\n\n### Rationale\n\nold\n\n### Body\n\nb1\n\
+                 \n## {p_b2}\n\n- kind: tighten\n- target: claude-md\n- target-path: CLAUDE.md\n\
+                 - has_predicate: false\n- proposed_at: 900\n\n### Rationale\n\nnew\n\n### Body\n\nb2\n"
+            ),
+        )
+        .unwrap();
+
+        let res = list_proposed_patches(&rpc, ListProposedPatchesArgs { repo_id: None })
+            .await
+            .unwrap();
+
+        // 3 total: one from A (no proposed_at) and two from B.
+        assert_eq!(res.entries.len(), 3);
+        // Newest-first: B's 900-ms entry leads, then B's 100-ms, then
+        // A's undated entry sorts last.
+        assert_eq!(res.entries[0].patch.id, p_b2);
+        assert_eq!(res.entries[1].patch.id, p_b1);
+        assert_eq!(res.entries[2].patch.id, p_a);
+        assert!(res.entries[2].patch.proposed_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_proposed_patches_filters_by_repo_id() {
+        let rpc = InProcessRpc::new().await.unwrap();
+        let dir_a = init_repo();
+        let dir_b = init_repo();
+        let repo_a = seed_repo_row(&rpc, dir_a.path()).await;
+        let _repo_b = seed_repo_row(&rpc, dir_b.path()).await;
+
+        let p_a = ScopePatchId::new();
+        let p_b = ScopePatchId::new();
+        write_queue_file(dir_a.path(), p_a, "CLAUDE.md");
+        write_queue_file(dir_b.path(), p_b, "CLAUDE.md");
+
+        let res = list_proposed_patches(
+            &rpc,
+            ListProposedPatchesArgs {
+                repo_id: Some(repo_a),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.entries.len(), 1);
+        assert_eq!(res.entries[0].repo_id, repo_a);
+        assert_eq!(res.entries[0].patch.id, p_a);
+    }
+
+    #[tokio::test]
+    async fn list_proposed_patches_missing_file_yields_empty_entry() {
+        let rpc = InProcessRpc::new().await.unwrap();
+        let dir = init_repo();
+        let repo_id = seed_repo_row(&rpc, dir.path()).await;
+        let res = list_proposed_patches(
+            &rpc,
+            ListProposedPatchesArgs {
+                repo_id: Some(repo_id),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(res.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_proposed_patches_unknown_repo_returns_not_found() {
+        let rpc = InProcessRpc::new().await.unwrap();
+        let res = list_proposed_patches(
+            &rpc,
+            ListProposedPatchesArgs {
+                repo_id: Some(RepoId::new()),
+            },
+        )
+        .await;
+        match res {
+            Err(RpcError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 
     #[tokio::test]
