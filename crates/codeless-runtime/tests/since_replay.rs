@@ -81,7 +81,7 @@ async fn since_zero_replays_everything_then_attaches_live_tail() {
             template_yaml: None,
             runner: "mock".into(),
             branch: "codeless/job-2".into(),
-            workspace_mode: None,
+            workspace_mode: Some(codeless_types::WorkspaceMode::Worktree),
             cost_cap_cents: 0,
             wall_clock_cap_ms: 60_000,
             model: None,
