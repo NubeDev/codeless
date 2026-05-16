@@ -20,12 +20,13 @@ use crate::methods::{
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
     ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs,
-    ResetJobArgs, ResumeJobArgs, ScopePatchActionResult, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult,
+    ScopePatchActionResult, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -499,4 +500,15 @@ pub trait RpcServer: Send + Sync + 'static {
     /// `AlreadyResolved` rather than an error.
     async fn edit_scope_patch(&self, args: EditScopePatchArgs)
         -> RpcResult<ScopePatchActionResult>;
+
+    /// Undo a previously-applied approval commit. Runs `git revert
+    /// <sha> --no-edit` against the repo's worktree and returns the new
+    /// revert commit's SHA. Not idempotent: a second call produces a
+    /// further revert. The UI exposes this only from the 10-second
+    /// post-approval undo toast (decision OQ#3); reverts beyond that
+    /// window happen out-of-band through plain `git`.
+    async fn revert_scope_patch(
+        &self,
+        args: RevertScopePatchArgs,
+    ) -> RpcResult<RevertScopePatchResult>;
 }

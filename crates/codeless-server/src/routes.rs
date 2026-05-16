@@ -21,13 +21,14 @@ use codeless_rpc::{
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
     PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs,
-    RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError, ScopePatchActionResult, ServerInfo,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    RerunJobArgs, ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult,
+    RpcError, ScopePatchActionResult, ServerInfo, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use serde_json::Value;
@@ -127,6 +128,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/approve_scope_patch", post(approve_scope_patch))
         .route("/rpc/reject_scope_patch", post(reject_scope_patch))
         .route("/rpc/edit_scope_patch", post(edit_scope_patch))
+        .route("/rpc/revert_scope_patch", post(revert_scope_patch))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -751,6 +753,17 @@ async fn edit_scope_patch(
 ) -> HandlerResult<ScopePatchActionResult> {
     st.rpc
         .edit_scope_patch(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn revert_scope_patch(
+    State(st): State<AppState>,
+    Json(args): Json<RevertScopePatchArgs>,
+) -> HandlerResult<RevertScopePatchResult> {
+    st.rpc
+        .revert_scope_patch(args)
         .await
         .map(Json)
         .map_err(map_err)

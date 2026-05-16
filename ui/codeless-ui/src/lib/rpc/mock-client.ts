@@ -974,6 +974,29 @@ export class MockRpcClient implements RpcClient {
         return next as RpcResultOf<M>;
       }
 
+      case "approve_scope_patch": {
+        // The mock does not maintain a real proposal queue or git
+        // history; it returns a synthesised commit sha so the inbox's
+        // toast / row-folding paths can be exercised end-to-end in
+        // tests and storybook fixtures. Real resolution is observable
+        // only against a live runtime; the mock is just a wire shim.
+        const sha = mockCommitSha();
+        return { outcome: "approved", commit_sha: sha } as RpcResultOf<M>;
+      }
+
+      case "reject_scope_patch": {
+        const sha = mockCommitSha();
+        return { outcome: "rejected", commit_sha: sha } as RpcResultOf<M>;
+      }
+
+      case "edit_scope_patch": {
+        return { outcome: "edited" } as RpcResultOf<M>;
+      }
+
+      case "revert_scope_patch": {
+        return { commit_sha: mockCommitSha() } as RpcResultOf<M>;
+      }
+
       case "delete_persona": {
         const a = args as RpcArgs<"delete_persona">;
         const existing = this.personas.get(a.id);
@@ -1242,6 +1265,18 @@ function sleep(ms: number) {
 function jobIdOf(e: Event): string | null {
   return "job_id" in e ? e.job_id : null;
 }
+function mockCommitSha(): string {
+  // Random 40-hex digit string. The inbox's revert/link rendering
+  // treats it as opaque; the mock only needs the shape to be
+  // recognisable as a SHA.
+  const chars = "0123456789abcdef";
+  let out = "";
+  for (let i = 0; i < 40; i += 1) {
+    out += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return out;
+}
+
 function stageIdOf(e: Event): string | null {
   return "stage_id" in e ? e.stage_id : null;
 }

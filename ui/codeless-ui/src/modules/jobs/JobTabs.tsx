@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BubbleChatIcon,
   FileEditIcon,
+  InboxIcon,
   ListViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -14,6 +15,7 @@ const SYSTEM_TAB_ICONS = {
   CHAT: BubbleChatIcon,
   SPEC: FileEditIcon,
   Stages: ListViewIcon,
+  Patches: InboxIcon,
 } as const;
 
 // ------------------------------------------------------------------ types
@@ -21,7 +23,10 @@ const SYSTEM_TAB_ICONS = {
 export type TabIndicator = "running" | "failed" | "review" | "paused" | null;
 
 // Always-pinned system tabs. Order matches the spec's visual left-to-right.
-export type SystemTabId = "CHAT" | "SPEC" | "Stages";
+// `Patches` is hidden by JobPage when the job has emitted zero
+// `scope-patch-proposed` events (decision OQ#2: hide-when-empty, no
+// disabled state).
+export type SystemTabId = "CHAT" | "SPEC" | "Stages" | "Patches";
 
 export interface StageTab {
   kind: "stage";
@@ -49,6 +54,10 @@ interface Props {
   // via the onChatActive callback from StageDetail so we don't need a
   // second event subscription here.
   chatStreamingStages?: ReadonlySet<string>;
+  // True when the job has emitted at least one `scope-patch-proposed`
+  // event. The `Patches` system tab is omitted from the strip when
+  // false — decision OQ#2 picks hide-when-empty over disable.
+  hasPatches?: boolean;
 }
 
 // ------------------------------------------------------------------ indicator derivation
@@ -154,9 +163,17 @@ export function JobTabs({
   onClose,
   onTogglePin,
   chatStreamingStages,
+  hasPatches,
 }: Props) {
   const indicators = useTabIndicators(jobId, active);
   const activeKey = active.kind === "system" ? active.id : active.stageId;
+
+  // The `Patches` tab is hidden when the job has emitted zero
+  // proposals. Visible tabs render left-to-right in the canonical
+  // order; toggling `hasPatches` does not reorder anything else.
+  const visibleSystemTabs: SystemTabId[] = hasPatches
+    ? ["CHAT", "SPEC", "Stages", "Patches"]
+    : ["CHAT", "SPEC", "Stages"];
 
   return (
     <div
@@ -164,7 +181,7 @@ export function JobTabs({
       role="tablist"
     >
       {/* Always-pinned system tabs */}
-      {(["CHAT", "SPEC", "Stages"] as SystemTabId[]).map((id) => {
+      {visibleSystemTabs.map((id) => {
         const isActive = active.kind === "system" && active.id === id;
         const indicator = indicators.get(id) ?? null;
         return (

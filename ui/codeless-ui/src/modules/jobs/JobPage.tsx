@@ -15,6 +15,7 @@ import {
 import { EditJobDialog } from "./EditJobDialog";
 import { CostCell, WallClockCell } from "./JobRow";
 import { CommonChat } from "../chat";
+import { PatchesTab } from "./patches";
 import { SpecPane } from "./spec/SpecPane";
 import { StageDetail } from "./StageDetail";
 import { StagesOverview } from "./StagesOverview";
@@ -85,6 +86,7 @@ export function JobPage({
       if (normalized === "chat") return { kind: "system", id: "CHAT" };
       if (normalized === "spec") return { kind: "system", id: "SPEC" };
       if (normalized === "stages") return { kind: "system", id: "Stages" };
+      if (normalized === "patches") return { kind: "system", id: "Patches" };
       if (param?.startsWith("stage:")) {
         const stageId = param.slice("stage:".length);
         if (stageId) {
@@ -162,6 +164,16 @@ export function JobPage({
     );
   }, [stageTabs, jobId]);
 
+  // Track which proposal ids this job has emitted. The set drives the
+  // `Patches` tab's visibility (hide-when-empty per OQ#2) and would
+  // also power a per-tab unread count if we wanted one. SSE replay on
+  // reconnect is the only reason this is a Set rather than a counter:
+  // the same patch_id may arrive twice and must not inflate the
+  // visibility signal.
+  const [proposedPatchIds, setProposedPatchIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+
   // Live-refetch the job row on lifecycle events that mutate it.
   const sseStatus = useEventStreamWithState(
     { scope: "job", job_id: jobId },
@@ -177,6 +189,15 @@ export function JobPage({
           t === "task-completed"
         ) {
           refetchJob();
+        }
+        if (t === "scope-patch-proposed") {
+          const pid = env.event.patch_id;
+          setProposedPatchIds((prev) => {
+            if (prev.has(pid)) return prev;
+            const next = new Set(prev);
+            next.add(pid);
+            return next;
+          });
         }
       },
       [refetchJob],
@@ -318,6 +339,7 @@ export function JobPage({
         onClose={handleCloseStageTab}
         onTogglePin={handleTogglePin}
         chatStreamingStages={chatStreamingStages}
+        hasPatches={proposedPatchIds.size > 0}
       />
 
       {/* Tab content */}
@@ -340,6 +362,9 @@ export function JobPage({
             jobId={jobId}
             onOpenStageTab={handleOpenStageTab}
           />
+        )}
+        {activeTab.kind === "system" && activeTab.id === "Patches" && (
+          <PatchesTab jobId={jobId} />
         )}
         {activeTab.kind === "stage" && (
           <StageDetail

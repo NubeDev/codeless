@@ -36,13 +36,13 @@ pub use methods::{
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
     ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs,
-    ResetJobArgs, ResumeJobArgs, RunnerInfo, ScopePatchActionResult, ScopePatchResolution,
-    ServerFeatureFlags, ServerInfo, StageRollup, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, UserPromptSnippet, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo,
+    ScopePatchActionResult, ScopePatchResolution, ServerFeatureFlags, ServerInfo, StageRollup,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, UserPromptSnippet,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

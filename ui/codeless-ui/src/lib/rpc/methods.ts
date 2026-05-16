@@ -6,7 +6,9 @@
 import type {
   AgentChatArgs,
   AgentChatResult,
+  ApproveScopePatchArgs,
   CancelChatTaskArgs,
+  EditScopePatchArgs,
   EventCursor,
   FsEntry,
   FsGlobHit,
@@ -20,9 +22,13 @@ import type {
   JobDiffArgs,
   JobDiffResult,
   JobId,
+  RejectScopePatchArgs,
   Repo,
   RepoId,
   Review,
+  RevertScopePatchArgs,
+  RevertScopePatchResult,
+  ScopePatchActionResult,
   StageId,
   ShellBgEntry,
   ShellBgLogChunk,
@@ -577,6 +583,31 @@ export interface RpcMethodMap {
   list_reviews: { args: ListReviewsArgs; result: ListReviewsResult };
   approve_review: { args: ReviewActionArgs; result: Review };
   comment_review: { args: CommentReviewArgs; result: Review };
+
+  // Scope-patch resolution surface. The runtime author resolves identity
+  // from repo-local `git config user.{name,email}`; the UI sends no
+  // author args. All three RPCs return the same `ScopePatchActionResult`
+  // wire shape — including `AlreadyResolved` on a re-call from a stale
+  // window — so the patch inbox can fold the response uniformly.
+  approve_scope_patch: {
+    args: ApproveScopePatchArgs;
+    result: ScopePatchActionResult;
+  };
+  reject_scope_patch: {
+    args: RejectScopePatchArgs;
+    result: ScopePatchActionResult;
+  };
+  edit_scope_patch: {
+    args: EditScopePatchArgs;
+    result: ScopePatchActionResult;
+  };
+  // Undo a prior approval by SHA. Wired only from the inbox's 10s
+  // post-approval undo toast; reverts beyond that window happen
+  // through plain `git revert` out-of-band.
+  revert_scope_patch: {
+    args: RevertScopePatchArgs;
+    result: RevertScopePatchResult;
+  };
   stop_review: { args: ReviewActionArgs; result: Review };
 
   agent_chat: { args: AgentChatArgs; result: AgentChatResult };

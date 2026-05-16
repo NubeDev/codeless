@@ -206,6 +206,38 @@ pub fn commit_paths(repo: &Path, subject: &str, paths: &[PathBuf]) -> Result<boo
     Ok(true)
 }
 
+/// Revert a previously-produced commit by SHA, producing a new
+/// `Revert "<original subject>"` commit on the current branch. Used by
+/// the UI patch-inbox's 10-second undo toast: when the operator clicks
+/// Approve and then changes their mind, the toast's `[Undo]` button
+/// runs this against the approval SHA so both events are preserved in
+/// `git log` (decision OQ#3 — "audit trail records both the approval
+/// and the undo").
+///
+/// The commit is created non-interactively (`--no-edit`); the message
+/// is whatever `git revert` produces by default. The runtime returns
+/// the new commit's SHA so the UI can display "approval undone" with a
+/// link to the revert commit.
+pub fn git_revert(repo: &Path, sha: &str) -> Result<String, GitCommitError> {
+    let revert = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["revert", "--no-edit", sha])
+        .output()
+        .map_err(|e| GitCommitError::Io {
+            op: "revert",
+            source: e,
+        })?;
+    if !revert.status.success() {
+        return Err(GitCommitError::GitFailed {
+            op: "revert",
+            status: revert.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&revert.stderr).into_owned(),
+        });
+    }
+    head_sha(repo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +277,38 @@ mod tests {
             .unwrap();
         let log = String::from_utf8_lossy(&log.stdout);
         assert!(log.lines().any(|l| l == "add hello.md"), "log: {log}");
+    }
+
+    #[test]
+    fn git_revert_undoes_an_earlier_commit_and_returns_new_sha() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let p = tmp.path().join("hello.md");
+        fs::write(&p, "hi").unwrap();
+        commit_paths(tmp.path(), "add hello.md", std::slice::from_ref(&p)).unwrap();
+        let approval_sha = head_sha(tmp.path()).unwrap();
+
+        let revert_sha = git_revert(tmp.path(), &approval_sha).unwrap();
+        assert_ne!(revert_sha, approval_sha, "revert must produce a new commit");
+
+        // The file the original commit added is gone after the revert.
+        assert!(!p.exists(), "revert should remove hello.md");
+
+        // Both the original commit and its revert remain in `git log`,
+        // which is the audit-trail invariant decision OQ#3 records.
+        let log = Command::new("git")
+            .arg("-C")
+            .arg(tmp.path())
+            .args(["log", "--pretty=%s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(log.lines().any(|l| l == "add hello.md"), "log: {log}");
+        assert!(
+            log.lines()
+                .any(|l| l.starts_with("Revert \"add hello.md\"")),
+            "log: {log}"
+        );
     }
 
     #[test]
