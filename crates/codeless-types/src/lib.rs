@@ -40,7 +40,9 @@ pub use persona::Persona;
 pub use repo::Repo;
 pub use review::{Review, ReviewStatus};
 pub use review_gate::{PreCheckOutcome, ReviewVerdict};
-pub use scope_patch::{ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget};
+pub use scope_patch::{
+    ProposedScopePatch, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget,
+};
 pub use stage::{Stage, StageStatus};
 pub use task::{Task, TaskStatus};
 pub use time::UnixMillis;

@@ -17,16 +17,16 @@ use crate::methods::{
     GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
     JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs,
-    ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult,
-    ScopePatchActionResult, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
+    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
+    ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs,
+    RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs,
+    RevertScopePatchResult, ScopePatchActionResult, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -511,4 +511,17 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: RevertScopePatchArgs,
     ) -> RpcResult<RevertScopePatchResult>;
+
+    /// Snapshot the unresolved scope-patch queue across one or all
+    /// repos. Wraps `scope_patch_queue::load_queue` per repo, projects
+    /// each entry onto `ProposedScopePatch`, and concatenates the
+    /// results sorted newest-first by `proposed_at` (legacy entries
+    /// with no timestamp sort last). Powers Surface C — the
+    /// cross-workspace patch worklist — and is mobile-safe (the result
+    /// DTO lives in `codeless-types`). A missing `DOCS/SCOPE-PROPOSED.md`
+    /// on a repo is treated as an empty contribution, not a failure.
+    async fn list_proposed_patches(
+        &self,
+        args: ListProposedPatchesArgs,
+    ) -> RpcResult<ListProposedPatchesResult>;
 }

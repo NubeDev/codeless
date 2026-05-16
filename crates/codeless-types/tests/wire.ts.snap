@@ -700,6 +700,67 @@ export type PreCheckOutcome =
  */
 { outcome: "nothing-to-verify" };
 
+/**
+ *  One unresolved proposal as parsed from `DOCS/SCOPE-PROPOSED.md`.
+ *  Wire DTO for `list_proposed_patches` — lifted into `codeless-types`
+ *  (R1: mobile shells must see the same shape the host emits) while
+ *  the parser / queue-rewriter implementation stays in
+ *  `codeless-runtime::scope_patch_queue` (host-only).
+ * 
+ *  Distinct from [`ScopePatch`]: that struct is the *event* payload
+ *  emitted at proposal time and carries `review_id` / `stage_id`
+ *  because those are durably linked to the originating REVIEW gate.
+ *  `ProposedScopePatch` is the *queue snapshot* — its lifecycle ends
+ *  when the human approves or rejects, and only `evidence_stage_id`
+ *  (carried by `Loosen` patches as the positive fixture) survives the
+ *  markdown round-trip. The two shapes overlap by design but should
+ *  not be unified: collapsing them would force the queue file to
+ *  carry `review_id` permanently, or force the event to drop it.
+ * 
+ *  `proposed_at` is the wall-clock time the proposal first landed on
+ *  disk. Surface C's "older than 14 days falls below the fold" filter
+ *  and the decay sort key off this field — without it, the worklist
+ *  view degrades to insertion-order-only. The writer
+ *  (`scope_patch_emit::append_to_proposals_file`) stamps it at
+ *  proposal-emit time; the reader (`scope_patch_queue::parse_block`)
+ *  surfaces it as `Some(_)` for proposals written by the timestamped
+ *  writer and `None` for proposals from older writes that predate the
+ *  field. The UI treats `None` as "age-unknown" and groups those
+ *  after the dated entries rather than rejecting the row.
+ */
+export type ProposedScopePatch = {
+	id: ScopePatchId,
+	kind: ScopePatchKind,
+	target: ScopePatchTarget,
+	target_path: string,
+	rationale: string,
+	body: string,
+	has_predicate: boolean,
+	/**
+	 *  Set for `Loosen` proposals — names the stage whose diff is the
+	 *  positive fixture. `None` for `Tighten`.
+	 */
+	evidence_stage_id?: StageId | null,
+	/**
+	 *  Path to the paired predicate file, when the proposal cites one
+	 *  (the queue format carries this as a parser-only cross-reference;
+	 *  the approval UX surfaces it next to `target_path`).
+	 */
+	predicate_ref?: string | null,
+	/**
+	 *  Path to the paired fixture file, when the proposal cites one
+	 *  (same shape as `predicate_ref` — used by `Loosen` proposals).
+	 */
+	fixture_ref?: string | null,
+	/**
+	 *  Wall-clock time the proposal was appended to
+	 *  `DOCS/SCOPE-PROPOSED.md`. `None` for entries written before the
+	 *  field existed (legacy data); UI treats unknown ages as
+	 *  undated and groups them after dated entries.
+	 */
+	proposed_at?: UnixMillis | null,
+};
+
 // A managed git repository row — see SCOPE.md Appendix A `repos`.
 export type Repo = {
 	id: RepoId,

@@ -1,8 +1,8 @@
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
     AssistantMessageId, AssistantThread, AssistantThreadId, FsEntry, FsEntryKind, GitAuth, Job,
-    JobId, Persona, Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatchId, Stage, StageId,
-    TaskId, UnixMillis, WorkspaceMode,
+    JobId, Persona, ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatchId,
+    Stage, StageId, TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1428,4 +1428,46 @@ pub enum ScopePatchActionResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit_sha: Option<String>,
     },
+}
+
+/// Snapshot the unresolved patch queue across one or all repos. Powers
+/// Surface C (cross-workspace patch worklist) in
+/// `DOCS/SCOPE-MUTABLE-UI.md`: the editor's standing view across every
+/// repo, independent of any single job. Wraps the same
+/// `scope_patch_queue::load_queue` helper the CLI's `codeless patches
+/// list` uses, lifting the per-entry shape into a mobile-safe DTO
+/// (`ProposedScopePatch`).
+///
+/// `repo_id = Some(_)` filters to one repo and returns `NotFound` when
+/// that repo row does not exist. `repo_id = None` walks every repo and
+/// concatenates the results — repos with no `DOCS/SCOPE-PROPOSED.md`
+/// contribute zero entries (not an error), and per-repo parse failures
+/// surface as `Internal` so the worklist refuses to half-render under
+/// a corrupted queue file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListProposedPatchesArgs {
+    /// Restrict the walk to a single repo. `None` lists across every
+    /// repo row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<RepoId>,
+}
+
+/// One entry in the cross-repo listing — pairs the queue row with the
+/// `RepoId` that owns it so Surface C can group by repo without a
+/// follow-up `list_repos` join.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ProposedPatchListEntry {
+    pub repo_id: RepoId,
+    pub patch: ProposedScopePatch,
+}
+
+/// Snapshot the unresolved queue. Ordering is **newest-first by
+/// `proposed_at`**, with `None`-timestamped entries (legacy data
+/// predating the field) sorted last in `id` order. Surface C layers
+/// its 14-day-decay filter and group-by-repo on top of this order; the
+/// runtime does not pre-filter so a "show everything" toggle remains
+/// implementable client-side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListProposedPatchesResult {
+    pub entries: Vec<ProposedPatchListEntry>,
 }
