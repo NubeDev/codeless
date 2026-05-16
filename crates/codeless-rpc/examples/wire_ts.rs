@@ -23,18 +23,20 @@ use std::path::{Path, PathBuf};
 
 use codeless_rpc::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, CancelAssistantActionArgs,
-    CancelAssistantActionResult, CancelChatTaskArgs, ChatAttachmentRef, ChatContext, ClaudeStatus,
-    CommentReviewArgs, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
-    CreateAssistantThreadArgs, DeleteAssistantThreadArgs, FsCwdResult, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobsArgs, ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    RemoveRepoArgs, ResetJobArgs, RunnerInfo, ServerFeatureFlags, ServerInfo, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UserPromptSnippet,
+    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs,
+    CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, ChatAttachmentRef,
+    ChatContext, ClaudeStatus, CommentReviewArgs, ConfirmAssistantActionArgs,
+    ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
+    EditScopePatchArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs,
+    JobDiffFile, JobDiffResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobsArgs, ListJobsResult,
+    ListReposResult, ListReviewsArgs, ListReviewsResult, RejectScopePatchArgs, RemoveRepoArgs,
+    ResetJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo, ScopePatchActionResult,
+    ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
@@ -152,7 +154,14 @@ fn collect() -> TypeCollection {
         .register_mut::<ScopePatchTarget>()
         .register_mut::<ScopePatch>()
         .register_mut::<PreCheckOutcome>()
-        .register_mut::<ReviewVerdict>();
+        .register_mut::<ReviewVerdict>()
+        .register_mut::<ApproveScopePatchArgs>()
+        .register_mut::<RejectScopePatchArgs>()
+        .register_mut::<EditScopePatchArgs>()
+        .register_mut::<ScopePatchResolution>()
+        .register_mut::<ScopePatchActionResult>()
+        .register_mut::<RevertScopePatchArgs>()
+        .register_mut::<RevertScopePatchResult>();
     types
 }
 

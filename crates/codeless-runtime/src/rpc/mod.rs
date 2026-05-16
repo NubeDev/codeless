@@ -523,4 +523,11 @@ impl RpcServer for InProcessRpc {
     ) -> RpcResult<codeless_rpc::ScopePatchActionResult> {
         scope_patches::edit_scope_patch(self, args).await
     }
+
+    async fn revert_scope_patch(
+        &self,
+        args: codeless_rpc::RevertScopePatchArgs,
+    ) -> RpcResult<codeless_rpc::RevertScopePatchResult> {
+        scope_patches::revert_scope_patch(self, args).await
+    }
 }

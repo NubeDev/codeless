@@ -149,6 +149,43 @@ export type ApproveReviewArgs = {
 };
 
 /**
+ *  Approve a proposed scope patch through the UI. Wraps the
+ *  `codeless patches approve` workflow: removes the entry from
+ *  `<repo>/DOCS/SCOPE-PROPOSED.md`, stages the queue file plus the
+ *  proposal's `target_path` plus any `include`d paths, and creates a
+ *  human-authored commit using the repo-local `git config
+ *  user.{name,email}` identity. A `Codeless-Approved-By: ui` trailer
+ *  distinguishes UI-driven approvals from CLI ones in `git log`.
+ * 
+ *  Idempotent. A second call against an already-resolved patch returns
+ *  `AlreadyResolved` rather than an error, so a stale UI window can
+ *  recover its view without surfacing a red toast — see
+ *  `DOCS/SCOPE-MUTABLE-UI.md` Dependency #3.
+ * 
+ *  The human must have edited the rulebook target on disk before the
+ *  call; the RPC does not interpret the proposal body. `target_path`
+ *  missing from the worktree returns `InvalidArgument` so the UI can
+ *  guide the user toward editing the file first.
+ */
+export type ApproveScopePatchArgs = {
+	repo_id: RepoId,
+	patch_id: ScopePatchId,
+	/**
+	 *  Optional override for the commit subject. Defaults to
+	 *  `scope-patch <kind>: <rationale>` — the same subject the CLI's
+	 *  `codeless patches approve` produces.
+	 */
+	message?: string | null,
+	/**
+	 *  Extra repo-relative paths to commit alongside the queue edit and
+	 *  the proposal's `target_path` (e.g. a paired predicate file and
+	 *  its fixture). Each path must live inside the worktree root;
+	 *  outside paths return `InvalidArgument`.
+	 */
+	include?: string[],
+};
+
+/**
  *  Proposed view/manage tool call, stored inside an assistant turn's
  *  `meta_json` as a JSON document (see `AssistantActionCard::META_KIND`).
  *  Each variant corresponds 1:1 to the `RpcServer` method the runtime
@@ -520,6 +557,31 @@ export type DeleteAssistantThreadArgs = {
 };
 
 /**
+ *  Edit the body of a proposed scope patch in-place. Mirrors `codeless
+ *  patches edit` but without the `$EDITOR` round-trip — the UI submits
+ *  the new markdown directly. The runtime re-parses the supplied
+ *  payload as a single proposal block; the parsed proposal must have
+ *  the same `id` as `patch_id`. `body` is the *complete* rendered
+ *  proposal as it would appear in `DOCS/SCOPE-PROPOSED.md` (i.e.
+ *  `Proposal::render`'s output), so the round-trip stays loss-free.
+ * 
+ *  Editing does not produce a commit — the operator typically follows
+ *  up with `approve_scope_patch`. Idempotency applies in the same
+ *  shape: editing an already-resolved patch returns `AlreadyResolved`.
+ */
+export type EditScopePatchArgs = {
+	repo_id: RepoId,
+	patch_id: ScopePatchId,
+	/**
+	 *  Full rendered proposal block as it would appear in the queue
+	 *  file (heading + bulleted metadata + `### Rationale` + `### Body`
+	 *  sections). Validated server-side; an unparseable buffer returns
+	 *  `InvalidArgument`.
+	 */
+	rendered: string,
+};
+
+/**
  *  One row from the `events` table. Variants are tagged by the
  *  `events.type` wire label; payload fields are flattened into the
  *  JSON object stored in `events.payload`.
@@ -757,7 +819,28 @@ reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageSt
  *  Carried on the wire so subscribers can render the path
  *  without fetching the proposal body.
  */
-target_path: string; evidence_stage_id: StageId | null; has_predicate: boolean };
+target_path: string; evidence_stage_id: StageId | null; has_predicate: boolean } | 
+/**
+ *  Operator approved a proposed scope patch through the UI. Emitted
+ *  after the approval commit lands so cross-window subscribers can
+ *  invalidate their patch-inbox caches and link to the resulting
+ *  commit without a follow-up RPC. Same shape considerations as
+ *  `ScopePatchProposed` — mobile-safe, no enrichment that requires
+ *  host-only types.
+ */
+{ type: "scope-patch-approved"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; target_path: string; 
+/**
+ *  SHA of the human-authored approval commit produced by
+ *  `approve_scope_patch`. The UI links the inbox row to a
+ *  `commit/<sha>` route off this field.
+ */
+commit_sha: string } | 
+/**
+ *  Operator rejected a proposed scope patch through the UI. Pairs
+ *  with `ScopePatchApproved`; same cross-window invalidation use
+ *  case.
+ */
+{ type: "scope-patch-rejected"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; target_path: string; commit_sha: string };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -907,7 +990,7 @@ export type GitAuth = { kind: "ssh"; key_path: string } | { kind: "token"; env_v
  *  A blank handover is forbidden (JOB-MODEL.md): at minimum the
  *  "Done" section must say *something*, even if it's "session aborted
  *  at <stage>, recovery needed".
- *
+ * 
  *  `raw_tail` carries everything in the handover body that follows
  *  the four canonical sections. It exists so the
  *  `SCOPE-PATCH-BEGIN` / `SCOPE-PATCH-END` block that the runtime's
@@ -917,7 +1000,7 @@ export type GitAuth = { kind: "ssh"; key_path: string } | { kind: "token"; env_v
  *  struct back would silently drop the proposal. The runtime's
  *  emitter reads the on-disk file body unchanged — `raw_tail` only
  *  guarantees the wire-shape doesn't lose the trailer.
- *
+ * 
  *  Adding this field is the wire-schema bump that ships alongside
  *  Surface B: pre-bump JSON has no `raw_tail` key, so the field is
  *  `#[serde(default)]` (deserialises to `None`) for one-way
@@ -1204,6 +1287,23 @@ export type PreCheckOutcome =
  */
 { outcome: "nothing-to-verify" };
 
+/**
+ *  Reject a proposed scope patch through the UI. Mirrors `codeless
+ *  patches reject`: removes the entry from `DOCS/SCOPE-PROPOSED.md` and
+ *  commits the queue edit with a rejection commit body. No rulebook
+ *  file is touched. Same idempotence semantics as
+ *  `approve_scope_patch`.
+ */
+export type RejectScopePatchArgs = {
+	repo_id: RepoId,
+	patch_id: ScopePatchId,
+	/**
+	 *  Optional free-form rejection reason recorded in the commit body.
+	 *  Audit trail only — the runtime does not act on it.
+	 */
+	reason?: string | null,
+};
+
 export type RemoveRepoArgs = {
 	repo_id: RepoId,
 };
@@ -1240,6 +1340,40 @@ export type RepoId = string;
  */
 export type ResetJobArgs = {
 	job_id: JobId,
+};
+
+/**
+ *  Undo a previously-applied scope-patch approval by running `git
+ *  revert <commit_sha> --no-edit` against the worktree at `repo_id`'s
+ *  `local_path`. Used by the patch-inbox's 10-second undo toast
+ *  (decision OQ#3): the toast surfaces the approval SHA and a one-click
+ *  revert, so changing your mind preserves both events in `git log`.
+ * 
+ *  Not idempotent — calling twice against the same approval SHA
+ *  produces two revert commits, each undoing the prior one. The UI
+ *  only exposes this from the transient post-approval toast, so a
+ *  double-click in practice means the operator intended the second
+ *  revert.
+ */
+export type RevertScopePatchArgs = {
+	repo_id: RepoId,
+	/**
+	 *  SHA of the approval commit the operator wants to undo. Returned
+	 *  on the matching `ScopePatchActionResult::Approved { commit_sha }`
+	 *  from the prior `approve_scope_patch` call.
+	 */
+	commit_sha: string,
+};
+
+/**
+ *  Outcome of `revert_scope_patch`. Separate from
+ *  `ScopePatchActionResult` because revert has no `AlreadyResolved`
+ *  shape — calling it after the approval has itself been reverted just
+ *  produces another revert commit.
+ */
+export type RevertScopePatchResult = {
+	// SHA of the new revert commit on the current branch.
+	commit_sha: string,
 };
 
 // A review row attached to a stage — see SCOPE.md Appendix A `reviews`.
@@ -1376,6 +1510,37 @@ export type ScopePatch = {
 };
 
 /**
+ *  Outcome of an `approve_scope_patch` / `reject_scope_patch` /
+ *  `edit_scope_patch` call. The same wire shape is returned by all
+ *  three so the UI's idempotency handling code path stays uniform:
+ *  `AlreadyResolved` is a successful response, not an error, and the
+ *  UI swaps its row to the resolved view without a toast.
+ */
+export type ScopePatchActionResult = 
+/**
+ *  `approve_scope_patch` produced a human-authored approval commit.
+ *  `commit_sha` is the SHA of the new commit, suitable for linking
+ *  to a `commit/<sha>` route.
+ */
+{ outcome: "approved"; commit_sha: string } | 
+// `reject_scope_patch` produced a rejection commit.
+{ outcome: "rejected"; commit_sha: string } | 
+/**
+ *  `edit_scope_patch` rewrote the queue entry. No commit is
+ *  produced — `edit` is a pre-approval ergonomic.
+ */
+{ outcome: "edited" } | 
+/**
+ *  The patch had already been resolved by a previous call (possibly
+ *  from another window, possibly from the CLI). `resolution`
+ *  distinguishes approved vs rejected; `commit_sha` carries the
+ *  SHA of the existing resolution commit when the runtime could
+ *  locate it in `git log`, `None` when the commit predates the
+ *  markers the runtime greps for (legacy approvals).
+ */
+{ outcome: "already_resolved"; resolution: ScopePatchResolution; commit_sha?: string | null };
+
+/**
  *  Identity of one `ScopePatch` proposal. ULID for the same reason
  *  every other identity in `codeless-types::id` is a ULID: monotonic
  *  over a session, sortable by creation order, and unambiguous on the
@@ -1397,6 +1562,14 @@ export type ScopePatchId = string;
  *  approving human's commit (decisions Q5).
  */
 export type ScopePatchKind = "tighten" | "loosen";
+
+/**
+ *  Which terminal state a previously-acted-on patch ended up in. Used
+ *  by `ScopePatchActionResult::AlreadyResolved` so a stale UI window
+ *  can render the right "this patch was {approved,rejected} by another
+ *  window" message without a follow-up RPC.
+ */
+export type ScopePatchResolution = "approved" | "rejected";
 
 /**
  *  Which rulebook surface the patch proposes to change. The enum

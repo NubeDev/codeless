@@ -1359,6 +1359,36 @@ pub struct EditScopePatchArgs {
     pub rendered: String,
 }
 
+/// Undo a previously-applied scope-patch approval by running `git
+/// revert <commit_sha> --no-edit` against the worktree at `repo_id`'s
+/// `local_path`. Used by the patch-inbox's 10-second undo toast
+/// (decision OQ#3): the toast surfaces the approval SHA and a one-click
+/// revert, so changing your mind preserves both events in `git log`.
+///
+/// Not idempotent — calling twice against the same approval SHA
+/// produces two revert commits, each undoing the prior one. The UI
+/// only exposes this from the transient post-approval toast, so a
+/// double-click in practice means the operator intended the second
+/// revert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct RevertScopePatchArgs {
+    pub repo_id: RepoId,
+    /// SHA of the approval commit the operator wants to undo. Returned
+    /// on the matching `ScopePatchActionResult::Approved { commit_sha }`
+    /// from the prior `approve_scope_patch` call.
+    pub commit_sha: String,
+}
+
+/// Outcome of `revert_scope_patch`. Separate from
+/// `ScopePatchActionResult` because revert has no `AlreadyResolved`
+/// shape — calling it after the approval has itself been reverted just
+/// produces another revert commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct RevertScopePatchResult {
+    /// SHA of the new revert commit on the current branch.
+    pub commit_sha: String,
+}
+
 /// Which terminal state a previously-acted-on patch ended up in. Used
 /// by `ScopePatchActionResult::AlreadyResolved` so a stale UI window
 /// can render the right "this patch was {approved,rejected} by another

@@ -19,10 +19,12 @@
 
 use std::path::{Path, PathBuf};
 
-use codeless_adapters_host::{commit_paths, find_patch_resolution, head_sha, PriorPatchResolution};
+use codeless_adapters_host::{
+    commit_paths, find_patch_resolution, git_revert, head_sha, PriorPatchResolution,
+};
 use codeless_rpc::{
-    ApproveScopePatchArgs, EditScopePatchArgs, RejectScopePatchArgs, RpcError, RpcResult,
-    ScopePatchActionResult, ScopePatchResolution,
+    ApproveScopePatchArgs, EditScopePatchArgs, RejectScopePatchArgs, RevertScopePatchArgs,
+    RevertScopePatchResult, RpcError, RpcResult, ScopePatchActionResult, ScopePatchResolution,
 };
 use codeless_types::{Event, Repo, RepoId, ScopePatchId, ScopePatchKind, ScopePatchTarget};
 
@@ -227,6 +229,24 @@ pub(super) async fn edit_scope_patch(
     }
     write_queue(&repo_path, &queue).map_err(queue_err)?;
     Ok(ScopePatchActionResult::Edited)
+}
+
+/// Undo a previously-applied approval commit. The 10-second post-
+/// approval undo toast in the UI patch inbox is the only call site;
+/// see decision OQ#3 ("audit trail records both the approval and the
+/// undo") for why this produces a new revert commit instead of a
+/// `git reset`. No event is emitted — the runtime cannot reconstruct
+/// the `ScopePatchProposed` payload from a SHA alone, and the existing
+/// `ScopePatchApproved` envelope on the bus is the resolution record.
+pub(super) async fn revert_scope_patch(
+    rpc: &InProcessRpc,
+    args: RevertScopePatchArgs,
+) -> RpcResult<RevertScopePatchResult> {
+    let repo = resolve_repo(rpc, args.repo_id).await?;
+    let repo_path = PathBuf::from(&repo.local_path);
+    let commit_sha = git_revert(&repo_path, &args.commit_sha)
+        .map_err(|e| RpcError::Internal(format!("git revert: {e}")))?;
+    Ok(RevertScopePatchResult { commit_sha })
 }
 
 async fn resolve_repo(rpc: &InProcessRpc, repo_id: RepoId) -> RpcResult<Repo> {
