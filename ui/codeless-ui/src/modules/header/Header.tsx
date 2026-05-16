@@ -15,6 +15,7 @@ import {
   type ShortcutId,
 } from "@/modules/shortcuts/shortcuts";
 import { ReviewQueueBadge } from "@/modules/jobs/ReviewQueueBadge";
+import { PatchesQueueBadge } from "@/modules/patches";
 import type { Tab } from "@/modules/tabs";
 import { TabBar } from "@/modules/tabs";
 import { ThemeToggle } from "@/modules/theme";
@@ -43,6 +44,7 @@ type Props = {
   onNewEditor: () => void;
   onNewJobs: () => void;
   onNewAssistant: () => void;
+  onNewPatches: () => void;
   onClose: (id: number) => void;
   /** Promote a preview (transient) tab to persistent. */
   onPin: (id: number) => void;
@@ -53,6 +55,7 @@ type Props = {
   onOpenShortcuts: () => void;
   onOpenSettings: () => void;
   onOpenReviews: () => void;
+  onOpenPatches: () => void;
   searchTarget: SearchTarget;
   searchRef: RefObject<SearchInlineHandle | null>;
 };
@@ -68,6 +71,7 @@ export function Header({
   onNewEditor,
   onNewJobs,
   onNewAssistant,
+  onNewPatches,
   onClose,
   onPin,
   onToggleSidebar,
@@ -76,6 +80,7 @@ export function Header({
   onOpenShortcuts,
   onOpenSettings,
   onOpenReviews,
+  onOpenPatches,
   searchTarget,
   searchRef,
 }: Props) {
@@ -217,6 +222,7 @@ export function Header({
           onNewEditor={onNewEditor}
           onNewJobs={onNewJobs}
           onNewAssistant={onNewAssistant}
+          onNewPatches={onNewPatches}
           onClose={onClose}
           onPin={onPin}
           compact={compact}
@@ -225,6 +231,7 @@ export function Header({
       </div>
 
       <ReviewQueueBadge onOpen={onOpenReviews} />
+      <PatchesQueueBadge onOpen={onOpenPatches} />
 
       <SearchInline ref={searchRef} target={searchTarget} compact={compact} />
 

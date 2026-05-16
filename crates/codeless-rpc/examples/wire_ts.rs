@@ -31,8 +31,9 @@ use codeless_rpc::methods::{
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs,
     JobDiffFile, JobDiffResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobsArgs, ListJobsResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, RejectScopePatchArgs, RemoveRepoArgs,
-    ResetJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo, ScopePatchActionResult,
+    ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ProposedPatchListEntry, RejectScopePatchArgs, RemoveRepoArgs, ResetJobArgs,
+    RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo, ScopePatchActionResult,
     ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs, StopActiveArgs,
     StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
     UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
@@ -43,10 +44,10 @@ use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
     AssistantThread, AssistantThreadId, CostCents, Event, EventCursor, EventEnvelope, FsEntry,
-    FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus, PreCheckOutcome, Repo, RepoId, Review,
-    ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind,
-    ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
-    UnixMillis,
+    FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus, PreCheckOutcome, ProposedScopePatch,
+    Repo, RepoId, Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId,
+    ScopePatchKind, ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId,
+    TaskStatus, UnixMillis,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -153,6 +154,10 @@ fn collect() -> TypeCollection {
         .register_mut::<ScopePatchKind>()
         .register_mut::<ScopePatchTarget>()
         .register_mut::<ScopePatch>()
+        .register_mut::<ProposedScopePatch>()
+        .register_mut::<ListProposedPatchesArgs>()
+        .register_mut::<ListProposedPatchesResult>()
+        .register_mut::<ProposedPatchListEntry>()
         .register_mut::<PreCheckOutcome>()
         .register_mut::<ReviewVerdict>()
         .register_mut::<ApproveScopePatchArgs>()

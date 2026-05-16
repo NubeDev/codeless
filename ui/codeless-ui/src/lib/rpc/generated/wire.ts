@@ -1215,6 +1215,42 @@ export type ListJobsResult = {
 	jobs: Job[],
 };
 
+/**
+ *  Snapshot the unresolved patch queue across one or all repos. Powers
+ *  Surface C (cross-workspace patch worklist) in
+ *  `DOCS/SCOPE-MUTABLE-UI.md`: the editor's standing view across every
+ *  repo, independent of any single job. Wraps the same
+ *  `scope_patch_queue::load_queue` helper the CLI's `codeless patches
+ *  list` uses, lifting the per-entry shape into a mobile-safe DTO
+ *  (`ProposedScopePatch`).
+ * 
+ *  `repo_id = Some(_)` filters to one repo and returns `NotFound` when
+ *  that repo row does not exist. `repo_id = None` walks every repo and
+ *  concatenates the results — repos with no `DOCS/SCOPE-PROPOSED.md`
+ *  contribute zero entries (not an error), and per-repo parse failures
+ *  surface as `Internal` so the worklist refuses to half-render under
+ *  a corrupted queue file.
+ */
+export type ListProposedPatchesArgs = {
+	/**
+	 *  Restrict the walk to a single repo. `None` lists across every
+	 *  repo row.
+	 */
+	repo_id?: RepoId | null,
+};
+
+/**
+ *  Snapshot the unresolved queue. Ordering is **newest-first by
+ *  `proposed_at`**, with `None`-timestamped entries (legacy data
+ *  predating the field) sorted last in `id` order. Surface C layers
+ *  its 14-day-decay filter and group-by-repo on top of this order; the
+ *  runtime does not pre-filter so a "show everything" toggle remains
+ *  implementable client-side.
+ */
+export type ListProposedPatchesResult = {
+	entries: ProposedPatchListEntry[],
+};
+
 export type ListReposResult = {
 	repos: Repo[],
 };
@@ -1286,6 +1322,77 @@ export type PreCheckOutcome =
  *  was simply nothing the verifier could match against.
  */
 { outcome: "nothing-to-verify" };
+
+/**
+ *  One entry in the cross-repo listing — pairs the queue row with the
+ *  `RepoId` that owns it so Surface C can group by repo without a
+ *  follow-up `list_repos` join.
+ */
+export type ProposedPatchListEntry = {
+	repo_id: RepoId,
+	patch: ProposedScopePatch,
+};
+
+/**
+ *  One unresolved proposal as parsed from `DOCS/SCOPE-PROPOSED.md`.
+ *  Wire DTO for `list_proposed_patches` — lifted into `codeless-types`
+ *  (R1: mobile shells must see the same shape the host emits) while
+ *  the parser / queue-rewriter implementation stays in
+ *  `codeless-runtime::scope_patch_queue` (host-only).
+ * 
+ *  Distinct from [`ScopePatch`]: that struct is the *event* payload
+ *  emitted at proposal time and carries `review_id` / `stage_id`
+ *  because those are durably linked to the originating REVIEW gate.
+ *  `ProposedScopePatch` is the *queue snapshot* — its lifecycle ends
+ *  when the human approves or rejects, and only `evidence_stage_id`
+ *  (carried by `Loosen` patches as the positive fixture) survives the
+ *  markdown round-trip. The two shapes overlap by design but should
+ *  not be unified: collapsing them would force the queue file to
+ *  carry `review_id` permanently, or force the event to drop it.
+ * 
+ *  `proposed_at` is the wall-clock time the proposal first landed on
+ *  disk. Surface C's "older than 14 days falls below the fold" filter
+ *  and the decay sort key off this field — without it, the worklist
+ *  view degrades to insertion-order-only. The writer
+ *  (`scope_patch_emit::append_to_proposals_file`) stamps it at
+ *  proposal-emit time; the reader (`scope_patch_queue::parse_block`)
+ *  surfaces it as `Some(_)` for proposals written by the timestamped
+ *  writer and `None` for proposals from older writes that predate the
+ *  field. The UI treats `None` as "age-unknown" and groups those
+ *  after the dated entries rather than rejecting the row.
+ */
+export type ProposedScopePatch = {
+	id: ScopePatchId,
+	kind: ScopePatchKind,
+	target: ScopePatchTarget,
+	target_path: string,
+	rationale: string,
+	body: string,
+	has_predicate: boolean,
+	/**
+	 *  Set for `Loosen` proposals — names the stage whose diff is the
+	 *  positive fixture. `None` for `Tighten`.
+	 */
+	evidence_stage_id?: StageId | null,
+	/**
+	 *  Path to the paired predicate file, when the proposal cites one
+	 *  (the queue format carries this as a parser-only cross-reference;
+	 *  the approval UX surfaces it next to `target_path`).
+	 */
+	predicate_ref?: string | null,
+	/**
+	 *  Path to the paired fixture file, when the proposal cites one
+	 *  (same shape as `predicate_ref` — used by `Loosen` proposals).
+	 */
+	fixture_ref?: string | null,
+	/**
+	 *  Wall-clock time the proposal was appended to
+	 *  `DOCS/SCOPE-PROPOSED.md`. `None` for entries written before the
+	 *  field existed (legacy data); UI treats unknown ages as
+	 *  undated and groups them after dated entries.
+	 */
+	proposed_at?: UnixMillis | null,
+};
 
 /**
  *  Reject a proposed scope patch through the UI. Mirrors `codeless

@@ -997,6 +997,15 @@ export class MockRpcClient implements RpcClient {
         return { commit_sha: mockCommitSha() } as RpcResultOf<M>;
       }
 
+      case "list_proposed_patches": {
+        // The mock has no on-disk queue file; Surface C tests inject
+        // fixtures by overriding the client's `call` method directly.
+        // Returning an empty list here keeps the default fixture
+        // honest (no proposals across any repo) so a test that forgets
+        // to override sees an empty worklist rather than mock data.
+        return { entries: [] } as RpcResultOf<M>;
+      }
+
       case "delete_persona": {
         const a = args as RpcArgs<"delete_persona">;
         const existing = this.personas.get(a.id);
