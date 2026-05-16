@@ -7,6 +7,7 @@ import type {
   AgentChatArgs,
   AgentChatResult,
   ApproveScopePatchArgs,
+  AutoBypassPolicy,
   CancelChatTaskArgs,
   EditScopePatchArgs,
   EventCursor,
@@ -107,6 +108,13 @@ export interface SubmitJobArgs {
    * agent posture even if the persona's body is edited later.
    * `null` means no persona was picked. */
   persona_id?: string | null;
+  /** Per-job auto-bypass policy (Surface F). `null` (default) keeps
+   * the existing halt-on-failure behaviour. A preset (`quick`,
+   * `long-term`, `cheap`, `best-judgement`, `just-code`) or a
+   * `custom` free-text comment pre-authorises the runtime to advance
+   * past a non-cap stage failure with the policy's guidance threaded
+   * into the next stage's prompt. Cap-breach failures always halt. */
+  auto_bypass_policy?: AutoBypassPolicy | null;
   /** When `false` (default) the job lands in `Draft` status — the row
    * exists, the user can edit the spec / docs / handover, but the
    * driver does not pick it up. The user calls `start_job` to promote
