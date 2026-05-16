@@ -19,9 +19,11 @@ when the failure happens.
 The full design lives in
 [`DOCS/SCOPE-MUTABLE-UI.md`](../../../DOCS/SCOPE-MUTABLE-UI.md)
 under "Surface F", "Journey 5", "Dependency #7", and "Step 7".
-The matching Slack command is Surface 4 in
-[`DOCS/SCOPE-SLACK-INTEGRATION.md`](../../../DOCS/SCOPE-SLACK-INTEGRATION.md).
-This file is the per-job brief; both docs are authoritative.
+This file is the per-job brief; the doc is authoritative.
+
+Slack integration is OUT OF SCOPE. A future Slack job picks up
+the matching `@codeless policy` command from the separate Slack
+integration doc; this job ships runtime + web UI only.
 
 ## In scope
 
@@ -44,9 +46,6 @@ This file is the per-job brief; both docs are authoritative.
 - `JobPolicyChanged` event for cross-window invalidation.
 - Timeline render of `StageAutoBypassed` events with a distinct
   icon and the canned comment in the hover.
-- Slack `@codeless policy <id> <preset|custom|none>` command
-  scaffolding (the heavy lifting lives in the Slack integration
-  job; this stage adds the runtime hook).
 - Tests: unit tests for the policy enum, the canned comment
   helper, the auto-bypass branch (with cap-breach and
   thrashing-guard cases), the `set_job_policy` RPC's
@@ -57,6 +56,14 @@ This file is the per-job brief; both docs are authoritative.
 
 ## Out of scope
 
+- **Slack integration.** The matching `@codeless policy`
+  command is Surface 4 in `DOCS/SCOPE-SLACK-INTEGRATION.md`
+  and ships as part of a separate Slack job. Do not add any
+  Slack-side wiring, command parsing, or notification
+  formatting in this job — even as a stub. The runtime side
+  this job ships (`set_job_policy` RPC, `JobPolicyChanged`
+  event, `StageAutoBypassed` event) is what the future Slack
+  job will subscribe to; that is the full contract.
 - Per-stage auto-bypass policy. The doc names this as an
   anti-pattern; the policy is one-per-job. Operators who want
   per-stage control should use Surface E.
@@ -196,9 +203,6 @@ the decisions file is a workflow failure.
 
 - Design: [`DOCS/SCOPE-MUTABLE-UI.md`](../../../DOCS/SCOPE-MUTABLE-UI.md)
   — Surface F, Journey 5, Dependency #7, Step 7.
-- Slack command for this surface:
-  [`DOCS/SCOPE-SLACK-INTEGRATION.md`](../../../DOCS/SCOPE-SLACK-INTEGRATION.md)
-  — Surface 4.
 - The runtime this sits on:
   [`DOCS/SESSION-MUTABLE-SCOPE.md`](../../../DOCS/SESSION-MUTABLE-SCOPE.md).
 - The bypass mechanism F builds on:
