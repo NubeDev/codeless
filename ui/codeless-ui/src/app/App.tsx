@@ -35,6 +35,7 @@ import {
 import { FileExplorer } from "@/modules/explorer";
 import { JobDetailStack, JobsDashboard } from "@/modules/jobs";
 import { AssistantFooterBar, AssistantPage } from "@/modules/assistant";
+import { PatchesPage } from "@/modules/patches";
 import {
   Header,
   type SearchInlineHandle,
@@ -117,6 +118,7 @@ export default function App() {
     newPreviewTab,
     newJobsTab,
     newAssistantTab,
+    newPatchesTab,
     newJobDetailTab,
     openAiDiffTab,
     setAiDiffStatus,
@@ -152,6 +154,9 @@ export default function App() {
     }
     if (typeof window !== "undefined" && window.location.pathname.startsWith("/assistant")) {
       newAssistantTab();
+    }
+    if (typeof window !== "undefined" && window.location.pathname.startsWith("/patches")) {
+      newPatchesTab();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -300,18 +305,22 @@ export default function App() {
       target = "/jobs";
     } else if (activeTab?.kind === "assistant") {
       target = "/assistant";
+    } else if (activeTab?.kind === "patches") {
+      target = "/patches";
     }
     const current = window.location.pathname + window.location.search;
     if (current === target) return;
     if (
       activeTab?.kind === "job-detail" ||
       activeTab?.kind === "jobs" ||
-      activeTab?.kind === "assistant"
+      activeTab?.kind === "assistant" ||
+      activeTab?.kind === "patches"
     ) {
       navigate(target, { replace: true });
     } else if (
       current.startsWith("/jobs") ||
-      current.startsWith("/assistant")
+      current.startsWith("/assistant") ||
+      current.startsWith("/patches")
     ) {
       navigate(target, { replace: true });
     }
@@ -324,6 +333,7 @@ export default function App() {
   const isJobsTab = activeTab?.kind === "jobs";
   const isJobDetailTab = activeTab?.kind === "job-detail";
   const isAssistantTab = activeTab?.kind === "assistant";
+  const isPatchesTab = activeTab?.kind === "patches";
 
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
@@ -857,6 +867,7 @@ export default function App() {
             onNewEditor={() => setNewEditorOpen(true)}
             onNewJobs={() => newJobsTab()}
             onNewAssistant={() => newAssistantTab()}
+            onNewPatches={() => newPatchesTab()}
             onClose={handleClose}
             onPin={pinTab}
             onToggleSidebar={toggleSidebar}
@@ -871,6 +882,7 @@ export default function App() {
               navigate("/jobs?filter=reviews");
               newJobsTab();
             }}
+            onOpenPatches={() => newPatchesTab()}
             searchTarget={searchTarget}
             searchRef={searchInlineRef}
           />
@@ -990,6 +1002,17 @@ export default function App() {
                     >
                       {tabs.some((t) => t.kind === "assistant") ? (
                         <AssistantPage />
+                      ) : null}
+                    </div>
+                    <div
+                      className={cn(
+                        "absolute inset-0 overflow-auto",
+                        !isPatchesTab && "invisible pointer-events-none",
+                      )}
+                      aria-hidden={!isPatchesTab}
+                    >
+                      {tabs.some((t) => t.kind === "patches") ? (
+                        <PatchesPage />
                       ) : null}
                     </div>
                     <div

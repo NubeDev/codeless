@@ -76,6 +76,16 @@ export type AssistantTab = {
   title: string;
 };
 
+// Surface C from `DOCS/SCOPE-MUTABLE-UI.md` — the cross-workspace
+// patch worklist at `/patches`. Singleton for the same reason as
+// `JobsTab` / `AssistantTab`: the page is a global view across every
+// repo, so a second tab would render identical content.
+export type PatchesTab = {
+  id: number;
+  kind: "patches";
+  title: string;
+};
+
 // Per-job workspace tab. Distinct from `JobsTab` (the global list) so
 // the user can have several jobs open in parallel — the natural read
 // of "I want to watch run A finish while I drive run B". Title is
@@ -95,7 +105,8 @@ export type Tab =
   | AiDiffTab
   | JobsTab
   | JobDetailTab
-  | AssistantTab;
+  | AssistantTab
+  | PatchesTab;
 
 export type TabPatch = Partial<{
   title: string;
@@ -122,7 +133,7 @@ function titleFromUrl(url: string): string {
 const JOBS_TABS_LS_KEY = "codeless-open-job-tabs-v3";
 
 interface PersistedTab {
-  kind: "jobs" | "job-detail";
+  kind: "jobs" | "job-detail" | "patches";
   jobId?: string;
   title: string;
 }
@@ -138,7 +149,9 @@ function readPersistedTabs(): PersistedTab[] {
       (t): t is PersistedTab =>
         t &&
         typeof t.title === "string" &&
-        (t.kind === "jobs" || (t.kind === "job-detail" && typeof t.jobId === "string")),
+        (t.kind === "jobs" ||
+          t.kind === "patches" ||
+          (t.kind === "job-detail" && typeof t.jobId === "string")),
     );
   } catch {
     return [];
@@ -151,6 +164,8 @@ function writePersistedTabs(tabs: Tab[]): void {
   for (const t of tabs) {
     if (t.kind === "jobs") {
       persisted.push({ kind: "jobs", title: t.title });
+    } else if (t.kind === "patches") {
+      persisted.push({ kind: "patches", title: t.title });
     } else if (t.kind === "job-detail") {
       persisted.push({ kind: "job-detail", jobId: t.jobId, title: t.title });
     }
@@ -185,6 +200,8 @@ function buildInitialState(
   for (const p of persisted) {
     if (p.kind === "jobs") {
       restored.push({ id: nextId++, kind: "jobs", title: p.title });
+    } else if (p.kind === "patches") {
+      restored.push({ id: nextId++, kind: "patches", title: p.title });
     } else if (p.kind === "job-detail" && p.jobId) {
       restored.push({
         id: nextId++,
@@ -213,6 +230,21 @@ function buildInitialState(
     } else if (path === "/jobs" || path.startsWith("/jobs?")) {
       const t = tabs.find((x): x is JobsTab => x.kind === "jobs");
       if (t) activeId = t.id;
+    } else if (path === "/patches" || path.startsWith("/patches?")) {
+      const existing = tabs.find((x): x is PatchesTab => x.kind === "patches");
+      if (existing) {
+        activeId = existing.id;
+      } else {
+        // The patches route is opt-in (no auto-create on first boot),
+        // but a deep-link reload to `/patches` should land on the
+        // worklist instead of silently falling back to the shell. The
+        // tab list above only includes restored tabs; appending here
+        // is the cheapest way to honour the URL without threading a
+        // "create-on-deeplink" branch through `useTabs`.
+        const id = nextId++;
+        tabs.push({ id, kind: "patches", title: "Patches" });
+        activeId = id;
+      }
     }
   }
   return { tabs, activeId };
@@ -431,6 +463,29 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       const id = nextIdRef.current++;
       targetId = id;
       return [...curr, { id, kind: "jobs", title: "Jobs" } satisfies JobsTab];
+    });
+    setActiveId(targetId);
+    return targetId;
+  }, []);
+
+  // Singleton: <PatchesPage /> renders the cross-workspace patch
+  // worklist (Surface C from `DOCS/SCOPE-MUTABLE-UI.md`). One tab is
+  // enough; a second would duplicate the worklist view. Focuses the
+  // existing tab if present.
+  const newPatchesTab = useCallback(() => {
+    let targetId = -1;
+    setTabs((curr) => {
+      const existing = curr.find((t) => t.kind === "patches");
+      if (existing) {
+        targetId = existing.id;
+        return curr;
+      }
+      const id = nextIdRef.current++;
+      targetId = id;
+      return [
+        ...curr,
+        { id, kind: "patches", title: "Patches" } satisfies PatchesTab,
+      ];
     });
     setActiveId(targetId);
     return targetId;
@@ -680,6 +735,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newPreviewTab,
     newJobsTab,
     newAssistantTab,
+    newPatchesTab,
     newJobDetailTab,
     openAiDiffTab,
     setAiDiffStatus,

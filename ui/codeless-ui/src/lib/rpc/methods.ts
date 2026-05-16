@@ -22,6 +22,8 @@ import type {
   JobDiffArgs,
   JobDiffResult,
   JobId,
+  ListProposedPatchesArgs,
+  ListProposedPatchesResult,
   RejectScopePatchArgs,
   Repo,
   RepoId,
@@ -607,6 +609,16 @@ export interface RpcMethodMap {
   revert_scope_patch: {
     args: RevertScopePatchArgs;
     result: RevertScopePatchResult;
+  };
+  // Snapshot the unresolved patch queue across one or all repos.
+  // Powers Surface C (cross-workspace worklist); `repo_id = null`
+  // walks every repo. Runtime returns entries newest-first by
+  // `proposed_at`, with legacy undated entries trailing. Filters,
+  // group-by, and 14-day-decay layering live client-side so the user
+  // can flip "show everything" without a round-trip.
+  list_proposed_patches: {
+    args: ListProposedPatchesArgs;
+    result: ListProposedPatchesResult;
   };
   stop_review: { args: ReviewActionArgs; result: Review };
 
