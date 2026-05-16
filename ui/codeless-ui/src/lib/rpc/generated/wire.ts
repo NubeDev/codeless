@@ -861,7 +861,34 @@ commit_sha: string } |
  *  with `ScopePatchApproved`; same cross-window invalidation use
  *  case.
  */
-{ type: "scope-patch-rejected"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; target_path: string; commit_sha: string };
+{ type: "scope-patch-rejected"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; target_path: string; commit_sha: string } | 
+/**
+ *  A stage failed under a job-level `AutoBypassPolicy` and the
+ *  runtime auto-bypassed the failure to keep the job moving
+ *  (Surface F, `DOCS/AUTO-BYPASS-DECISIONS.md` Q1/Q4). Emitted
+ *  by the stage-failed handler in the same commit that writes
+ *  `stages.bypassed_at` / `stages.bypassed_reason`; the
+ *  corresponding `tracing` line stays for operator debugging
+ *  while this event carries the structured form the UI gate
+ *  panel reads. Deliberately a distinct variant from
+ *  Surface E's operator-clicked `StageBypassed` so the panel
+ *  can render `bypassed by policy: <name>` vs
+ *  `bypassed by operator` without inspecting the reason
+ *  string (Q6 "Event reuse").
+ * 
+ *  `policy_name` is the stable name returned by
+ *  `AutoBypassPolicy::policy_name()` — one of the five preset
+ *  labels or the literal `"Custom"`. `comment_used` is the
+ *  canned (or operator-supplied) guidance string that was
+ *  threaded into the next stage's prompt; it is carried on
+ *  the wire so subscribers can render the comment without
+ *  re-resolving the policy and to keep the audit trail intact
+ *  if a future preset string is reworded (Q4
+ *  wording-revision policy). `applied_at` mirrors
+ *  `stages.bypassed_at` and is the timestamp the recorder
+ *  stamped on the row.
+ */
+{ type: "stage-auto-bypassed"; stage_id: StageId; policy_name: string; comment_used: string; applied_at: UnixMillis };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
