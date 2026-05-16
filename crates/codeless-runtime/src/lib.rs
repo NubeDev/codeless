@@ -7,6 +7,7 @@
 
 pub mod anthropic_runner;
 pub mod attached_workspaces;
+pub mod auto_bypass_policy;
 pub mod claude_runner;
 pub mod codex_runner;
 pub mod copilot_runner;

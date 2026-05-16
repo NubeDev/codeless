@@ -1,8 +1,8 @@
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
-    AssistantMessageId, AssistantThread, AssistantThreadId, FsEntry, FsEntryKind, GitAuth, Job,
-    JobId, Persona, ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatchId,
-    Stage, StageId, TaskId, UnixMillis, WorkspaceMode,
+    AssistantMessageId, AssistantThread, AssistantThreadId, AutoBypassPolicy, FsEntry, FsEntryKind,
+    GitAuth, Job, JobId, Persona, ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus,
+    ScopePatchId, Stage, StageId, TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +83,14 @@ pub struct SubmitJobArgs {
     /// against a server-side persona table lands in a later stage.
     #[serde(default)]
     pub persona_id: Option<String>,
+    /// Per-job auto-bypass policy (Surface F). `None` (default) keeps
+    /// the existing halt-on-failure behaviour; `Some(...)` pre-
+    /// authorises the runtime to advance past a failed stage under
+    /// the chosen preset's canned guidance (or a custom comment).
+    /// The value is persisted onto the `Job` row verbatim so a
+    /// resume / rerun reproduces the same policy.
+    #[serde(default)]
+    pub auto_bypass_policy: Option<AutoBypassPolicy>,
     /// `false` (default) lands the job in `Draft` status — the row
     /// exists, the user can edit the spec / docs / handover, but the
     /// driver does not pick it up. The user calls `start_job` to

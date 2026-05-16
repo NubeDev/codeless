@@ -5,6 +5,7 @@
 //! sqlx, ...) here would break that path.
 
 pub mod assistant;
+pub mod auto_bypass;
 pub mod event;
 pub mod fs;
 pub mod git_auth;
@@ -26,6 +27,7 @@ pub use assistant::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantMessage, AssistantMessageRole, AssistantThread,
 };
+pub use auto_bypass::AutoBypassPolicy;
 pub use event::{Event, EventCursor, EventEnvelope};
 pub use fs::{FsEntry, FsEntryKind};
 pub use git_auth::GitAuth;

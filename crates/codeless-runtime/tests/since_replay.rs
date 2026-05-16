@@ -64,6 +64,7 @@ async fn since_zero_replays_everything_then_attaches_live_tail() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
@@ -89,6 +90,7 @@ async fn since_zero_replays_everything_then_attaches_live_tail() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
@@ -147,6 +149,7 @@ async fn since_above_max_filters_strictly_by_cursor() {
         effort: None,
         system_prompt: None,
         persona_id: None,
+        auto_bypass_policy: None,
         start_immediately: true,
     })
     .await
@@ -195,6 +198,7 @@ async fn replay_dedupes_overlap_with_live_tail() {
         effort: None,
         system_prompt: None,
         persona_id: None,
+        auto_bypass_policy: None,
         start_immediately: true,
     })
     .await

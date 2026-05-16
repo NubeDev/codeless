@@ -49,6 +49,7 @@ async fn fresh_job(rpc: &InProcessRpc, runner: &str) -> JobId {
         effort: None,
         system_prompt: None,
         persona_id: None,
+        auto_bypass_policy: None,
         start_immediately: true,
     })
     .await

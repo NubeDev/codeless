@@ -139,6 +139,7 @@ async fn bootstrap(args: BootstrapArgs, db: Option<PathBuf>) -> Result<ExitCode>
             // queueing the job for immediate driver pickup.
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await

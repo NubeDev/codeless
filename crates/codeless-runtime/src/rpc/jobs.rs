@@ -120,6 +120,7 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
         // Empty strings collapse to `None` so the column stays a
         // clean optional regardless of how the UI shaped the payload.
         persona_id: args.persona_id.filter(|s| !s.is_empty()),
+        auto_bypass_policy: args.auto_bypass_policy,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -796,6 +797,7 @@ pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResu
         effort: source.effort,
         system_prompt: source.system_prompt,
         persona_id: source.persona_id,
+        auto_bypass_policy: source.auto_bypass_policy,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -1142,6 +1144,7 @@ pub(super) async fn draft_job_from_conversation(
             // promote the draft from the job page.
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: false,
         },
     )

@@ -112,6 +112,7 @@ async fn submit_then_stop_job_round_trip() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
@@ -151,6 +152,7 @@ async fn unknown_repo_surfaces_as_not_found() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await

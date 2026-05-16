@@ -212,6 +212,7 @@ async fn submit_job_unknown_repo_maps_to_404() {
         effort: None,
         system_prompt: None,
         persona_id: None,
+        auto_bypass_policy: None,
         start_immediately: true,
     })
     .unwrap();
@@ -258,6 +259,7 @@ async fn submit_then_get_job_round_trip() {
         effort: None,
         system_prompt: None,
         persona_id: None,
+        auto_bypass_policy: None,
         start_immediately: true,
     })
     .unwrap();

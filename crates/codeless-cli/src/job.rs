@@ -129,6 +129,7 @@ async fn submit(args: SubmitArgs, db: Option<PathBuf>) -> Result<ExitCode> {
             // user can edit the spec first.
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await

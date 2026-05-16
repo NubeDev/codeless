@@ -2,9 +2,9 @@ use std::str::FromStr;
 
 use codeless_types::{
     AssistantAttachment, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, CostCents, GitAuth, Job, JobId, JobStatus, Persona, Repo,
-    RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus, StopReason, Task, TaskId,
-    TaskStatus, UnixMillis, WorkspaceMode,
+    AssistantThread, AssistantThreadId, AutoBypassPolicy, CostCents, GitAuth, Job, JobId,
+    JobStatus, Persona, Repo, RepoId, Review, ReviewId, ReviewStatus, Stage, StageId, StageStatus,
+    StopReason, Task, TaskId, TaskStatus, UnixMillis, WorkspaceMode,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -89,13 +89,14 @@ impl SqliteStore {
     }
 
     pub async fn insert_job(&self, job: &Job) -> sqlx::Result<()> {
+        let auto_bypass_policy = encode_auto_bypass_policy(job.auto_bypass_policy.as_ref())?;
         sqlx::query(
             "INSERT INTO jobs \
              (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
               workspace_mode, worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
               model, permission_mode, effort, system_prompt, persona_id, \
-              started_at, ended_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              auto_bypass_policy, started_at, ended_at, created_at) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(job.id.to_string())
         .bind(job.repo_id.to_string())
@@ -115,6 +116,7 @@ impl SqliteStore {
         .bind(&job.effort)
         .bind(&job.system_prompt)
         .bind(&job.persona_id)
+        .bind(&auto_bypass_policy)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -134,12 +136,13 @@ impl SqliteStore {
     /// Whole-row update by primary key. Returns `true` when a row
     /// was updated.
     pub async fn update_job(&self, job: &Job) -> sqlx::Result<bool> {
+        let auto_bypass_policy = encode_auto_bypass_policy(job.auto_bypass_policy.as_ref())?;
         let res = sqlx::query(
             "UPDATE jobs SET \
                 repo_id=?, status=?, stop_reason=?, template_yaml=?, prompt=?, runner=?, \
                 branch=?, workspace_mode=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
                 cost_cents=?, model=?, permission_mode=?, effort=?, system_prompt=?, \
-                persona_id=?, started_at=?, ended_at=?, created_at=? \
+                persona_id=?, auto_bypass_policy=?, started_at=?, ended_at=?, created_at=? \
              WHERE id=?",
         )
         .bind(job.repo_id.to_string())
@@ -159,6 +162,7 @@ impl SqliteStore {
         .bind(&job.effort)
         .bind(&job.system_prompt)
         .bind(&job.persona_id)
+        .bind(&auto_bypass_policy)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -1297,10 +1301,26 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
         effort: row.try_get("effort")?,
         system_prompt: row.try_get("system_prompt")?,
         persona_id: row.try_get("persona_id")?,
+        auto_bypass_policy: decode_auto_bypass_policy(row.try_get("auto_bypass_policy")?)?,
         started_at: started_at.map(UnixMillis),
         ended_at: ended_at.map(UnixMillis),
         created_at: UnixMillis(row.try_get("created_at")?),
     })
+}
+
+/// JSON-encode the policy for storage. The serde-tagged wire form is
+/// the same shape the column carries, so the round-trip is the
+/// `AutoBypassPolicy`'s own `Serialize` impl. `None` becomes SQL
+/// NULL (the column default) so existing rows decode unchanged.
+fn encode_auto_bypass_policy(policy: Option<&AutoBypassPolicy>) -> sqlx::Result<Option<String>> {
+    policy
+        .map(|p| serde_json::to_string(p).map_err(serde_err))
+        .transpose()
+}
+
+fn decode_auto_bypass_policy(raw: Option<String>) -> sqlx::Result<Option<AutoBypassPolicy>> {
+    raw.map(|s| serde_json::from_str::<AutoBypassPolicy>(&s).map_err(serde_err))
+        .transpose()
 }
 
 fn parse_id<T: FromStr>(s: &str) -> sqlx::Result<T>
