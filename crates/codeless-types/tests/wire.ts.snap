@@ -1093,7 +1093,19 @@ export type StageStatus = "pending" | "running" | "awaiting-review" | "passed" |
  *  Why a job left the running set early. `None` while running or after a
  *  clean completion; populated when status is `Stopped` or `Failed`.
  */
-export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash";
+export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash" | 
+/**
+ *  Surface F thrashing guard: the per-job `AutoBypassPolicy` fired
+ *  twice in a row with no `Passed` stage between, so the runtime
+ *  halts the job instead of auto-bypassing a third time. The
+ *  guidance comment thread converged on nothing in two attempts;
+ *  a third would burn more tokens for the same outcome. See
+ *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q1 — two-strikes is the
+ *  canonical window size, written here as the wire-level stop
+ *  reason so the UI can render `policy thrashing` distinctly from
+ *  the other terminal causes.
+ */
+"auto-bypass-thrashing";
 
 /**
  *  The atomic re-runnable unit inside a stage — see SCOPE.md Appendix A

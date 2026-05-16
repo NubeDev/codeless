@@ -1459,6 +1459,7 @@ fn stop_reason_label(s: StopReason) -> &'static str {
         StopReason::CostCap => "cost-cap",
         StopReason::WallClock => "wall-clock",
         StopReason::RunnerCrash => "runner-crash",
+        StopReason::AutoBypassThrashing => "auto-bypass-thrashing",
     }
 }
 
@@ -1527,6 +1528,7 @@ fn parse_stop_reason(s: &str) -> sqlx::Result<StopReason> {
         "cost-cap" => StopReason::CostCap,
         "wall-clock" => StopReason::WallClock,
         "runner-crash" => StopReason::RunnerCrash,
+        "auto-bypass-thrashing" => StopReason::AutoBypassThrashing,
         other => {
             return Err(sqlx::Error::Decode(
                 format!("unknown stop reason: {other}").into(),

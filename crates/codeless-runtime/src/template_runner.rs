@@ -57,6 +57,7 @@ use codeless_types::review_gate::{PreCheckOutcome as WirePreCheck, ReviewVerdict
 use codeless_types::{Event, ReviewId, StageId, StageStatus, TaskId};
 use tokio_util::sync::CancellationToken;
 
+use crate::auto_bypass_guard::ThrashingGuard;
 use crate::claude_runner::ClaudeRunnerAdapter;
 use crate::diff_verify::{
     fail_reason as diff_verify_fail_reason, verify_handover, DiffVerifyOutcome,
@@ -97,6 +98,15 @@ pub struct TemplateRunner {
     /// so the agent picks up the same conversation. `None` (test
     /// harness path) opts out: every stage runs fresh.
     pub store: Option<Arc<SqliteStore>>,
+    /// Surface F thrashing guard. Shared across every `TemplateRunner`
+    /// the factory builds so a single process's running jobs all
+    /// agree on the consecutive-auto-bypass count, and rebuilt from
+    /// the events table at the top of `run` so a driver restart does
+    /// not reset the count. `None` (test-harness path) opts every
+    /// stage failure into the historical halt behaviour — the guard
+    /// has nothing to track, but `record_auto_bypass` would have no
+    /// observer either.
+    pub thrashing_guard: Option<Arc<ThrashingGuard>>,
 }
 
 impl TemplateRunner {
@@ -106,7 +116,19 @@ impl TemplateRunner {
             system_prompt: None,
             use_mock_runner: false,
             store: None,
+            thrashing_guard: None,
         }
+    }
+
+    /// Attach a process-wide `ThrashingGuard` so this runner's
+    /// auto-bypass decisions feed the same counter every other runner
+    /// in the same server consults. The driver factory holds a single
+    /// `Arc<ThrashingGuard>` and clones it into every
+    /// `TemplateRunner::build`; the test harness leaves the field
+    /// `None` and exercises the guard through its own module tests.
+    pub fn with_thrashing_guard(mut self, guard: Arc<ThrashingGuard>) -> Self {
+        self.thrashing_guard = Some(guard);
+        self
     }
 
     /// Inject the store handle so the runner can look up each
@@ -139,6 +161,43 @@ impl TemplateRunner {
     /// available) — `.codeless/jobs/<name>/` lives inside it, so we
     /// resolve per-stage docs there rather than from the source repo.
     /// `None` (test harness path) skips doc resolution entirely.
+    /// Centralised post-classify handler: every `FailureAction::
+    /// AutoBypass` branch consults the thrashing guard, halts when
+    /// the guard says so (stamping `stop_reason` on the row first),
+    /// and otherwise emits the `StageAutoBypassed` envelope plus
+    /// records the bypass into the in-memory count. The five
+    /// auto-bypass call sites in `run` differ only in the failure
+    /// reason text and tracing line; the load-bearing thrash-or-emit
+    /// shape lives here so a future tweak to the guard contract
+    /// (e.g. a window-size change per Q1) lands in one place.
+    async fn try_auto_bypass(
+        &self,
+        ctx: &RunnerContext,
+        stage_id: StageId,
+        task_id: TaskId,
+        policy_name: &str,
+        comment: &str,
+    ) -> AutoBypassDecision {
+        if let Some(guard) = self.thrashing_guard.as_ref() {
+            if guard.would_breach(ctx.job_id) {
+                record_thrash_halt(self.store.as_deref(), ctx).await;
+                return AutoBypassDecision::Thrash;
+            }
+        }
+        emit_auto_bypass(
+            ctx,
+            stage_id,
+            task_id,
+            policy_name.to_string(),
+            comment.to_string(),
+        )
+        .await;
+        if let Some(guard) = self.thrashing_guard.as_ref() {
+            guard.record_auto_bypass(ctx.job_id);
+        }
+        AutoBypassDecision::Advanced
+    }
+
     fn stage_prompt(
         &self,
         planned: PlannedStage<'_>,
@@ -217,6 +276,22 @@ impl Runner for TemplateRunner {
     async fn run(&self, ctx: RunnerContext) -> RunnerOutcome {
         let planned = self.template.planned_stages();
         let total = planned.len();
+        // Surface F thrashing guard: rebuild the in-memory count from
+        // the persisted events table before the first stage runs. A
+        // driver restart wipes the map but the wire log survives, so
+        // a resumed job that was already at one auto-bypass picks up
+        // the count where it left off and the next failure halts
+        // instead of burning a fresh policy budget. Failures here are
+        // warn-only: a missing rebuild degrades to "guard starts at
+        // zero," not to a runner abort.
+        if let (Some(guard), Some(store)) = (self.thrashing_guard.as_ref(), self.store.as_ref()) {
+            if let Err(err) = guard.rebuild_from_store(store, ctx.job_id).await {
+                tracing::warn!(
+                    ?err,
+                    "thrashing-guard: rebuild_from_store failed; starting at zero"
+                );
+            }
+        }
         // Resume-skip-passed: fetch prior stage rows once. On a fresh
         // job this is empty; on a resume it carries the per-ordinal
         // status history. The runner skips any ordinal whose latest
@@ -433,22 +508,40 @@ impl Runner for TemplateRunner {
                                         policy_name,
                                         comment,
                                     } => {
-                                        emit_auto_bypass(
-                                            &ctx,
-                                            stage_id,
-                                            task_id,
-                                            policy_name.clone(),
-                                            comment.clone(),
-                                        )
-                                        .await;
-                                        tracing::info!(
-                                            stage = stage.title,
-                                            policy = %policy_name,
-                                            %failure_reason,
-                                            "auto-bypass: advancing past pre-check failure"
-                                        );
-                                        next_stage_prefix = Some(comment);
-                                        continue;
+                                        match self
+                                            .try_auto_bypass(
+                                                &ctx,
+                                                stage_id,
+                                                task_id,
+                                                &policy_name,
+                                                &comment,
+                                            )
+                                            .await
+                                        {
+                                            AutoBypassDecision::Thrash => {
+                                                tracing::warn!(
+                                                    stage = stage.title,
+                                                    policy = %policy_name,
+                                                    %failure_reason,
+                                                    "auto-bypass thrashing guard fired at pre-check failure; halting job"
+                                                );
+                                                return RunnerOutcome::Failed {
+                                                    reason: format!(
+                                                        "auto-bypass thrashing: {failure_reason}"
+                                                    ),
+                                                };
+                                            }
+                                            AutoBypassDecision::Advanced => {
+                                                tracing::info!(
+                                                    stage = stage.title,
+                                                    policy = %policy_name,
+                                                    %failure_reason,
+                                                    "auto-bypass: advancing past pre-check failure"
+                                                );
+                                                next_stage_prefix = Some(comment);
+                                                continue;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -612,22 +705,38 @@ impl Runner for TemplateRunner {
                                 policy_name,
                                 comment,
                             } => {
-                                emit_auto_bypass(
-                                    &ctx,
-                                    stage_id,
-                                    task_id,
-                                    policy_name.clone(),
-                                    comment.clone(),
-                                )
-                                .await;
-                                tracing::info!(
-                                    stage = stage.title,
-                                    policy = %policy_name,
-                                    failure_reason = %reason,
-                                    "auto-bypass: advancing past stage failure"
-                                );
-                                next_stage_prefix = Some(comment);
-                                continue;
+                                match self
+                                    .try_auto_bypass(
+                                        &ctx,
+                                        stage_id,
+                                        task_id,
+                                        &policy_name,
+                                        &comment,
+                                    )
+                                    .await
+                                {
+                                    AutoBypassDecision::Thrash => {
+                                        tracing::warn!(
+                                            stage = stage.title,
+                                            policy = %policy_name,
+                                            failure_reason = %reason,
+                                            "auto-bypass thrashing guard fired at stage failure; halting job"
+                                        );
+                                        return RunnerOutcome::Failed {
+                                            reason: format!("auto-bypass thrashing: {reason}"),
+                                        };
+                                    }
+                                    AutoBypassDecision::Advanced => {
+                                        tracing::info!(
+                                            stage = stage.title,
+                                            policy = %policy_name,
+                                            failure_reason = %reason,
+                                            "auto-bypass: advancing past stage failure"
+                                        );
+                                        next_stage_prefix = Some(comment);
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
@@ -767,22 +876,40 @@ impl Runner for TemplateRunner {
                                         policy_name,
                                         comment,
                                     } => {
-                                        emit_auto_bypass(
-                                            &ctx,
-                                            stage_id,
-                                            task_id,
-                                            policy_name.clone(),
-                                            comment.clone(),
-                                        )
-                                        .await;
-                                        tracing::info!(
-                                            stage = stage.title,
-                                            policy = %policy_name,
-                                            %failure_reason,
-                                            "auto-bypass: advancing past review-gate patch rejection"
-                                        );
-                                        next_stage_prefix = Some(comment);
-                                        continue;
+                                        match self
+                                            .try_auto_bypass(
+                                                &ctx,
+                                                stage_id,
+                                                task_id,
+                                                &policy_name,
+                                                &comment,
+                                            )
+                                            .await
+                                        {
+                                            AutoBypassDecision::Thrash => {
+                                                tracing::warn!(
+                                                    stage = stage.title,
+                                                    policy = %policy_name,
+                                                    %failure_reason,
+                                                    "auto-bypass thrashing guard fired at review-gate patch rejection; halting job"
+                                                );
+                                                return RunnerOutcome::Failed {
+                                                    reason: format!(
+                                                        "auto-bypass thrashing: {failure_reason}"
+                                                    ),
+                                                };
+                                            }
+                                            AutoBypassDecision::Advanced => {
+                                                tracing::info!(
+                                                    stage = stage.title,
+                                                    policy = %policy_name,
+                                                    %failure_reason,
+                                                    "auto-bypass: advancing past review-gate patch rejection"
+                                                );
+                                                next_stage_prefix = Some(comment);
+                                                continue;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -827,22 +954,40 @@ impl Runner for TemplateRunner {
                                 policy_name,
                                 comment,
                             } => {
-                                emit_auto_bypass(
-                                    &ctx,
-                                    stage_id,
-                                    task_id,
-                                    policy_name.clone(),
-                                    comment.clone(),
-                                )
-                                .await;
-                                tracing::info!(
-                                    stage = stage.title,
-                                    policy = %policy_name,
-                                    %failure_reason,
-                                    "auto-bypass: advancing past review-gate fail"
-                                );
-                                next_stage_prefix = Some(comment);
-                                continue;
+                                match self
+                                    .try_auto_bypass(
+                                        &ctx,
+                                        stage_id,
+                                        task_id,
+                                        &policy_name,
+                                        &comment,
+                                    )
+                                    .await
+                                {
+                                    AutoBypassDecision::Thrash => {
+                                        tracing::warn!(
+                                            stage = stage.title,
+                                            policy = %policy_name,
+                                            %failure_reason,
+                                            "auto-bypass thrashing guard fired at review-gate fail; halting job"
+                                        );
+                                        return RunnerOutcome::Failed {
+                                            reason: format!(
+                                                "auto-bypass thrashing: {failure_reason}"
+                                            ),
+                                        };
+                                    }
+                                    AutoBypassDecision::Advanced => {
+                                        tracing::info!(
+                                            stage = stage.title,
+                                            policy = %policy_name,
+                                            %failure_reason,
+                                            "auto-bypass: advancing past review-gate fail"
+                                        );
+                                        next_stage_prefix = Some(comment);
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
@@ -882,22 +1027,38 @@ impl Runner for TemplateRunner {
                                 policy_name,
                                 comment,
                             } => {
-                                emit_auto_bypass(
-                                    &ctx,
-                                    stage_id,
-                                    task_id,
-                                    policy_name.clone(),
-                                    comment.clone(),
-                                )
-                                .await;
-                                tracing::info!(
-                                    stage = stage.title,
-                                    policy = %policy_name,
-                                    failure_reason = %reason,
-                                    "auto-bypass: advancing past review-gate parse failure"
-                                );
-                                next_stage_prefix = Some(comment);
-                                continue;
+                                match self
+                                    .try_auto_bypass(
+                                        &ctx,
+                                        stage_id,
+                                        task_id,
+                                        &policy_name,
+                                        &comment,
+                                    )
+                                    .await
+                                {
+                                    AutoBypassDecision::Thrash => {
+                                        tracing::warn!(
+                                            stage = stage.title,
+                                            policy = %policy_name,
+                                            failure_reason = %reason,
+                                            "auto-bypass thrashing guard fired at review-gate parse failure; halting job"
+                                        );
+                                        return RunnerOutcome::Failed {
+                                            reason: format!("auto-bypass thrashing: {reason}"),
+                                        };
+                                    }
+                                    AutoBypassDecision::Advanced => {
+                                        tracing::info!(
+                                            stage = stage.title,
+                                            policy = %policy_name,
+                                            failure_reason = %reason,
+                                            "auto-bypass: advancing past review-gate parse failure"
+                                        );
+                                        next_stage_prefix = Some(comment);
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
@@ -914,6 +1075,14 @@ impl Runner for TemplateRunner {
                 },
             )
             .await;
+            // Surface F: a Passed stage is the doc's reset criterion
+            // for the consecutive-auto-bypass count. Drop the count
+            // back to zero so the next failure under the policy is
+            // allowed one auto-bypass before the two-strikes guard
+            // fires again (DOCS/AUTO-BYPASS-DECISIONS.md Q1).
+            if let Some(guard) = self.thrashing_guard.as_ref() {
+                guard.record_pass(ctx.job_id);
+            }
             // The next iteration's REVIEW pre-check (if any) keys off
             // this stage's id to locate its handover. Updated only on
             // the Passed exit path; a Failed stage short-circuits via
@@ -1153,6 +1322,19 @@ enum FailureAction {
     },
 }
 
+/// Surface F thrashing-guard outcome at each auto-bypass call site.
+/// `Advanced` means the runner emitted `StageAutoBypassed` and the
+/// caller should set `next_stage_prefix` and `continue`. `Thrash`
+/// means the guard fired: `stop_reason = AutoBypassThrashing` is
+/// already on the job row and the caller must return
+/// `RunnerOutcome::Failed` with a thrash-tagged reason so the driver
+/// transitions the job terminal.
+#[derive(Debug)]
+enum AutoBypassDecision {
+    Advanced,
+    Thrash,
+}
+
 /// Classify a `RunnerOutcome::Failed` outcome against the job row.
 ///
 /// Cancellation (cap watcher OR external stop/pause) always wins over
@@ -1201,6 +1383,40 @@ async fn classify_stage_failure(store: Option<&SqliteStore>, ctx: &RunnerContext
 /// against the same instant the wire event carries — keeping the row
 /// and the audit trail mutually consistent without a second time
 /// lookup downstream.
+/// Write `stop_reason = AutoBypassThrashing` onto the job row when
+/// the guard fires. `RunnerOutcome::Failed` returning to the driver
+/// would otherwise leave `stop_reason` `None` (the driver translates
+/// the outcome to `JobStatus::Failed` without setting a reason), and
+/// the UI's gate panel reads the reason to label the halt as policy
+/// thrashing rather than a generic crash. Failures here are warn-only
+/// — the wire-event audit trail still records the
+/// `StageAutoBypassed` envelopes that led to the thrash, so a missing
+/// `stop_reason` degrades to "thrash recorded but unlabelled" rather
+/// than a lost halt.
+async fn record_thrash_halt(store: Option<&SqliteStore>, ctx: &RunnerContext) {
+    let Some(store) = store else {
+        return;
+    };
+    let mut job = match store.get_job(ctx.job_id).await {
+        Ok(Some(j)) => j,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "thrashing-guard: get_job failed; halt missing stop_reason"
+            );
+            return;
+        }
+    };
+    job.stop_reason = Some(codeless_types::StopReason::AutoBypassThrashing);
+    if let Err(err) = store.update_job(&job).await {
+        tracing::warn!(
+            ?err,
+            "thrashing-guard: update_job failed; halt missing stop_reason"
+        );
+    }
+}
+
 async fn emit_auto_bypass(
     ctx: &RunnerContext,
     stage_id: StageId,

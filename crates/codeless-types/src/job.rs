@@ -54,6 +54,16 @@ pub enum StopReason {
     CostCap,
     WallClock,
     RunnerCrash,
+    /// Surface F thrashing guard: the per-job `AutoBypassPolicy` fired
+    /// twice in a row with no `Passed` stage between, so the runtime
+    /// halts the job instead of auto-bypassing a third time. The
+    /// guidance comment thread converged on nothing in two attempts;
+    /// a third would burn more tokens for the same outcome. See
+    /// `DOCS/AUTO-BYPASS-DECISIONS.md` Q1 — two-strikes is the
+    /// canonical window size, written here as the wire-level stop
+    /// reason so the UI can render `policy thrashing` distinctly from
+    /// the other terminal causes.
+    AutoBypassThrashing,
 }
 
 /// One unit of work the user kicked off — see SCOPE.md Appendix A `jobs`.
