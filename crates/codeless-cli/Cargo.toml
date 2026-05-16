@@ -21,6 +21,7 @@ codeless-client = { path = "../codeless-client" }
 codeless-rpc = { path = "../codeless-rpc" }
 codeless-runtime = { path = "../codeless-runtime" }
 codeless-server = { path = "../codeless-server" }
+codeless-slack = { path = "../codeless-slack" }
 codeless-types = { path = "../codeless-types" }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"

@@ -28,6 +28,7 @@ BIND="${CODELESS_BIND:-127.0.0.1:7777}"
 FS_ROOT="${CODELESS_FS_ROOT:-}"
 RUNNERS="${CODELESS_RUNNERS:-claude}"   # comma list: claude,anthropic,codex,copilot
 DRIVER_CONCURRENCY="${CODELESS_DRIVER_CONCURRENCY:-4}"
+ENABLE_SLACK="${CODELESS_ENABLE_SLACK:-0}"
 
 usage() {
   cat <<EOF
@@ -48,6 +49,7 @@ env:
   CODELESS_FS_ROOT        default: <added repo's local_path>, or unset
   CODELESS_RUNNERS        default: claude  (comma list: claude,anthropic,codex,copilot)
   CODELESS_DRIVER_CONCURRENCY  default: 4
+  CODELESS_ENABLE_SLACK   set to 1 to pass --enable-slack
 EOF
 }
 
@@ -77,6 +79,9 @@ build_serve_args() {
       *) echo "unknown runner: $r (allowed: claude,anthropic,codex,copilot,mock)" >&2; exit 2 ;;
     esac
   done
+  if [[ "$ENABLE_SLACK" == "1" ]]; then
+    args+=(--enable-slack)
+  fi
   printf '%s\n' "${args[@]}"
 }
 
