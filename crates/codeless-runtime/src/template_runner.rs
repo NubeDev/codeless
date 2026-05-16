@@ -62,7 +62,7 @@ use crate::diff_verify::{
     fail_reason as diff_verify_fail_reason, verify_handover, DiffVerifyOutcome,
 };
 use crate::handover::handover_path;
-use crate::review_gate::{parse_review_verdict, ReviewVerdict, VerdictParseError};
+use crate::review_gate::{parse_review_verdict_lenient, ReviewVerdict, VerdictParseError};
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
 use crate::scope_patch_emit::{emit_from_handover, EmitOutcome};
 use crate::store::SqliteStore;
@@ -219,13 +219,23 @@ impl Runner for TemplateRunner {
                     let mut map: std::collections::HashMap<u32, StageId> =
                         std::collections::HashMap::new();
                     for s in rows {
-                        if matches!(s.stage.status, StageStatus::Passed) {
+                        // Passed stages are skipped (success short-
+                        // circuit). Failed-but-bypassed stages are
+                        // ALSO skipped — the operator advanced past
+                        // them via resume_job's bypass_failing_stage,
+                        // so a re-run would either repeat the same
+                        // failure or invent a different one. Bypass
+                        // is the forward-advance signal; status stays
+                        // Failed for audit.
+                        let skip_eligible = matches!(s.stage.status, StageStatus::Passed)
+                            || s.stage.bypassed_at.is_some();
+                        if skip_eligible {
                             // Last write wins; list_stages_for_job
                             // returns ORDER BY ordinal so multiple
                             // attempts at the same ordinal arrive in
-                            // insertion order. The latest passed row
-                            // is the one whose handover the next
-                            // REVIEW gate should read.
+                            // insertion order. The latest skip-
+                            // eligible row is the one whose handover
+                            // the next REVIEW gate should read.
                             map.insert(s.stage.ordinal, s.stage.id);
                         }
                     }
@@ -943,7 +953,22 @@ async fn evaluate_review_gate(
     let body = tokio::fs::read_to_string(&path)
         .await
         .map_err(|err| format!("read handover {}: {err}", path.display()))?;
-    parse_review_verdict(&body).map_err(|err: VerdictParseError| err.to_string())
+    // Lenient parse: a missing sentinel on a substantive handover
+    // (real Done + Next) implicit-PASSes. A model can still
+    // explicitly FAIL, and a genuinely empty handover still halts.
+    parse_review_verdict_lenient(&body)
+        .map(|(verdict, lenient_reason)| {
+            if let Some(reason) = lenient_reason {
+                tracing::warn!(
+                    %job_id,
+                    %stage_id,
+                    %reason,
+                    "review gate accepted handover via lenient parser; agent forgot the sentinel grammar",
+                );
+            }
+            verdict
+        })
+        .map_err(|err: VerdictParseError| err.to_string())
 }
 
 async fn publish(ctx: &RunnerContext, stage_id: StageId, task_id: TaskId, event: Event) {
@@ -1073,23 +1098,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evaluate_review_gate_missing_sentinel_is_error() {
+    async fn evaluate_review_gate_missing_sentinel_on_substantive_handover_is_lenient_pass() {
+        // The lenient parser was added because production-realistic
+        // agents forget the sentinel grammar but still do the work.
+        // A handover with real Done + Next content now PASSes
+        // implicitly; the gate's audit log records the lenient
+        // reason via tracing::warn (asserted indirectly via the
+        // verdict shape).
         use codeless_types::{Handover, JobId};
         let tmp = tempfile::tempdir().unwrap();
         let job_id = JobId::new();
         let stage_id = StageId::new();
         let h = Handover {
             done: vec!["forgot the sentinel".into()],
-            next: vec!["nothing".into()],
+            next: vec!["next step".into()],
             ..Default::default()
         };
         crate::handover::write_handover(tmp.path(), job_id, stage_id, &h)
             .await
             .unwrap();
 
+        let verdict = evaluate_review_gate(Some(tmp.path()), job_id, stage_id)
+            .await
+            .expect("lenient parser implicit-PASSes a substantive handover");
+        match verdict {
+            ReviewVerdict::Pass { reason } => assert!(
+                reason.contains("implicit"),
+                "implicit reason expected, got: {reason}"
+            ),
+            other => panic!("expected lenient Pass, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn evaluate_review_gate_empty_handover_still_fails() {
+        // The lenient parser only PASSes when Done AND Next have
+        // substance. A handover with placeholder bullets ("(none)")
+        // is the "model died mid-stream" failure mode; the gate
+        // must still halt. Bypass the runtime's write-time
+        // validator (which refuses empty Done/Next) by writing the
+        // markdown directly — the on-disk shape is what the parser
+        // sees, and a model that emitted only placeholders is the
+        // case under test.
+        use codeless_types::JobId;
+        let tmp = tempfile::tempdir().unwrap();
+        let job_id = JobId::new();
+        let stage_id = StageId::new();
+        let path = crate::handover::handover_path(tmp.path(), job_id, stage_id);
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &path,
+            "## Done\n\n- (none)\n\n## Next\n\n- (none)\n\n## What you need to know\n\n- (none)\n\n## Open questions\n\n- (none)\n",
+        )
+        .await
+        .unwrap();
+
         let err = evaluate_review_gate(Some(tmp.path()), job_id, stage_id)
             .await
-            .expect_err("missing sentinel is an error");
+            .expect_err("genuinely empty handover is an error");
         assert!(err.contains("did not contain"), "unexpected error: {err}");
     }
 

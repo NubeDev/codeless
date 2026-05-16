@@ -286,6 +286,27 @@ impl SqliteStore {
         Ok(res.rows_affected() > 0)
     }
 
+    /// Mark a stage as bypassed: set `bypassed_at` and
+    /// `bypassed_reason` without touching `status`. The bypass is the
+    /// forward-advance signal for `TemplateRunner` on the next resume;
+    /// the stage row stays `Failed` so the audit trail is honest.
+    /// Returns `true` when the row exists.
+    pub async fn mark_stage_bypassed(
+        &self,
+        id: codeless_types::StageId,
+        bypassed_at: codeless_types::UnixMillis,
+        reason: &str,
+    ) -> sqlx::Result<bool> {
+        let res =
+            sqlx::query("UPDATE stages SET bypassed_at = ?, bypassed_reason = ? WHERE id = ?")
+                .bind(bypassed_at.0)
+                .bind(reason)
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Bump `last_activity_at` on a stage. Used by the idle sweeper +
     /// the resume-resolution path to record interactive activity on the
     /// stage's warm session. Returns `true` when the row exists.
@@ -452,6 +473,7 @@ impl SqliteStore {
             "SELECT s.id, s.ordinal, s.name, s.status, s.verify_cmd, \
                     s.started_at, s.ended_at, s.session_id, s.goal, s.acceptance, \
                     s.last_activity_at, s.archived, s.persona_id, \
+                    s.bypassed_at, s.bypassed_reason, \
                     COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
                     COUNT(t.id) AS task_count \
              FROM stages s \
@@ -498,6 +520,10 @@ impl SqliteStore {
                             .map(codeless_types::UnixMillis),
                         archived: row.try_get::<i64, _>("archived")? != 0,
                         persona_id: row.try_get("persona_id")?,
+                        bypassed_at: row
+                            .try_get::<Option<i64>, _>("bypassed_at")?
+                            .map(codeless_types::UnixMillis),
+                        bypassed_reason: row.try_get("bypassed_reason")?,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,
@@ -516,7 +542,8 @@ impl SqliteStore {
         let row = sqlx::query(
             "SELECT id, job_id, ordinal, name, status, verify_cmd, \
                     started_at, ended_at, session_id, goal, acceptance, \
-                    last_activity_at, archived, persona_id \
+                    last_activity_at, archived, persona_id, \
+                    bypassed_at, bypassed_reason \
              FROM stages WHERE id = ?",
         )
         .bind(id.to_string())
@@ -549,6 +576,10 @@ impl SqliteStore {
                 .map(codeless_types::UnixMillis),
             archived: row.try_get::<i64, _>("archived")? != 0,
             persona_id: row.try_get("persona_id")?,
+            bypassed_at: row
+                .try_get::<Option<i64>, _>("bypassed_at")?
+                .map(codeless_types::UnixMillis),
+            bypassed_reason: row.try_get("bypassed_reason")?,
         }))
     }
 

@@ -12,7 +12,7 @@ use codeless_rpc::{
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantMessageRole, CostCents,
-    Event, Job, JobId, JobStatus, StopReason,
+    Event, Job, JobId, JobStatus, StageStatus, StopReason,
 };
 use sqlx::Row;
 
@@ -198,6 +198,40 @@ pub(super) async fn resume_job(rpc: &InProcessRpc, args: ResumeJobArgs) -> RpcRe
         )));
     }
     resync_template_from_disk(rpc, &mut job).await?;
+    // Bypass-on-resume: when the caller set `bypass_failing_stage`,
+    // find the most recently failed stage on this job and stamp its
+    // `bypassed_at` so the next run of `TemplateRunner` advances past
+    // it. The status column stays `Failed` so history is honest.
+    if args.bypass_failing_stage {
+        let stages = rpc
+            .store
+            .list_stages_for_job(job.id)
+            .await
+            .map_err(super::db_err)?;
+        let target = stages
+            .iter()
+            .filter(|s| matches!(s.stage.status, StageStatus::Failed))
+            .filter(|s| s.stage.bypassed_at.is_none())
+            .max_by_key(|s| s.stage.ordinal);
+        if let Some(s) = target {
+            let now = crate::time::now_ms();
+            rpc.store
+                .mark_stage_bypassed(s.stage.id, now, "operator bypass via resume_job")
+                .await
+                .map_err(super::db_err)?;
+            tracing::info!(
+                job_id = %job.id,
+                stage_id = %s.stage.id,
+                ordinal = s.stage.ordinal,
+                "resume_job: bypassed failed stage at operator request",
+            );
+        } else {
+            tracing::warn!(
+                job_id = %job.id,
+                "resume_job: bypass_failing_stage set but no Failed stage without an existing bypass found; resume proceeds without bypass",
+            );
+        }
+    }
     crate::state_machine::transition_job(job.status, JobStatus::Queued).map_err(|e| {
         RpcError::Conflict(format!(
             "illegal job transition from {:?} to Queued: {e}",

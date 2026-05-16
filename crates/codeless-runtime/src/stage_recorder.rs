@@ -95,6 +95,11 @@ async fn handle_event(
                     // the stage inherits the job-level persona; the
                     // archive handover encodes that as `<inherited>`.
                     persona_id: persona_id.clone(),
+                    // Bypass is set later via mark_stage_bypassed
+                    // when resume_job's bypass_failing_stage arg is
+                    // used; a fresh stage row never starts bypassed.
+                    bypassed_at: None,
+                    bypassed_reason: None,
                 })
                 .await?;
         }

@@ -77,4 +77,19 @@ pub struct Stage {
     /// the template or the persona row.
     #[serde(default)]
     pub persona_id: Option<String>,
+    /// Wall-clock millis the operator (or a future auto-bypass
+    /// policy) marked this stage as bypassed. `None` is the
+    /// common case; `Some(_)` together with `status: Failed`
+    /// means "advance past this stage on the next run." The
+    /// status column stays `Failed` so the audit trail keeps
+    /// the original outcome; the bypass timestamp is the
+    /// forward-advance signal.
+    #[serde(default)]
+    pub bypassed_at: Option<UnixMillis>,
+    /// Operator (or policy) reason for the bypass. Free-text;
+    /// rendered in the run log + the UI gate panel so the audit
+    /// trail names *why* the bypass happened. `None` when
+    /// `bypassed_at` is also `None`.
+    #[serde(default)]
+    pub bypassed_reason: Option<String>,
 }

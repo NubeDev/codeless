@@ -69,6 +69,7 @@ async fn resume_job_requeues_stopped_in_place() {
             job_id: job.id,
             additional_cost_cap_cents: None,
             additional_wall_clock_cap_ms: None,
+            bypass_failing_stage: false,
         })
         .await
         .unwrap();
@@ -94,6 +95,7 @@ async fn resume_job_applies_cap_bumps_additively() {
             job_id: job.id,
             additional_cost_cap_cents: Some(1500),
             additional_wall_clock_cap_ms: Some(30_000),
+            bypass_failing_stage: false,
         })
         .await
         .unwrap();
@@ -128,6 +130,7 @@ async fn resume_job_emits_job_resumed_with_previous_reason() {
         job_id: job.id,
         additional_cost_cap_cents: None,
         additional_wall_clock_cap_ms: None,
+        bypass_failing_stage: false,
     })
     .await
     .unwrap();
@@ -170,6 +173,7 @@ async fn resume_job_rejects_non_terminal_states() {
             job_id: job.id,
             additional_cost_cap_cents: None,
             additional_wall_clock_cap_ms: None,
+            bypass_failing_stage: false,
         })
         .await
         .unwrap_err();
@@ -192,6 +196,7 @@ async fn resume_job_works_on_failed_jobs_too() {
             job_id: job.id,
             additional_cost_cap_cents: None,
             additional_wall_clock_cap_ms: None,
+            bypass_failing_stage: false,
         })
         .await
         .unwrap();

@@ -61,6 +61,8 @@ async fn ai_message_complete_accumulates_cost_on_task_and_job() {
         last_activity_at: None,
         archived: false,
         persona_id: None,
+        bypassed_at: None,
+        bypassed_reason: None,
     };
     store.insert_stage(&stage).await.unwrap();
     let task = Task {

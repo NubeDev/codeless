@@ -137,6 +137,8 @@ async fn cost_cap_pauses_when_stage_has_captured_session() {
         last_activity_at: None,
         archived: false,
         persona_id: None,
+        bypassed_at: None,
+        bypassed_reason: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
 

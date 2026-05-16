@@ -913,6 +913,7 @@ async fn dispatch_action(
                     job_id: *job_id,
                     additional_cost_cap_cents: None,
                     additional_wall_clock_cap_ms: None,
+                    bypass_failing_stage: false,
                 })
                 .await?;
             Ok((

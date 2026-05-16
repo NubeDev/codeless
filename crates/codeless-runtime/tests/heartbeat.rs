@@ -75,6 +75,8 @@ async fn fresh_stage(rpc: &InProcessRpc, job_id: JobId) -> StageId {
         last_activity_at: None,
         archived: false,
         persona_id: None,
+        bypassed_at: None,
+        bypassed_reason: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
     stage.id

@@ -54,6 +54,106 @@ impl std::fmt::Display for VerdictParseError {
 
 impl std::error::Error for VerdictParseError {}
 
+/// Reason a lenient parse produced an implicit PASS. Carried through
+/// to the runtime so the log + handover audit can show *why* a
+/// handover with no sentinel was accepted (rather than silently
+/// erasing the protocol violation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LenientPassReason {
+    /// Handover has a non-empty `Done` and a non-empty `Next`. The
+    /// model did the review work but forgot the sentinel grammar.
+    /// Treated as PASS; the implicit reason cites the stage having
+    /// substance.
+    SubstantiveHandover,
+}
+
+impl std::fmt::Display for LenientPassReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LenientPassReason::SubstantiveHandover => f.write_str(
+                "REVIEW handover had no `PASS:` / `FAIL:` sentinel but the Done and Next sections \
+                 carry substance; treating as implicit PASS",
+            ),
+        }
+    }
+}
+
+/// Lenient verdict parser. Tries the strict path first; if the
+/// strict parser returns `Missing` AND the handover body has
+/// substance (the four canonical sections render *some* content,
+/// not just placeholders), returns an implicit PASS with the
+/// lenient reason. Any other strict-parser outcome (Multiple,
+/// or a real Pass/Fail) is propagated unchanged.
+///
+/// The contract: a `PASS:` / `FAIL:` line is the *preferred* form
+/// and remains the only way to deliberately FAIL the gate. A
+/// missing sentinel on a substantive handover is the production-
+/// realistic failure mode (model forgot the grammar but did the
+/// work); treating that as PASS keeps the loop moving without
+/// loosening the "model can explicitly FAIL" contract. A
+/// genuinely empty handover (Done empty, Next empty) still falls
+/// through to `Missing` and the gate fails — the model has to do
+/// *something*.
+pub fn parse_review_verdict_lenient(
+    body: &str,
+) -> Result<(ReviewVerdict, Option<LenientPassReason>), VerdictParseError> {
+    match parse_review_verdict(body) {
+        Ok(v) => Ok((v, None)),
+        Err(VerdictParseError::Missing) => {
+            if handover_has_substance(body) {
+                let reason = LenientPassReason::SubstantiveHandover;
+                let verdict = ReviewVerdict::Pass {
+                    reason: format!("implicit (lenient): {reason}"),
+                };
+                Ok((verdict, Some(reason)))
+            } else {
+                Err(VerdictParseError::Missing)
+            }
+        }
+        Err(VerdictParseError::Multiple) => Err(VerdictParseError::Multiple),
+    }
+}
+
+/// True when the handover body has non-placeholder content in the
+/// `Done` AND `Next` sections. The check is intentionally cheap
+/// (string scan, no full markdown parse) because the strict
+/// parser already confirmed the body did not name a verdict; this
+/// is the "did the model do anything?" sanity check.
+fn handover_has_substance(body: &str) -> bool {
+    let mut current_section: Option<&str> = None;
+    let mut done_has_content = false;
+    let mut next_has_content = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("##") {
+            let heading = rest.trim_start_matches('#').trim().to_ascii_lowercase();
+            current_section = match heading.as_str() {
+                "done" => Some("done"),
+                "next" => Some("next"),
+                _ => None,
+            };
+            continue;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        let bullet_body = trimmed
+            .trim_start_matches('-')
+            .trim_start_matches('*')
+            .trim_start_matches('+')
+            .trim();
+        if bullet_body.is_empty() || bullet_body == "(none)" {
+            continue;
+        }
+        match current_section {
+            Some("done") => done_has_content = true,
+            Some("next") => next_has_content = true,
+            _ => {}
+        }
+    }
+    done_has_content && next_has_content
+}
+
 /// Parse a single `PASS:` or `FAIL:` verdict from a handover body.
 ///
 /// The sentinel is a line whose first non-whitespace content is
@@ -228,6 +328,88 @@ mod tests {
             ReviewVerdict::Pass {
                 reason: String::new()
             }
+        );
+    }
+
+    #[test]
+    fn lenient_substantive_handover_passes_implicitly() {
+        // Production-realistic shape: the model wrote a complete
+        // handover with real Done and Next sections but forgot to
+        // emit the sentinel grammar. The strict parser returns
+        // Missing; the lenient parser returns an implicit PASS with
+        // a structured reason.
+        let body = "## Done\n\n\
+                    - Reviewed the runtime branch and verified R1.\n\
+                    - Verified wire-format additivity.\n\n\
+                    ## Next\n\n\
+                    - Stage 8 picks up the live smoke-test.\n\n\
+                    ## What you need to know\n\n\
+                    - notes\n\n\
+                    ## Open questions\n\n\
+                    - (none)\n";
+        let (verdict, reason) = parse_review_verdict_lenient(body).unwrap();
+        assert!(matches!(verdict, ReviewVerdict::Pass { .. }));
+        assert_eq!(reason, Some(LenientPassReason::SubstantiveHandover));
+    }
+
+    #[test]
+    fn lenient_keeps_explicit_pass_untouched() {
+        let body = "## Done\n\n- did work\n\nPASS: gate held\n";
+        let (verdict, reason) = parse_review_verdict_lenient(body).unwrap();
+        assert_eq!(
+            verdict,
+            ReviewVerdict::Pass {
+                reason: "gate held".to_string()
+            }
+        );
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn lenient_keeps_explicit_fail_untouched() {
+        // The contract: the model can deliberately FAIL the gate. The
+        // lenient parser must NOT loosen FAIL into PASS just because
+        // the handover has substance.
+        let body = "## Done\n\n- found a real bug\n\n\
+                    ## Next\n\n- halt and fix\n\nFAIL: real bug\n";
+        let (verdict, _reason) = parse_review_verdict_lenient(body).unwrap();
+        assert!(matches!(verdict, ReviewVerdict::Fail { .. }));
+    }
+
+    #[test]
+    fn lenient_keeps_multiple_error() {
+        // Multiple sentinels of different kinds is still a real
+        // ambiguity. The lenient parser propagates it; the gate
+        // still has to halt.
+        let body = "PASS: yes\nFAIL: no\n";
+        assert_eq!(
+            parse_review_verdict_lenient(body),
+            Err(VerdictParseError::Multiple)
+        );
+    }
+
+    #[test]
+    fn lenient_rejects_empty_handover() {
+        // Genuinely empty Done + Next is the model writing nothing.
+        // The lenient parser falls through to Missing so the gate
+        // halts. Otherwise a model that died mid-stream would
+        // accidentally pass.
+        let body = "## Done\n\n- (none)\n\n## Next\n\n- (none)\n";
+        assert_eq!(
+            parse_review_verdict_lenient(body),
+            Err(VerdictParseError::Missing)
+        );
+    }
+
+    #[test]
+    fn lenient_rejects_done_only_no_next() {
+        // The model wrote Done but skipped Next entirely. That's a
+        // half-finished handover; the lenient parser refuses to
+        // implicit-PASS it.
+        let body = "## Done\n\n- did stuff\n\n## Next\n\n- (none)\n";
+        assert_eq!(
+            parse_review_verdict_lenient(body),
+            Err(VerdictParseError::Missing)
         );
     }
 }

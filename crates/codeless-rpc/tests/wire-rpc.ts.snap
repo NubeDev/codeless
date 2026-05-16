@@ -1243,6 +1243,23 @@ export type Stage = {
 	 *  the template or the persona row.
 	 */
 	persona_id?: string | null,
+	/**
+	 *  Wall-clock millis the operator (or a future auto-bypass
+	 *  policy) marked this stage as bypassed. `None` is the
+	 *  common case; `Some(_)` together with `status: Failed`
+	 *  means "advance past this stage on the next run." The
+	 *  status column stays `Failed` so the audit trail keeps
+	 *  the original outcome; the bypass timestamp is the
+	 *  forward-advance signal.
+	 */
+	bypassed_at?: UnixMillis | null,
+	/**
+	 *  Operator (or policy) reason for the bypass. Free-text;
+	 *  rendered in the run log + the UI gate panel so the audit
+	 *  trail names *why* the bypass happened. `None` when
+	 *  `bypassed_at` is also `None`.
+	 */
+	bypassed_reason?: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.

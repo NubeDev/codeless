@@ -392,6 +392,8 @@ mod tests {
             last_activity_at: Some(UnixMillis(last_activity_ms)),
             archived: false,
             persona_id: None,
+            bypassed_at: None,
+            bypassed_reason: None,
         }
     }
 

@@ -123,6 +123,15 @@ pub struct ResumeJobArgs {
     pub additional_cost_cap_cents: Option<i64>,
     #[serde(default)]
     pub additional_wall_clock_cap_ms: Option<i64>,
+    /// Bypass the most recently failed stage on resume. When `true`,
+    /// the runtime marks that stage's `bypassed_at` so the
+    /// skip-passed-or-bypassed branch in `TemplateRunner` advances
+    /// past it instead of re-running. The stage row stays
+    /// `Failed` in the database; the bypass is a *forward* advance,
+    /// not a rewrite of history. Defaults to `false` so callers
+    /// that did not set it keep the existing retry semantics.
+    #[serde(default)]
+    pub bypass_failing_stage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]

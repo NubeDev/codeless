@@ -156,6 +156,7 @@ async fn paused_job_is_resumable() {
             job_id: job.id,
             additional_cost_cap_cents: None,
             additional_wall_clock_cap_ms: None,
+            bypass_failing_stage: false,
         })
         .await
         .unwrap();
