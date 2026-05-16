@@ -25,6 +25,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+pub mod annotations;
 pub mod probes;
 
 /// A file slice handed to every probe. The runner reads the file once

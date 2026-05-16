@@ -78,6 +78,7 @@ Anything touching `codeless/ui/` should read both first.
 ## Hard rules — trip one and the loop halts
 
 ### R1 — Crate dependency direction is enforceable
+<!-- enforced_by: crates/codeless-predicates/src/probes/process_spawn.rs -->
 
 The iOS-safe / Android-safe columns in
 [`../DOCS/SCOPE.md`](../DOCS/SCOPE.md#crate-layout-load-bearing-not-aspirational)
@@ -96,6 +97,8 @@ define which crates may reach which other crates. The mobile shell
   asymmetry is the whole point of the layering.
 
 ### R2 — Comments explain *why*, never *what*
+<!-- enforced_by: crates/codeless-predicates/src/probes/no_emojis.rs -->
+<!-- enforced_by: crates/codeless-predicates/src/probes/no_task_status.rs -->
 
 Comments are how the next AI agent and the next human understand
 intent. The code already says what it does.

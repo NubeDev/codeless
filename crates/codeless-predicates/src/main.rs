@@ -17,18 +17,27 @@
 
 use std::env;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use codeless_predicates::annotations::{scan_rule_files, DEFAULT_RULE_FILES};
 use codeless_predicates::{read_changed, run_all};
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let mut worktree: Option<PathBuf> = None;
+    let mut validate_annotations = false;
+    let mut root: Option<PathBuf> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--worktree" => {
                 worktree = args.next().map(PathBuf::from);
+            }
+            "--validate-annotations" => {
+                validate_annotations = true;
+            }
+            "--root" => {
+                root = args.next().map(PathBuf::from);
             }
             "-h" | "--help" => {
                 print_help();
@@ -40,6 +49,10 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         }
+    }
+
+    if validate_annotations {
+        return run_validate_annotations(root.as_deref());
     }
 
     let Some(worktree) = worktree else {
@@ -90,17 +103,58 @@ fn read_paths_stdin() -> io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+fn run_validate_annotations(root: Option<&Path>) -> ExitCode {
+    let root = match root {
+        Some(p) => p.to_path_buf(),
+        None => match env::current_dir() {
+            Ok(p) => p,
+            Err(err) => {
+                eprintln!("codeless-predicates: failed to read current dir: {err}");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let files: Vec<&Path> = DEFAULT_RULE_FILES.iter().map(Path::new).collect();
+    let broken = match scan_rule_files(&root, &files) {
+        Ok(b) => b,
+        Err(err) => {
+            eprintln!(
+                "codeless-predicates: failed to scan rule files under {}: {err}",
+                root.display()
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    for b in &broken {
+        let _ = writeln!(out, "{}", b.render());
+    }
+    if broken.is_empty() {
+        ExitCode::from(0)
+    } else {
+        ExitCode::from(1)
+    }
+}
+
 fn print_help() {
     eprintln!(
         "codeless-predicates --worktree <PATH>\n\
+         codeless-predicates --validate-annotations [--root <PATH>]\n\
          \n\
-         Reads newline-delimited changed paths from stdin (relative to\n\
-         <PATH>) and runs every checked-in predicate against the\n\
-         current file contents.\n\
+         Default form: reads newline-delimited changed paths from stdin\n\
+         (relative to <PATH>) and runs every checked-in predicate against\n\
+         the current file contents.\n\
+         \n\
+         --validate-annotations: scans the workspace rule files for\n\
+         `<!-- enforced_by: PATH -->` comments and verifies each cited\n\
+         path resolves to a file under --root (defaulting to the current\n\
+         directory). Catches a predicate being renamed without the rule\n\
+         being updated.\n\
          \n\
          Exit codes:\n\
-           0  no violations\n\
-           1  at least one rule was violated\n\
+           0  no violations / no broken annotations\n\
+           1  at least one rule was violated / annotation is broken\n\
            2  usage / I/O error"
     );
 }
