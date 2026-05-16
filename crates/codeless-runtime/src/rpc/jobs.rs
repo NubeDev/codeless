@@ -199,11 +199,11 @@ pub(super) async fn resume_job(rpc: &InProcessRpc, args: ResumeJobArgs) -> RpcRe
         )));
     }
     resync_template_from_disk(rpc, &mut job).await?;
-    // Bypass-on-resume: when the caller set `bypass_failing_stage`,
-    // find the most recently failed stage on this job and stamp its
-    // `bypassed_at` so the next run of `TemplateRunner` advances past
-    // it. The status column stays `Failed` so history is honest.
-    if args.bypass_failing_stage {
+    // Bypass-on-resume: when the caller set `bypass`, find the most
+    // recently failed stage on this job and stamp its `bypassed_at`
+    // so the next run of `TemplateRunner` advances past it. The
+    // status column stays `Failed` so history is honest.
+    if args.bypass {
         let stages = rpc
             .store
             .list_stages_for_job(job.id)
@@ -229,7 +229,23 @@ pub(super) async fn resume_job(rpc: &InProcessRpc, args: ResumeJobArgs) -> RpcRe
         } else {
             tracing::warn!(
                 job_id = %job.id,
-                "resume_job: bypass_failing_stage set but no Failed stage without an existing bypass found; resume proceeds without bypass",
+                "resume_job: bypass set but no Failed stage without an existing bypass found; resume proceeds without bypass",
+            );
+        }
+    }
+    // `next_stage_comment` rides into the runner via the
+    // `TemplateRunner::pending_operator_comment` builder; the
+    // factory-side persistence channel that hands the comment to the
+    // runner factory on dispatch lands in a later stage of the Slack
+    // integration. For now, log the receipt so a misconfigured
+    // operator path is visible in `journalctl` without the comment
+    // silently dropping on the floor.
+    if let Some(comment) = args.next_stage_comment.as_deref() {
+        if !comment.is_empty() {
+            tracing::info!(
+                job_id = %job.id,
+                comment_len = comment.len(),
+                "resume_job: next_stage_comment received; runner-side wiring lands in a later stage of the Slack integration",
             );
         }
     }
@@ -270,6 +286,14 @@ pub(super) async fn resume_job(rpc: &InProcessRpc, args: ResumeJobArgs) -> RpcRe
             Event::JobResumed {
                 job_id: job.id,
                 previous_reason,
+                // The actor that initiated the resume is set by the
+                // calling surface (e.g. the Slack adapter sets
+                // `"slack"`). The base RPC has no surface context so
+                // it publishes `None` here; richer call sites layer
+                // their own envelope through a future
+                // `ResumeJobArgs.actor` field or a server-side
+                // middleware.
+                actor: None,
             },
             now_ms(),
         )

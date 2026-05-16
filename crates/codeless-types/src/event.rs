@@ -90,6 +90,16 @@ pub enum Event {
         /// the RPC enforces it).
         #[serde(default)]
         previous_reason: Option<StopReason>,
+        /// Free-text identifier for the surface that initiated the
+        /// resume. The first consumer is the Slack control plane,
+        /// which sets this to `"slack"` (vs. `"operator"` for direct
+        /// UI/CLI/RPC, `"assistant"` for the assistant-tool path,
+        /// etc.) so audit and dashboard surfaces can distinguish a
+        /// phone-driven resume from a keyboard-driven one. `None`
+        /// preserves the historical event shape; older replayed
+        /// events deserialize unchanged.
+        #[serde(default)]
+        actor: Option<String>,
     },
 
     /// `reset_job` returned a stuck job (`Queued` whose driver kept
