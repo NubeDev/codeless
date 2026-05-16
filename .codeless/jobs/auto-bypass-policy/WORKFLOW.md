@@ -23,17 +23,14 @@ The stages are intentionally ordered:
   policy change but the badge can render against the
   submit-time field alone.
 - Stage 11 (timeline render) is the smallest UI stage.
-- Stage 12 (Slack hook) is intentionally stub-shaped — the
-  Slack integration job picks up from there.
-- Stage 13 is the final REVIEW gate.
+- Stage 12 is the final REVIEW gate.
 
 ## Per-stage discipline
 
 Each stage:
 
 1. Re-reads `SCOPE.md`, this `WORKFLOW.md`, and the relevant
-   section of the SCOPE-MUTABLE-UI / SCOPE-SLACK-INTEGRATION
-   docs before writing code.
+   section of SCOPE-MUTABLE-UI.md before writing code.
 2. Re-reads `DOCS/AUTO-BYPASS-DECISIONS.md` (after stage 0
    creates it) before making any decision the doc punted on.
 3. Lands code + tests in the same commit. Unit tests per
@@ -139,5 +136,4 @@ threaded) before the UI surfaces ship on top.
 | 9 JobPage policy badge | L2 | JobPage header component |
 | 10 set_job_policy RPC | L1 | codeless-runtime::rpc::jobs |
 | 11 timeline auto-bypassed render | L2 | timeline component |
-| 12 Slack policy command stub | L1 | codeless-slack (stub if crate doesn't exist yet) |
-| 13 REVIEW final | — | walk Step 7 stopping point, R1-R5 unchanged, all green |
+| 12 REVIEW final | — | walk Step 7 stopping point, R1-R5 unchanged, all green |
