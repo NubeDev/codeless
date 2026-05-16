@@ -236,6 +236,36 @@ function AssistantBubble({
 
 function EventRow({ env }: { env: EventEnvelope }) {
   const time = new Date(env.created_at).toLocaleTimeString();
+  const e = env.event;
+  // Auto-bypass gets a custom row so the down-arrow-with-check glyph
+  // (not the verify-failed red `!`) is the load-bearing signal that
+  // this failure was *pre-authorised* by the job's policy, not an
+  // operator click. The policy name + canned guidance live in the
+  // hover so the timeline stays one line per event.
+  if (e.type === "stage-auto-bypassed") {
+    const tip = `${e.policy_name}: ${e.comment_used}`;
+    return (
+      <li className="border-border/30 border-l pl-2" title={tip}>
+        <div className="flex items-baseline gap-2">
+          <span className="text-muted-foreground font-mono text-[10px]">
+            {time}
+          </span>
+          <span
+            className="font-mono text-[12px] text-emerald-600 dark:text-emerald-400"
+            aria-label="auto-bypassed"
+          >
+            ↓✓
+          </span>
+          <span className="font-mono text-[11px] font-medium">
+            auto-bypassed
+          </span>
+          <span className="text-muted-foreground text-[11px]">
+            by policy: {e.policy_name}
+          </span>
+        </div>
+      </li>
+    );
+  }
   return (
     <li className="border-border/30 border-l pl-2">
       <div className="flex items-baseline gap-2">

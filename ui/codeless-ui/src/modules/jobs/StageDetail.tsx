@@ -15,7 +15,7 @@ import {
   type StageRollup,
 } from "@/lib/rpc";
 
-import { ReviewGatePanel } from "./ReviewGatePanel";
+import { ReviewGatePanel, type AutoBypassSummary } from "./ReviewGatePanel";
 import { StageChat } from "./StageChat";
 
 // ------------------------------------------------------------------ types
@@ -55,6 +55,12 @@ interface StageState {
   // (or for non-REVIEW stages, which never emit either).
   precheck: PreCheckOutcome | null;
   verdict: ReviewVerdict | null;
+  // Most recent `StageAutoBypassed` for this stage, when the job's
+  // policy turned a stage failure into a pre-authorised bypass
+  // (Surface F). Carries the policy name + canned guidance so the
+  // gate panel can render the AUTO-BYPASSED badge without re-resolving
+  // the policy. Null on stages the policy never fired against.
+  autoBypass: AutoBypassSummary | null;
   // Set of patch ids the runtime has emitted a `ScopePatchProposed`
   // event for on this stage. Stored as a set so SSE replays after a
   // reconnect cannot double-count the same proposal.
@@ -252,6 +258,15 @@ function applyEvent(state: StageState, env: EventEnvelope): StageState {
     case "review-verdict":
       return { ...state, verdict: e.verdict };
 
+    case "stage-auto-bypassed":
+      return {
+        ...state,
+        autoBypass: {
+          policyName: e.policy_name,
+          commentUsed: e.comment_used,
+        },
+      };
+
     case "scope-patch-proposed": {
       // Dedup on patch_id so an SSE replay cannot inflate the count.
       // The `Set` is cloned (not mutated) so React notices the change.
@@ -333,6 +348,7 @@ export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) 
     children: [],
     precheck: null,
     verdict: null,
+    autoBypass: null,
     patchIds: new Set<ScopePatchId>(),
   });
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -352,6 +368,7 @@ export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) 
       children: [],
       precheck: null,
       verdict: null,
+      autoBypass: null,
       patchIds: new Set<ScopePatchId>(),
     });
     setFetchError(null);
@@ -439,7 +456,12 @@ export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) 
   // should always be present once `rollup` lands).
   const reviewByName = (rollup?.stage.name ?? stageName ?? "")
     .startsWith("REVIEW ");
-  const reviewByEvent = stage.precheck !== null || stage.verdict !== null;
+  // A `stage-auto-bypassed` event also lights up the gate panel so the
+  // editor sees the policy-driven recovery even on non-REVIEW stages
+  // where pre-check/verdict never fire — Surface F's audit trail
+  // belongs in the same panel as the operator-visible verdict.
+  const reviewByEvent =
+    stage.precheck !== null || stage.verdict !== null || stage.autoBypass !== null;
   const isReview = reviewByName || reviewByEvent;
 
   return (
@@ -486,6 +508,7 @@ export function StageDetail({ jobId, stageId, stageName, onChatActive }: Props) 
               <ReviewGatePanel
                 precheck={stage.precheck}
                 verdict={stage.verdict}
+                autoBypass={stage.autoBypass}
                 patchesProposed={stage.patchIds.size}
                 patchCounterEnabled={patchCounterEnabled}
               />
