@@ -17,12 +17,12 @@ use codeless_rpc::{
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
     ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
-    RpcError, RpcResult, RpcServer, Since, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    RpcError, RpcResult, RpcServer, SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review, TaskId};
 use sqlx::SqlitePool;
@@ -536,5 +536,9 @@ impl RpcServer for InProcessRpc {
         args: codeless_rpc::ListProposedPatchesArgs,
     ) -> RpcResult<codeless_rpc::ListProposedPatchesResult> {
         scope_patches::list_proposed_patches(self, args).await
+    }
+
+    async fn set_job_policy(&self, args: SetJobPolicyArgs) -> RpcResult<()> {
+        jobs::set_job_policy(self, args).await
     }
 }

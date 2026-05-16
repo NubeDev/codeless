@@ -437,6 +437,22 @@ pub enum Event {
         comment_used: String,
         applied_at: UnixMillis,
     },
+
+    /// `set_job_policy` replaced (or cleared) the job's
+    /// `auto_bypass_policy`. Emitted only when the value actually
+    /// changes — a same-policy call is a no-op success that publishes
+    /// nothing, keeping cross-window invalidation traffic bounded
+    /// (`DOCS/AUTO-BYPASS-DECISIONS.md` Q5 "Idempotency"). `policy_name`
+    /// mirrors `AutoBypassPolicy::policy_name()` (one of the five preset
+    /// labels or the literal `"Custom"`), or `None` when the policy was
+    /// cleared. Subscribers refresh their per-job badge / submit-form
+    /// state from this event without re-fetching the whole row.
+    #[serde(rename = "job-policy-changed")]
+    JobPolicyChanged {
+        job_id: JobId,
+        #[serde(default)]
+        policy_name: Option<String>,
+    },
 }
 
 /// Envelope written to the `events` table. The `cursor`, `created_at`,

@@ -38,12 +38,12 @@ pub use methods::{
     ListStagesResult, PauseJobArgs, ProposedPatchListEntry, ReadJobFileArgs, ReadJobFileResult,
     RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
     RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo, ScopePatchActionResult,
-    ScopePatchResolution, ServerFeatureFlags, ServerInfo, StageRollup, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, UserPromptSnippet, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ScopePatchResolution, ServerFeatureFlags, ServerInfo, SetJobPolicyArgs, StageRollup,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, UserPromptSnippet,
+    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 pub use server::RpcServer;
 pub use subscribe::{EventFilter, EventStream, Since};

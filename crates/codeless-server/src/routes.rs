@@ -23,8 +23,8 @@ use codeless_rpc::{
     ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
     RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
     RevertScopePatchArgs, RevertScopePatchResult, RpcError, ScopePatchActionResult, ServerInfo,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
     UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
     UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
     ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult,
@@ -130,6 +130,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/edit_scope_patch", post(edit_scope_patch))
         .route("/rpc/revert_scope_patch", post(revert_scope_patch))
         .route("/rpc/list_proposed_patches", post(list_proposed_patches))
+        .route("/rpc/set_job_policy", post(set_job_policy))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -778,5 +779,16 @@ async fn list_proposed_patches(
         .list_proposed_patches(args)
         .await
         .map(Json)
+        .map_err(map_err)
+}
+
+async fn set_job_policy(
+    State(st): State<AppState>,
+    Json(args): Json<SetJobPolicyArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .set_job_policy(args)
+        .await
+        .map(|()| Json(Value::Null))
         .map_err(map_err)
 }

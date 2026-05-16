@@ -16,13 +16,13 @@ use codeless_rpc::{
     ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
     ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs,
     RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs,
-    RevertScopePatchResult, RpcError, RpcResult, RpcServer, ScopePatchActionResult, Since,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    RevertScopePatchResult, RpcError, RpcResult, RpcServer, ScopePatchActionResult,
+    SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use futures_util::StreamExt;
@@ -502,6 +502,10 @@ impl RpcServer for HttpRpcClient {
         args: ListProposedPatchesArgs,
     ) -> RpcResult<ListProposedPatchesResult> {
         self.call("list_proposed_patches", &args).await
+    }
+
+    async fn set_job_policy(&self, args: SetJobPolicyArgs) -> RpcResult<()> {
+        self.call_void("set_job_policy", &args).await
     }
 }
 

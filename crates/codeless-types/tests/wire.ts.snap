@@ -543,7 +543,19 @@ commit_sha: string } |
  *  `stages.bypassed_at` and is the timestamp the recorder
  *  stamped on the row.
  */
-{ type: "stage-auto-bypassed"; stage_id: StageId; policy_name: string; comment_used: string; applied_at: UnixMillis };
+{ type: "stage-auto-bypassed"; stage_id: StageId; policy_name: string; comment_used: string; applied_at: UnixMillis } | 
+/**
+ *  `set_job_policy` replaced (or cleared) the job's
+ *  `auto_bypass_policy`. Emitted only when the value actually
+ *  changes — a same-policy call is a no-op success that publishes
+ *  nothing, keeping cross-window invalidation traffic bounded
+ *  (`DOCS/AUTO-BYPASS-DECISIONS.md` Q5 "Idempotency"). `policy_name`
+ *  mirrors `AutoBypassPolicy::policy_name()` (one of the five preset
+ *  labels or the literal `"Custom"`), or `None` when the policy was
+ *  cleared. Subscribers refresh their per-job badge / submit-form
+ *  state from this event without re-fetching the whole row.
+ */
+{ type: "job-policy-changed"; job_id: JobId; policy_name?: string | null };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER

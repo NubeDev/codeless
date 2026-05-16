@@ -1488,3 +1488,22 @@ pub struct ProposedPatchListEntry {
 pub struct ListProposedPatchesResult {
     pub entries: Vec<ProposedPatchListEntry>,
 }
+
+/// Argument shape for `set_job_policy`. Replaces the job's
+/// `auto_bypass_policy` column with `policy`; `None` clears it so a
+/// future stage failure halts the job rather than auto-bypassing.
+///
+/// The RPC refuses with `Conflict` while the row is `Running` or
+/// `Queued` (`DOCS/AUTO-BYPASS-DECISIONS.md` Q5) — those states race
+/// the stage-failed handler, so the operator must `pause_job` first.
+/// `Draft`, `Stopped`, and `Paused` are accepted. Setting the same
+/// policy twice is a no-op success: the second call returns `Ok(())`
+/// and emits no `JobPolicyChanged` event, which keeps cross-window
+/// invalidation traffic bounded and lets the UI call defensively.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct SetJobPolicyArgs {
+    pub job_id: JobId,
+    /// New policy, or `None` to clear the existing one.
+    #[serde(default)]
+    pub policy: Option<AutoBypassPolicy>,
+}

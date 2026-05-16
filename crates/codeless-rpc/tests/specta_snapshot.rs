@@ -24,10 +24,11 @@ use codeless_rpc::methods::{
     ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RevertScopePatchArgs,
     RevertScopePatchResult, RunnerInfo, ScopePatchActionResult, ScopePatchResolution,
-    ServerFeatureFlags, ServerInfo, StageRollup, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ServerFeatureFlags, ServerInfo, SetJobPolicyArgs, StageRollup, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_rpc::subscribe::EventFilter;
 use specta::TypeCollection;
@@ -108,7 +109,8 @@ fn collect() -> TypeCollection {
         .register_mut::<ScopePatchResolution>()
         .register_mut::<ScopePatchActionResult>()
         .register_mut::<RevertScopePatchArgs>()
-        .register_mut::<RevertScopePatchResult>();
+        .register_mut::<RevertScopePatchResult>()
+        .register_mut::<SetJobPolicyArgs>();
     types
 }
 
