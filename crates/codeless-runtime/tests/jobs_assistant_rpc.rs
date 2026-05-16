@@ -72,6 +72,7 @@ async fn fixture_with_template_job() -> (InProcessRpc, TempDir, JobId) {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: false,
         })
         .await

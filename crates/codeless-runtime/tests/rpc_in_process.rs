@@ -92,6 +92,7 @@ async fn submit_job_rejects_unknown_repo() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await;
@@ -134,6 +135,7 @@ async fn submit_job_succeeds_and_emits_queued_event() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
@@ -191,6 +193,7 @@ async fn submit_job_persists_system_prompt_on_the_job_row() {
             effort: None,
             system_prompt: Some("You are the Architect persona.".into()),
             persona_id: Some("builtin:architect".into()),
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
@@ -256,6 +259,7 @@ stages:
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: false,
         })
         .await
@@ -327,6 +331,7 @@ stages:
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: false,
         })
         .await
@@ -364,6 +369,7 @@ async fn stop_job_emits_event_and_is_idempotent_against_terminal_state() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
@@ -421,6 +427,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
@@ -446,6 +453,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
@@ -496,6 +504,7 @@ async fn since_cursor_replay_returns_events_above_cursor() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await

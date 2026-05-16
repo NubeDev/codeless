@@ -7,6 +7,7 @@ import type {
   AgentChatArgs,
   AgentChatResult,
   ApproveScopePatchArgs,
+  AutoBypassPolicy,
   CancelChatTaskArgs,
   EditScopePatchArgs,
   EventCursor,
@@ -107,6 +108,13 @@ export interface SubmitJobArgs {
    * agent posture even if the persona's body is edited later.
    * `null` means no persona was picked. */
   persona_id?: string | null;
+  /** Per-job auto-bypass policy (Surface F). `null` (default) keeps
+   * the existing halt-on-failure behaviour. A preset (`quick`,
+   * `long-term`, `cheap`, `best-judgement`, `just-code`) or a
+   * `custom` free-text comment pre-authorises the runtime to advance
+   * past a non-cap stage failure with the policy's guidance threaded
+   * into the next stage's prompt. Cap-breach failures always halt. */
+  auto_bypass_policy?: AutoBypassPolicy | null;
   /** When `false` (default) the job lands in `Draft` status — the row
    * exists, the user can edit the spec / docs / handover, but the
    * driver does not pick it up. The user calls `start_job` to promote
@@ -267,6 +275,19 @@ export interface UpdateJobArgs {
 
 export interface DeleteJobArgs {
   job_id: JobId;
+}
+
+// Mid-life policy change for Surface F. The runtime accepts the call
+// when the job is `Draft | Queued | Paused | Stopped | Failed |
+// Completed` and refuses with `Conflict` on `Running |
+// AwaitingReview` — the operator pauses, sets, resumes. `policy =
+// null` clears the policy and restores halt-on-failure. The Rust
+// counterpart lands alongside the JobPage policy-badge modal that
+// calls this; until then the UI button surfaces the conflict as an
+// inline error message.
+export interface SetJobPolicyArgs {
+  job_id: JobId;
+  auto_bypass_policy: AutoBypassPolicy | null;
 }
 
 export interface GcWorktreesArgs {
@@ -542,6 +563,7 @@ export interface RpcMethodMap {
   reset_job: { args: ResetJobArgs; result: Job };
   rerun_job: { args: RerunJobArgs; result: Job };
   update_job: { args: UpdateJobArgs; result: Job };
+  set_job_policy: { args: SetJobPolicyArgs; result: Job };
   delete_job: { args: DeleteJobArgs; result: null };
   gc_worktrees: { args: GcWorktreesArgs; result: GcWorktreesResult };
   job_diff: { args: JobDiffArgs; result: JobDiffResult };

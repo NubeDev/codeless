@@ -257,6 +257,27 @@ export type AssistantThread = {
 export type AssistantThreadId = string;
 
 /**
+ *  Per-job auto-bypass policy. When set, a stage that fails under a
+ *  non-cap reason is marked `Failed`-with-`bypassed_at` automatically,
+ *  and the policy's canned (or operator-supplied) guidance is threaded
+ *  into the next stage's prompt instead of halting the job.
+ * 
+ *  The five presets are reviewer-controlled canned guidance whose
+ *  exact comment strings live in
+ *  `codeless-runtime::auto_bypass_policy`. `Custom` carries the
+ *  operator's free-text comment verbatim — the runtime wraps it in the
+ *  same `Operator comment` envelope but does not edit the body.
+ * 
+ *  Wire form is serde-`type`-tagged: presets serialize as
+ *  `{"type":"quick"}`, custom as
+ *  `{"type":"custom","comment":"..."}`. Cap-breach failures
+ *  (`StopReason::CostCap`, `StopReason::WallClock`) ignore the policy
+ *  and halt as today — operator-set caps win over auto-bypass per
+ *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
+ */
+export type AutoBypassPolicy = { type: "quick" } | { type: "long-term" } | { type: "cheap" } | { type: "best-judgement" } | { type: "just-code" } | { type: "custom"; comment: string };
+
+/**
  *  `assistant.cancelAction`. Flip a pending action card's status to
  *  `cancelled` and do **nothing else** — no RPC is dispatched, no
  *  `Tool` message appended. The card row stays in the transcript so
@@ -706,6 +727,18 @@ export type Job = {
 	 *  server-side table; the FK lands in a later stage.
 	 */
 	persona_id: string | null,
+	/**
+	 *  Per-job auto-bypass policy. `None` (the default) preserves the
+	 *  existing behaviour: a stage failure under any non-cap reason
+	 *  halts the job and waits for operator triage. `Some(policy)`
+	 *  pre-authorises the runtime to mark the failed stage
+	 *  `Failed`-with-bypass and advance, threading the policy's
+	 *  canned (or operator-supplied) guidance into the next stage's
+	 *  prompt. Cap breaches (`CostCap`, `WallClock`) ignore the
+	 *  policy and halt regardless — see
+	 *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
+	 */
+	auto_bypass_policy: AutoBypassPolicy | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
@@ -1174,6 +1207,25 @@ export type ServerInfo = {
 	feature_flags?: ServerFeatureFlags,
 };
 
+/**
+ *  Argument shape for `set_job_policy`. Replaces the job's
+ *  `auto_bypass_policy` column with `policy`; `None` clears it so a
+ *  future stage failure halts the job rather than auto-bypassing.
+ * 
+ *  The RPC refuses with `Conflict` while the row is `Running` or
+ *  `Queued` (`DOCS/AUTO-BYPASS-DECISIONS.md` Q5) — those states race
+ *  the stage-failed handler, so the operator must `pause_job` first.
+ *  `Draft`, `Stopped`, and `Paused` are accepted. Setting the same
+ *  policy twice is a no-op success: the second call returns `Ok(())`
+ *  and emits no `JobPolicyChanged` event, which keeps cross-window
+ *  invalidation traffic bounded and lets the UI call defensively.
+ */
+export type SetJobPolicyArgs = {
+	job_id: JobId,
+	// New policy, or `None` to clear the existing one.
+	policy?: AutoBypassPolicy | null,
+};
+
 // A verify-gated chunk of a job — see SCOPE.md Appendix A `stages`.
 export type Stage = {
 	id: StageId,
@@ -1324,7 +1376,19 @@ export type StopJobArgs = {
  *  Why a job left the running set early. `None` while running or after a
  *  clean completion; populated when status is `Stopped` or `Failed`.
  */
-export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash";
+export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash" | 
+/**
+ *  Surface F thrashing guard: the per-job `AutoBypassPolicy` fired
+ *  twice in a row with no `Passed` stage between, so the runtime
+ *  halts the job instead of auto-bypassing a third time. The
+ *  guidance comment thread converged on nothing in two attempts;
+ *  a third would burn more tokens for the same outcome. See
+ *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q1 — two-strikes is the
+ *  canonical window size, written here as the wire-level stop
+ *  reason so the UI can render `policy thrashing` distinctly from
+ *  the other terminal causes.
+ */
+"auto-bypass-thrashing";
 
 export type StopReviewArgs = {
 	review_id: ReviewId,
@@ -1374,6 +1438,15 @@ export type SubmitJobArgs = {
 	 *  against a server-side persona table lands in a later stage.
 	 */
 	persona_id?: string | null,
+	/**
+	 *  Per-job auto-bypass policy (Surface F). `None` (default) keeps
+	 *  the existing halt-on-failure behaviour; `Some(...)` pre-
+	 *  authorises the runtime to advance past a failed stage under
+	 *  the chosen preset's canned guidance (or a custom comment).
+	 *  The value is persisted onto the `Job` row verbatim so a
+	 *  resume / rerun reproduces the same policy.
+	 */
+	auto_bypass_policy?: AutoBypassPolicy | null,
 	/**
 	 *  `false` (default) lands the job in `Draft` status — the row
 	 *  exists, the user can edit the spec / docs / handover, but the

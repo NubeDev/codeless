@@ -117,6 +117,7 @@ async fn submit(rpc: &InProcessRpc, repo_path: &Path) -> codeless_types::JobId {
         effort: None,
         system_prompt: None,
         persona_id: None,
+        auto_bypass_policy: None,
         start_immediately: true,
     })
     .await

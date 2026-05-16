@@ -163,6 +163,7 @@ async fn jobs_columns_match_appendix_a() {
             "workspace_mode",
             "system_prompt",
             "persona_id",
+            "auto_bypass_policy",
         ],
     );
 }

@@ -91,6 +91,7 @@ async fn fixture_with_job(
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await

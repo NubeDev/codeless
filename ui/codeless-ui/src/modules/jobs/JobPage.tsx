@@ -16,6 +16,7 @@ import { EditJobDialog } from "./EditJobDialog";
 import { CostCell, WallClockCell } from "./JobRow";
 import { CommonChat } from "../chat";
 import { PatchesTab } from "./patches";
+import { PolicyBadge } from "./PolicyBadge";
 import { SpecPane } from "./spec/SpecPane";
 import { StageDetail } from "./StageDetail";
 import { StagesOverview } from "./StagesOverview";
@@ -506,6 +507,7 @@ export function PageHeader({
         >
           {job.branch}
         </span>
+        <PolicyBadge job={job} onUpdated={refetchJob} />
         <div className="ml-auto flex items-center gap-3">
           <WallClockCell
             startedAt={job.started_at}

@@ -211,6 +211,7 @@ export class MockRpcClient implements RpcClient {
           effort: a.effort ?? null,
           system_prompt: a.system_prompt ?? null,
           persona_id: a.persona_id ?? null,
+          auto_bypass_policy: a.auto_bypass_policy ?? null,
           started_at: null,
           ended_at: null,
           created_at: now,
@@ -371,6 +372,25 @@ export class MockRpcClient implements RpcClient {
         } as RpcResultOf<M>;
       }
 
+      case "set_job_policy": {
+        // Mirror the runtime contract from
+        // DOCS/AUTO-BYPASS-DECISIONS.md Q5: Running and
+        // AwaitingReview rows reject with Conflict — the operator
+        // pauses, sets, resumes. Every other status accepts the
+        // mutation in place.
+        const a = args as RpcArgs<"set_job_policy">;
+        const job = this.jobs.find((j) => j.id === a.job_id);
+        if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
+        if (job.status === "running" || job.status === "awaiting-review") {
+          throw new RpcError(
+            "conflict",
+            `job ${a.job_id} is ${job.status}; pause the job before changing its auto-bypass policy`,
+          );
+        }
+        job.auto_bypass_policy = a.auto_bypass_policy ?? null;
+        return job as RpcResultOf<M>;
+      }
+
       case "rerun_job": {
         const a = args as RpcArgs<"rerun_job">;
         const src = this.jobs.find((j) => j.id === a.source_job_id);
@@ -395,6 +415,7 @@ export class MockRpcClient implements RpcClient {
           effort: src.effort,
           system_prompt: src.system_prompt,
           persona_id: src.persona_id,
+          auto_bypass_policy: src.auto_bypass_policy,
           started_at: null,
           ended_at: null,
           created_at: now,

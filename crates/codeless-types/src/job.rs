@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::auto_bypass::AutoBypassPolicy;
 use crate::id::{JobId, RepoId};
 use crate::money::CostCents;
 use crate::time::UnixMillis;
@@ -53,6 +54,16 @@ pub enum StopReason {
     CostCap,
     WallClock,
     RunnerCrash,
+    /// Surface F thrashing guard: the per-job `AutoBypassPolicy` fired
+    /// twice in a row with no `Passed` stage between, so the runtime
+    /// halts the job instead of auto-bypassing a third time. The
+    /// guidance comment thread converged on nothing in two attempts;
+    /// a third would burn more tokens for the same outcome. See
+    /// `DOCS/AUTO-BYPASS-DECISIONS.md` Q1 — two-strikes is the
+    /// canonical window size, written here as the wire-level stop
+    /// reason so the UI can render `policy thrashing` distinctly from
+    /// the other terminal causes.
+    AutoBypassThrashing,
 }
 
 /// One unit of work the user kicked off — see SCOPE.md Appendix A `jobs`.
@@ -109,6 +120,16 @@ pub struct Job {
     /// rerun keeps that posture. Free TEXT until personas move to a
     /// server-side table; the FK lands in a later stage.
     pub persona_id: Option<String>,
+    /// Per-job auto-bypass policy. `None` (the default) preserves the
+    /// existing behaviour: a stage failure under any non-cap reason
+    /// halts the job and waits for operator triage. `Some(policy)`
+    /// pre-authorises the runtime to mark the failed stage
+    /// `Failed`-with-bypass and advance, threading the policy's
+    /// canned (or operator-supplied) guidance into the next stage's
+    /// prompt. Cap breaches (`CostCap`, `WallClock`) ignore the
+    /// policy and halt regardless — see
+    /// `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
+    pub auto_bypass_policy: Option<AutoBypassPolicy>,
     pub started_at: Option<UnixMillis>,
     pub ended_at: Option<UnixMillis>,
     pub created_at: UnixMillis,

@@ -21,9 +21,9 @@ use crate::methods::{
     ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
     ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs,
     RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs,
-    RevertScopePatchResult, ScopePatchActionResult, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    RevertScopePatchResult, ScopePatchActionResult, SetJobPolicyArgs, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
     UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
     WriteJobFileArgs, WriteJobFileResult,
@@ -524,4 +524,14 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: ListProposedPatchesArgs,
     ) -> RpcResult<ListProposedPatchesResult>;
+
+    /// Replace the job-level `auto_bypass_policy`. Refused with
+    /// `Conflict` while the row is `Running` or `Queued` so the
+    /// stage-failed handler cannot race the write — the operator must
+    /// `pause_job` first per `DOCS/AUTO-BYPASS-DECISIONS.md` Q5.
+    /// Setting the policy to the value already on the row is a no-op
+    /// success: the second call returns `Ok(())` and emits no
+    /// `JobPolicyChanged`, so a defensive UI write never floods the
+    /// bus. `NotFound` for an unknown job id.
+    async fn set_job_policy(&self, args: SetJobPolicyArgs) -> RpcResult<()>;
 }

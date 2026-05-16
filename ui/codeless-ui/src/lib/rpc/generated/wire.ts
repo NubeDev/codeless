@@ -366,6 +366,27 @@ export type AssistantThread = {
 export type AssistantThreadId = string;
 
 /**
+ *  Per-job auto-bypass policy. When set, a stage that fails under a
+ *  non-cap reason is marked `Failed`-with-`bypassed_at` automatically,
+ *  and the policy's canned (or operator-supplied) guidance is threaded
+ *  into the next stage's prompt instead of halting the job.
+ * 
+ *  The five presets are reviewer-controlled canned guidance whose
+ *  exact comment strings live in
+ *  `codeless-runtime::auto_bypass_policy`. `Custom` carries the
+ *  operator's free-text comment verbatim — the runtime wraps it in the
+ *  same `Operator comment` envelope but does not edit the body.
+ * 
+ *  Wire form is serde-`type`-tagged: presets serialize as
+ *  `{"type":"quick"}`, custom as
+ *  `{"type":"custom","comment":"..."}`. Cap-breach failures
+ *  (`StopReason::CostCap`, `StopReason::WallClock`) ignore the policy
+ *  and halt as today — operator-set caps win over auto-bypass per
+ *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
+ */
+export type AutoBypassPolicy = { type: "quick" } | { type: "long-term" } | { type: "cheap" } | { type: "best-judgement" } | { type: "just-code" } | { type: "custom"; comment: string };
+
+/**
  *  `assistant.cancelAction`. Flip a pending action card's status to
  *  `cancelled` and do **nothing else** — no RPC is dispatched, no
  *  `Tool` message appended. The card row stays in the transcript so
@@ -840,7 +861,34 @@ commit_sha: string } |
  *  with `ScopePatchApproved`; same cross-window invalidation use
  *  case.
  */
-{ type: "scope-patch-rejected"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; target_path: string; commit_sha: string };
+{ type: "scope-patch-rejected"; stage_id: StageId; review_id: ReviewId; patch_id: ScopePatchId; kind: ScopePatchKind; target: ScopePatchTarget; target_path: string; commit_sha: string } | 
+/**
+ *  A stage failed under a job-level `AutoBypassPolicy` and the
+ *  runtime auto-bypassed the failure to keep the job moving
+ *  (Surface F, `DOCS/AUTO-BYPASS-DECISIONS.md` Q1/Q4). Emitted
+ *  by the stage-failed handler in the same commit that writes
+ *  `stages.bypassed_at` / `stages.bypassed_reason`; the
+ *  corresponding `tracing` line stays for operator debugging
+ *  while this event carries the structured form the UI gate
+ *  panel reads. Deliberately a distinct variant from
+ *  Surface E's operator-clicked `StageBypassed` so the panel
+ *  can render `bypassed by policy: <name>` vs
+ *  `bypassed by operator` without inspecting the reason
+ *  string (Q6 "Event reuse").
+ * 
+ *  `policy_name` is the stable name returned by
+ *  `AutoBypassPolicy::policy_name()` — one of the five preset
+ *  labels or the literal `"Custom"`. `comment_used` is the
+ *  canned (or operator-supplied) guidance string that was
+ *  threaded into the next stage's prompt; it is carried on
+ *  the wire so subscribers can render the comment without
+ *  re-resolving the policy and to keep the audit trail intact
+ *  if a future preset string is reworded (Q4
+ *  wording-revision policy). `applied_at` mirrors
+ *  `stages.bypassed_at` and is the timestamp the recorder
+ *  stamped on the row.
+ */
+{ type: "stage-auto-bypassed"; stage_id: StageId; policy_name: string; comment_used: string; applied_at: UnixMillis };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -1081,6 +1129,18 @@ export type Job = {
 	 *  server-side table; the FK lands in a later stage.
 	 */
 	persona_id: string | null,
+	/**
+	 *  Per-job auto-bypass policy. `None` (the default) preserves the
+	 *  existing behaviour: a stage failure under any non-cap reason
+	 *  halts the job and waits for operator triage. `Some(policy)`
+	 *  pre-authorises the runtime to mark the failed stage
+	 *  `Failed`-with-bypass and advance, threading the policy's
+	 *  canned (or operator-supplied) guidance into the next stage's
+	 *  prompt. Cap breaches (`CostCap`, `WallClock`) ignore the
+	 *  policy and halt regardless — see
+	 *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
+	 */
+	auto_bypass_policy: AutoBypassPolicy | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
@@ -1955,6 +2015,15 @@ export type SubmitJobArgs = {
 	 *  against a server-side persona table lands in a later stage.
 	 */
 	persona_id?: string | null,
+	/**
+	 *  Per-job auto-bypass policy (Surface F). `None` (default) keeps
+	 *  the existing halt-on-failure behaviour; `Some(...)` pre-
+	 *  authorises the runtime to advance past a failed stage under
+	 *  the chosen preset's canned guidance (or a custom comment).
+	 *  The value is persisted onto the `Job` row verbatim so a
+	 *  resume / rerun reproduces the same policy.
+	 */
+	auto_bypass_policy?: AutoBypassPolicy | null,
 	/**
 	 *  `false` (default) lands the job in `Draft` status — the row
 	 *  exists, the user can edit the spec / docs / handover, but the

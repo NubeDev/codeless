@@ -405,6 +405,54 @@ pub enum Event {
         target_path: String,
         commit_sha: String,
     },
+
+    /// A stage failed under a job-level `AutoBypassPolicy` and the
+    /// runtime auto-bypassed the failure to keep the job moving
+    /// (Surface F, `DOCS/AUTO-BYPASS-DECISIONS.md` Q1/Q4). Emitted
+    /// by the stage-failed handler in the same commit that writes
+    /// `stages.bypassed_at` / `stages.bypassed_reason`; the
+    /// corresponding `tracing` line stays for operator debugging
+    /// while this event carries the structured form the UI gate
+    /// panel reads. Deliberately a distinct variant from
+    /// Surface E's operator-clicked `StageBypassed` so the panel
+    /// can render `bypassed by policy: <name>` vs
+    /// `bypassed by operator` without inspecting the reason
+    /// string (Q6 "Event reuse").
+    ///
+    /// `policy_name` is the stable name returned by
+    /// `AutoBypassPolicy::policy_name()` — one of the five preset
+    /// labels or the literal `"Custom"`. `comment_used` is the
+    /// canned (or operator-supplied) guidance string that was
+    /// threaded into the next stage's prompt; it is carried on
+    /// the wire so subscribers can render the comment without
+    /// re-resolving the policy and to keep the audit trail intact
+    /// if a future preset string is reworded (Q4
+    /// wording-revision policy). `applied_at` mirrors
+    /// `stages.bypassed_at` and is the timestamp the recorder
+    /// stamped on the row.
+    #[serde(rename = "stage-auto-bypassed")]
+    StageAutoBypassed {
+        stage_id: StageId,
+        policy_name: String,
+        comment_used: String,
+        applied_at: UnixMillis,
+    },
+
+    /// `set_job_policy` replaced (or cleared) the job's
+    /// `auto_bypass_policy`. Emitted only when the value actually
+    /// changes — a same-policy call is a no-op success that publishes
+    /// nothing, keeping cross-window invalidation traffic bounded
+    /// (`DOCS/AUTO-BYPASS-DECISIONS.md` Q5 "Idempotency"). `policy_name`
+    /// mirrors `AutoBypassPolicy::policy_name()` (one of the five preset
+    /// labels or the literal `"Custom"`), or `None` when the policy was
+    /// cleared. Subscribers refresh their per-job badge / submit-form
+    /// state from this event without re-fetching the whole row.
+    #[serde(rename = "job-policy-changed")]
+    JobPolicyChanged {
+        job_id: JobId,
+        #[serde(default)]
+        policy_name: Option<String>,
+    },
 }
 
 /// Envelope written to the `events` table. The `cursor`, `created_at`,

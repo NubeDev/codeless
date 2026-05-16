@@ -101,6 +101,7 @@ async fn claude_runner_streams_events_via_bridge() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await

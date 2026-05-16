@@ -19,6 +19,7 @@ describe("ReviewGatePanel", () => {
       <ReviewGatePanel
         precheck={{ outcome: "pass", verified: ["DOCS/SCOPE.md", "src/lib.rs"] }}
         verdict={{ verdict: "pass", reason: "all evidence matched" }}
+        autoBypass={null}
         patchesProposed={0}
         patchCounterEnabled={false}
       />,
@@ -35,6 +36,7 @@ describe("ReviewGatePanel", () => {
       <ReviewGatePanel
         precheck={{ outcome: "fail", missing: ["DOCS/SCOPE.md"] }}
         verdict={{ verdict: "fail", reason: "claimed path absent from diff" }}
+        autoBypass={null}
         patchesProposed={0}
         patchCounterEnabled={false}
       />,
@@ -53,6 +55,7 @@ describe("ReviewGatePanel", () => {
           verdict: "auto-fail",
           reason: "sentinel missing from handover",
         }}
+        autoBypass={null}
         patchesProposed={0}
         patchCounterEnabled={false}
       />,
@@ -73,6 +76,7 @@ describe("ReviewGatePanel", () => {
       <ReviewGatePanel
         precheck={{ outcome: "pass", verified: [] }}
         verdict={{ verdict: "pass", reason: "" }}
+        autoBypass={null}
         patchesProposed={3}
         patchCounterEnabled={false}
       />,
@@ -85,11 +89,40 @@ describe("ReviewGatePanel", () => {
       <ReviewGatePanel
         precheck={{ outcome: "pass", verified: [] }}
         verdict={{ verdict: "pass", reason: "" }}
+        autoBypass={null}
         patchesProposed={2}
         patchCounterEnabled={true}
       />,
     );
     expect(screen.getByText(/2 proposed/)).toBeInTheDocument();
+  });
+
+  // Surface F: when a `StageAutoBypassed` event reaches the panel,
+  // the verdict row is replaced by an AUTO-BYPASSED badge naming the
+  // policy and showing the canned guidance. The recorded verdict is
+  // still the failure (audit trail, decision Q6), but the editor's
+  // headline reads the policy-driven recovery so they know the
+  // failure was pre-authorised rather than a fresh red.
+  it("renders the auto-bypassed verdict badge when a policy fired", () => {
+    render(
+      <ReviewGatePanel
+        precheck={{ outcome: "pass", verified: [] }}
+        verdict={{ verdict: "fail", reason: "compile error" }}
+        autoBypass={{
+          policyName: "Best-judgement",
+          commentUsed: "use your best judgement to recover",
+        }}
+        patchesProposed={0}
+        patchCounterEnabled={false}
+      />,
+    );
+    expect(screen.getByText("AUTO-BYPASSED")).toBeInTheDocument();
+    expect(screen.getByText(/Best-judgement/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/use your best judgement to recover/),
+    ).toBeInTheDocument();
+    // The original FAIL badge is not rendered — auto-bypass wins.
+    expect(screen.queryByText("FAIL")).toBeNull();
   });
 
   // Placeholder state: a queued REVIEW stage opens its detail pane
@@ -101,6 +134,7 @@ describe("ReviewGatePanel", () => {
       <ReviewGatePanel
         precheck={null}
         verdict={null}
+        autoBypass={null}
         patchesProposed={0}
         patchCounterEnabled={false}
       />,

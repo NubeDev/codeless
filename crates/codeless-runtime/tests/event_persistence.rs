@@ -84,6 +84,7 @@ async fn cursors_are_strictly_monotonic_across_publish_calls() {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await

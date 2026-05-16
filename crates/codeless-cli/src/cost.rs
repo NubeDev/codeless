@@ -172,6 +172,7 @@ mod tests {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             started_at: None,
             ended_at: None,
             created_at: UnixMillis(0),

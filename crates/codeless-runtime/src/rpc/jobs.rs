@@ -7,8 +7,8 @@ use codeless_rpc::{
     JobReportArgs, JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage,
     JobReportToolCall, JobReportTurn, ListJobsArgs, ListJobsResult, ListStagesArgs,
     ListStagesResult, PauseJobArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError, RpcResult,
-    StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    WriteJobFileArgs,
+    SetJobPolicyArgs, StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, WriteJobFileArgs,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantMessageRole, CostCents,
@@ -120,6 +120,7 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
         // Empty strings collapse to `None` so the column stays a
         // clean optional regardless of how the UI shaped the payload.
         persona_id: args.persona_id.filter(|s| !s.is_empty()),
+        auto_bypass_policy: args.auto_bypass_policy,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -687,6 +688,70 @@ pub(super) async fn pause_job(rpc: &InProcessRpc, args: PauseJobArgs) -> RpcResu
     Ok(())
 }
 
+pub(super) async fn set_job_policy(rpc: &InProcessRpc, args: SetJobPolicyArgs) -> RpcResult<()> {
+    // Q5 in DOCS/AUTO-BYPASS-DECISIONS.md: only let the operator move
+    // the policy while the row is not racing the stage-failed handler.
+    // Queued is rejected for the same reason Running is — the scheduler
+    // may flip Queued -> Running between the policy read and the policy
+    // write. Completed is intentionally rejected here too: the stage
+    // description pins the permitted set to Draft / Stopped / Paused so
+    // the audit trail can never grow a post-hoc policy change after the
+    // job is closed out.
+    let Some(mut job) = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+    else {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    };
+    match job.status {
+        JobStatus::Running => {
+            return Err(RpcError::Conflict(
+                "job is Running; pause before changing the auto-bypass policy".into(),
+            ));
+        }
+        JobStatus::Queued => {
+            return Err(RpcError::Conflict(
+                "job is Queued; pause before changing the auto-bypass policy".into(),
+            ));
+        }
+        JobStatus::Draft | JobStatus::Stopped | JobStatus::Paused => {}
+        other => {
+            return Err(RpcError::Conflict(format!(
+                "job is {other:?}; auto-bypass policy can only be set on Draft, Stopped, or Paused jobs",
+            )));
+        }
+    }
+
+    // Idempotency clause from Q5: same-policy-set is a no-op success
+    // that emits no event. Cross-window subscribers therefore only see
+    // traffic on a real change, and the UI can call defensively.
+    if job.auto_bypass_policy == args.policy {
+        return Ok(());
+    }
+
+    let policy_name = args.policy.as_ref().map(|p| p.policy_name().to_string());
+    job.auto_bypass_policy = args.policy;
+    if !rpc.store.update_job(&job).await.map_err(super::db_err)? {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    rpc.bus
+        .publish(
+            Some(job.id),
+            None,
+            None,
+            Event::JobPolicyChanged {
+                job_id: job.id,
+                policy_name,
+            },
+            now_ms(),
+        )
+        .await
+        .map_err(super::db_err)?;
+    Ok(())
+}
+
 pub(super) async fn reset_job(rpc: &InProcessRpc, args: ResetJobArgs) -> RpcResult<Job> {
     let mut job = rpc
         .store
@@ -796,6 +861,7 @@ pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResu
         effort: source.effort,
         system_prompt: source.system_prompt,
         persona_id: source.persona_id,
+        auto_bypass_policy: source.auto_bypass_policy,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -1142,6 +1208,7 @@ pub(super) async fn draft_job_from_conversation(
             // promote the draft from the job page.
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: false,
         },
     )

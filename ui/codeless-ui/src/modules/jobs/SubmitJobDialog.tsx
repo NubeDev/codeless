@@ -19,7 +19,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useRpc, type Repo, type RunnerInfo, type ServerInfo } from "@/lib/rpc";
+import {
+  useRpc,
+  type AutoBypassPolicy,
+  type Repo,
+  type RunnerInfo,
+  type ServerInfo,
+} from "@/lib/rpc";
 import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 
@@ -131,6 +137,46 @@ const EFFORT_LEVELS: { id: string; label: string }[] = [
 
 const SERVER_PICK = "__server_default__";
 
+// Sentinel for "no auto-bypass policy" in the picker. Per
+// DOCS/AUTO-BYPASS-DECISIONS.md and the SCOPE-MUTABLE-UI doc's
+// Surface F anti-pattern note, the safe default is None — a stage
+// failure halts the job and waits for the operator. The other six
+// options pre-authorise the runtime to advance past a non-cap
+// failure with the matching guidance threaded into the next stage's
+// prompt. Cap-breach failures always halt regardless (Q2).
+const NO_POLICY = "__no_policy__";
+const POLICY_CUSTOM = "custom";
+
+type PresetPolicyKind = Exclude<AutoBypassPolicy["type"], "custom">;
+
+const POLICY_PRESETS: { id: PresetPolicyKind; label: string; hint: string }[] = [
+  {
+    id: "quick",
+    label: "Quick",
+    hint: "Smallest change that works; skip nice-to-haves and refactors.",
+  },
+  {
+    id: "long-term",
+    label: "Long-term",
+    hint: "Prefer the durable fix; tests stay in sync with behaviour.",
+  },
+  {
+    id: "cheap",
+    label: "Cheap",
+    hint: "Minimise tokens and tool calls; one-line fixes ship.",
+  },
+  {
+    id: "best-judgement",
+    label: "Best judgement",
+    hint: "Let the runner decide quality-vs-speed with no operator present.",
+  },
+  {
+    id: "just-code",
+    label: "Just code",
+    hint: "Pick a reasonable approach and ship it; do not block on questions.",
+  },
+];
+
 export function SubmitJobDialog({ repo, trigger }: Props) {
   const rpc = useRpc();
   // Personas live in the same KV store the chat panel reads. We pull
@@ -171,6 +217,25 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
   const [effort, setEffort] = useState<string>(SERVER_PICK);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Auto-bypass policy (Surface F). `NO_POLICY` is the doc-mandated
+  // default; the picker only graduates off it when the operator
+  // explicitly opts in to one of the five canned presets or supplies
+  // a Custom comment. `customComment` is held even while a preset is
+  // selected so toggling back to Custom restores the operator's text.
+  const [policyKind, setPolicyKind] = useState<string>(NO_POLICY);
+  const [customComment, setCustomComment] = useState<string>("");
+  const policyCustomTrimmed = customComment.trim();
+  const policyCustomValid =
+    policyKind !== POLICY_CUSTOM || policyCustomTrimmed.length > 0;
+  const policy: AutoBypassPolicy | null = (() => {
+    if (policyKind === NO_POLICY) return null;
+    if (policyKind === POLICY_CUSTOM) {
+      return policyCustomTrimmed.length > 0
+        ? { type: "custom", comment: policyCustomTrimmed }
+        : null;
+    }
+    return { type: policyKind as PresetPolicyKind };
+  })();
   // Default OFF — landing in `Draft` lets the user edit SCOPE.md /
   // WORKFLOW.md / per-stage docs before the driver picks the job up.
   // Power users who want the legacy submit-and-run can flip this on.
@@ -330,6 +395,7 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
         // body is edited later. `null` when the user submitted with
         // no persona picked.
         persona_id: selectedPersona ? selectedPersona.id : null,
+        auto_bypass_policy: policy,
         start_immediately: runImmediately,
       });
       // eslint-disable-next-line no-console
@@ -577,6 +643,53 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
                 : "Agent edits a separate worktree checkout — isolates concurrent jobs but edits live in /tmp."}
             </span>
           </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="auto-bypass-policy">Auto-bypass on stage failure</Label>
+            <Select value={policyKind} onValueChange={setPolicyKind}>
+              <SelectTrigger id="auto-bypass-policy">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_POLICY}>None — halt on stage failure</SelectItem>
+                {POLICY_PRESETS.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+                <SelectItem value={POLICY_CUSTOM}>Custom — write your own comment</SelectItem>
+              </SelectContent>
+            </Select>
+            {policyKind === NO_POLICY && (
+              <span className="text-muted-foreground text-[10px]">
+                Default. A failed stage halts the job; you decide how to
+                recover from the job page.
+              </span>
+            )}
+            {policyKind !== NO_POLICY && policyKind !== POLICY_CUSTOM && (
+              <span className="text-muted-foreground text-[10px]">
+                {POLICY_PRESETS.find((p) => p.id === policyKind)?.hint}{" "}
+                Cap-breach failures still halt regardless.
+              </span>
+            )}
+            {policyKind === POLICY_CUSTOM && (
+              <>
+                <textarea
+                  id="auto-bypass-custom"
+                  value={customComment}
+                  onChange={(e) => setCustomComment(e.target.value)}
+                  rows={3}
+                  placeholder="One paragraph of guidance threaded into the next stage when a failure is auto-bypassed."
+                  aria-invalid={!policyCustomValid}
+                  className="border-input bg-background rounded-md border px-2 py-1.5 text-xs"
+                />
+                <span className="text-muted-foreground text-[10px]">
+                  Wrapped in an <code>Operator comment</code> envelope
+                  and prepended to the next stage's prompt verbatim.
+                  Cap-breach failures still halt regardless.
+                </span>
+              </>
+            )}
+          </div>
           <label className="hover:bg-accent/40 flex cursor-pointer items-start gap-2 rounded p-2 text-xs">
             <input
               type="checkbox"
@@ -605,7 +718,8 @@ export function SubmitJobDialog({ repo, trigger }: Props) {
               nameSlug.length === 0 ||
               branchClashesDefault ||
               !costCapValid ||
-              !wallClockValid
+              !wallClockValid ||
+              !policyCustomValid
             }
           >
             {submitting

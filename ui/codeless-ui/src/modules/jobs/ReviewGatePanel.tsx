@@ -16,9 +16,21 @@ import type { PreCheckOutcome, ReviewVerdict } from "@/lib/rpc";
 // guarantee SCOPE-PATCH markers survive the next-stage handover,
 // the row is omitted (not zeroed) per OQ#1 — a counter that lies
 // once per missed proposal is worse than no counter.
+// `autoBypass` carries the most-recent `StageAutoBypassed` event for
+// this stage when one has fired. It overrides the verdict badge so
+// the panel reads "AUTO-BYPASSED by <policy>" rather than the FAIL it
+// would otherwise show — the audit trail keeps the failed verdict
+// (Surface F decision Q6 "Failed-with-bypass"), but the editor-facing
+// summary surfaces the policy-driven recovery as the headline state.
+export interface AutoBypassSummary {
+  policyName: string;
+  commentUsed: string;
+}
+
 interface Props {
   precheck: PreCheckOutcome | null;
   verdict: ReviewVerdict | null;
+  autoBypass: AutoBypassSummary | null;
   patchesProposed: number;
   patchCounterEnabled: boolean;
 }
@@ -26,6 +38,7 @@ interface Props {
 export function ReviewGatePanel({
   precheck,
   verdict,
+  autoBypass,
   patchesProposed,
   patchCounterEnabled,
 }: Props) {
@@ -35,7 +48,7 @@ export function ReviewGatePanel({
   return (
     <div className="space-y-3">
       <PreCheckRow outcome={precheck} />
-      <VerdictRow verdict={verdict} />
+      <VerdictRow verdict={verdict} autoBypass={autoBypass} />
       {patchCounterEnabled && <PatchesRow count={patchesProposed} />}
     </div>
   );
@@ -83,7 +96,32 @@ function PreCheckRow({ outcome }: { outcome: PreCheckOutcome | null }) {
 
 // ------------------------------------------------------------------ verdict
 
-function VerdictRow({ verdict }: { verdict: ReviewVerdict | null }) {
+function VerdictRow({
+  verdict,
+  autoBypass,
+}: {
+  verdict: ReviewVerdict | null;
+  autoBypass: AutoBypassSummary | null;
+}) {
+  // Auto-bypass wins over the recorded verdict so the editor sees the
+  // policy outcome as the headline. The down-arrow-with-check glyph
+  // matches the timeline row so the two views read as the same event.
+  if (autoBypass !== null) {
+    return (
+      <Row label="verdict" tone="ok" glyph="↓✓">
+        <span className="font-medium">AUTO-BYPASSED</span>
+        <span className="text-muted-foreground">
+          {" "}
+          by policy: {autoBypass.policyName}
+        </span>
+        {autoBypass.commentUsed && (
+          <div className="text-muted-foreground mt-0.5 text-[11px]">
+            {autoBypass.commentUsed}
+          </div>
+        )}
+      </Row>
+    );
+  }
   if (verdict === null) {
     return (
       <Row label="verdict" tone="muted" glyph="○">

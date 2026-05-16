@@ -65,6 +65,7 @@ async fn new_stage(rpc: &InProcessRpc) -> StageId {
             effort: None,
             system_prompt: None,
             persona_id: None,
+            auto_bypass_policy: None,
             start_immediately: true,
         })
         .await
