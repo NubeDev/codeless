@@ -277,6 +277,19 @@ export interface DeleteJobArgs {
   job_id: JobId;
 }
 
+// Mid-life policy change for Surface F. The runtime accepts the call
+// when the job is `Draft | Queued | Paused | Stopped | Failed |
+// Completed` and refuses with `Conflict` on `Running |
+// AwaitingReview` — the operator pauses, sets, resumes. `policy =
+// null` clears the policy and restores halt-on-failure. The Rust
+// counterpart lands alongside the JobPage policy-badge modal that
+// calls this; until then the UI button surfaces the conflict as an
+// inline error message.
+export interface SetJobPolicyArgs {
+  job_id: JobId;
+  auto_bypass_policy: AutoBypassPolicy | null;
+}
+
 export interface GcWorktreesArgs {
   older_than_ms: number | null;
   job_ids: JobId[] | null;
@@ -550,6 +563,7 @@ export interface RpcMethodMap {
   reset_job: { args: ResetJobArgs; result: Job };
   rerun_job: { args: RerunJobArgs; result: Job };
   update_job: { args: UpdateJobArgs; result: Job };
+  set_job_policy: { args: SetJobPolicyArgs; result: Job };
   delete_job: { args: DeleteJobArgs; result: null };
   gc_worktrees: { args: GcWorktreesArgs; result: GcWorktreesResult };
   job_diff: { args: JobDiffArgs; result: JobDiffResult };
