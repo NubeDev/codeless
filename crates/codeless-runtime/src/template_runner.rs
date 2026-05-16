@@ -203,6 +203,43 @@ impl Runner for TemplateRunner {
     async fn run(&self, ctx: RunnerContext) -> RunnerOutcome {
         let planned = self.template.planned_stages();
         let total = planned.len();
+        // Resume-skip-passed: fetch prior stage rows once. On a fresh
+        // job this is empty; on a resume it carries the per-ordinal
+        // status history. The runner skips any ordinal whose latest
+        // attempt is `Passed`, reusing that attempt's stage_id as the
+        // prev pointer so the next REVIEW's diff-verify pre-check
+        // reads the correct prior handover. Without this, every
+        // resume restarts at ordinal 0, re-running already-passed
+        // stages as expensive no-ops.
+        let prior_passed_by_ord: std::collections::HashMap<u32, StageId> = match self.store.as_ref()
+        {
+            Some(store) => match store.list_stages_for_job(ctx.job_id).await {
+                Ok(rows) => {
+                    let mut map: std::collections::HashMap<u32, StageId> =
+                        std::collections::HashMap::new();
+                    for s in rows {
+                        if matches!(s.stage.status, StageStatus::Passed) {
+                            // Last write wins; list_stages_for_job
+                            // returns ORDER BY ordinal so multiple
+                            // attempts at the same ordinal arrive in
+                            // insertion order. The latest passed row
+                            // is the one whose handover the next
+                            // REVIEW gate should read.
+                            map.insert(s.stage.ordinal, s.stage.id);
+                        }
+                    }
+                    map
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        "resume-skip: list_stages_for_job failed; will re-run all stages"
+                    );
+                    std::collections::HashMap::new()
+                }
+            },
+            None => std::collections::HashMap::new(),
+        };
         // Tracks the stage_id of the most recent stage that finished
         // (Passed) so a REVIEW stage's diff-verify pre-check can read
         // the prior WORK stage's handover by key rather than rely on
@@ -218,6 +255,20 @@ impl Runner for TemplateRunner {
                 return RunnerOutcome::Failed {
                     reason: "cancelled".into(),
                 };
+            }
+            // Skip ordinals whose latest attempt already passed on a
+            // prior run. Carry the prior attempt's stage_id forward
+            // as `prev_stage_id` so the next REVIEW gate's
+            // diff-verify pre-check reads the right handover.
+            if let Some(prior_id) = prior_passed_by_ord.get(&(stage.index as u32)) {
+                tracing::info!(
+                    stage = stage.title,
+                    ordinal = stage.index,
+                    prior_stage_id = %prior_id,
+                    "template runner: ordinal already passed on a prior run; skipping",
+                );
+                prev_stage_id = Some(*prior_id);
+                continue;
             }
             let stage_id = StageId::new();
             let task_id = TaskId::new();
