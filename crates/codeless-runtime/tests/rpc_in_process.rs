@@ -438,7 +438,7 @@ async fn job_filtered_subscription_drops_unrelated_events() {
             template_yaml: None,
             runner: "mock".into(),
             branch: "codeless/job-b".into(),
-            workspace_mode: None,
+            workspace_mode: Some(codeless_types::WorkspaceMode::Worktree),
             cost_cap_cents: 500,
             wall_clock_cap_ms: 60_000,
             model: None,
