@@ -331,6 +331,39 @@ export type AssistantAttachment = {
 	created_at: UnixMillis,
 };
 
+/**
+ *  Structured payload of an `Assistant`- or `Tool`-role message whose
+ *  `meta_json` declares one or more reconciled attachments produced by
+ *  a tool call (PS7). The renderer dispatches on `kind ==
+ *  META_KIND` and shows a download card (plus inline preview for
+ *  recognised mime types) without any per-plugin UI code.
+ * 
+ *  Lives next to [`AssistantActionCard`] so the two meta-kind variants
+ *  the substrate carries on `assistant_messages.meta_json` share a
+ *  header and a single `kind` discriminator namespace.
+ */
+export type AssistantAttachmentCard = {
+	/**
+	 *  Discriminator. Always [`AssistantAttachmentCard::META_KIND`];
+	 *  the UI parser checks this before deserialising the rest.
+	 */
+	kind: string,
+	items: AssistantAttachmentCardItem[],
+};
+
+/**
+ *  One reconciled attachment item the UI renders inside an
+ *  [`AssistantAttachmentCard`]. Fields are populated from the stored
+ *  `assistant_attachments` row (authoritative); any tool-supplied
+ *  hint that disagrees was dropped during reconciliation.
+ */
+export type AssistantAttachmentCardItem = {
+	attachment_id: AssistantAttachmentId,
+	filename: string,
+	mime?: string | null,
+	size_bytes: number,
+};
+
 //Identity of one file uploaded into an assistant thread (`<codeless-data>/threads/<thread_id>/attachments/`).
 export type AssistantAttachmentId = string;
 
@@ -399,6 +432,29 @@ export type AssistantThread = {
 
 //Identity of one conversational thread on the /assistant surface.
 export type AssistantThreadId = string;
+
+/**
+ *  One attachment reference as returned by a plugin tool (PS7,
+ *  `DOCS/PLUGIN-SUBSTRATE.md` item 7). `attachment_id` is the
+ *  authoritative server-minted id of an existing row in
+ *  `assistant_attachments`; `mime` and `filename` are *advisory* hints
+ *  the renderer may use as a fast path. The substrate-doc rule is that
+ *  the server reconciles every advisory hint against the stored row
+ *  (`reconcile_attachment_refs`) and the stored value wins -- a tool
+ *  that mistypes the mime or renames the file in flight cannot trick
+ *  the renderer into a bogus content-type or path.
+ * 
+ *  Tools opt into this shape by declaring their output schema with the
+ *  `{"$ref": "codeless://attachment"}` marker (see
+ *  `codeless_tools::attachment::ATTACHMENT_SCHEMA_REF`). A tool that
+ *  returns multiple attachments returns an array of these objects or
+ *  wraps them in a field whose schema is the array form.
+ */
+export type AttachmentRef = {
+	attachment_id: AssistantAttachmentId,
+	mime?: string | null,
+	filename?: string | null,
+};
 
 /**
  *  Per-job auto-bypass policy. When set, a stage that fails under a

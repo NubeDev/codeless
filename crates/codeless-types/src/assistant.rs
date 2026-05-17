@@ -279,3 +279,68 @@ impl AssistantActionCard {
         }
     }
 }
+
+/// One attachment reference as returned by a plugin tool (PS7,
+/// `DOCS/PLUGIN-SUBSTRATE.md` item 7). `attachment_id` is the
+/// authoritative server-minted id of an existing row in
+/// `assistant_attachments`; `mime` and `filename` are *advisory* hints
+/// the renderer may use as a fast path. The substrate-doc rule is that
+/// the server reconciles every advisory hint against the stored row
+/// (`reconcile_attachment_refs`) and the stored value wins -- a tool
+/// that mistypes the mime or renames the file in flight cannot trick
+/// the renderer into a bogus content-type or path.
+///
+/// Tools opt into this shape by declaring their output schema with the
+/// `{"$ref": "codeless://attachment"}` marker (see
+/// `codeless_tools::attachment::ATTACHMENT_SCHEMA_REF`). A tool that
+/// returns multiple attachments returns an array of these objects or
+/// wraps them in a field whose schema is the array form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct AttachmentRef {
+    pub attachment_id: AssistantAttachmentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
+/// One reconciled attachment item the UI renders inside an
+/// [`AssistantAttachmentCard`]. Fields are populated from the stored
+/// `assistant_attachments` row (authoritative); any tool-supplied
+/// hint that disagrees was dropped during reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct AssistantAttachmentCardItem {
+    pub attachment_id: AssistantAttachmentId,
+    pub filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    pub size_bytes: i64,
+}
+
+/// Structured payload of an `Assistant`- or `Tool`-role message whose
+/// `meta_json` declares one or more reconciled attachments produced by
+/// a tool call (PS7). The renderer dispatches on `kind ==
+/// META_KIND` and shows a download card (plus inline preview for
+/// recognised mime types) without any per-plugin UI code.
+///
+/// Lives next to [`AssistantActionCard`] so the two meta-kind variants
+/// the substrate carries on `assistant_messages.meta_json` share a
+/// header and a single `kind` discriminator namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct AssistantAttachmentCard {
+    /// Discriminator. Always [`AssistantAttachmentCard::META_KIND`];
+    /// the UI parser checks this before deserialising the rest.
+    pub kind: String,
+    pub items: Vec<AssistantAttachmentCardItem>,
+}
+
+impl AssistantAttachmentCard {
+    pub const META_KIND: &'static str = "attachment_card";
+
+    pub fn new(items: Vec<AssistantAttachmentCardItem>) -> Self {
+        Self {
+            kind: Self::META_KIND.to_owned(),
+            items,
+        }
+    }
+}

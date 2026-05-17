@@ -1201,6 +1201,23 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Fetch one attachment row by id. Used by the PS7 reconciliation
+    /// helper to resolve a tool-returned `AttachmentRef` against the
+    /// stored row (filename / mime / size become the authoritative
+    /// values the UI renders; tool-supplied advisory hints are
+    /// dropped). Returns `None` for a missing or deleted row -- the
+    /// caller surfaces that as an `AttachmentReconcileError::Unknown`.
+    pub async fn get_assistant_attachment(
+        &self,
+        id: codeless_types::AssistantAttachmentId,
+    ) -> sqlx::Result<Option<AssistantAttachment>> {
+        let row = sqlx::query("SELECT * FROM assistant_attachments WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(assistant_attachment_from_row).transpose()
+    }
+
     pub async fn list_assistant_attachments(
         &self,
         thread_id: AssistantThreadId,

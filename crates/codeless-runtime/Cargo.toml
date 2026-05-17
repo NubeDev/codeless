@@ -15,6 +15,7 @@ codeless-types = { path = "../codeless-types" }
 codeless-rpc = { path = "../codeless-rpc" }
 codeless-adapters-host = { path = "../codeless-adapters-host" }
 codeless-predicates = { path = "../codeless-predicates" }
+codeless-tools = { path = "../codeless-tools" }
 ai-runner = { path = "../../../ai-runner" }
 async-trait = "0.1"
 base64 = "0.22"

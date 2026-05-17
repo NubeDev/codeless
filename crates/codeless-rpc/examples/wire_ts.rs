@@ -42,12 +42,12 @@ use codeless_rpc::methods::{
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
-    AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, CostCents, Event, EventCursor, EventEnvelope, FsEntry,
-    FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus, PreCheckOutcome, ProposedScopePatch,
-    Repo, RepoId, Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId,
-    ScopePatchKind, ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId,
-    TaskStatus, UnixMillis,
+    AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
+    AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId, AttachmentRef,
+    CostCents, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Handover, Job,
+    JobId, JobStatus, PreCheckOutcome, ProposedScopePatch, Repo, RepoId, Review, ReviewId,
+    ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage,
+    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -146,6 +146,9 @@ fn collect() -> TypeCollection {
         .register_mut::<AssistantAction>()
         .register_mut::<AssistantActionStatus>()
         .register_mut::<AssistantActionCard>()
+        .register_mut::<AttachmentRef>()
+        .register_mut::<AssistantAttachmentCardItem>()
+        .register_mut::<AssistantAttachmentCard>()
         .register_mut::<ConfirmAssistantActionArgs>()
         .register_mut::<ConfirmAssistantActionResult>()
         .register_mut::<CancelAssistantActionArgs>()

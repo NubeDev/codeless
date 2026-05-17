@@ -5,6 +5,7 @@ import {
   type AssistantAction,
   type AssistantActionCard,
   type AssistantActionStatus,
+  type AssistantAttachmentCard,
   type AssistantMessage,
   type AssistantThread,
   type EventEnvelope,
@@ -309,6 +310,17 @@ function MessageBubble({
         onConfirm={() => onConfirmAction(message.id)}
         onCancel={() => onCancelAction(message.id)}
       />
+    );
+  }
+  // PS7 (`DOCS/PLUGIN-SUBSTRATE.md` item 7): a `Tool`-role message
+  // whose meta_json decodes to an `attachment_card` carries one or
+  // more reconciled attachments produced by the tool call. Render
+  // ahead of the generic `ToolResultView` so the download card shows
+  // instead of a raw-JSON dump.
+  const attachmentCard = parseAttachmentCard(message.meta_json);
+  if (attachmentCard) {
+    return (
+      <AttachmentCardView message={message} card={attachmentCard} />
     );
   }
   if (message.role === "tool") {
@@ -652,6 +664,74 @@ function ToolResultView({ message }: { message: AssistantMessage }) {
       </div>
     </div>
   );
+}
+
+// PS7 attachment-card decoder. Same shape as `parseActionCard` but
+// discriminates on `kind === "attachment_card"`. Returns null for any
+// other meta payload (action cards, future variants, malformed JSON)
+// so callers can fall through to the next renderer.
+function parseAttachmentCard(
+  raw: string | null,
+): AssistantAttachmentCard | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<AssistantAttachmentCard>;
+    if (
+      parsed
+      && parsed.kind === "attachment_card"
+      && Array.isArray(parsed.items)
+    ) {
+      return parsed as AssistantAttachmentCard;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+type AttachmentCardViewProps = {
+  message: AssistantMessage;
+  card: AssistantAttachmentCard;
+};
+
+// Reconciled-attachment card. The server already enforced cross-thread
+// + dangling-id checks (`rpc::attachment::build_attachment_card`); the
+// renderer trusts the items it sees and shows filename, mime, size,
+// plus a placeholder inline preview slot for image/PDF mimes. The
+// download link surface is deferred until the runtime exposes an HTTP
+// route for `assistant_attachments/<id>` -- until then the card
+// documents the file the tool produced so the user can locate it on
+// disk via the existing attachments folder convention.
+function AttachmentCardView({ message: _message, card }: AttachmentCardViewProps) {
+  return (
+    <div className="flex justify-start">
+      <div className="flex w-full max-w-[85%] flex-col gap-2 rounded-md border border-border/60 bg-card px-3 py-2 text-sm">
+        <span className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">
+          {card.items.length === 1 ? "attachment" : `${card.items.length} attachments`}
+        </span>
+        <ul className="flex flex-col gap-1">
+          {card.items.map((item) => (
+            <li
+              key={item.attachment_id}
+              className="flex items-center gap-2 rounded border border-border/40 bg-muted/30 px-2 py-1"
+            >
+              <span className="truncate font-medium">{item.filename}</span>
+              <span className="text-xs text-muted-foreground">
+                {item.mime ?? "unknown type"} · {formatBytes(item.size_bytes)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${kib.toFixed(1)} KiB`;
+  return `${(kib / 1024).toFixed(1)} MiB`;
 }
 
 function prettyJson(raw: string): string {

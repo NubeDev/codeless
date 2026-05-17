@@ -25,6 +25,24 @@ pub trait Tool: Send + Sync + 'static {
     /// this to runners; runners validate before calling.
     fn schema(&self) -> &Value;
 
+    /// JSON Schema for the tool's return value. Plugin tools that
+    /// produce attachments declare `{"$ref": "codeless://attachment"}`
+    /// here so the Assistant agent loop (PS8) can walk the schema
+    /// (`crate::attachment::find_attachment_refs`), reconcile each
+    /// hit against the stored `assistant_attachments` row, and render
+    /// a download card without per-plugin UI code. Default is the
+    /// empty object — a tool that does not return attachments has no
+    /// obligation to declare an output schema.
+    ///
+    /// Returned by value (not `&Value`) so an implementor can compose
+    /// the schema with `serde_json::json!` per call without needing a
+    /// `OnceLock` to satisfy the trait's lifetime; called rarely (at
+    /// agent-call time, not per-token), so the allocation is
+    /// inconsequential against the surrounding LLM round-trip.
+    fn output_schema(&self) -> Value {
+        Value::Object(serde_json::Map::new())
+    }
+
     /// Invoke the tool. Implementations should poll
     /// `ctx.is_cancelled()` at every await point that could be
     /// load-bearing and return `ToolError::Cancelled` when set —

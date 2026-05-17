@@ -26,7 +26,8 @@ pub mod workspace;
 
 pub use assistant::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
-    AssistantMessage, AssistantMessageRole, AssistantThread,
+    AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantMessage, AssistantMessageRole,
+    AssistantThread, AttachmentRef,
 };
 pub use auto_bypass::AutoBypassPolicy;
 pub use event::{Event, EventCursor, EventEnvelope};

@@ -41,7 +41,7 @@ Goal:        a new workflow ships as `crates/codeless-plugin-<id>/` + a
    **Halted. See "Stage 3 (PS4) — halt notes" below.**
 4. [x] PS5 — persona / thread-kind data model.
 5. [x] PS6 — plugin manifest + registry.
-6. [ ] PS7 — tool-result attachments.
+6. [x] PS7 — tool-result attachments.
 7. [ ] PS8 — Assistant agent loop.
 8. [ ] Plugin #0 `notes` end-to-end.
 
@@ -395,3 +395,68 @@ two pre-existing failures on this branch (`claude_runner` CLI smoke
 test and `codeless-bot-core::reply::format_parse_error_routes_empty_to_help`)
 are unchanged by this stage. The Specta wire snapshot and
 `ui/codeless-ui/src/lib/rpc/generated/wire.ts` are regenerated.
+
+## Stage 6 (PS7) — landed
+
+The substrate's tool-result attachment contract (DOCS/PLUGIN-SUBSTRATE.md
+item 7) lands as three composable seams plus the renderer that consumes
+them:
+
+- **Wire shape**: `codeless_types::AttachmentRef { attachment_id, mime?,
+  filename? }` is what a tool returns; `AssistantAttachmentCard` (kind
+  `attachment_card`) + `AssistantAttachmentCardItem` is what the
+  reconciled card looks like on `assistant_messages.meta_json`. Lives
+  next to `AssistantActionCard` so both meta-kind variants share the
+  same `kind` discriminator namespace and the renderer's parser stays a
+  single switch.
+- **Schema marker + walker**: `codeless_tools::attachment` exports
+  `ATTACHMENT_SCHEMA_REF = "codeless://attachment"`,
+  `attachment_ref_schema()` / `attachment_array_schema()` for plugin
+  authors, and `find_attachment_refs(schema, value)`. The walker
+  understands four shapes (root single, root array, named-property
+  single, named-property array); anything richer is intentionally
+  unmatched -- the substrate doc limits the contract to those shapes so
+  the renderer cannot be tricked into recursing into arbitrary plugin
+  output. `Tool::output_schema()` joins `Tool::schema()` with a default
+  returning the empty object, so plugin authors opt into attachment
+  output by overriding one method on their tool impl.
+- **Reconciliation**: `codeless_runtime::rpc::attachment::
+  build_attachment_card` is the one place that goes value -> refs ->
+  rows -> card. Stored row wins for `filename`/`mime`/`size_bytes`;
+  tool-supplied hints that disagree are silently dropped (the doc rule).
+  Cross-thread ids are rejected as `InvalidArgument`; dangling ids as
+  `NotFound`. PS8 will call this once per resolved tool call -- the
+  function is `pub` and the module is `#![allow(dead_code)]` until then
+  (same pattern as `resolve_thread_persona` in PS5). Reconciliation is
+  centralised here so a future PS8 turn cannot accidentally skip the
+  store check: the only way to mint an attachment card is through this
+  function.
+- **Store accessor**: `SqliteStore::get_assistant_attachment(id)`. The
+  list accessor already existed; the by-id accessor was the missing
+  piece the reconciler needs.
+
+UI side: `AssistantThreadView` gains an `AttachmentCardView` plus the
+matching `parseAttachmentCard` discriminator, slotted in front of the
+generic `ToolResultView` so a tool whose result decoded to an
+`attachment_card` renders the file list (name + mime + size, one row
+per item) instead of a raw-JSON payload. The HTTP download route is
+deferred -- the runtime exposes no `assistant_attachments/<id>`
+endpoint yet, so the card documents the file the tool produced and
+leaves a future PS8 / notes-plugin tick to wire the link.
+
+Wire types added to both specta snapshots (`codeless-types` for the
+core shapes, the `codeless-rpc` `wire_ts` example for the UI bundle)
+and the UI's `methods.ts` re-exports the three new names so consumers
+import from `@/lib/rpc` like every other wire type.
+
+`cargo test -p codeless-tools` (71 passed including 9 new attachment
+tests); `cargo test -p codeless-runtime --lib rpc::attachment` (5 new
+tests covering store reconciliation, cross-thread rejection, unknown
+id, array shape, and empty schema); `cargo test -p codeless-types
+--test specta_snapshot` green after regen. `cargo clippy -p
+codeless-tools -p codeless-types -p codeless-runtime --all-targets --
+-D warnings` clean. `cargo fmt --all -- --check` clean. UI `pnpm
+typecheck` and `pnpm vitest run src/modules/chat` green.
+
+The pre-existing `claude_runner` integration-test failure on this
+branch is unchanged by this stage.

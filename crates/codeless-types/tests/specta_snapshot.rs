@@ -10,14 +10,15 @@ use std::path::PathBuf;
 
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
-    AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, AttachWorkspaceArgs, AttachWorkspaceResult,
-    AttachedWorkspace, CostCents, DetachPolicy, DetachWorkspaceArgs, Event, EventCursor,
-    EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId, JobStatus, ListWorkspacesResult,
-    PreCheckOutcome, ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus,
-    ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage, StageId,
-    StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
+    AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
+    AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId,
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, CostCents,
+    DetachPolicy, DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind,
+    GitAuth, Job, JobId, JobStatus, ListWorkspacesResult, PreCheckOutcome, ProposedScopePatch,
+    Repo, RepoId, Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId,
+    ScopePatchKind, ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId,
+    TaskStatus, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError,
+    WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -68,6 +69,9 @@ fn collect() -> TypeCollection {
         .register_mut::<AssistantAction>()
         .register_mut::<AssistantActionStatus>()
         .register_mut::<AssistantActionCard>()
+        .register_mut::<AttachmentRef>()
+        .register_mut::<AssistantAttachmentCardItem>()
+        .register_mut::<AssistantAttachmentCard>()
         .register_mut::<ScopePatchId>()
         .register_mut::<ScopePatchKind>()
         .register_mut::<ScopePatchTarget>()

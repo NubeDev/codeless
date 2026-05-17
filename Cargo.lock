@@ -831,6 +831,7 @@ dependencies = [
  "codeless-adapters-host",
  "codeless-predicates",
  "codeless-rpc",
+ "codeless-tools",
  "codeless-types",
  "futures-core",
  "futures-util",
