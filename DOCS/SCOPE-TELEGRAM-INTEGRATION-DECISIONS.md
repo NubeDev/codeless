@@ -1233,3 +1233,508 @@ completion). The next session that picks this stage up must:
    `crates/codeless-bot/src/post.rs`, and the matching tests.
 
 If any precondition still fails, that session also halts.
+
+## Stage 9 — blocked, marked `[!]`
+
+Stage 9's outcome from `template.yaml` is:
+
+> Surface 2: enrich failure notifications with REVIEW gate context
+> (`ReviewPreCheck` / `ReviewVerdict` event data) when available;
+> render structured block as Markdown V2 preformatted text.
+
+This stage cannot write code in this worktree. It inherits every
+blocker that halted stages 4, 5, 6 and 8, plus three stage-9-
+specific constraints that turn on what slack-integration's analogue
+commit (`68799e0`, stage 7 on the unmerged `codeless/slack-
+integration` branch, +798 / -21 lines across `notify.rs` +
+`outbound.rs` + `lib.rs`) introduced and where the Telegram-side
+work diverges from it.
+
+### Precondition A (carried) — gate still closed
+
+The four `WORKFLOW.md` greps were re-run against this worktree's
+`HEAD` (`43eb338`, branched from `master @ b615115`). The result
+is identical to the tables under "Stage 4 — blocked" through
+"Stage 8 — blocked":
+
+- `grep -n 'pub bypass' crates/codeless-rpc/src/methods.rs` →
+  only `pub bypass_failing_stage: bool` (line 142), the unrelated
+  auto-bypass-policy field.
+- `grep -n 'pub next_stage_comment' crates/codeless-rpc/src/methods.rs`
+  → no matches.
+- `grep -nE 'actor:.*Option<String>' crates/codeless-types/src/event.rs`
+  → no matches.
+- `grep -nE 'comment:.*Option<String>' crates/codeless-types/src/event.rs`
+  → no matches.
+
+`git fetch origin` between sessions reports `origin/master`
+unchanged at `b615115`; `origin/codeless/slack-integration` is
+still not visible. The branch-base merge-base check
+(`git merge-base HEAD origin/master`) returns `b615115`, the same
+commit the prior six stages' "blocked" sections recorded. Three
+of the four required fields stay absent. The gate is still
+closed.
+
+The renderer this stage extends takes its `ReviewContext` argument
+through the same path the publisher's enrichment branch (stage 8)
+adds. Without stages 1–8's scaffolding the renderer signature and
+its call site both fail to compile, and the new Markdown V2
+preformatted-block pass in the Telegram poster has nothing to
+wrap — there is no `notify::format_job_failed` in this worktree
+to call.
+
+### Precondition B (carried) — no `codeless-bot-core`, no `codeless-bot`, no `codeless-slack`
+
+`ls crates/` on this worktree:
+
+```
+codeless-adapters-host  codeless-mcp         codeless-runtime         codeless-tools
+codeless-cli            codeless-predicates  codeless-server          codeless-types
+codeless-client         codeless-rpc         codeless-tauri-desktop
+```
+
+No `codeless-bot/`, no `codeless-bot-core/`, no `codeless-slack/`.
+The Stage-2 sequencing constraint stands verbatim. Stage 9's
+renderer changes must land inside
+`codeless-bot-core::reply::notify` (mirror of
+`codeless-slack/src/notify.rs` at slack stage 7, file is 585 lines
+post-stage-7); the cache + capture branches must land inside
+`codeless-bot-core::outbound` (mirror of
+`codeless-slack/src/outbound.rs` at slack stage 7, file is 1226
+lines post-stage-7); the Markdown V2 preformatted-block wrap must
+land inside `crates/codeless-bot/src/post.rs` (created at stage 4,
+which is itself `[!]`). None of those files exist here.
+
+### Precondition C (carried) — no `ReviewContext` arg on the renderer signature
+
+Stage 8 names `codeless-bot-core::reply::notify::{format_job_failed,
+format_job_stopped}` as the two pure renderers it moves out of
+`codeless-slack`. Stage 9's first concrete change is to widen each
+renderer's signature with a trailing `review: Option<&ReviewContext>`
+argument (this is exactly the diff `68799e0` makes on `notify.rs`:
+the `Option<&ReviewContext>` parameter is appended to both
+renderers, and every call site at the publisher's
+`post_notification` path is updated in the same commit). Without
+the file existing in `codeless-bot-core/`, the signature cannot be
+widened; without the publisher (stage 8 `[!]`), there is no call
+site to update.
+
+### Precondition D (carried) — no enrichment-event capture branch in the publisher
+
+The publisher's `handle_envelope` function in
+`codeless-bot-core::outbound` is the seam where stage 9 inserts
+the two enrichment-event match arms. Slack's stage-7 diff against
+`outbound.rs` (`@@ async fn handle_envelope`) adds:
+
+```rust
+match &event {
+    Event::ReviewPreCheck { stage_id, outcome } => {
+        reviews.lock().await
+            .record_pre_check(*stage_id, outcome.clone());
+        return;
+    }
+    Event::ReviewVerdict { stage_id, verdict } => {
+        reviews.lock().await
+            .record_verdict(*stage_id, verdict.clone());
+        return;
+    }
+    _ => {}
+}
+```
+
+Both arms `return` early — Surface 2 events are pure enrichment
+and never produce a top-level post on their own (the firehose
+policy from Surface 1 is preserved verbatim). Until `outbound.rs`
+lives in `codeless-bot-core` with its `handle_envelope` body, the
+two arms have nowhere to land.
+
+### Precondition E (carried) — no `EventSource` + `CommandBackend` test fakes
+
+Stage 8 cites both seams as needed for the publisher's tests to
+fake five methods (subscribe + get_job + list_stages on the
+publisher; start_job + stop_job + resume_job on the dispatcher)
+without stubbing the whole `RpcServer`. Stage 9's tests build on
+the same fakes — `TestSource` from slack stage 7's `outbound.rs`
+implements both `EventSource` and `CommandBackend` and exposes
+`seed_jobs` / `seed_stages` / `events: Mutex<Vec<Envelope>>` so
+the `wiremock`-backed integration tests can replay a
+`ReviewPreCheck` + `ReviewVerdict` + `JobFailed` triple and assert
+the captured POST body. Without these fakes in
+`codeless-bot-core`, the tests have nothing to drive.
+
+### Precondition I (new at stage 9) — no `ReviewContext` type, no `ReviewCache` type
+
+Two new types ship in `68799e0` that stage 9 must add to
+`codeless-bot-core` (and that have no equivalent on `master`):
+
+1. **`codeless_bot_core::reply::notify::ReviewContext`** — a small
+   pair-of-options struct:
+
+   ```rust
+   #[derive(Debug, Clone, Default, PartialEq, Eq)]
+   pub struct ReviewContext {
+       pub pre_check: Option<PreCheckOutcome>,
+       pub verdict: Option<ReviewVerdict>,
+   }
+
+   impl ReviewContext {
+       pub fn is_empty(&self) -> bool {
+           self.pre_check.is_none() && self.verdict.is_none()
+       }
+   }
+   ```
+
+   Both fields are independently optional: a model-driven `Fail`
+   arrives with only `verdict`; a pre-check auto-fail arrives with
+   both; a `Skipped` / `NothingToVerify` pre-check arrives with
+   only `pre_check`. `is_empty()` is the renderer's short-circuit
+   for the non-REVIEW failure case. The type is `pub` so the
+   publisher (in `outbound.rs`) and the renderers (in
+   `reply/notify.rs`) can name it across the module boundary; it
+   also re-exports through `codeless-bot-core::lib.rs` so the
+   downstream Slack and Telegram crates can name it without
+   reaching into private paths.
+
+2. **`codeless_bot_core::outbound::ReviewCache`** — a bounded FIFO
+   keyed by `StageId`:
+
+   ```rust
+   struct ReviewCache {
+       capacity: usize,
+       entries: HashMap<StageId, ReviewContext>,
+       order: Vec<StageId>,
+   }
+   ```
+
+   With `record_pre_check`, `record_verdict`, `upsert<F>`, and
+   `take(stage_id) -> Option<ReviewContext>`. The capacity is
+   `pub const REVIEW_CACHE_CAPACITY: usize = 1024` (re-exported
+   through `codeless-bot-core::lib.rs`). `take` is destructive on
+   hit so a future retry of the same stage starts from a clean
+   cache; non-REVIEW failures miss the cache and the renderer
+   collapses the Surface 2 block (the SCOPE doc names
+   notifications as additive — the events table is the durable
+   record, an evicted entry that the renderer never used is not a
+   data loss). Neither type exists in this worktree.
+
+### Precondition J (new at stage 9) — no gate-type label table
+
+Stage 9's renderer derives a single `Type:` line from the
+`(pre_check, verdict)` pair so the operator reads
+"diff-verify pre-check auto-fail" vs "model rejected handover" vs
+"runtime auto-fail (sentinel)" at a glance. The mapping table
+lives inside `notify::review_type_label` in `68799e0`:
+
+| `pre_check`                              | `verdict`                | label                                       |
+| ---------------------------------------- | ------------------------ | ------------------------------------------- |
+| `Some(Fail { .. })`                      | `Some(AutoFail { .. })`  | `"diff-verify pre-check auto-fail"`         |
+| `Some(Fail { .. })`                      | other                    | `"diff-verify pre-check failed"`            |
+| any                                      | `Some(Fail { .. })`      | `"model rejected handover"`                 |
+| any                                      | `Some(AutoFail { .. })`  | `"runtime auto-fail"`                       |
+| any                                      | `Some(Pass { .. })`      | `"review passed (failure elsewhere)"`       |
+| `Some(Skipped)`                          | `None`                   | `"diff-verify pre-check skipped"`           |
+| `Some(NothingToVerify)`                  | `None`                   | `"nothing to verify"`                       |
+| `Some(Pass { .. })`                      | `None`                   | `None` (no Type line)                       |
+| `None`                                   | `None`                   | `None` (caller should not have rendered)    |
+
+The table is identical to slack's because the renderer is shared.
+Telegram does not customise the labels; only the wrapping at post
+time differs. Without `notify.rs` in `codeless-bot-core`, the
+table has nowhere to land.
+
+### Precondition K (new at stage 9) — no MarkdownV2 preformatted-block wrap in the Telegram poster
+
+This is the one place Telegram's stage 9 actually diverges from
+slack's stage 7. Slack's transport posts plain text and the
+Surface 2 block renders as ASCII lines inline. Telegram's
+transport sends Markdown V2 (the parse mode the stage-4 poster
+sets so `[!]` does not trip on the literal `!` and so the
+`reply_to_message_id → job_id` map's bare-verb hint hides nicely
+in italic). Markdown V2 has 18 reserved characters that must be
+escaped outside a code block (per
+<https://core.telegram.org/bots/api#markdownv2-style>):
+``_ * [ ] ( ) ~ ` > # + - = | { } . !``. Inside a preformatted
+(triple-backtick) block the only escapes needed are backtick and
+backslash. So the Surface 2 structured lines, which contain `:`,
+`-`, and `.`, naturally belong in a preformatted block — the
+operator sees fixed-width text and the escape rule drops from
+"escape 18 chars" to "escape 2 chars".
+
+The renderer cannot do this wrapping itself: it is shared with
+the Slack transport, which must continue to emit plain ASCII. So
+the renderer's signature must widen further than slack's stage 7
+needed:
+
+```rust
+pub struct RenderedNotification {
+    pub prelude: String,      // header + Stage: line + (no Surface 2)
+    pub block: Option<String>,// Type / Missing paths / Verdict lines
+    pub postlude: String,     // Reason / Cost / Reply hint
+}
+
+pub fn format_job_failed(
+    job: &Job,
+    stage: Option<&StageRollup>,
+    total_stages: Option<u32>,
+    review: Option<&ReviewContext>,
+) -> RenderedNotification;
+```
+
+with the matching shape for `format_job_stopped`. The Slack
+poster (`web_api::ChatPoster::post`) concatenates
+`prelude + block_or_empty + postlude` verbatim, recovering its
+prior behaviour. The Telegram poster (`crates/codeless-bot/src/
+post.rs`) does:
+
+1. MarkdownV2-escape `prelude` (18-char escape pass).
+2. If `block.is_some()`, MarkdownV2-escape it with the *code-
+   block* rules (only `` ` `` and `\`), then wrap in triple
+   backticks on their own lines, with a leading blank line and
+   no language tag.
+3. MarkdownV2-escape `postlude`.
+4. Concatenate.
+
+The reason for refactoring the renderer's return type rather than
+sentinel-parsing the slack-stage-7-shape `String` in the
+Telegram poster: sentinel parsing couples the poster to the
+renderer's exact output text, and any future format tweak to the
+Surface 2 block in `codeless-bot-core::reply::notify` would
+silently break the Telegram wrap. The struct return type makes
+the seam explicit and survives renderer evolution.
+
+This refactor — by changing `notify`'s return type — is the part
+of stage 9 that fans out into the slack crate as well: slack's
+stage-7-shaped `format_job_failed(...) -> String` must move to
+`format_job_failed(...) -> RenderedNotification` and the slack
+poster must learn to concatenate. The slack-side change is
+mechanical and lands in the same commit as the Telegram-side
+addition; the assertions in slack's stage-7 wiremock tests
+(`assert!(text.contains("Type:   ..."))` and the bare-Surface-1
+negative tests) are preserved verbatim because the concatenated
+output is byte-identical to what slack stage 7 produced.
+
+The MarkdownV2 escape passes themselves do not yet exist in this
+worktree: stage 4 (creating `crates/codeless-bot/src/post.rs`) is
+blocked, so neither the 18-char nor the code-block escape pass
+has a host file. The escape passes are short — `String::with_
+capacity` + character-by-character — and slack does not need
+them, so they live only in the Telegram crate.
+
+### What stage 9 will actually produce when it unblocks
+
+The slack equivalent (`68799e0`, +798 / -21 lines across 3 files)
+is the working template. The Telegram stage 9 maps to it plus the
+renderer-return-type refactor plus the Telegram-poster wrap:
+
+```
+crates/codeless-bot-core/src/
+├── reply/
+│   └── notify.rs     # CHANGED — adds pub struct ReviewContext
+│                     #   (+impl is_empty), pub struct
+│                     #   RenderedNotification (prelude / block /
+│                     #   postlude), widens format_job_failed /
+│                     #   format_job_stopped to take
+│                     #   Option<&ReviewContext> and return
+│                     #   RenderedNotification, adds private
+│                     #   render_review_block + review_type_label
+│                     #   helpers, +15 unit tests pinning every
+│                     #   row of the gate-type label table plus
+│                     #   the is_empty short-circuit plus the
+│                     #   bare-block (non-REVIEW) shape.
+└── outbound.rs       # CHANGED — adds pub const
+                      #   REVIEW_CACHE_CAPACITY: usize = 1024;
+                      #   adds struct ReviewCache with
+                      #   record_pre_check / record_verdict /
+                      #   upsert / take; threads
+                      #   Arc<Mutex<ReviewCache>> through run_loop
+                      #   + handle_envelope + post_notification;
+                      #   matches Event::ReviewPreCheck /
+                      #   Event::ReviewVerdict before the terminal-
+                      #   variant check and returns early; takes
+                      #   the cache entry on the terminal envelope
+                      #   and passes Option<&ReviewContext> to the
+                      #   renderer; +3 unit tests on ReviewCache
+                      #   (record + take, FIFO eviction at
+                      #   capacity, take-on-miss) and +3 wiremock-
+                      #   backed integration tests (
+                      #   ReviewPreCheck+ReviewVerdict+JobFailed
+                      #   renders Surface 2 block, bare JobFailed
+                      #   renders Surface 1 only, two review-only
+                      #   envelopes produce zero posts).
+
+crates/codeless-bot-core/src/
+└── lib.rs            # CHANGED — pub use reply::notify::{
+                      #   ReviewContext, RenderedNotification};
+                      #   pub use outbound::REVIEW_CACHE_CAPACITY;
+                      #   so the Slack and Telegram crates can
+                      #   name them without reaching into private
+                      #   paths.
+
+crates/codeless-bot/src/
+├── post.rs           # CHANGED — TelegramPoster::send_message
+│                     #   accepts the RenderedNotification return
+│                     #   value rather than a flat String;
+│                     #   escapes prelude / postlude with the
+│                     #   18-char MarkdownV2 pass; wraps block (if
+│                     #   present) in triple backticks with the
+│                     #   code-block 2-char escape pass; +2 unit
+│                     #   tests asserting the wrapped output
+│                     #   roundtrips through Telegram's reference
+│                     #   parser (one Surface 2 case, one Surface
+│                     #   1 only) and that the code-block escape
+│                     #   leaves the structured lines unchanged
+│                     #   (no `:` / `-` / `.` escaping inside the
+│                     #   block).
+└── lib.rs            # UNCHANGED on Surface 2 — the publisher
+                      #   spawn from stage 8 already wires the
+                      #   shared ReplyContextMap and the Arc<dyn
+                      #   RpcServer>; the only change visible at
+                      #   the spawn site is the renderer's return
+                      #   type, which propagates through the
+                      #   BotTransport seam without touching this
+                      #   file.
+
+crates/codeless-slack/src/
+├── notify.rs         # CHANGED (after stage 8's move to
+                      #   codeless-bot-core) — re-exports the
+                      #   widened renderer and the new types from
+                      #   codeless-bot-core so existing call sites
+                      #   don't churn.
+├── outbound.rs       # CHANGED (after stage 8's move) — slack-
+                      #   side concatenation of prelude / block /
+                      #   postlude inside ChatPoster::post; the
+                      #   wiremock tests' string assertions stay
+                      #   byte-identical because the concatenation
+                      #   reproduces slack stage 7's output verbatim.
+└── web_api.rs        # CHANGED — ChatPoster::post takes
+                      #   RenderedNotification, concatenates plain.
+```
+
+Tests live with the code (R5):
+
+- `codeless-bot-core/src/reply/notify.rs` keeps slack stage 7's
+  full renderer-string-shape test surface verbatim, adapted to
+  assert on `RenderedNotification` fields rather than the
+  flattened `String`. The 15 unit tests slack stage 7 added (label
+  table row by row, `is_empty` short-circuit, missing-paths-only,
+  pre-check-pass collapses block, JobStopped path, empty-missing-
+  list edge case) stay; assertions like
+  `assert!(body.contains("Type:   diff-verify pre-check auto-fail"))`
+  become
+  `assert_eq!(rendered.block.as_deref().unwrap_or(""), "...")`
+  with the explicit expected block text.
+- `codeless-bot-core/src/outbound.rs` keeps the 3 `ReviewCache`
+  unit tests plus the 3 integration tests slack stage 7 added,
+  with the wiremock POST-body capture updated to assert on the
+  concatenated `prelude + block + postlude` rather than the
+  flattened slack-shape `String`. The "no post on review-only"
+  invariant test stays unchanged.
+- `crates/codeless-bot/src/post.rs` adds two tests asserting the
+  Markdown V2 wrap: one with a Surface 2 block (round-trips
+  through `teloxide::utils::markdown::escape` for the 18-char
+  pass and asserts the triple-backtick fence frames the
+  structured lines unchanged), one with a `None` block (asserts
+  no fence emitted and the full text passes the 18-char escape).
+  The wiremock binding from stage 4 captures the Telegram-side
+  `sendMessage` body and pulls `text` + `parse_mode` for the
+  assertions.
+- `crates/codeless-bot/src/lib.rs` reuses stage 8's `Publisher`
+  spawn test; it gains a single negative assertion that the
+  wrapped Telegram body does NOT contain an unescaped `[` from
+  the `[!]` glyph (a regression guard for the renderer / poster
+  boundary).
+
+The verify trio (`cargo test --workspace`, `cargo clippy
+--workspace --all-targets -- -D warnings`, `cargo fmt --check`)
+must be green before commit.
+
+### What would have to happen for stage 9 to unblock
+
+Same sequence as stage 8, with stage 8 itself at the tail:
+
+1. slack-integration finishes its remaining stages (4 through 10)
+   on its own branch and merges to `master`. Ships
+   `ResumeJobArgs.bypass`, `ResumeJobArgs.next_stage_comment`,
+   `JobResumed.actor`, `JobResumed.comment`, and the
+   `crates/codeless-slack/` directory (now 11 files post-slack-
+   stage-7: the original 9 plus `outbound.rs` (1226 lines) and
+   `notify.rs` (585 lines)).
+2. This worktree rebases (or a fresh worktree opens) on the
+   updated `master`. The four-grep gate then passes.
+3. The `codeless-bot-core` extraction runs and moves
+   `outbound.rs` + `notify.rs` (including their slack-stage-7
+   contents — `ReviewContext`, `ReviewCache`, the enrichment-
+   event capture arms, the gate-type label table) out of
+   `codeless-slack` alongside the stage-4/5/6 shared modules.
+4. Stage 4 (scaffold Telegram transport) creates
+   `crates/codeless-bot/` with `Cargo.toml`, `lib.rs`,
+   `config.rs`, `long_poll.rs`, `post.rs` (with the 18-char
+   MarkdownV2 escape pass already present from the Surface 1
+   posting work), plus the `teloxide` (or hand-rolled `reqwest`)
+   dep and the `--enable-telegram-bot` CLI flag.
+5. Stage 5 (Telegram parser extensions) adds the three concrete
+   widenings inside `codeless-bot-core` enumerated in that stage's
+   blocked-doc section.
+6. Stage 6 (dispatcher + Telegram poster) adds the inbound
+   command pipeline and the `BotTransport` impl, with
+   `TelegramBot::spawn` exposing `reply_context_map()` for stage
+   8 to share.
+7. Stage 7's REVIEW gate runs with a real end-to-end Telegram
+   client trace and either passes or sends the job back to a
+   prior stage.
+8. Stage 8 adds the publisher spawn, the per-chat `TokenBucket`
+   wrap, and the matching tests.
+9. *Then* this stage 9 makes its concrete additions:
+
+   a. Refactor `codeless-bot-core::reply::notify::format_job_failed`
+      and `format_job_stopped` to return `RenderedNotification`
+      (prelude / block / postlude). Update slack's `web_api.rs`
+      to concatenate the three fields. The slack-side wiremock
+      tests stay byte-identical because the concatenation
+      reproduces slack stage 7's output verbatim.
+   b. Add the Markdown V2 wrap to `crates/codeless-bot/src/
+      post.rs`: escape prelude / postlude with the 18-char pass,
+      wrap block in triple backticks with the code-block 2-char
+      escape pass. Skip the fence entirely when block is None.
+   c. (Already present from stage 8's move and slack stage 7's
+      contents: `ReviewContext`, `ReviewCache`, the enrichment-
+      event capture arms in `handle_envelope`, the gate-type
+      label table in `notify`, the cache lookup in
+      `post_notification`.)
+   d. Tests per the section above.
+
+   The verify trio must be green before commit.
+
+### What this stage produces
+
+This commit. The decisions doc gains this Stage-9 section so the
+audit trail records *why* stage 9 was halted in the same form as
+stages 4, 5, 6 and 8's records. No `crates/` files are touched;
+no `Cargo.toml` is edited; no Rust is written. `cargo test
+--workspace` was not run for the same reason — there is no Rust
+change in this stage to verify.
+
+Stage 9 is marked `[!]` (blocked) per `CLAUDE.md` R4. The job
+halts here and waits for the eleven preconditions above (A, B, C,
+D, E carried from stages 4–8; I, J, K new at stage 9; plus
+stages 4, 5, 6, 7's REVIEW gate, and 8's own completion). The
+next session that picks this stage up must:
+
+1. Re-run the four-grep gate before writing any code.
+2. Confirm `crates/codeless-bot-core/src/reply/notify.rs` already
+   contains `pub struct ReviewContext`, `pub fn review_type_label`,
+   and the widened `format_job_failed` / `format_job_stopped`
+   signatures (from stage 8's move plus slack stage 7's contents).
+3. Confirm `crates/codeless-bot-core/src/outbound.rs` already
+   contains `pub const REVIEW_CACHE_CAPACITY`, `struct
+   ReviewCache`, and the `Event::ReviewPreCheck` /
+   `Event::ReviewVerdict` arms in `handle_envelope`.
+4. Confirm `crates/codeless-bot/src/post.rs` exists (from stage 4)
+   with the 18-char MarkdownV2 escape pass already in place for
+   Surface 1 posting.
+5. Only then refactor the renderer return type to
+   `RenderedNotification`, propagate through the slack and
+   Telegram posters, and add the Telegram-side preformatted-block
+   wrap and its tests.
+
+If any precondition still fails, that session also halts.
