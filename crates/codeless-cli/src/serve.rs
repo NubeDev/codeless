@@ -757,7 +757,11 @@ fn compose_system_prompt(server: Option<&str>, job: Option<&str>) -> Option<Stri
 }
 
 impl RunnerFactory for DefaultRunnerFactory {
-    fn build(&self, job: &Job) -> Option<Arc<dyn Runner>> {
+    fn build(
+        &self,
+        job: &Job,
+        pending_operator_comment: Option<String>,
+    ) -> Option<Arc<dyn Runner>> {
         // `prompt` is documented as Optional on `SubmitJobArgs`; a
         // missing prompt is most likely a YAML-template job whose
         // stages list carries the real work. We branch on
@@ -769,7 +773,9 @@ impl RunnerFactory for DefaultRunnerFactory {
         if let Some(template_src) = job.template_yaml.as_ref() {
             match JobTemplate::parse_yaml(template_src) {
                 Ok(template) if self.enable_claude => {
-                    let mut runner = TemplateRunner::new(template).with_store(self.store.clone());
+                    let mut runner = TemplateRunner::new(template)
+                        .with_store(self.store.clone())
+                        .with_pending_operator_comment(pending_operator_comment.clone());
                     if let Some(sp) = compose_system_prompt(
                         self.claude_system_prompt.as_deref(),
                         job.system_prompt.as_deref(),
@@ -788,7 +794,9 @@ impl RunnerFactory for DefaultRunnerFactory {
                         stages = template.stages.len(),
                         "running template via mock runner (claude disabled)"
                     );
-                    let runner = TemplateRunner::new(template).with_mock_runner();
+                    let runner = TemplateRunner::new(template)
+                        .with_mock_runner()
+                        .with_pending_operator_comment(pending_operator_comment.clone());
                     return Some(Arc::new(runner));
                 }
                 Err(err) => {
@@ -799,6 +807,13 @@ impl RunnerFactory for DefaultRunnerFactory {
                 }
             }
         }
+        // Single-prompt runners (claude/anthropic/codex/copilot
+        // direct, mock) have no per-stage prompt builder, so the
+        // operator-comment slot is silently dropped here. The
+        // resume path that produces the comment only makes sense
+        // for multi-stage template jobs; binding the comment for a
+        // one-shot run has nowhere coherent to surface.
+        let _ = pending_operator_comment;
         let prompt = job.prompt.clone().unwrap_or_default();
         // `mock` is only built when no real runner is enabled — same
         // gate as the published runner list. A `runner: "mock"` job

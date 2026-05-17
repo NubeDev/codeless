@@ -59,7 +59,11 @@ fn main() {
 struct DesktopRunnerFactory;
 
 impl RunnerFactory for DesktopRunnerFactory {
-    fn build(&self, job: &Job) -> Option<Arc<dyn Runner>> {
+    fn build(
+        &self,
+        job: &Job,
+        _pending_operator_comment: Option<String>,
+    ) -> Option<Arc<dyn Runner>> {
         if job.runner == "mock" {
             Some(Arc::new(MockRunner::new(vec![MockStep::Finish(
                 RunnerOutcome::Completed,

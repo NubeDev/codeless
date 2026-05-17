@@ -75,8 +75,17 @@ use crate::time::now_ms;
 /// extra DB round trip. Returning `None` means "this runner isn't
 /// enabled on this core"; the loop treats this as a non-retryable
 /// failure and transitions the job straight to `Failed`.
+///
+/// `pending_operator_comment` is the value the driver loop already
+/// took-and-cleared from `jobs.pending_operator_comment` for this
+/// build. Threading it through the factory keeps the take atomic
+/// (one DB statement in the driver, the factory just plumbs the
+/// value into runner construction) so a runner rebuild without a
+/// fresh resume call sees `None` rather than re-applying stale
+/// guidance.
 pub trait RunnerFactory: Send + Sync + 'static {
-    fn build(&self, job: &Job) -> Option<Arc<dyn Runner>>;
+    fn build(&self, job: &Job, pending_operator_comment: Option<String>)
+        -> Option<Arc<dyn Runner>>;
 }
 
 /// Bounded retry-with-backoff policy for `drive_job` failures.
@@ -355,7 +364,26 @@ async fn dispatch<F: RunnerFactory>(
         }
     }
 
-    let runner = match factory.build(&job) {
+    // Take-and-clear the operator's pending comment for this job.
+    // The slot is consumed exactly once per runner build: a
+    // subsequent driver restart or second resume without a fresh
+    // `next_stage_comment` sees `None` rather than re-threading
+    // stale guidance into the wrong stage. A DB error here is not
+    // fatal to the job — the comment is best-effort context, not
+    // correctness — but is logged so a regression is visible.
+    let pending_operator_comment = match rpc.store.take_pending_operator_comment(job.id).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                %job_id,
+                error = %e,
+                "driver: failed to take pending_operator_comment; runner builds without it",
+            );
+            None
+        }
+    };
+
+    let runner = match factory.build(&job, pending_operator_comment) {
         Some(r) => r,
         None => {
             // Runner not enabled on this core. Non-retryable —

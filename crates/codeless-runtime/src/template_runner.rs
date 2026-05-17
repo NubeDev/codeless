@@ -1607,6 +1607,7 @@ mod tests {
             system_prompt: None,
             persona_id: None,
             auto_bypass_policy: policy,
+            pending_operator_comment: None,
             started_at: None,
             ended_at: None,
             created_at: UnixMillis(0),

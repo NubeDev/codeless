@@ -288,6 +288,7 @@ mod tests {
             system_prompt: None,
             persona_id: None,
             auto_bypass_policy: None,
+            pending_operator_comment: None,
             started_at: None,
             ended_at: None,
             created_at: codeless_types::time::UnixMillis(0),

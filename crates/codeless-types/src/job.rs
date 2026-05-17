@@ -130,6 +130,7 @@ pub struct Job {
     /// policy and halt regardless — see
     /// `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
     pub auto_bypass_policy: Option<AutoBypassPolicy>,
+    pub pending_operator_comment: Option<String>,
     pub started_at: Option<UnixMillis>,
     pub ended_at: Option<UnixMillis>,
     pub created_at: UnixMillis,

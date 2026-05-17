@@ -121,6 +121,7 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
         // clean optional regardless of how the UI shaped the payload.
         persona_id: args.persona_id.filter(|s| !s.is_empty()),
         auto_bypass_policy: args.auto_bypass_policy,
+        pending_operator_comment: None,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -233,19 +234,27 @@ pub(super) async fn resume_job(rpc: &InProcessRpc, args: ResumeJobArgs) -> RpcRe
             );
         }
     }
-    // `next_stage_comment` rides into the runner via the
-    // `TemplateRunner::pending_operator_comment` builder; the
-    // factory-side persistence channel that hands the comment to the
-    // runner factory on dispatch lands in a later stage of the Slack
-    // integration. For now, log the receipt so a misconfigured
-    // operator path is visible in `journalctl` without the comment
-    // silently dropping on the floor.
-    if let Some(comment) = args.next_stage_comment.as_deref() {
-        if !comment.is_empty() {
+    // `next_stage_comment` lands on the job row's
+    // `pending_operator_comment` slot. The runner factory consumes
+    // and clears it atomically when building the next runner, so
+    // the comment threads into exactly the stage the operator wrote
+    // it for and a later resume without a fresh comment does not
+    // re-apply stale text. Empty string is normalised to clear.
+    {
+        let normalised = args
+            .next_stage_comment
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        rpc.store
+            .set_pending_operator_comment(job.id, normalised)
+            .await
+            .map_err(super::db_err)?;
+        if let Some(c) = normalised {
             tracing::info!(
                 job_id = %job.id,
-                comment_len = comment.len(),
-                "resume_job: next_stage_comment received; runner-side wiring lands in a later stage of the Slack integration",
+                comment_len = c.len(),
+                "resume_job: stashed pending_operator_comment for next runner build",
             );
         }
     }
@@ -886,6 +895,7 @@ pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResu
         system_prompt: source.system_prompt,
         persona_id: source.persona_id,
         auto_bypass_policy: source.auto_bypass_policy,
+        pending_operator_comment: None,
         started_at: None,
         ended_at: None,
         created_at: now,

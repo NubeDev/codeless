@@ -95,8 +95,8 @@ impl SqliteStore {
              (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
               workspace_mode, worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
               model, permission_mode, effort, system_prompt, persona_id, \
-              auto_bypass_policy, started_at, ended_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              auto_bypass_policy, pending_operator_comment, started_at, ended_at, created_at) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(job.id.to_string())
         .bind(job.repo_id.to_string())
@@ -117,6 +117,7 @@ impl SqliteStore {
         .bind(&job.system_prompt)
         .bind(&job.persona_id)
         .bind(&auto_bypass_policy)
+        .bind(&job.pending_operator_comment)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -142,7 +143,7 @@ impl SqliteStore {
                 repo_id=?, status=?, stop_reason=?, template_yaml=?, prompt=?, runner=?, \
                 branch=?, workspace_mode=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
                 cost_cents=?, model=?, permission_mode=?, effort=?, system_prompt=?, \
-                persona_id=?, auto_bypass_policy=?, started_at=?, ended_at=?, created_at=? \
+                persona_id=?, auto_bypass_policy=?, pending_operator_comment=?, started_at=?, ended_at=?, created_at=? \
              WHERE id=?",
         )
         .bind(job.repo_id.to_string())
@@ -163,6 +164,7 @@ impl SqliteStore {
         .bind(&job.system_prompt)
         .bind(&job.persona_id)
         .bind(&auto_bypass_policy)
+        .bind(&job.pending_operator_comment)
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -170,6 +172,48 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    /// Stash an operator comment on the job row so the next runner
+    /// build picks it up. Overwrites any prior unconsumed comment
+    /// because a fresh resume call expresses fresh operator intent;
+    /// the prior text would otherwise leak into a stage the operator
+    /// did not write it for. `None` clears the slot explicitly.
+    pub async fn set_pending_operator_comment(
+        &self,
+        job_id: JobId,
+        comment: Option<&str>,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query("UPDATE jobs SET pending_operator_comment = ? WHERE id = ?")
+            .bind(comment)
+            .bind(job_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Atomically read and clear the pending operator comment. The
+    /// runner factory calls this once per `build()` so a single
+    /// resume comment threads into exactly one runner instance — a
+    /// subsequent rebuild (e.g. driver restart, second resume
+    /// without a fresh comment) sees `None` rather than re-applying
+    /// stale guidance to the wrong stage. SQLite's `RETURNING`
+    /// makes the read+clear a single statement, no transaction
+    /// gymnastics needed.
+    pub async fn take_pending_operator_comment(
+        &self,
+        job_id: JobId,
+    ) -> sqlx::Result<Option<String>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "UPDATE jobs \
+             SET pending_operator_comment = NULL \
+             WHERE id = ? AND pending_operator_comment IS NOT NULL \
+             RETURNING pending_operator_comment",
+        )
+        .bind(job_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|(c,)| c))
     }
 
     /// Hard-delete a job row and all associated events, stages, and
@@ -1302,6 +1346,7 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
         system_prompt: row.try_get("system_prompt")?,
         persona_id: row.try_get("persona_id")?,
         auto_bypass_policy: decode_auto_bypass_policy(row.try_get("auto_bypass_policy")?)?,
+        pending_operator_comment: row.try_get("pending_operator_comment")?,
         started_at: started_at.map(UnixMillis),
         ended_at: ended_at.map(UnixMillis),
         created_at: UnixMillis(row.try_get("created_at")?),

@@ -2151,6 +2151,7 @@ mod tests {
                 system_prompt: None,
                 persona_id: None,
                 auto_bypass_policy: None,
+                pending_operator_comment: None,
                 started_at: Some(now),
                 ended_at: None,
                 created_at: now,

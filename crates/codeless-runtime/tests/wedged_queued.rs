@@ -66,7 +66,7 @@ fn fresh_repo() -> (TempDir, PathBuf) {
 struct AlwaysMock;
 
 impl RunnerFactory for AlwaysMock {
-    fn build(&self, _job: &Job) -> Option<Arc<dyn Runner>> {
+    fn build(&self, _job: &Job, _pending_operator_comment: Option<String>) -> Option<Arc<dyn Runner>> {
         Some(Arc::new(MockRunner::new(vec![MockStep::Finish(
             RunnerOutcome::Completed,
         )])))
