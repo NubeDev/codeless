@@ -29,7 +29,8 @@ use async_trait::async_trait;
 use codeless_rpc::{
     error::RpcResult,
     methods::{
-        GetJobArgs, ListJobsArgs, ListJobsResult, ResumeJobArgs, StartJobArgs, StopJobArgs,
+        GetJobArgs, ListJobsArgs, ListJobsResult, ListStagesArgs, ListStagesResult, ResumeJobArgs,
+        StartJobArgs, StopJobArgs,
     },
     RpcServer,
 };
@@ -44,7 +45,9 @@ use crate::web_api::ChatPoster;
 /// The slice of `RpcServer` the dispatcher actually calls. Defining a
 /// smaller trait avoids forcing every Slack-side test to fake all ~80
 /// methods on `RpcServer` and keeps the production blanket impl
-/// transparently forwarded.
+/// transparently forwarded. The outbound failure publisher
+/// ([`crate::outbound`]) also goes through this trait so test fakes
+/// can drive both the inbound and outbound surfaces with one stub.
 #[async_trait]
 pub trait CommandBackend: Send + Sync + 'static {
     async fn list_jobs(&self, args: ListJobsArgs) -> RpcResult<ListJobsResult>;
@@ -52,6 +55,11 @@ pub trait CommandBackend: Send + Sync + 'static {
     async fn start_job(&self, args: StartJobArgs) -> RpcResult<Job>;
     async fn stop_job(&self, args: StopJobArgs) -> RpcResult<()>;
     async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job>;
+    /// Used by the outbound failure publisher to resolve the failing
+    /// stage's ordinal and title at notification time. Best-effort —
+    /// the publisher falls back to a bare header when this fails
+    /// rather than dropping the post entirely.
+    async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult>;
 }
 
 /// Forward `CommandBackend` to any `RpcServer` implementor. The
@@ -83,6 +91,9 @@ impl CommandBackend for RpcServerBackend {
     }
     async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job> {
         self.inner.resume_job(args).await
+    }
+    async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult> {
+        self.inner.list_stages(args).await
     }
 }
 
@@ -182,11 +193,7 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub fn new(
-        backend: Arc<dyn CommandBackend>,
-        poster: ChatPoster,
-        threads: ThreadMap,
-    ) -> Self {
+    pub fn new(backend: Arc<dyn CommandBackend>, poster: ChatPoster, threads: ThreadMap) -> Self {
         Self {
             backend,
             poster,
@@ -213,7 +220,13 @@ impl Dispatcher {
     pub async fn dispatch_message(&self, msg: InboundMessage) {
         let reply_text = self.build_reply(&msg).await;
         // Reply in the same thread the command came from; if it was a
-        // top-level message, post a top-level reply.
+        // top-level message, post a top-level reply. The dispatcher
+        // discards the returned `PostedMessage` — only the outbound
+        // failure publisher needs the new message's `ts` (to register
+        // a `ThreadMap` entry); a command reply lands either in an
+        // existing thread (already mapped) or as a fresh top-level
+        // post that the operator did not initiate from a notification
+        // thread, so there is nothing to bind a future reply to.
         if let Err(err) = self
             .poster
             .post(&msg.channel, &reply_text, msg.thread_ts.as_deref())
@@ -257,7 +270,10 @@ impl Dispatcher {
         match cmd {
             Command::Help => Ok(reply::format_help()),
             Command::ListJobs => {
-                let res = self.backend.list_jobs(ListJobsArgs { repo_id: None }).await?;
+                let res = self
+                    .backend
+                    .list_jobs(ListJobsArgs { repo_id: None })
+                    .await?;
                 Ok(reply::format_list_jobs(&res))
             }
             Command::GetJob { job_id } => {
@@ -400,6 +416,10 @@ mod tests {
                 .take()
                 .unwrap_or_else(|| Err(RpcError::NotFound("unset".into())))
         }
+        async fn list_stages(&self, _args: ListStagesArgs) -> RpcResult<ListStagesResult> {
+            self.record("list_stages");
+            Ok(ListStagesResult { stages: vec![] })
+        }
     }
 
     fn dispatcher_with(backend: Arc<FakeBackend>) -> (Dispatcher, ThreadMap) {
@@ -411,23 +431,16 @@ mod tests {
         // dedicated tests below.
         let poster = ChatPoster::new(http, "xoxb-test").with_base_url("http://127.0.0.1:1/api");
         let threads = ThreadMap::new();
-        (
-            Dispatcher::new(backend, poster, threads.clone()),
-            threads,
-        )
+        (Dispatcher::new(backend, poster, threads.clone()), threads)
     }
 
     #[tokio::test]
     async fn list_jobs_command_calls_backend_and_formats() {
         let backend = Arc::new(FakeBackend::default());
         let job = sample_job("scope-mutable-ui", JobStatus::Failed);
-        backend
-            .list_jobs
-            .lock()
-            .unwrap()
-            .replace(ListJobsResult {
-                jobs: vec![job.clone()],
-            });
+        backend.list_jobs.lock().unwrap().replace(ListJobsResult {
+            jobs: vec![job.clone()],
+        });
         let (disp, _) = dispatcher_with(backend.clone());
         let body = disp
             .build_reply(&InboundMessage {
@@ -665,7 +678,8 @@ mod tests {
             .and(path("/api/chat.postMessage"))
             .and(body_partial_json(serde_json::json!({"channel": "C1"})))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "1700.0001"})),
             )
             .expect(1)
             .mount(&server)

@@ -58,6 +58,31 @@ struct ChatPostMessageRequest<'a> {
 struct ChatPostMessageResponse {
     ok: bool,
     error: Option<String>,
+    /// The Slack-side timestamp of the posted message. For a top-level
+    /// post the value doubles as the `thread_ts` of every reply in the
+    /// thread — the outbound failure publisher (stage 6) keys its
+    /// `ThreadMap` registration off this field so that bare-verb
+    /// replies (`resume bypass`, `stop`) inside the notification
+    /// thread resolve to the failing job's id. A reply-post returns
+    /// its own ts; the publisher discards it because the parent
+    /// thread is already mapped.
+    ts: Option<String>,
+}
+
+/// Outcome of a successful `chat.postMessage` call. The `ts` is the
+/// Slack-side message timestamp; for a top-level post it doubles as
+/// the `thread_ts` of every subsequent reply, which is why the
+/// outbound failure publisher (stage 6) registers it in the
+/// [`crate::ThreadMap`] right after posting the notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostedMessage {
+    /// Channel the post landed in. Echoed back from Slack — Slack
+    /// resolves channel names server-side, so a caller that passed a
+    /// `#name` form gets the canonical `C…` id here.
+    pub channel: String,
+    /// Slack-side message timestamp. Used as the `thread_ts` of
+    /// in-thread replies.
+    pub ts: String,
 }
 
 impl ChatPoster {
@@ -88,7 +113,7 @@ impl ChatPoster {
         channel: &str,
         text: &str,
         thread_ts: Option<&str>,
-    ) -> Result<(), SlackPostError> {
+    ) -> Result<PostedMessage, SlackPostError> {
         let url = format!("{}/chat.postMessage", self.base_url);
         let body = ChatPostMessageRequest {
             channel,
@@ -112,7 +137,18 @@ impl ChatPoster {
         if !payload.ok {
             return Err(SlackPostError::SlackApi(payload.error));
         }
-        Ok(())
+        // `ts` should always be present on `ok = true` per Slack's
+        // documented response; treat a missing value as a Slack-side
+        // protocol break rather than a silent no-op so the outbound
+        // publisher's ThreadMap registration never sees a phantom
+        // post.
+        let ts = payload
+            .ts
+            .ok_or_else(|| SlackPostError::SlackApi(Some("missing-ts".to_string())))?;
+        Ok(PostedMessage {
+            channel: channel.to_string(),
+            ts,
+        })
     }
 }
 
@@ -129,23 +165,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn happy_path_returns_ok_on_slack_ok() {
+    async fn happy_path_returns_posted_message_with_ts() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat.postMessage"))
             .and(header("Authorization", "Bearer xoxb-test"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"ok": true, "channel": "C1"})),
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"ok": true, "channel": "C1", "ts": "1700.0042"}),
+                ),
             )
             .expect(1)
             .mount(&server)
             .await;
         let poster = poster_against(&server);
-        poster
+        let posted = poster
             .post("C1", "hello", None)
             .await
             .expect("happy path should succeed");
+        assert_eq!(posted.channel, "C1");
+        assert_eq!(posted.ts, "1700.0042");
     }
 
     #[tokio::test]
@@ -157,16 +196,42 @@ mod tests {
                 serde_json::json!({"thread_ts": "1700.0001"}),
             ))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "1700.0009"})),
             )
             .expect(1)
             .mount(&server)
             .await;
         let poster = poster_against(&server);
-        poster
+        let posted = poster
             .post("C1", "hello", Some("1700.0001"))
             .await
             .expect("thread_ts path should succeed");
+        // The reply's ts (not the parent's) is what Slack returns here;
+        // the outbound publisher discards it because the parent thread
+        // is already mapped — only the assertion shape matters.
+        assert_eq!(posted.ts, "1700.0009");
+    }
+
+    #[tokio::test]
+    async fn missing_ts_surfaces_as_slack_api_error() {
+        // A `ok: true` response with no `ts` is a Slack-side protocol
+        // break (the field is documented as always present on success).
+        // Surfacing it as `SlackApi("missing-ts")` keeps the outbound
+        // publisher from registering a phantom thread.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat.postMessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let poster = poster_against(&server);
+        let err = poster.post("C1", "hello", None).await.unwrap_err();
+        match err {
+            SlackPostError::SlackApi(Some(label)) => assert_eq!(label, "missing-ts"),
+            other => panic!("expected SlackApi(missing-ts), got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -174,9 +239,10 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat.postMessage"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({"ok": false, "error": "not_in_channel"}),
-            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": false, "error": "not_in_channel"})),
+            )
             .expect(1)
             .mount(&server)
             .await;

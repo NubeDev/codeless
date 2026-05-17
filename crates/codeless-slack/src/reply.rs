@@ -101,7 +101,11 @@ pub fn format_start_job(job: &Job) -> String {
 /// gracefully to the short-id form.
 pub fn format_stop_job(job_id_display: &str, template: Option<&str>) -> String {
     match template {
-        Some(name) => format!("[ok] Stopped {name} (`{id}`).", name = name, id = job_id_display),
+        Some(name) => format!(
+            "[ok] Stopped {name} (`{id}`).",
+            name = name,
+            id = job_id_display
+        ),
         None => format!("[ok] Stopped `{id}`.", id = job_id_display),
     }
 }
@@ -302,9 +306,7 @@ mod tests {
     #[test]
     fn template_name_skips_comments_and_blanks() {
         let mut job = sample_job("ignored");
-        job.template_yaml = Some(
-            "# header comment\n\nname: real-name\nstages: []\n".to_string(),
-        );
+        job.template_yaml = Some("# header comment\n\nname: real-name\nstages: []\n".to_string());
         assert_eq!(template_name(&job).as_deref(), Some("real-name"));
     }
 
@@ -314,9 +316,7 @@ mod tests {
         // A nested `name:` under `stages:` must not be picked up as
         // the template's own name; the helper bails as soon as it
         // hits an indented line without seeing a top-level `name:`.
-        job.template_yaml = Some(
-            "stages:\n  - name: step-one\n    run: noop\n".to_string(),
-        );
+        job.template_yaml = Some("stages:\n  - name: step-one\n    run: noop\n".to_string());
         assert!(template_name(&job).is_none());
     }
 
