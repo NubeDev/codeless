@@ -49,8 +49,10 @@ pub use config::{
     SlackConfig, SlackConfigError, SLACK_APP_TOKEN_KEY, SLACK_BOT_TOKEN_KEY, SLACK_CHANNEL_KEY,
 };
 pub use dispatcher::{CommandBackend, Dispatcher, InboundMessage, RpcServerBackend};
+pub use notify::ReviewContext;
 pub use outbound::{
     EventSource, OutboundConfig, OutboundPublisher, RpcServerEventSource, DEBOUNCE_WINDOW,
+    REVIEW_CACHE_CAPACITY,
 };
 pub use socket_mode::{SocketModeError, SocketModeSession};
 pub use thread_map::ThreadMap;

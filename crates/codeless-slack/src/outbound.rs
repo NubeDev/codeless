@@ -17,6 +17,26 @@
 //! channel into noise. A future "verbose mode" opt-in is a separate
 //! feature.
 //!
+//! ## Surface 2 — REVIEW gate context
+//!
+//! In addition to the terminal-only post rule above, the publisher
+//! quietly tracks two enrichment events as they fly past:
+//!
+//!   - [`Event::ReviewPreCheck`] — the Layer-1 diff-verify pre-check
+//!     outcome for a REVIEW stage.
+//!   - [`Event::ReviewVerdict`] — the final REVIEW verdict (model
+//!     Pass / Fail or runtime auto-fail).
+//!
+//! Both are stored in a small in-memory [`ReviewCache`] keyed by
+//! `StageId`. When a `JobFailed` / `JobStopped` lands, the publisher
+//! looks up the failing stage's id, pulls the context (if any), and
+//! passes it to the renderer so the Slack post grows the structured
+//! gate block from `notify::ReviewContext`. The cache holds at most
+//! [`REVIEW_CACHE_CAPACITY`] entries and falls back to the bare
+//! Surface 1 shape on a miss — the SCOPE doc names the rule
+//! ("notifications are additive; the durable record is the events
+//! table") and the renderer is built to degrade.
+//!
 //! ## Debounce
 //!
 //! Per the SCOPE doc Risk 2: a job stuck in a retry loop must not
@@ -56,19 +76,30 @@ use async_trait::async_trait;
 use codeless_rpc::error::{RpcError, RpcResult};
 use codeless_rpc::methods::{GetJobArgs, ListStagesArgs, StageRollup};
 use codeless_rpc::{EventFilter, EventStream, RpcServer};
-use codeless_types::{Event, JobId, StopReason};
+use codeless_types::review_gate::{PreCheckOutcome, ReviewVerdict};
+use codeless_types::{Event, JobId, StageId, StopReason};
 use futures_util::StreamExt;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::dispatcher::CommandBackend;
-use crate::notify;
+use crate::notify::{self, ReviewContext};
 use crate::thread_map::ThreadMap;
 use crate::web_api::ChatPoster;
 
 /// Per-job debounce window. Matches the SCOPE doc: one event-driven
 /// outbound post per job per 5 minutes max.
 pub const DEBOUNCE_WINDOW: Duration = Duration::from_secs(300);
+
+/// Upper bound on entries the [`ReviewCache`] holds. REVIEW gate
+/// events fire at most twice per REVIEW stage (one pre-check, one
+/// verdict) and the cache only matters until the matching
+/// `JobFailed` / `JobStopped` lands, so the live working set is
+/// small (one entry per in-flight REVIEW stage). The cap is a guard
+/// against a long-lived process accumulating an entry per REVIEW
+/// stage ever observed: at 1024 entries the map sits well under
+/// 64 KB and the oldest entries are evicted on insert.
+pub const REVIEW_CACHE_CAPACITY: usize = 1024;
 
 /// Minimal surface the publisher needs from the runtime for the
 /// subscription side of the loop. `RpcServer` already supplies this;
@@ -196,6 +227,7 @@ async fn run_loop(
     };
 
     let debouncer = Arc::new(Mutex::new(Debouncer::new(config.debounce_window)));
+    let reviews = Arc::new(Mutex::new(ReviewCache::new(REVIEW_CACHE_CAPACITY)));
     loop {
         tokio::select! {
             biased;
@@ -203,7 +235,7 @@ async fn run_loop(
             next = stream.next() => {
                 let Some(item) = next else { return };
                 match item {
-                    Ok(env) => handle_envelope(env.event, &config, &backend, &poster, &threads, &debouncer).await,
+                    Ok(env) => handle_envelope(env.event, &config, &backend, &poster, &threads, &debouncer, &reviews).await,
                     Err(e) => {
                         // A single error envelope is logged and skipped — the
                         // bus stream typically recovers; an unrecoverable
@@ -224,7 +256,31 @@ async fn handle_envelope(
     poster: &ChatPoster,
     threads: &ThreadMap,
     debouncer: &Arc<Mutex<Debouncer>>,
+    reviews: &Arc<Mutex<ReviewCache>>,
 ) {
+    // REVIEW-gate enrichment events arrive ahead of the terminal
+    // envelope by construction (the template runner publishes the
+    // pre-check and the verdict before transitioning the stage and
+    // the job to Failed). Updating the cache before checking for a
+    // terminal variant lets the lookup downstream of `JobFailed` see
+    // the freshly stored context without an extra hop.
+    match &event {
+        Event::ReviewPreCheck { stage_id, outcome } => {
+            reviews
+                .lock()
+                .await
+                .record_pre_check(*stage_id, outcome.clone());
+            return;
+        }
+        Event::ReviewVerdict { stage_id, verdict } => {
+            reviews
+                .lock()
+                .await
+                .record_verdict(*stage_id, verdict.clone());
+            return;
+        }
+        _ => {}
+    }
     let (job_id, kind) = match event {
         Event::JobFailed { job_id } => (job_id, OutboundKind::Failed),
         Event::JobStopped { job_id, reason } => (job_id, OutboundKind::Stopped(reason)),
@@ -234,7 +290,9 @@ async fn handle_envelope(
         tracing::debug!(%job_id, "slack: outbound debounced");
         return;
     }
-    if let Err(err) = post_notification(job_id, kind, config, backend, poster, threads).await {
+    if let Err(err) =
+        post_notification(job_id, kind, config, backend, poster, threads, reviews).await
+    {
         tracing::warn!(%job_id, error = %err, "slack: outbound publish failed");
     }
 }
@@ -260,6 +318,7 @@ async fn post_notification(
     backend: &Arc<dyn CommandBackend>,
     poster: &ChatPoster,
     threads: &ThreadMap,
+    reviews: &Arc<Mutex<ReviewCache>>,
 ) -> Result<(), OutboundError> {
     let job = backend
         .get_job(GetJobArgs { job_id })
@@ -283,13 +342,31 @@ async fn post_notification(
         }
     };
 
+    // Pull the REVIEW-gate context for the failing stage (if any).
+    // The cache is keyed by stage id, so a non-REVIEW failure or a
+    // REVIEW stage whose pre-check/verdict events never fired produces
+    // `None` and the renderer collapses the Surface 2 block. The take
+    // call evicts the entry so a future retry of the same stage starts
+    // from a clean cache; the SCOPE doc names notifications as
+    // additive (the events table is the durable record) so an evicted
+    // entry that the renderer never used is not a data loss.
+    let review_ctx = match failing_stage.as_ref() {
+        Some(s) => reviews.lock().await.take(s.stage.id),
+        None => None,
+    };
+    let review_ref = review_ctx.as_ref();
+
     let body = match kind {
         OutboundKind::Failed => {
-            notify::format_job_failed(&job, failing_stage.as_ref(), total_stages)
+            notify::format_job_failed(&job, failing_stage.as_ref(), total_stages, review_ref)
         }
-        OutboundKind::Stopped(reason) => {
-            notify::format_job_stopped(&job, failing_stage.as_ref(), total_stages, reason)
-        }
+        OutboundKind::Stopped(reason) => notify::format_job_stopped(
+            &job,
+            failing_stage.as_ref(),
+            total_stages,
+            reason,
+            review_ref,
+        ),
     };
 
     let posted = poster.post(&config.channel_id, &body, None).await?;
@@ -320,6 +397,75 @@ fn pick_failing_stage(stages: &[StageRollup]) -> Option<&StageRollup> {
                 .max_by_key(|s| s.stage.ordinal)
         })
         .or_else(|| stages.iter().max_by_key(|s| s.stage.ordinal))
+}
+
+/// Per-stage REVIEW-gate context cache. Populated as `ReviewPreCheck`
+/// and `ReviewVerdict` envelopes fly past the publisher and consumed
+/// when the matching `JobFailed` / `JobStopped` lands. A bounded
+/// FIFO eviction keeps the live set capped (the cache is only useful
+/// up to the matching terminal event; entries that miss their
+/// terminal are pruned when capacity is hit).
+struct ReviewCache {
+    capacity: usize,
+    entries: HashMap<StageId, ReviewContext>,
+    /// Insertion order so the oldest entry can be evicted on
+    /// overflow. The vector is rebuilt cheaply on `take` because
+    /// REVIEW events are uncommon relative to the rest of the bus
+    /// traffic; a more elaborate structure would cost more than it
+    /// saves at this scale.
+    order: Vec<StageId>,
+}
+
+impl ReviewCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: HashMap::new(),
+            order: Vec::new(),
+        }
+    }
+
+    fn record_pre_check(&mut self, stage_id: StageId, outcome: PreCheckOutcome) {
+        self.upsert(stage_id, |ctx| ctx.pre_check = Some(outcome));
+    }
+
+    fn record_verdict(&mut self, stage_id: StageId, verdict: ReviewVerdict) {
+        self.upsert(stage_id, |ctx| ctx.verdict = Some(verdict));
+    }
+
+    fn upsert<F>(&mut self, stage_id: StageId, mutate: F)
+    where
+        F: FnOnce(&mut ReviewContext),
+    {
+        let is_new = !self.entries.contains_key(&stage_id);
+        let ctx = self.entries.entry(stage_id).or_default();
+        mutate(ctx);
+        if is_new {
+            self.order.push(stage_id);
+            while self.order.len() > self.capacity {
+                let evict = self.order.remove(0);
+                self.entries.remove(&evict);
+            }
+        }
+    }
+
+    /// Pull and remove the context for the given stage. Returning
+    /// `None` on a miss is the normal path for non-REVIEW failures.
+    /// Removal (rather than read-only lookup) is intentional — the
+    /// cache only matters up to the matching terminal event, and
+    /// keeping the entry past that point would only delay eviction
+    /// without buying anything for a future event the renderer will
+    /// not see.
+    fn take(&mut self, stage_id: StageId) -> Option<ReviewContext> {
+        let ctx = self.entries.remove(&stage_id)?;
+        self.order.retain(|id| *id != stage_id);
+        Some(ctx)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 /// Per-job debounce ledger. `allow(job_id)` returns `true` when no
@@ -778,5 +924,303 @@ mod tests {
         ];
         let pick = pick_failing_stage(&stages).unwrap();
         assert_eq!(pick.stage.ordinal, 1);
+    }
+
+    #[test]
+    fn review_cache_records_pre_check_and_verdict_for_same_stage() {
+        let mut cache = ReviewCache::new(4);
+        let stage_id = StageId::new();
+        cache.record_pre_check(
+            stage_id,
+            PreCheckOutcome::Fail {
+                missing: vec!["a".to_string()],
+            },
+        );
+        cache.record_verdict(
+            stage_id,
+            ReviewVerdict::AutoFail {
+                reason: "x".to_string(),
+            },
+        );
+        let ctx = cache.take(stage_id).expect("entry present");
+        assert!(matches!(ctx.pre_check, Some(PreCheckOutcome::Fail { .. })));
+        assert!(matches!(ctx.verdict, Some(ReviewVerdict::AutoFail { .. })));
+        // Take is destructive — a second take must miss so a future
+        // notification for the same stage starts from a clean slate.
+        assert!(cache.take(stage_id).is_none());
+    }
+
+    #[test]
+    fn review_cache_evicts_oldest_when_capacity_hit() {
+        let mut cache = ReviewCache::new(2);
+        let a = StageId::new();
+        let b = StageId::new();
+        let c = StageId::new();
+        cache.record_pre_check(
+            a,
+            PreCheckOutcome::Fail {
+                missing: vec!["a".to_string()],
+            },
+        );
+        cache.record_pre_check(
+            b,
+            PreCheckOutcome::Fail {
+                missing: vec!["b".to_string()],
+            },
+        );
+        cache.record_pre_check(
+            c,
+            PreCheckOutcome::Fail {
+                missing: vec!["c".to_string()],
+            },
+        );
+        assert_eq!(cache.len(), 2);
+        // `a` was the oldest; the FIFO eviction must drop it first.
+        assert!(cache.take(a).is_none());
+        assert!(cache.take(b).is_some());
+        assert!(cache.take(c).is_some());
+    }
+
+    #[test]
+    fn review_cache_take_on_miss_returns_none() {
+        let mut cache = ReviewCache::new(4);
+        assert!(cache.take(StageId::new()).is_none());
+    }
+
+    #[tokio::test]
+    async fn job_failed_with_review_pre_check_renders_surface_2_block() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat.postMessage"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "1700.0099"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let src = Arc::new(TestSource::default());
+        let mut job = sample_job(
+            "scope-mutable-ui",
+            JobStatus::Failed,
+            Some(StopReason::RunnerCrash),
+        );
+        job.id = JobId::new();
+        let job_id = job.id;
+        src.seed_jobs(vec![job.clone()]);
+        let failing_stage = sample_stage(
+            7,
+            "REVIEW after per-job action loop",
+            StageStatus::Failed,
+            job_id,
+        );
+        let failing_stage_id = failing_stage.stage.id;
+        src.seed_stages(vec![
+            sample_stage(0, "first", StageStatus::Passed, job_id),
+            failing_stage,
+        ]);
+        // The runtime publishes ReviewPreCheck and ReviewVerdict before
+        // transitioning the job; replay that ordering here so the
+        // publisher's cache holds the context when the JobFailed
+        // envelope is dequeued.
+        src.events.lock().unwrap().extend([
+            envelope(
+                Event::ReviewPreCheck {
+                    stage_id: failing_stage_id,
+                    outcome: PreCheckOutcome::Fail {
+                        missing: vec!["DOCS/SCOPE-MUTABLE-UI.md".to_string()],
+                    },
+                },
+                Some(job_id),
+            ),
+            envelope(
+                Event::ReviewVerdict {
+                    stage_id: failing_stage_id,
+                    verdict: ReviewVerdict::AutoFail {
+                        reason: "diff-verify pre-check failed".to_string(),
+                    },
+                },
+                Some(job_id),
+            ),
+            envelope(Event::JobFailed { job_id }, Some(job_id)),
+        ]);
+
+        let threads = ThreadMap::new();
+        let poster = ChatPoster::new(Arc::new(reqwest::Client::new()), "xoxb-test")
+            .with_base_url(server.uri() + "/api");
+        let events: Arc<dyn EventSource> = src.clone();
+        let backend: Arc<dyn CommandBackend> = src.clone();
+        let pub_ = OutboundPublisher::spawn(
+            OutboundConfig::new("C123"),
+            events,
+            backend,
+            poster,
+            threads,
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        pub_.shutdown().await;
+
+        // Snapshot the post body to verify the Surface 2 block landed
+        // alongside the Surface 1 fields.
+        let body_text = received_post_body(&server)
+            .await
+            .expect("publisher posted exactly once");
+        assert!(
+            body_text.contains("Type:   diff-verify pre-check auto-fail"),
+            "missing Type line in:\n{body_text}"
+        );
+        assert!(
+            body_text.contains("Missing paths:"),
+            "missing paths header in:\n{body_text}"
+        );
+        assert!(
+            body_text.contains("DOCS/SCOPE-MUTABLE-UI.md"),
+            "missing paths bullet in:\n{body_text}"
+        );
+        assert!(
+            body_text.contains("Verdict: diff-verify pre-check failed"),
+            "missing Verdict line in:\n{body_text}"
+        );
+        assert!(
+            body_text.contains("Stage:  \"REVIEW after per-job action loop\""),
+            "missing Surface 1 stage line in:\n{body_text}"
+        );
+
+        // Helper to pull the text field out of the captured chat.postMessage
+        // body; lives inside the test so the rest of the file does not see it.
+        async fn received_post_body(server: &MockServer) -> Option<String> {
+            let reqs: Vec<Request> = server.received_requests().await.unwrap_or_default();
+            let r = reqs
+                .into_iter()
+                .find(|r| r.url.path().ends_with("chat.postMessage"))?;
+            let body: serde_json::Value = serde_json::from_slice(&r.body).ok()?;
+            body.get("text").and_then(|v| v.as_str()).map(String::from)
+        }
+    }
+
+    #[tokio::test]
+    async fn job_failed_without_review_events_renders_bare_surface_1() {
+        // A non-REVIEW failure (no ReviewPreCheck / ReviewVerdict in
+        // the stream) must not introduce any Surface 2 lines — the
+        // cache lookup misses and the renderer collapses the block.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat.postMessage"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "1700.0100"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let src = Arc::new(TestSource::default());
+        let mut job = sample_job(
+            "hello-gin",
+            JobStatus::Failed,
+            Some(StopReason::RunnerCrash),
+        );
+        job.id = JobId::new();
+        let job_id = job.id;
+        src.seed_jobs(vec![job.clone()]);
+        src.seed_stages(vec![sample_stage(0, "build", StageStatus::Failed, job_id)]);
+        src.events
+            .lock()
+            .unwrap()
+            .push(envelope(Event::JobFailed { job_id }, Some(job_id)));
+
+        let threads = ThreadMap::new();
+        let poster = ChatPoster::new(Arc::new(reqwest::Client::new()), "xoxb-test")
+            .with_base_url(server.uri() + "/api");
+        let events: Arc<dyn EventSource> = src.clone();
+        let backend: Arc<dyn CommandBackend> = src.clone();
+        let pub_ = OutboundPublisher::spawn(
+            OutboundConfig::new("C123"),
+            events,
+            backend,
+            poster,
+            threads,
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        pub_.shutdown().await;
+
+        let reqs: Vec<Request> = server.received_requests().await.unwrap_or_default();
+        let r = reqs
+            .into_iter()
+            .find(|r| r.url.path().ends_with("chat.postMessage"))
+            .expect("publisher posted exactly once");
+        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        let text = body["text"].as_str().unwrap_or_default();
+        assert!(!text.contains("Type:"), "unexpected Type line in:\n{text}");
+        assert!(
+            !text.contains("Missing paths:"),
+            "unexpected paths line in:\n{text}"
+        );
+        assert!(
+            !text.contains("Verdict:"),
+            "unexpected Verdict line in:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_events_alone_do_not_trigger_a_post() {
+        // Surface 2 events are pure enrichment — they update the cache
+        // and never produce a top-level notification on their own.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat.postMessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let src = Arc::new(TestSource::default());
+        let stage_id = StageId::new();
+        src.events.lock().unwrap().extend([
+            envelope(
+                Event::ReviewPreCheck {
+                    stage_id,
+                    outcome: PreCheckOutcome::Skipped,
+                },
+                None,
+            ),
+            envelope(
+                Event::ReviewVerdict {
+                    stage_id,
+                    verdict: ReviewVerdict::Pass {
+                        reason: "ok".to_string(),
+                    },
+                },
+                None,
+            ),
+        ]);
+
+        let threads = ThreadMap::new();
+        let poster = ChatPoster::new(Arc::new(reqwest::Client::new()), "xoxb-test")
+            .with_base_url(server.uri() + "/api");
+        let events: Arc<dyn EventSource> = src.clone();
+        let backend: Arc<dyn CommandBackend> = src.clone();
+        let pub_ = OutboundPublisher::spawn(
+            OutboundConfig::new("C123"),
+            events,
+            backend,
+            poster,
+            threads,
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        pub_.shutdown().await;
     }
 }
