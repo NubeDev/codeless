@@ -739,6 +739,7 @@ dependencies = [
  "clap",
  "codeless-adapters-host",
  "codeless-client",
+ "codeless-plugin-notes",
  "codeless-rpc",
  "codeless-runtime",
  "codeless-server",
@@ -799,6 +800,21 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "codeless-plugin-notes"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "codeless-tools",
+ "codeless-types",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

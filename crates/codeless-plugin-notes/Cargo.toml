@@ -1,0 +1,24 @@
+[package]
+name = "codeless-plugin-notes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless plugin #0 (notes): one tool, one persona, one migration. Exists to exercise the plugin substrate (DOCS/PLUGIN-SUBSTRATE.md items 1-8) end-to-end; lives in-tree so substrate breakage fails CI here first."
+
+[lints]
+workspace = true
+
+[dependencies]
+codeless-tools = { path = "../codeless-tools" }
+codeless-types = { path = "../codeless-types" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }
+tokio-util = { version = "0.7", default-features = false }
+tracing = { workspace = true }

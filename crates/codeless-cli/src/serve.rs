@@ -659,6 +659,7 @@ fn maybe_webhook_config(store: &SecretStore) -> Result<Option<WebhookConfig>> {
 /// 2. Sibling of the current executable (same directory as the
 ///    `codeless` server binary — the standard `cargo build` layout).
 /// 3. `codeless-mcp` on `PATH`.
+///
 /// Returns `None` with a tracing warning if not found.
 fn resolve_mcp_binary() -> Option<String> {
     use std::path::PathBuf;

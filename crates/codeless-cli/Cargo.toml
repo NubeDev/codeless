@@ -23,6 +23,7 @@ codeless-runtime = { path = "../codeless-runtime" }
 codeless-server = { path = "../codeless-server" }
 codeless-slack = { path = "../codeless-slack" }
 codeless-tools = { path = "../codeless-tools" }
+codeless-plugin-notes = { path = "../codeless-plugin-notes" }
 codeless-telegram = { path = "../codeless-telegram" }
 codeless-types = { path = "../codeless-types" }
 clap = { version = "4", features = ["derive", "env"] }

@@ -72,14 +72,21 @@ pub fn handle(verb: Verb) -> Result<ExitCode> {
     }
 }
 
-/// The statically-linked registration table. Today this is empty:
-/// plugin #0 (`notes`) lands in a follow-up stage and inserts its
-/// `notes_register` here. The table lives in `codeless-cli` (not
-/// `codeless-tools`) because only the host binary knows which plugin
-/// crates it has compiled in -- exactly the substrate-doc MVP shape
-/// for OQ-PS-2.
+/// The statically-linked registration table. Plugin #0 (`notes`) is
+/// the only crate compiled in today; see DOCS/PLUGIN-SUBSTRATE.md
+/// section "Plugin #0: notes" (stage PS-NOTES). The table lives in
+/// `codeless-cli` (not `codeless-tools`) because only the host binary
+/// knows which plugin crates it has compiled in, which is exactly the
+/// substrate-doc MVP shape for OQ-PS-2. Adding a new plugin is one
+/// line here plus the crate dependency in `Cargo.toml`; no other host
+/// code changes.
 pub(crate) fn host_registration_table() -> RegistrationTable {
-    RegistrationTable::new()
+    let mut table = RegistrationTable::new();
+    table.insert(
+        codeless_plugin_notes::PLUGIN_ID,
+        codeless_plugin_notes::register,
+    );
+    table
 }
 
 fn load_status_label(err: &codeless_tools::plugin::PluginLoadError) -> &'static str {
