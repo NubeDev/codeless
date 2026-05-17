@@ -13,6 +13,10 @@
 //! scope, so swapping them produces a 200-with-ok=false response
 //! that surfaces here as `SlackApi`.
 
+use async_trait::async_trait;
+use codeless_bot_core::transport::{
+    BotPostError, BotTransport, PostedMessage as CorePostedMessage,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -148,6 +152,43 @@ impl ChatPoster {
         Ok(PostedMessage {
             channel: channel.to_string(),
             ts,
+        })
+    }
+}
+
+/// Map a [`SlackPostError`] onto the transport-agnostic
+/// [`BotPostError`] surface so the [`codeless_bot_core::Dispatcher`]
+/// and [`codeless_bot_core::OutboundPublisher`] never have to match on
+/// Slack-specific variants. `Transport` carries the underlying
+/// `reqwest::Error` as a string (the trait does not depend on
+/// reqwest); the labelled API and HTTP-status arms map across
+/// directly.
+impl From<SlackPostError> for BotPostError {
+    fn from(err: SlackPostError) -> Self {
+        match err {
+            SlackPostError::Transport(e) => BotPostError::Transport(e.to_string()),
+            SlackPostError::HttpStatus { status } => BotPostError::HttpStatus { status },
+            SlackPostError::SlackApi(label) => BotPostError::Api(label),
+        }
+    }
+}
+
+/// Wire [`ChatPoster`] into the transport-agnostic
+/// [`codeless_bot_core::BotTransport`] surface so the shared
+/// dispatcher and outbound publisher can drive Slack the same way
+/// they drive Telegram. `reply_to` maps to Slack's `thread_ts`.
+#[async_trait]
+impl BotTransport for ChatPoster {
+    async fn post(
+        &self,
+        chat: &str,
+        text: &str,
+        reply_to: Option<&str>,
+    ) -> Result<CorePostedMessage, BotPostError> {
+        let posted = ChatPoster::post(self, chat, text, reply_to).await?;
+        Ok(CorePostedMessage {
+            chat: posted.channel,
+            id: posted.ts,
         })
     }
 }

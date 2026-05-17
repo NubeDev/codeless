@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 async-trait = { workspace = true }
 codeless-adapters-host = { path = "../codeless-adapters-host" }
+codeless-bot-core = { path = "../codeless-bot-core" }
 codeless-rpc = { path = "../codeless-rpc" }
 codeless-types = { path = "../codeless-types" }
 futures-util = "0.3"

@@ -3,19 +3,24 @@
 //!
 //!   - **Inbound** (stages 2-4): [`SlackBot::spawn`] establishes a
 //!     Slack Socket Mode WebSocket and keeps it open with
-//!     reconnect/backoff. Inbound envelopes are acked and then handed
-//!     to a [`Dispatcher`] that parses the message body via
-//!     [`command::parse`], calls the matching `RpcServer` method, and
-//!     posts a synchronous reply via `chat.postMessage`. Renderers in
-//!     [`reply`] stay pure so the format can be unit-tested without
-//!     the network plumbing.
-//!   - **Outbound** (stage 6): [`OutboundPublisher`] subscribes to
-//!     the event bus and posts a single Slack message per terminal
-//!     transition (`JobFailed` / `JobStopped`), debounced per-job.
-//!     The post's `ts` is registered in the [`ThreadMap`] so a
-//!     bare-verb reply (`resume bypass`, `stop`) inside the thread
+//!     reconnect/backoff. Inbound envelopes are acked, projected onto
+//!     [`codeless_bot_core::InboundMessage`] by [`envelope::extract_inbound`],
+//!     and handed to a [`Dispatcher`] from `codeless-bot-core` that
+//!     parses the message body, calls the matching `RpcServer`
+//!     method, and posts a synchronous reply via `chat.postMessage`.
+//!   - **Outbound** (stage 6): the bot-core [`OutboundPublisher`]
+//!     subscribes to the event bus and posts a single Slack message
+//!     per terminal transition (`JobFailed` / `JobStopped`), debounced
+//!     per-job. The post's `ts` is registered in the [`ThreadMap`] so
+//!     a bare-verb reply (`resume bypass`, `stop`) inside the thread
 //!     resolves to the right job id without the operator retyping it.
-//!     Renderers in [`notify`] stay pure for the same reason.
+//!
+//! All transport-agnostic pieces — parser, reply renderers, failure
+//! renderers, dispatcher, publisher, debouncer, REVIEW-gate cache —
+//! live in [`codeless_bot_core`]; this crate only owns the
+//! Slack-specific bits: the `chat.postMessage` HTTP wrapper, the
+//! Socket Mode WebSocket transport, the `events_api` envelope shape,
+//! and the `SlackConfig` reader.
 //!
 //! [`SlackConfig::from_secrets`] reads the bot/app tokens and the
 //! configured channel out of the shared `SecretStore`; the outbound
@@ -28,34 +33,31 @@
 //! table because mobile shells reach the same RPC surface through the
 //! HTTP/SSE transport — they do not need the Slack bridge.
 
-pub mod command;
 pub mod config;
-pub mod dispatcher;
-pub mod notify;
-pub mod outbound;
-pub mod reply;
+pub mod envelope;
 pub mod socket_mode;
-pub mod thread_map;
 pub mod web_api;
 
 use std::sync::Arc;
 
+use codeless_bot_core::transport::BotTransport;
+use codeless_bot_core::{
+    CommandBackend, Dispatcher, EventSource, OutboundConfig, OutboundPublisher, RpcServerBackend,
+    RpcServerEventSource, ThreadMap,
+};
 use codeless_rpc::RpcServer;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-pub use command::{parse as parse_command, Command, ParseError, ThreadContext};
+pub use codeless_bot_core::{
+    parse_command, Command, InboundMessage, ParseError, ReviewContext, ThreadContext,
+    DEBOUNCE_WINDOW, REVIEW_CACHE_CAPACITY,
+};
 pub use config::{
     SlackConfig, SlackConfigError, SLACK_APP_TOKEN_KEY, SLACK_BOT_TOKEN_KEY, SLACK_CHANNEL_KEY,
 };
-pub use dispatcher::{CommandBackend, Dispatcher, InboundMessage, RpcServerBackend};
-pub use notify::ReviewContext;
-pub use outbound::{
-    EventSource, OutboundConfig, OutboundPublisher, RpcServerEventSource, DEBOUNCE_WINDOW,
-    REVIEW_CACHE_CAPACITY,
-};
+pub use envelope::{decode_envelope, extract_inbound, EnvelopePayload};
 pub use socket_mode::{SocketModeError, SocketModeSession};
-pub use thread_map::ThreadMap;
 pub use web_api::{ChatPoster, PostedMessage, SlackPostError};
 
 /// Handle to a running Slack bot. Dropping it leaves the spawned task
@@ -100,8 +102,9 @@ impl SlackBot {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let backend: Arc<dyn CommandBackend> = Arc::new(RpcServerBackend::new(rpc.clone()));
         let poster = ChatPoster::new(http.clone(), config.bot_token.clone());
+        let transport: Arc<dyn BotTransport> = Arc::new(poster);
         let threads = ThreadMap::new();
-        let dispatcher = Dispatcher::new(backend.clone(), poster.clone(), threads.clone());
+        let dispatcher = Dispatcher::new(backend.clone(), transport.clone(), threads.clone());
 
         // The outbound publisher only spawns when a channel is
         // configured — a deployment that wants commands-only behaviour
@@ -116,7 +119,7 @@ impl SlackBot {
                     OutboundConfig::new(channel_id),
                     events,
                     backend,
-                    poster,
+                    transport,
                     threads.clone(),
                 ))
             }

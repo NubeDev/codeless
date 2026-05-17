@@ -1,0 +1,24 @@
+[package]
+name = "codeless-bot-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless: transport-agnostic bot core. Shared command parser, reply/notify renderers, thread-context cache, debouncer, REVIEW-gate cache, dispatcher, and outbound publisher used by both codeless-slack and codeless-telegram. Host-only; the transport-specific HTTP / WebSocket clients live in the per-transport crates and plug in via the `BotTransport` trait defined here."
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+codeless-rpc = { path = "../codeless-rpc" }
+codeless-types = { path = "../codeless-types" }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }

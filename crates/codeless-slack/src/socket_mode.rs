@@ -33,7 +33,8 @@ use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::SlackConfig;
-use crate::dispatcher::{decode_envelope, Dispatcher};
+use crate::envelope::{decode_envelope, dispatch_envelope};
+use codeless_bot_core::Dispatcher;
 
 /// Endpoint that mints a single-use `wss_url`. Overridden by tests via
 /// `SocketModeSession::with_connect_endpoint`.
@@ -302,7 +303,7 @@ fn handle_text_frame(text: &str, dispatcher: Option<&Dispatcher>) -> Option<Stri
         // scheduler. The dispatcher logs and swallows its own
         // failures, so this fire-and-forget is safe.
         tokio::spawn(async move {
-            disp.dispatch_envelope(&envelope).await;
+            dispatch_envelope(&disp, &envelope).await;
         });
     }
     envelope_id
