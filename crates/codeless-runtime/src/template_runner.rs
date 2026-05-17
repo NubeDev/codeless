@@ -107,6 +107,16 @@ pub struct TemplateRunner {
     /// has nothing to track, but `record_auto_bypass` would have no
     /// observer either.
     pub thrashing_guard: Option<Arc<ThrashingGuard>>,
+    /// Operator-supplied comment to thread into the first stage's
+    /// prompt under the same `# Operator comment` envelope the
+    /// auto-bypass policy path uses. Originates in
+    /// `ResumeJobArgs::next_stage_comment` for the Slack-driven
+    /// `resume <job-id> "<comment>"` shape (and the equivalent UI
+    /// affordance). Consumed exactly once: the runner seeds
+    /// `next_stage_prefix` from it on the first iteration of `run`
+    /// and clears the prefix after the next `stage_prompt` call so
+    /// the guidance does not bleed into later, unrelated stages.
+    pub pending_operator_comment: Option<String>,
 }
 
 impl TemplateRunner {
@@ -117,7 +127,18 @@ impl TemplateRunner {
             use_mock_runner: false,
             store: None,
             thrashing_guard: None,
+            pending_operator_comment: None,
         }
+    }
+
+    /// Seed the first stage's `# Operator comment` block from the
+    /// caller-supplied free-text comment. Used by the runner factory
+    /// to thread `ResumeJobArgs::next_stage_comment` into the next
+    /// stage's prompt. An empty string is treated as `None` so a
+    /// no-op payload does not produce a stray empty heading.
+    pub fn with_pending_operator_comment(mut self, comment: Option<String>) -> Self {
+        self.pending_operator_comment = comment.filter(|s| !s.is_empty());
+        self
     }
 
     /// Attach a process-wide `ThrashingGuard` so this runner's
@@ -310,7 +331,7 @@ impl Runner for TemplateRunner {
                         // Passed stages are skipped (success short-
                         // circuit). Failed-but-bypassed stages are
                         // ALSO skipped — the operator advanced past
-                        // them via resume_job's bypass_failing_stage,
+                        // them via resume_job's `bypass` argument,
                         // so a re-run would either repeat the same
                         // failure or invent a different one. Bypass
                         // is the forward-advance signal; status stays
@@ -352,7 +373,14 @@ impl Runner for TemplateRunner {
         // goal. Cleared after the next stage's prompt is built — the
         // guidance threads exactly one stage forward, not the rest of
         // the run.
-        let mut next_stage_prefix: Option<String> = None;
+        //
+        // Seeded once on entry from `pending_operator_comment` so the
+        // Slack-driven `resume <job-id> "<comment>"` path threads the
+        // operator's note into the first stage `TemplateRunner`
+        // executes after the resume. Same envelope as the auto-bypass
+        // path so the model sees one `# Operator comment` heading
+        // regardless of which surface filled it.
+        let mut next_stage_prefix: Option<String> = self.pending_operator_comment.clone();
         for stage in &planned {
             if ctx.cancel.is_cancelled() {
                 tracing::info!(
@@ -1679,6 +1707,46 @@ mod tests {
         let planned = r.template.planned_stages();
         let prompt = r.stage_prompt(planned[1], 2, None, None);
         assert!(!prompt.contains("# Operator comment"));
+    }
+
+    #[test]
+    fn with_pending_operator_comment_drops_empty_string() {
+        // Slack's parser cannot prove a quoted argument is non-empty
+        // before the RPC fires; the runner's builder normalises an
+        // empty string back to `None` so the first stage's prompt
+        // does not grow a stray empty `# Operator comment` heading.
+        let r = TemplateRunner::new(template_with_stages(&["one"]))
+            .with_pending_operator_comment(Some(String::new()));
+        assert!(r.pending_operator_comment.is_none());
+        let r2 = TemplateRunner::new(template_with_stages(&["one"]))
+            .with_pending_operator_comment(Some("ship it".into()));
+        assert_eq!(r2.pending_operator_comment.as_deref(), Some("ship it"));
+    }
+
+    #[test]
+    fn pending_operator_comment_seeds_first_stage_prompt() {
+        // The Slack `resume <job-id> "<comment>"` path threads its
+        // free-text payload through `pending_operator_comment`. On
+        // entry to `run`, that value seeds `next_stage_prefix`, which
+        // `stage_prompt` then renders into the `# Operator comment`
+        // block above the goal. This test pins the contract by
+        // calling `stage_prompt` with the same value the runner
+        // would pass on the first iteration; the `stage_prompt`
+        // assembly path is shared with the auto-bypass thread-through
+        // and is already covered for the empty-comment case above.
+        let r = TemplateRunner::new(template_with_stages(&["one", "two"]))
+            .with_pending_operator_comment(Some("ship it".into()));
+        let planned = r.template.planned_stages();
+        let prompt = r.stage_prompt(planned[0], 2, None, r.pending_operator_comment.as_deref());
+        let op_idx = prompt
+            .find("# Operator comment")
+            .expect("operator-comment heading missing on first-stage prompt");
+        let goal_idx = prompt.find("# Job goal").expect("job-goal heading missing");
+        assert!(
+            op_idx < goal_idx,
+            "operator-comment block must precede job goal; got prompt: {prompt}"
+        );
+        assert!(prompt.contains("ship it"));
     }
 
     #[test]

@@ -137,9 +137,22 @@ pub struct ResumeJobArgs {
     /// past it instead of re-running. The stage row stays
     /// `Failed` in the database; the bypass is a *forward* advance,
     /// not a rewrite of history. Defaults to `false` so callers
-    /// that did not set it keep the existing retry semantics.
+    /// that did not set it keep the existing retry semantics. The
+    /// serde alias preserves wire compatibility with callers that
+    /// were written against the earlier `bypass_failing_stage` name
+    /// shipped under SCOPE-MUTABLE-UI Surface E.
+    #[serde(default, alias = "bypass_failing_stage")]
+    pub bypass: bool,
+    /// Operator-supplied free-text comment threaded into the next
+    /// stage's prompt under an `# Operator comment` heading (the
+    /// same envelope auto-bypass uses, so the model parses one form,
+    /// not two). Surfaces the Slack `resume <job-id> "<comment>"`
+    /// shape and the equivalent UI affordance. `None` keeps the
+    /// existing resume semantics; an empty string is treated as
+    /// `None` by the runtime so a no-op payload from a chat client
+    /// does not produce a stray empty heading in the prompt.
     #[serde(default)]
-    pub bypass_failing_stage: bool,
+    pub next_stage_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
