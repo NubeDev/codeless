@@ -43,7 +43,10 @@ Goal:        a new workflow ships as `crates/codeless-plugin-<id>/` + a
 5. [x] PS6 — plugin manifest + registry.
 6. [x] PS7 — tool-result attachments.
 7. [x] PS8 — Assistant agent loop.
-8. [ ] Plugin #0 `notes` end-to-end.
+8. [x] Plugin #0 `notes` end-to-end (PS-NOTES — manifest + registration
+   + smoke test in-tree).
+9. [x] PS-ACCEPT — integration-test coverage for items 2-8 + notes
+   plugin end-to-end test + Acceptance section updated.
 
 ## Stage 1 — halt notes
 
@@ -516,3 +519,59 @@ codeless-tools --all-targets -- -D warnings` clean; `cargo fmt --all
 -- --check` clean. The pre-existing `codeless-bot-core::dispatcher`
 `manual_range_contains` warning on this branch is unchanged by this
 stage; the `claude_runner` integration-test failure is unchanged.
+
+## Stage 9 (PS-ACCEPT) — landed
+
+The substrate-doc Acceptance §3 ("each of items 1-8 has integration-
+test coverage; `notes` has end-to-end coverage that drives the
+Assistant → persona → tool → attachment path") is now satisfied by
+`crates/codeless-runtime/tests/plugin_substrate_e2e.rs`, six tests
+walking the on-disk `plugins/notes/` plugin through the public seams
+the host binary uses at boot:
+
+- `notes_plugin_loads_and_seeds_persona_addressable_by_thread` —
+  `PluginRegistry::load_plugin` against the real plugin dir,
+  migration apply against the runtime pool, persona upsert, and
+  thread create bound to `notes:notes`. The append path round-trips
+  through the NOOP planner fallback so the test exercises the
+  persona FK without needing a fake runner.
+- `persona_allowed_tools_admit_plugin_namespace_only` — PS3 matcher
+  pinned at `notes.*` + `attachments.read`; built-in `assistant.*`
+  and host-FS `fs.*` ids are rejected, proving the persona's column
+  (not a UI routing prop) drives the answer.
+- `plugin_tool_output_schema_round_trips_through_attachment_reconciler`
+  — PS7 marker contract end-to-end: upload an attachment, walk
+  `notes.append`'s real output schema with `find_attachment_refs`,
+  reconcile against the live store row, assert the stored row's
+  filename/mime/size win over the tool's "lies" hints.
+- `plugin_tool_call_executes_through_registry` — PS1 / PS-NOTES
+  contract: `notes.append` is reachable through `ToolRegistry::get`
+  with a real `ToolCtx`; an empty body surfaces `InvalidArgs`, a
+  well-formed body surfaces the documented PS-ACCEPT `Failed` (the
+  signal that the per-tool ctx-extension writer is the next stage).
+- `planner_allow_filter_admits_plugin_tool_under_persona_namespace`
+  — PS8 acceptance: the same `tool_allowed` call the planner's
+  publish closure makes still returns true after the persona has
+  round-tripped through SQLite and the `assistant_threads.persona_id`
+  FK.
+- `notes_plugin_directory_shape_matches_substrate_contract` —
+  Acceptance §1: the plugin tree is `plugins/notes/` +
+  `crates/codeless-plugin-notes/`; no plugin assets leaked into
+  `codeless-runtime` / `codeless-rpc` / `codeless-tools` / `ui/`.
+
+`DOCS/PLUGIN-SUBSTRATE.md` Acceptance section now carries a per-item
+status table pointing at the integration tests for items 1, 3, 5, 6,
+7, 8, plus an honest accounting of items 2 + 4 (PS2 partially landed
+via PS2a, PS4 halted; both block the estimator's worked-example
+flow, neither blocks the substrate seams).
+
+The `codeless-plugin-notes` crate is dev-dep-only of
+`codeless-runtime`, preserving the substrate's tree direction
+(`codeless-runtime` does not depend on any plugin crate at the
+library layer). The host binary's `host_registration_table` in
+`crates/codeless-cli/src/plugin.rs` remains the one place a plugin
+crate becomes a runtime dependency.
+
+`cargo test -p codeless-runtime --test plugin_substrate_e2e` green
+(6/6); `cargo clippy -p codeless-runtime --tests --test
+plugin_substrate_e2e -- -D warnings` clean.

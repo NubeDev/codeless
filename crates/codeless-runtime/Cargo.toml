@@ -47,3 +47,10 @@ sha2 = "0.10"
 tempfile = "3"
 toml = "0.8"
 wiremock = "0.6"
+# Plugin-substrate PS-ACCEPT (DOCS/PLUGIN-SUBSTRATE.md Acceptance §3):
+# the runtime's `plugin_substrate_e2e.rs` test loads the on-disk
+# `plugins/notes/` directory through `PluginRegistry` and needs the
+# crate's `register` entry point. Dev-only so the substrate's tree
+# direction (`codeless-runtime` does not depend on plugins at the
+# library layer) is preserved.
+codeless-plugin-notes = { path = "../codeless-plugin-notes" }
