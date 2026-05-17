@@ -701,7 +701,13 @@ Re-exports tool families: `BrowseFetchTool`, `HttpRequestTool`,
 ### 2.11 `crates/codeless-tauri-desktop/` — Tauri 2 desktop shell
 
 Phase 5 placeholder. `src/main.rs` is intentionally minimal until the
-shell is wired up.
+shell is wired up. Design lives in
+[`SCOPE-TAURI-DESKTOP.md`](./SCOPE-TAURI-DESKTOP.md): the crate adds
+a second transport adapter in front of the same `InProcessRpc` the
+hosted `codeless-server` uses, hand-rolling one `#[tauri::command]`
+shim per `RpcServer` method plus `rpc_subscribe` / `rpc_unsubscribe`
+backed by a `Channel::id() -> CancellationToken` registry. Wire
+contract is locked by `ui/codeless-ui/src/lib/rpc/tauri-ipc-client.ts`.
 
 ### 2.12 `ui/codeless-ui/` — React 19 + TS, single UI for four shells
 

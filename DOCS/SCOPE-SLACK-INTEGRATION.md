@@ -106,31 +106,44 @@ context to act on. Everything else is a follow-up.
 
 ## What the operator gets from Surface 1 of this integration
 
-From any Slack channel the bot is in, or via DM to the bot:
+The bot posts failure notifications as top-level messages in the
+configured `#codeless` channel. The operator replies *in the
+notification thread* — no job ID required; the thread implies it.
+Cold commands (not in a notification thread) require an explicit
+job ID and can come from DM or any channel the bot is in.
 
 ```
 @codeless status                              → list of jobs, status, cost
 @codeless status <job-id>                     → one-job detail
 @codeless start <job-id>                      → transition Draft → Running
-@codeless stop <job-id>                       → transition Running → Stopped
-@codeless resume <job-id>                     → standard resume
-@codeless resume <job-id> bypass              → resume past the failed stage
-@codeless resume <job-id> "<comment>"         → resume with operator comment
-@codeless resume <job-id> bypass "<comment>"  → both
+
+# Cold (requires job ID):
+@codeless stop <job-id>
+@codeless resume <job-id>
+@codeless resume <job-id> bypass
+@codeless resume <job-id> "<comment>"
+@codeless resume <job-id> bypass "<comment>"
+
+# In-thread (job ID implied by thread):
+stop
+resume
+resume bypass
+resume "<comment>"
+resume bypass "<comment>"
 ```
 
 Plus an **outbound failure notification** posted by Slack when any
 job transitions to `Failed`, with the failure reason, the failing
-stage's title, and the message format the operator can copy back
-to act on:
+stage's title, and the reply commands the operator can type
+directly in the thread:
 
 ```
-🚨 Job 01KRPVJX...M4S59Z5D — Failed at stage 8/13
+🚨 Job "scope-mutable-ui" — Failed at stage 8/13
    Stage: "REVIEW after per-job action loop"
    Reason: diff-verify pre-check failed; handover claims paths
            not in the diff: DOCS/SCOPE-MUTABLE-UI.md
    Cost: $52.64 / $150.00 cap
-   Reply: `resume bypass` or `resume "<comment>"` or `stop`
+   Reply in this thread: resume bypass | resume "<comment>" | stop
 ```
 
 That is the whole first surface.
@@ -156,16 +169,23 @@ The minimum-viable Slack surface. Five commands, one notification.
 
 **Commands** (each maps directly to an existing RPC):
 
-| Slack input                          | RPC                                  | Notes |
-|--------------------------------------|--------------------------------------|-------|
-| `status`                             | `list_jobs`                          | Bot filters to non-terminal + last 3 terminal per repo. |
-| `status <job-id>`                    | `get_job`                            | Includes status, cost, current stage, stop_reason. |
-| `start <job-id>`                     | `start_job`                          | Only valid when status is `Draft`. |
-| `stop <job-id>`                      | `stop_job`                           | Valid when status is `Running` or `Queued`. |
-| `resume <job-id>`                    | `resume_job`                         | Valid when status is `Stopped` or `Failed` or `Paused`. |
-| `resume <job-id> bypass`             | `resume_job` with `bypass: true`     | Requires Dependency #1 below. |
-| `resume <job-id> "<comment>"`        | `resume_job` with `comment: <str>`   | Comment threaded into the prompt of the next-run stage. |
-| `resume <job-id> bypass "<comment>"` | Both. |  |
+When replying inside a notification thread the job ID is
+implied by the thread; it must be omitted. When issuing a cold
+command (not in a notification thread) the job ID is required.
+
+| Slack input                                 | RPC                                  | Notes |
+|---------------------------------------------|--------------------------------------|-------|
+| `status`                                    | `list_jobs`                          | Bot filters to non-terminal + last 3 terminal per repo. |
+| `status <job-id>`                           | `get_job`                            | Includes status, cost, current stage, stop_reason. |
+| `start <job-id>`                            | `start_job`                          | Only valid when status is `Draft`. |
+| `stop` *(in thread)*                        | `stop_job`                           | Valid when status is `Running` or `Queued`. |
+| `stop <job-id>` *(cold)*                    | `stop_job`                           | Same, explicit job ID. |
+| `resume` *(in thread)*                      | `resume_job`                         | Valid when status is `Stopped`, `Failed`, or `Paused`. |
+| `resume <job-id>` *(cold)*                  | `resume_job`                         | Same, explicit job ID. |
+| `resume bypass` *(in thread)*               | `resume_job` with `bypass: true`     | Requires Dependency #1 below. |
+| `resume bypass "<comment>"` *(in thread)*   | Both.                                |  |
+| `resume "<comment>"` *(in thread)*          | `resume_job` with `comment: <str>`   | Comment threaded into the prompt of the next-run stage. |
+| `resume <job-id> bypass "<comment>"` *(cold)* | Both.                              |  |
 
 **Grammar — `bypass` is a positional keyword, not part of the
 comment.** If present, it appears immediately after `<job-id>`
@@ -415,25 +435,26 @@ in Slack.
 The operator gets a Slack notification:
 
 ```
-🚨 Job 01KRPVJX...M4S59Z5D — Failed at stage 8/13
+🚨 Job "scope-mutable-ui" — Failed at stage 8/13
    Stage: "REVIEW after per-job action loop"
    Reason: diff-verify pre-check failed; handover claims paths
            not in the diff: DOCS/SCOPE-MUTABLE-UI.md
    Cost: $52.64 / $150.00 cap
-   Reply: resume bypass | resume "<comment>" | stop
+   Reply in this thread: resume bypass | resume "<comment>" | stop
 ```
 
 They look at the reason. "Yeah, that's the same false positive
-class I've seen before; the gate is wrong here." They reply:
+class I've seen before; the gate is wrong here." They tap the
+notification, reply in the thread:
 
 ```
-@codeless resume 01KRPVJX...M4S59Z5D bypass
+resume bypass
 ```
 
-Bot confirms:
+Bot confirms in the same thread:
 
 ```
-✓ Resuming job 01KRPVJX...M4S59Z5D with stage 8 bypassed.
+✓ Resuming scope-mutable-ui with stage 8 bypassed.
   Status: queued. Watching for next event.
 ```
 
@@ -444,12 +465,13 @@ Slack user as the operator.
 ### Journey 2 — "I want to give the agent guidance"
 
 Same setup, but the failure is the agent making a wrong choice
-the operator wants to correct rather than bypass:
+the operator wants to correct rather than bypass. They reply in
+the notification thread:
 
 ```
-@codeless resume 01KRPVJX...M4S59Z5D "When you redo this stage,
-do not list the design doc by name in the Done section; only list
-files you actually created or modified."
+resume "When you redo this stage, do not list the design doc by
+name in the Done section; only list files you actually created
+or modified."
 ```
 
 The bot threads the comment into the next stage's prompt as a
@@ -578,17 +600,39 @@ the helper.
 
 ## Open questions worth fighting about
 
-1. **One channel or many?** Argument for one: a single
-   `#codeless` channel where the bot posts notifications and
-   the operator types commands. Argument for many: each repo
-   gets its own channel; notifications go to the matching
-   channel only. Probably: configurable per repo (a
-   `slack_channel: String` field on the Repo row), defaults
-   to a single channel from env.
+1. **One channel, thread-scoped commands — resolved.** A
+   single `#codeless` channel (configurable via a
+   `slack_channel: String` field on the Repo row). The bot
+   posts each failure notification as a top-level message;
+   the operator replies *in that thread* with bare commands
+   (`resume bypass`, `stop`) — no job ID required because
+   the bot maps `thread_ts → job_id` at notification time.
+   Cold commands (`@codeless status`, `@codeless stop <id>`)
+   still target any channel the bot is in or via DM, and
+   still require an explicit job ID. Thread context is
+   explicit and visible; it is not the same as the
+   "per-channel state" anti-pattern (which was about
+   implicitly remembering the last job ID typed in a channel).
+
+   ```
+   #codeless
+     ├── 🚨 Job "scope-mutable-ui" — Failed at stage 8/13 ...
+     │     Reply: resume bypass | resume "<comment>" | stop
+     │   └── [operator] resume bypass
+     │   └── [bot] ✓ Resuming scope-mutable-ui with stage 8 bypassed.
+     │
+     └── 🚨 Job "smscope-smoke-2" — Failed at stage 2/4 ...
+           Reply: resume bypass | resume "<comment>" | stop
+   ```
+
+   This is the right shape for the operator-on-phone case:
+   tap the notification, swipe to reply, type two words.
+   No job ID to memorise or fat-finger.
+
 2. **DM vs channel commands?** Both should work. Notifications
-   go to the configured channel; commands can come from DM or
-   from any channel the bot is in. The bot replies in the same
-   thread the command came from.
+   go to the configured channel; cold commands can come from
+   DM or from any channel the bot is in. The bot replies in
+   the same thread the command came from.
 3. **What about Slack user → operator mapping?** R5 says one
    trust boundary; the bot is the operator. But the audit
    trail should still record *which Slack user* typed each

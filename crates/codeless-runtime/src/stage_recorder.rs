@@ -115,16 +115,14 @@ async fn handle_event(
         Event::StageSessionCaptured {
             stage_id,
             session_id,
-        } => {
+        } if !session_id.is_empty() => {
             // Pin the runner-supplied session id onto the stage row.
             // The store's `WHERE session_id IS NULL` guard makes this a
             // first-wins write — a second envelope for the same stage
             // (replay on recorder restart, or a stray duplicate publish
             // from the runner) silently no-ops at the SQL level rather
             // than overwriting the original capture.
-            if !session_id.is_empty() {
-                store.update_stage_session_id(*stage_id, session_id).await?;
-            }
+            store.update_stage_session_id(*stage_id, session_id).await?;
         }
         Event::TaskStarted { task_id } => {
             if let Some(stage_id) = env.stage_id {

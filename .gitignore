@@ -26,6 +26,9 @@ worktrees/
 # (codeless/Makefile): pid files, dev SQLite, backend/ui log files.
 .codeless-dev/
 
+# Local loop job scratch directories
+job-01KRSKS8XYAW47SR6F1GXAWH9F/
+
 # Secrets / local config
 .env
 .env.*

@@ -137,6 +137,17 @@ captured in SCOPE.md. Keep entries short; if something needs more than
 a paragraph, write a `DOCS/` page in the parent workspace and link to
 it.
 
+- **2026-05-17** — Phase 5 design landed in
+  [`../DOCS/SCOPE-TAURI-DESKTOP.md`](../DOCS/SCOPE-TAURI-DESKTOP.md).
+  Implementation is *not yet* started; the doc spells out the
+  blockers reviewing the Phase 5 kickoff prompt surfaced — no
+  monolithic `handle_rpc` (~60 per-method `#[tauri::command]`
+  shims), missing `rpc_server_info`, required
+  `Channel::id() -> CancellationToken` registry for subscribe/
+  unsubscribe, full `InProcessRpc` builder wiring (fs + worktrees +
+  agent_chat + assistant_data_dir + `spawn_job_driver_loop` +
+  `spawn_heartbeat`), and the `tauri-build` / `tauri.conf.json` /
+  `capabilities/` / icons scaffolding the current stub crate lacks.
 - **2026-05-12** — Bootstrap. Workspace created at
   `codeless-workspace`; `codeless` repo moved under it; vendored
   `ai-runner` from the rubix-agent workspace; mani.yaml + tasks
