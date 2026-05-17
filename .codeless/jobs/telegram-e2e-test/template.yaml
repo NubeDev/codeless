@@ -1,0 +1,7 @@
+name: telegram-e2e-test
+goal: |
+  Verify the Telegram bot integration works end-to-end by creating
+  a trivial file and committing it. This is a smoke test — success
+  means the runner loop, worktree checkout, and commit all function.
+stages:
+  - Create a file tests/telegram-smoke.txt containing "telegram e2e ok" and commit it
