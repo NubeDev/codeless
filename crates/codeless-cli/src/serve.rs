@@ -121,6 +121,16 @@ pub struct ServeArgs {
     #[arg(long)]
     pub enable_slack: bool,
 
+    /// Enable the Telegram control-plane adapter. When set, the
+    /// server opens a Bot API long-poll loop at boot using the
+    /// `telegram_bot_token` key from the secrets file (and the
+    /// optional `telegram_chat_id` key for outbound failure cards).
+    /// Missing-token errors are surfaced as a warning so the rest of
+    /// the server still boots — the bot is additive, not
+    /// load-bearing for the runtime.
+    #[arg(long)]
+    pub enable_telegram: bool,
+
     /// Force bearer-token authentication even on loopback binds.
     /// Loopback is unauthenticated by default because the trust
     /// boundary is already the same-user same-host process; this
@@ -485,6 +495,37 @@ async fn run_server(
             }
             Err(err) => {
                 eprintln!("codeless-server: --enable-slack ignored: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Telegram adapter is opt-in via `--enable-telegram`. Mirrors
+    // the Slack arm above: a missing token logs a warning and the
+    // rest of the server still boots, and the handle stays in scope
+    // so the spawned long-poll task is not dropped before
+    // `serve_with_shutdown` returns.
+    let _telegram = if args.enable_telegram {
+        match codeless_telegram::TelegramConfig::from_secrets(&store) {
+            Ok(cfg) => {
+                eprintln!(
+                    "codeless-server: telegram adapter enabled (chat={})",
+                    cfg.chat_id.as_deref().unwrap_or("unset"),
+                );
+                match codeless_telegram::TelegramBot::spawn(cfg, state.rpc.clone()) {
+                    Ok(bot) => Some(bot),
+                    Err(err) => {
+                        eprintln!(
+                            "codeless-server: --enable-telegram ignored: api init failed: {err}"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("codeless-server: --enable-telegram ignored: {err}");
                 None
             }
         }
