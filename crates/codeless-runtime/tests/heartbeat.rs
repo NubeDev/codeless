@@ -78,6 +78,8 @@ async fn fresh_stage(rpc: &InProcessRpc, job_id: JobId) -> StageId {
         persona_id: None,
         bypassed_at: None,
         bypassed_reason: None,
+        failure_class: None,
+        failure_detail: None,
     };
     rpc.store().insert_stage(&stage).await.unwrap();
     stage.id
@@ -254,6 +256,8 @@ async fn startup_reaper_flips_orphan_running_stages_to_failed() {
         persona_id: None,
         bypassed_at: None,
         bypassed_reason: None,
+        failure_class: None,
+        failure_detail: None,
     };
     store.insert_stage(&running).await.unwrap();
 

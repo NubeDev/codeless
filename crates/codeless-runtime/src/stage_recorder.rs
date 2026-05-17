@@ -100,16 +100,36 @@ async fn handle_event(
                     // stage row never starts bypassed.
                     bypassed_at: None,
                     bypassed_reason: None,
+                    // A fresh `StageStarted` row carries no failure
+                    // info; the recorder fills these on the matching
+                    // `StageCompleted` envelope via
+                    // `update_stage_completed`.
+                    failure_class: None,
+                    failure_detail: None,
                 })
                 .await?;
         }
-        Event::StageCompleted { stage_id, status } => {
+        Event::StageCompleted {
+            stage_id,
+            status,
+            failure_class,
+            failure_detail,
+        } => {
             // Cap the per-stage cost view by writing `ended_at` now.
             // Status maps 1:1 between event and DB. The `bool` return
             // says whether a row was actually updated; we don't care
             // here because a missing row is logged + skipped.
+            // `failure_class` / `failure_detail` are written
+            // unconditionally — `None` for `Passed`, `Some(_)` for
+            // `Failed` from the emit sites in `template_runner`.
             store
-                .update_stage_completed(*stage_id, *status, env.created_at)
+                .update_stage_completed(
+                    *stage_id,
+                    *status,
+                    env.created_at,
+                    *failure_class,
+                    failure_detail.as_deref(),
+                )
                 .await?;
         }
         Event::StageSessionCaptured {
@@ -316,6 +336,8 @@ mod tests {
             Event::StageCompleted {
                 stage_id,
                 status: StageStatus::Passed,
+                failure_class: None,
+                failure_detail: None,
             },
             now_ms(),
         )

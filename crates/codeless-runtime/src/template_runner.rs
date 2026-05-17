@@ -54,7 +54,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeless_types::review_gate::{PreCheckOutcome as WirePreCheck, ReviewVerdict as WireVerdict};
-use codeless_types::{Event, ReviewId, StageId, StageStatus, StopReason, TaskId};
+use codeless_types::{Event, FailureClass, ReviewId, StageId, StageStatus, StopReason, TaskId};
 use tokio_util::sync::CancellationToken;
 
 use crate::auto_bypass_guard::ThrashingGuard;
@@ -721,6 +721,8 @@ impl Runner for TemplateRunner {
                                         },
                                     )
                                     .await;
+                                    let failure_reason =
+                                        format!("diff-verify pre-check failed: {reason}");
                                     publish(
                                         &ctx,
                                         stage_id,
@@ -728,6 +730,10 @@ impl Runner for TemplateRunner {
                                         Event::StageCompleted {
                                             stage_id,
                                             status: StageStatus::Failed,
+                                            failure_class: Some(FailureClass::PreCheckFailed),
+                                            failure_detail: Some(truncate_failure_detail(
+                                                &failure_reason,
+                                            )),
                                         },
                                     )
                                     .await;
@@ -736,8 +742,6 @@ impl Runner for TemplateRunner {
                                         %reason,
                                         "diff-verify pre-check failed; review stage auto-failed without invoking model"
                                     );
-                                    let failure_reason =
-                                        format!("diff-verify pre-check failed: {reason}");
                                     match classify_stage_failure(self.store.as_deref(), &ctx).await
                                     {
                                         FailureAction::Halt => {
@@ -990,6 +994,8 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
+                                failure_class: Some(FailureClass::RunnerError),
+                                failure_detail: Some(truncate_failure_detail(&reason)),
                             },
                         )
                         .await;
@@ -1153,6 +1159,7 @@ impl Runner for TemplateRunner {
                                     },
                                 )
                                 .await;
+                                let failure_reason = format!("review gate failed: {reason}");
                                 publish(
                                     &ctx,
                                     stage_id,
@@ -1160,6 +1167,10 @@ impl Runner for TemplateRunner {
                                     Event::StageCompleted {
                                         stage_id,
                                         status: StageStatus::Failed,
+                                        failure_class: Some(FailureClass::ReviewPatchInvalid),
+                                        failure_detail: Some(truncate_failure_detail(
+                                            &failure_reason,
+                                        )),
                                     },
                                 )
                                 .await;
@@ -1168,7 +1179,6 @@ impl Runner for TemplateRunner {
                                     %reason,
                                     "review gate failed at patch parse/validation"
                                 );
-                                let failure_reason = format!("review gate failed: {reason}");
                                 match classify_stage_failure(self.store.as_deref(), &ctx).await {
                                     FailureAction::Halt => {
                                         return RunnerOutcome::Failed {
@@ -1233,6 +1243,7 @@ impl Runner for TemplateRunner {
                             },
                         )
                         .await;
+                        let failure_reason = format!("review gate failed: {reason}");
                         publish(
                             &ctx,
                             stage_id,
@@ -1240,6 +1251,8 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
+                                failure_class: Some(FailureClass::ReviewFail),
+                                failure_detail: Some(truncate_failure_detail(&failure_reason)),
                             },
                         )
                         .await;
@@ -1248,7 +1261,6 @@ impl Runner for TemplateRunner {
                             %reason,
                             "review gate failed; aborting template run"
                         );
-                        let failure_reason = format!("review gate failed: {reason}");
                         match classify_stage_failure(self.store.as_deref(), &ctx).await {
                             FailureAction::Halt => {
                                 return RunnerOutcome::Failed {
@@ -1322,6 +1334,8 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
+                                failure_class: Some(FailureClass::ReviewUnparseable),
+                                failure_detail: Some(truncate_failure_detail(&reason)),
                             },
                         )
                         .await;
@@ -1381,6 +1395,8 @@ impl Runner for TemplateRunner {
                 Event::StageCompleted {
                     stage_id,
                     status: StageStatus::Passed,
+                    failure_class: None,
+                    failure_detail: None,
                 },
             )
             .await;
@@ -1754,6 +1770,21 @@ async fn emit_auto_bypass(
         },
     )
     .await;
+}
+
+/// Short summary string for `failure_detail`. Trims to ~200 chars on
+/// a char boundary so the SQLite column stays cheap to render and the
+/// SSE envelope is small; the full transcript is on disk and the UI
+/// links to it from the badge.
+fn truncate_failure_detail(s: &str) -> String {
+    const MAX: usize = 200;
+    if s.chars().count() <= MAX {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(MAX - 1).collect();
+        out.push('…');
+        out
+    }
 }
 
 async fn publish(ctx: &RunnerContext, stage_id: StageId, task_id: TaskId, event: Event) {

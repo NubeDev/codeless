@@ -5,7 +5,7 @@ use crate::job::StopReason;
 use crate::money::CostCents;
 use crate::review_gate::{PreCheckOutcome, ReviewVerdict};
 use crate::scope_patch::{ScopePatchId, ScopePatchKind, ScopePatchTarget};
-use crate::stage::StageStatus;
+use crate::stage::{FailureClass, StageStatus};
 use crate::task::TaskStatus;
 use crate::time::UnixMillis;
 
@@ -201,6 +201,18 @@ pub enum Event {
     StageCompleted {
         stage_id: StageId,
         status: StageStatus,
+        /// Coarse classification when `status = Failed`. The
+        /// StageRecorder writes this onto `stages.failure_class`
+        /// in the same SQL update as `status`. `None` for
+        /// `Passed` and for replayed events from before the field
+        /// existed (which decode unchanged via `serde(default)`).
+        #[serde(default)]
+        failure_class: Option<FailureClass>,
+        /// Short human-readable failure description paired with
+        /// `failure_class`. Truncated to ~200 chars at the emit
+        /// site. `None` for `Passed` and for legacy events.
+        #[serde(default)]
+        failure_detail: Option<String>,
     },
     /// First-and-only-time capture of the runner-supplied session id
     /// for this stage. Emitted by `StageRecorder` the first time a

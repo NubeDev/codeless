@@ -99,6 +99,8 @@ async fn restart_preserves_repos_jobs_tasks_events_and_cursors() {
             persona_id: None,
             bypassed_at: None,
             bypassed_reason: None,
+            failure_class: None,
+            failure_detail: None,
         };
         store.insert_stage(&stage).await.unwrap();
 
