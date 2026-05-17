@@ -289,7 +289,7 @@ implementation with TODOs is worse than a documented halt.
 
 ## Stage 4 (PS5) — landed
 
-Migration `0017_assistant_thread_persona.sql` extends `personas` with
+Migration `0019_assistant_thread_persona.sql` extends `personas` with
 the three substrate-doc columns (`allowed_tools`, `default_model_family`,
 `default_attachments_policy`) and rebuilds `assistant_threads` so
 `persona_id` is NOT NULL with `REFERENCES personas(id) ON DELETE
@@ -496,7 +496,7 @@ built-in actions the planner advertises and accepts.
   action dispatch on confirm is unchanged -- the cap is at emit
   time, not at execute time, so a card the user has already seen
   always runs.
-- Migration `0018_assistant_persona_builtin_tools.sql` updates the
+- Migration `0020_assistant_persona_builtin_tools.sql` updates the
   two seeded built-ins so PS8 acceptance ("an Assistant thread with
   the `general` persona can call one read-only tool, e.g.
   `list_jobs`, end-to-end") matches the seed: `builtin:general`
