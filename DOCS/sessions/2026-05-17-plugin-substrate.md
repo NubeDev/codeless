@@ -13,7 +13,19 @@ Goal:        a new workflow ships as `crates/codeless-plugin-<id>/` + a
 1. [!] [M] PS2 — extract CommonChat: JobChat (RunPane.tsx), AiChat, and
    the chat store collapse into one CommonChat component bound to a
    server-resident thread id; assistant page + in-job chat + in-editor
-   AI panel all render the same component.
+   AI panel all render the same component. **Partial landing: PS2a
+   prep sub-stage shipped (see below). PS2b–PS2d still blocked on
+   PS3/PS4.**
+   1a. [x] PS2a — `CommonChatProps` gains `threadId` on every variant;
+       every call site (`RunPane`, `JobPage`, `JobChatPage`,
+       `AssistantPage`, `AiMiniWindow`) passes the server-resident
+       thread id it already has on hand. New
+       `src/modules/chat/CommonChat.test.tsx` pins each kind's
+       routing so a future drive-by drop is caught at compile + run
+       time. `pnpm typecheck` and `pnpm vitest run` both green.
+   1b. [ ] PS2b — see "Recommended re-split" below; requires PS4.
+   1c. [ ] PS2c — same; requires PS2b.
+   1d. [ ] PS2d — collapse the kind-dispatch facade once b+c land.
 2. [ ] PS3 — server-side capability derivation.
 3. [ ] PS4 — chat state moves server-side (R4 compliance).
 4. [ ] PS5 — persona / thread-kind data model.
@@ -101,15 +113,25 @@ Either option leaves PS3 / PS4 as the small clean-up they were
 originally scoped to be, rather than absorbing them silently into a
 PS2 rewrite.
 
-### What I did this tick
+### What landed this tick
 
 - Read PLUGIN-SUBSTRATE.md, ASSISTANT-SCOPE.md, the existing
   CommonChat facade, and the three target implementations to confirm
   the data-source split above (CHAT.md vs `useChat` vs
   `assistant_messages`).
-- Authored this status file documenting the halt and the recommended
-  re-split.
+- Landed **PS2a** (the safe prep sub-stage of the recommended
+  re-split): every `CommonChat` call site now passes a `threadId`
+  matching the server-resident id it already had — `job.id` for
+  job/`RunPane`/`JobPage`/`JobChatPage`, `thread.id` for
+  `AssistantPage`, the editor `sessionId` for `AiMiniWindow`.
+  `CommonChatProps` requires the slot on every variant; the routing
+  is pinned by a new vitest in
+  `src/modules/chat/CommonChat.test.tsx`. Comment on `CommonChat`
+  updated to explain why the slot is now load-bearing (PS3 derives
+  capabilities from it; PS4 keys state off it).
+- `pnpm typecheck` clean; `pnpm vitest run src/modules/chat` green
+  (3 / 3 tests).
 
-No code changes. Per R4, a partial UI collapse with TODOs is worse
-than no change at all; the next tick should pick Option A or B above
-and proceed from there.
+PS2b–PS2d (the actual collapse of the three implementations) still
+needs PS3 + PS4 to land first. The session doc above records the
+recommended sequence for the next tick.
