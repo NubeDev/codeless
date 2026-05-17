@@ -84,8 +84,17 @@ STAGES
 
 ● 3  auth                                                     14m   $0.42
      ✓  tick 1   add bearer middleware
+           ✓  parse incoming Authorization header
+           ✓  reject when claims.exp is in the past
+           ✓  attach principal to request extensions
      ✓  test     cargo test --lib auth
-     ✓  tick 2   wire middleware into router
+     ●  tick 2   wire middleware into router
+           ✓  register on /api subrouter
+           ●  merge subrouter into root router      ← now
+           ○  add coverage for /me and /logout
+           ○  checks   cargo check + clippy
+           ○  docs     update handover.md + session doc
+           ○  git      commit + push stage 3
      !  final    cargo test --test http      2 failed   [ restart ▾ ]
                                                          ├─ rerun now
 ○ 4  tests                                                   └─ new session
@@ -108,6 +117,58 @@ A `test` row is a single verify step. A stage may have many — one
 after each tick that asked to verify, plus a `final` gate before the
 stage closes. This matches the **layered verify** model
 (`verify: Vec<VerifyStep>`) called out in the next-steps section below.
+
+### Todo rows (nested under a tick)
+
+Ticks expand one level deeper into **todos** — the runner's own
+in-flight checklist for the current invocation. The problem they
+solve is concrete: one tick is a single runner invocation, but a
+single Claude Code or Codex session routinely runs 20–30 minutes
+before `task-completed` fires. Without todos, the UI shows `tick 2 ●`
+unchanged for half an hour and the user cannot tell whether the agent
+is making progress or has wedged. With todos, every plan item the
+runner ticks off ships a `todo-updated` event and the row flips
+`○` → `●` → `✓` in real time.
+
+Each todo row carries:
+
+- **Status glyph** — `○` pending, `●` in-progress, `✓` done, `!` failed, `~` skipped
+- **One-line title** — verbatim from the runner's plan tool (`TodoWrite`
+  for Claude Code, equivalent for Codex). Codeless does not rewrite or
+  prettify it; if the runner wrote a bad title, that's a runner-prompt
+  issue, not a UI issue.
+
+Todos are display-only. The truth of "is this stage done" is still
+the verify gate plus the push, not the checklist — a stage with all
+todos green but a red verify is still `failed`. The checklist exists
+to make the *invisible middle* of a long task visible, nothing more.
+
+#### The mandatory closing trio
+
+Every stage's todo list **must end with the same three items, in
+order**, so the user always sees the safety steps tick over before a
+stage is declared done:
+
+1. `checks` — run the stage's verify steps (`cargo check`, tests,
+   lint — whatever the stage's `verify:` list resolves to).
+2. `docs` — update the stage's `handover.md` and the active session
+   doc so the next stage's fresh agent has the context it needs (per
+   SCOPE Constraint 2: anything that must survive a stage boundary
+   lives on disk, not in the agent's head).
+3. `git` — `git add` the stage's changes, commit with the
+   `stage N: <title>` message, push to the job's branch.
+
+When all three are `✓`, the stage emits `stage-completed` and the
+stage row in the overview flips green. This is the contract that
+makes the user's question "did it actually push?" answerable at a
+glance instead of by reading the run log. The trio is enforced two
+ways: the planner injects them when it writes the stage's todo list,
+and the runtime refuses to fire `stage-completed` unless all three
+are `done`.
+
+If the runner produces no other todos (a trivial stage), the three
+trio items are still emitted and ticked off in order. There is no
+"FINISH" todo on the wire — the trio going green *is* finish.
 
 ### The `[ restart ▾ ]` menu
 
@@ -223,6 +284,10 @@ table). Nothing new on the wire for the overview itself:
   `verify-failed`, `stage-completed`, `review-requested`.
 - **Tick status glyph** — derived from `task-started`, `task-completed`,
   `task-failed`.
+- **Todo status glyph** — derived from `todo-added`, `todo-updated`,
+  `todo-completed`. A tick row aggregates its todos: glyph is `●`
+  while any todo is `in_progress`, `!` if any is `failed`, `✓` only
+  when every todo (including the closing trio) is `done` or `skipped`.
 - **Cost / time / tool-call counters** — summed from event payloads
   per SCOPE "Cost — visible and cappable from day one".
 - **`● ` unread indicator on tab labels** — driven by a per-tab
@@ -230,7 +295,7 @@ table). Nothing new on the wire for the overview itself:
 
 ## What's new on the schema side
 
-Three additions are load-bearing for this UI to render with real
+Four additions are load-bearing for this UI to render with real
 content. None are wire-breaking; all are additive.
 
 ### 1. `stage.goal` and `stage.acceptance`
@@ -272,7 +337,18 @@ verify:
 `verify_cmd: String` stays as a sugar for a single-step list, for
 backward compatibility with existing YAML.
 
-### 3. `session_idle_timeout`
+### 3. `Todo` entity + `todo-*` events
+
+New SQLite table `todos(id, task_id, ord, title, status, started_at,
+completed_at)` and the three events listed in the SCOPE event table:
+`todo-added`, `todo-updated`, `todo-completed`. Populated from the
+runner's plan tool call (`TodoWrite` for Claude Code; equivalent for
+Codex). The closing trio (`checks`, `docs`, `git`) is injected by the
+runtime — not the runner — so a misbehaving runner cannot skip them.
+The runtime refuses to emit `stage-completed` until all three trio
+todos are `done`.
+
+### 4. `session_idle_timeout`
 
 Job-level config, default 30 min. After this much idle time on a
 warm session, the runtime archives the session and the next user
@@ -302,6 +378,11 @@ own letter-codes there.
    item below.
 2. **`Stages` overview tab** with stages + ticks + status glyphs.
    Read-only render of existing events; no new runtime behaviour.
+2a. **Todo rows** under ticks, fed by `todo-*` events. Includes the
+   runtime-injected closing trio (`checks`, `docs`, `git`) and the
+   gate that blocks `stage-completed` until the trio is green. This
+   is the user-visible "is the agent still alive?" payoff for any
+   stage longer than ~5 minutes.
 3. **`Stage-<N>` detail tab** with goal / gates / failure summary
    and the three buttons (`rerun now`, `new session + handover`,
    `stop`). No live chat yet — buttons-only.

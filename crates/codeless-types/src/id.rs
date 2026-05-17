@@ -63,6 +63,10 @@ ulid_newtype!(
 );
 ulid_newtype!(ReviewId, "Identity of a review gate attached to a stage.");
 ulid_newtype!(
+    TodoId,
+    "Identity of one user-visible sub-step within a task (`todos` row)."
+);
+ulid_newtype!(
     AssistantThreadId,
     "Identity of one conversational thread on the /assistant surface."
 );

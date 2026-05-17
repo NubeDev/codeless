@@ -3,7 +3,7 @@ use std::str::FromStr;
 use codeless_types::{
     AssistantAttachment, AssistantMessage, AssistantMessageRole, AssistantThread, AutoBypassPolicy,
     CostCents, GitAuth, Job, JobStatus, Persona, Repo, Review, ReviewStatus, StageStatus,
-    StopReason, Task, TaskId, TaskStatus, UnixMillis, WorkspaceMode,
+    StopReason, Task, TaskId, TaskStatus, Todo, TodoKind, TodoStatus, UnixMillis, WorkspaceMode,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
@@ -266,6 +266,77 @@ pub(super) fn task_status_label(s: TaskStatus) -> &'static str {
         TaskStatus::Failed => "failed",
         TaskStatus::Cancelled => "cancelled",
     }
+}
+
+pub(super) fn todo_status_label(s: TodoStatus) -> &'static str {
+    match s {
+        TodoStatus::Pending => "pending",
+        TodoStatus::InProgress => "in-progress",
+        TodoStatus::Done => "done",
+        TodoStatus::Skipped => "skipped",
+        TodoStatus::Failed => "failed",
+    }
+}
+
+pub(super) fn parse_todo_status(s: &str) -> sqlx::Result<TodoStatus> {
+    Ok(match s {
+        "pending" => TodoStatus::Pending,
+        "in-progress" => TodoStatus::InProgress,
+        "done" => TodoStatus::Done,
+        "skipped" => TodoStatus::Skipped,
+        "failed" => TodoStatus::Failed,
+        other => {
+            return Err(sqlx::Error::Decode(
+                format!("unknown todo status: {other}").into(),
+            ))
+        }
+    })
+}
+
+pub(super) fn todo_kind_label(k: TodoKind) -> &'static str {
+    match k {
+        TodoKind::Runner => "runner",
+        TodoKind::Planner => "planner",
+        TodoKind::Checks => "checks",
+        TodoKind::Docs => "docs",
+        TodoKind::Git => "git",
+    }
+}
+
+pub(super) fn parse_todo_kind(s: &str) -> sqlx::Result<TodoKind> {
+    Ok(match s {
+        "runner" => TodoKind::Runner,
+        "planner" => TodoKind::Planner,
+        "checks" => TodoKind::Checks,
+        "docs" => TodoKind::Docs,
+        "git" => TodoKind::Git,
+        other => {
+            return Err(sqlx::Error::Decode(
+                format!("unknown todo kind: {other}").into(),
+            ))
+        }
+    })
+}
+
+pub(super) fn todo_from_row(row: SqliteRow) -> sqlx::Result<Todo> {
+    let id: String = row.try_get("id")?;
+    let task_id: String = row.try_get("task_id")?;
+    let status: String = row.try_get("status")?;
+    let kind: String = row.try_get("kind")?;
+    let ordinal: i64 = row.try_get("ordinal")?;
+    let started_at: Option<i64> = row.try_get("started_at")?;
+    let ended_at: Option<i64> = row.try_get("ended_at")?;
+    Ok(Todo {
+        id: parse_id(&id)?,
+        task_id: parse_id(&task_id)?,
+        ordinal: ordinal as u32,
+        title: row.try_get("title")?,
+        status: parse_todo_status(&status)?,
+        kind: parse_todo_kind(&kind)?,
+        created_at: UnixMillis(row.try_get("created_at")?),
+        started_at: started_at.map(UnixMillis),
+        ended_at: ended_at.map(UnixMillis),
+    })
 }
 
 fn parse_task_status(s: &str) -> sqlx::Result<TaskStatus> {

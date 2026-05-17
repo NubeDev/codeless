@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::id::{JobId, RepoId, ReviewId, StageId, TaskId};
+use crate::id::{JobId, RepoId, ReviewId, StageId, TaskId, TodoId};
 use crate::job::StopReason;
 use crate::money::CostCents;
 use crate::review_gate::{PreCheckOutcome, ReviewVerdict};
@@ -8,6 +8,7 @@ use crate::scope_patch::{ScopePatchId, ScopePatchKind, ScopePatchTarget};
 use crate::stage::{FailureClass, StageStatus};
 use crate::task::TaskStatus;
 use crate::time::UnixMillis;
+use crate::todo::{TodoKind, TodoStatus};
 
 /// Monotonic event index, allocated by `events.cursor INTEGER
 /// AUTOINCREMENT`. Doubles as `Last-Event-ID` over SSE (SCOPE.md
@@ -271,6 +272,37 @@ pub enum Event {
     },
     #[serde(rename = "task-completed")]
     TaskCompleted { task_id: TaskId, status: TaskStatus },
+
+    /// A new sub-step appeared on a running task — either the runner
+    /// emitted a `TodoWrite`-equivalent tool call (`kind = Runner`) or
+    /// the runtime injected one (`kind` is one of `Checks` / `Docs` /
+    /// `Git` for the closing trio, or `Planner` for the future
+    /// stage-level pre-declared path). See `DOCS/JOB-UI.md` "Todo rows
+    /// (nested under a tick)" for the UI contract — the row's glyph
+    /// flips `○ → ● → ✓` as `TodoUpdated` / `TodoCompleted` arrive.
+    #[serde(rename = "todo-added")]
+    TodoAdded {
+        todo_id: TodoId,
+        task_id: TaskId,
+        ordinal: u32,
+        title: String,
+        kind: TodoKind,
+    },
+    /// Status transition on an existing todo. Carried as a separate
+    /// event from `TodoCompleted` so an intermediate `Pending →
+    /// InProgress` flip can light up the `●` glyph without faking a
+    /// completion. `TodoCompleted` is the dedicated terminal event so
+    /// the stage-completion gate (the part that holds back
+    /// `StageCompleted` until the trio is resolved) can subscribe to
+    /// one event type instead of inspecting every `TodoUpdated`.
+    #[serde(rename = "todo-updated")]
+    TodoUpdated { todo_id: TodoId, status: TodoStatus },
+    /// Terminal transition: `Done`, `Skipped`, or `Failed`. Pairs with
+    /// `TodoUpdated` — the runtime emits `TodoUpdated` for non-terminal
+    /// flips and `TodoCompleted` for terminal ones, so subscribers can
+    /// pick the granularity they care about.
+    #[serde(rename = "todo-completed")]
+    TodoCompleted { todo_id: TodoId, status: TodoStatus },
 
     #[serde(rename = "review-requested")]
     ReviewRequested {

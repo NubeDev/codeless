@@ -117,6 +117,13 @@ Stage-writing rules:
   doesn't enforce it.
 - Stages are **persistent** — they live in the repo. Don't write
   one-off "fix the typo" stages here; that's chat.
+- Do **not** hand-author the `checks` / `docs` / `git` closing todos
+  in the stage description. The runtime injects them as the last
+  three todos of every stage's checklist (see
+  [`JOB-UI.md`](../DOCS/JOB-UI.md) "The mandatory closing trio") so
+  the user always sees the verify-then-handover-then-push sequence
+  tick off live. Listing them in `template.yaml` is redundant and
+  will look duplicated in the UI.
 
 ## Step 3 — derive the workflow
 
@@ -139,33 +146,47 @@ freeform markdown. A good `WORKFLOW.md` covers:
 If the workflow is generic enough that it would apply to any job in
 this repo, it belongs in `CLAUDE.md` instead, not here.
 
-### Per-stage commit + push — exact wording for `WORKFLOW.md`
+### Per-stage closing trio — exact wording for `WORKFLOW.md`
 
 Paste this block into every job's `WORKFLOW.md` (adjust the branch
 name). It survives stage boundaries because the agent re-reads
-`WORKFLOW.md` at the top of each stage.
+`WORKFLOW.md` at the top of each stage. The block names the three
+todos the runtime will inject at the tail of every stage
+(`checks`, `docs`, `git`) so the agent treats them as real work,
+not boilerplate.
 
 ```markdown
-## Commit + push after every stage
+## Closing trio — the last three todos of every stage
 
-At the end of every stage — including stages that precede a REVIEW
-gate, including stages that only edit docs — the agent MUST:
+Every stage's todo checklist ends with the same three items, in
+order. The user watches these tick over in the `Stages` overview;
+they are how the user confirms a long-running stage actually
+landed instead of just looking like it did. Do **not** rename or
+reorder them.
 
-1. Stage every change the stage produced (`git add -A` from the
-   worktree root, or specific paths if the stage was surgical).
-2. Commit with the message `stage N: <one-line title from
-   template.yaml>` so the history mirrors the template stages
-   one-for-one.
-3. Push to the job's branch (`codeless/<job-name>`) so the work is
+1. `checks` — run the stage's `verify:` list (or `verify_cmd`).
+   Every step must pass. On failure: stop, fix, re-run; do not
+   advance to `docs`.
+2. `docs` — update `handover.md` for the next stage and the active
+   session doc, in the same worktree, so the fresh agent that opens
+   the next stage has the context it needs (per SCOPE Constraint 2:
+   anything that must survive a stage boundary is on disk, not in
+   the agent's head).
+3. `git` — stage the changes (`git add -A` from the worktree root,
+   or specific paths if the stage was surgical), commit with the
+   message `stage N: <one-line title from template.yaml>` so the
+   history mirrors the template stages one-for-one, and push to
+   the job's branch (`codeless/<job-name>`) so the work is
    recoverable even if the worktree is wiped.
 
-A stage is not "done" until the push succeeds. If the commit or
-push fails, fix the cause and retry — do not mark the stage `[x]`,
-do not advance, and never `--force` or `--no-verify`. If a stage
-genuinely produced no change (e.g. an investigation stage that
-only updated `SCOPE.md` and that doc was already current), say so
-in the handover and skip the commit, but the next stage's commit
-must include any side-effect files the investigation touched.
+A stage is not "done" until all three todos are green and the push
+succeeds. If `checks` or `git` fails, fix the cause and retry — do
+not mark the stage `[x]`, do not advance, and never `--force` or
+`--no-verify`. If a stage genuinely produced no change (e.g. an
+investigation stage that only updated `SCOPE.md` and that doc was
+already current), say so in the handover and mark `git` as
+`skipped — no diff`, but the next stage's commit must include any
+side-effect files the investigation touched.
 ```
 
 ## Step 4 — submit it (curl)
@@ -281,14 +302,17 @@ under `SubmitJobArgs`.
 4. **Never delete `template.yaml` to "reset" a job.** Use
    `delete_job_file` (which refuses) or remove the whole directory
    with the server stopped.
-5. **Every stage commits and pushes its own work, on its own
-   branch.** No batching across stages, no "I'll commit at the
+5. **Every stage ends with the closing trio: `checks`, `docs`,
+   `git`.** No batching across stages, no "I'll commit at the
    end". The recovery story for a crashed worktree is `git fetch`
    plus the per-stage commits — without them, the work is lost.
-   `WORKFLOW.md` must include the per-stage commit-and-push block
-   from Step 3 above so the agent re-reads the rule at every
-   stage. Never `--force`, never `--no-verify`; if a hook fails,
-   fix the cause.
+   The trio is also the UI's live signal that the stage actually
+   landed (see [`JOB-UI.md`](../DOCS/JOB-UI.md) "The mandatory
+   closing trio"); a stage that skips it looks running forever to
+   the user even if the code is fine. `WORKFLOW.md` must include
+   the trio block from Step 3 above so the agent re-reads the rule
+   at every stage. Never `--force`, never `--no-verify`; if a hook
+   fails, fix the cause.
 
 ## Common gotchas
 

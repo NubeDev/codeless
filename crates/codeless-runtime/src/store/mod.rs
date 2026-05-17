@@ -12,6 +12,7 @@ mod repos;
 mod reviews;
 mod stages;
 mod tasks;
+mod todos;
 
 /// SQLite-backed persistence for repos and jobs. Status enums are
 /// mapped to their kebab-case wire labels (matching SCOPE.md Appendix

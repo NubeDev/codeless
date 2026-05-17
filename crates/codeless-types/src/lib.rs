@@ -22,6 +22,7 @@ pub mod scope_patch;
 pub mod stage;
 pub mod task;
 pub mod time;
+pub mod todo;
 pub mod workspace;
 
 pub use assistant::{
@@ -36,7 +37,7 @@ pub use git_auth::GitAuth;
 pub use handover::{Handover, HandoverParseError};
 pub use id::{
     AssistantAttachmentId, AssistantMessageId, AssistantThreadId, JobId, RepoId, ReviewId, StageId,
-    TaskId,
+    TaskId, TodoId,
 };
 pub use job::{Job, JobStatus, StopReason, WorkspaceMode};
 pub use money::CostCents;
@@ -50,6 +51,7 @@ pub use scope_patch::{
 pub use stage::{FailureClass, Stage, StageStatus};
 pub use task::{Task, TaskStatus};
 pub use time::UnixMillis;
+pub use todo::{Todo, TodoKind, TodoStatus};
 pub use workspace::{
     AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, DetachPolicy,
     DetachWorkspaceArgs, ListWorkspacesResult, ValidateWorkspacePathArgs,

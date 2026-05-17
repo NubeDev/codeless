@@ -6,7 +6,7 @@
 #   docker build -f codeless/crates/codeless-tauri-desktop/docker/Dockerfile.windows \
 #     -t codeless-desktop-windows .
 
-FROM rust:1.78-bookworm AS builder
+FROM rust:1.95-bookworm AS builder
 
 # System deps for cross-compilation
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,10 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wine64 \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js + pnpm for building the UI
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# Node.js 22 + pnpm for building the UI (pnpm v11 requires Node >= 22.13)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
-    && npm install -g pnpm@9 \
+    && npm install -g pnpm@11 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install cargo-xwin for Windows MSVC cross-compilation
