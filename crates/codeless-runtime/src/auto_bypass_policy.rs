@@ -23,6 +23,8 @@ pub const BEST_JUDGEMENT: &str = "Operator policy: Best judgement. The previous 
 
 pub const JUST_CODE: &str = "Operator policy: Just code. The previous stage failed and auto-bypass advanced the job. The operator wants forward progress. Pick a reasonable approach and ship it; do not block on questions, do not propose a SCOPE patch, do not request review unless the next change is destructive.";
 
+pub const RELENTLESS: &str = "Operator policy: Relentless. The previous stage failed and auto-bypass advanced the job. The thrashing guard is disabled for this job; the only stop signals are the cost cap and the wall-clock cap. Make the best long-term decision you can with the context you have, ship forward progress, and keep going — the operator is not present to arbitrate.";
+
 /// Resolve a policy to the comment body the auto-bypass branch
 /// threads into the next stage's prompt. Presets return their
 /// `const &str` verbatim; `Custom` returns the operator's free-text
@@ -35,6 +37,7 @@ pub fn policy_comment(policy: &AutoBypassPolicy) -> &str {
         AutoBypassPolicy::BestJudgement => BEST_JUDGEMENT,
         AutoBypassPolicy::JustCode => JUST_CODE,
         AutoBypassPolicy::Custom { comment } => comment.as_str(),
+        AutoBypassPolicy::Relentless => RELENTLESS,
     }
 }
 
@@ -44,7 +47,14 @@ mod tests {
 
     #[test]
     fn preset_comments_are_single_paragraph() {
-        for s in [QUICK, LONG_TERM, CHEAP, BEST_JUDGEMENT, JUST_CODE] {
+        for s in [
+            QUICK,
+            LONG_TERM,
+            CHEAP,
+            BEST_JUDGEMENT,
+            JUST_CODE,
+            RELENTLESS,
+        ] {
             assert!(!s.starts_with('\n'), "leading newline: {s:?}");
             assert!(!s.ends_with('\n'), "trailing newline: {s:?}");
             assert!(!s.contains("\n\n"), "paragraph break inside: {s:?}");

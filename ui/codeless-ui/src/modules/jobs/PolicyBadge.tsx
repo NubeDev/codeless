@@ -63,6 +63,11 @@ const PRESETS: { id: PresetKind; label: string; hint: string }[] = [
     label: "Just code",
     hint: "Pick a reasonable approach and ship it; do not block on questions.",
   },
+  {
+    id: "relentless",
+    label: "Relentless",
+    hint: "Never stops on stage failure; only the cost cap and wall-clock cap halt the job.",
+  },
 ];
 
 const NO_POLICY = "__no_policy__";
@@ -85,6 +90,8 @@ export function policyDisplayName(policy: AutoBypassPolicy): string {
       return "Best judgement";
     case "just-code":
       return "Just code";
+    case "relentless":
+      return "Relentless";
     case "custom":
       return "Custom";
   }
@@ -106,25 +113,31 @@ interface BadgeProps {
 export function PolicyBadge({ job, onUpdated }: BadgeProps) {
   const [open, setOpen] = useState(false);
   const policy = job.auto_bypass_policy;
-  if (!policy) return null;
   const editable = canEditPolicy(job.status);
-  const label = `policy: ${policyDisplayName(policy)}`;
-  // The badge doubles as the modal trigger so the surface stays
-  // small. A button (rather than a span) wins keyboard access for
-  // free; the visual is the badge pill.
+  // Render an "attach policy" affordance when none is set. Without
+  // this the badge disappears entirely and the operator has no path
+  // to opt a fresh job into hands-off advancement, which is the
+  // whole point of Surface F.
+  const label = policy
+    ? `policy: ${policyDisplayName(policy)}`
+    : "policy: none";
+  const unsetTitle = editable
+    ? "Click to set an auto-bypass policy"
+    : "Policy is locked while the job is running — pause to set one";
+  const setTitle = editable
+    ? "Click to change or clear the auto-bypass policy"
+    : "Policy is locked while the job is running — pause to change";
   return (
     <>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title={
-          editable
-            ? "Click to change or clear the auto-bypass policy"
-            : "Policy is locked while the job is running — pause to change"
-        }
+        title={policy ? setTitle : unsetTitle}
         className={cn(
-          "border-border/60 bg-muted/40 text-muted-foreground hover:border-border hover:text-foreground",
           "inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium transition-colors",
+          policy
+            ? "border-border/60 bg-muted/40 text-muted-foreground hover:border-border hover:text-foreground"
+            : "border-dashed border-border/50 text-muted-foreground/70 hover:border-border hover:text-foreground",
         )}
       >
         {label}

@@ -164,6 +164,7 @@ async fn jobs_columns_match_appendix_a() {
             "system_prompt",
             "persona_id",
             "auto_bypass_policy",
+            "pending_operator_comment",
         ],
     );
 }

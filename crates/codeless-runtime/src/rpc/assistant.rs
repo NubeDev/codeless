@@ -574,8 +574,11 @@ fn parse_action(input: &str) -> Option<(AssistantAction, String)> {
 ///
 /// Keys: `runner`, `branch`, `cost_cap_cents`, `wall_clock_cap_ms`,
 /// `workspace_mode` (`in-repo` | `worktree`), `model`, `permission_mode`,
-/// `effort`. Anything unrecognised fails the parse so the user sees the
-/// no-op responder rather than a card with a silently-dropped knob.
+/// `effort`, `policy` (one of `quick`, `long-term`, `cheap`,
+/// `best-judgement`, `just-code`, `relentless` — enables hands-off
+/// auto-bypass when a stage fails). Anything unrecognised fails the
+/// parse so the user sees the no-op responder rather than a card with
+/// a silently-dropped knob.
 ///
 /// Sensible defaults fill in for unprovided fields so a one-liner like
 /// `/draft <repo_id> -- add dark mode` still produces a complete,
@@ -599,6 +602,7 @@ fn parse_draft(after: &str) -> Option<(AssistantAction, String)> {
     let mut model: Option<String> = None;
     let mut permission_mode: Option<String> = None;
     let mut effort: Option<String> = None;
+    let mut auto_bypass_policy: Option<codeless_types::AutoBypassPolicy> = None;
     for tok in toks {
         let (k, v) = tok.split_once('=')?;
         match k {
@@ -616,6 +620,19 @@ fn parse_draft(after: &str) -> Option<(AssistantAction, String)> {
             "model" => model = Some(v.to_owned()),
             "permission_mode" => permission_mode = Some(v.to_owned()),
             "effort" => effort = Some(v.to_owned()),
+            "policy" => {
+                auto_bypass_policy = Some(match v {
+                    "quick" => codeless_types::AutoBypassPolicy::Quick,
+                    "long-term" | "long_term" => codeless_types::AutoBypassPolicy::LongTerm,
+                    "cheap" => codeless_types::AutoBypassPolicy::Cheap,
+                    "best-judgement" | "best_judgement" => {
+                        codeless_types::AutoBypassPolicy::BestJudgement
+                    }
+                    "just-code" | "just_code" => codeless_types::AutoBypassPolicy::JustCode,
+                    "relentless" => codeless_types::AutoBypassPolicy::Relentless,
+                    _ => return None,
+                });
+            }
             _ => return None,
         }
     }
@@ -629,8 +646,12 @@ fn parse_draft(after: &str) -> Option<(AssistantAction, String)> {
 
     let summary = format!(
         "Draft job in repo `{repo_id}` on branch `{branch}` \
-         (runner `{runner}`, caps {cost_cap_cents}¢ / {wall_clock_cap_ms}ms).\n\n\
+         (runner `{runner}`, caps {cost_cap_cents}¢ / {wall_clock_cap_ms}ms{policy_suffix}).\n\n\
          Prompt:\n{prompt}",
+        policy_suffix = match &auto_bypass_policy {
+            Some(p) => format!(", auto-bypass `{}`", p.policy_name()),
+            None => String::new(),
+        },
     );
     Some((
         AssistantAction::DraftJob {
@@ -644,6 +665,7 @@ fn parse_draft(after: &str) -> Option<(AssistantAction, String)> {
             model,
             permission_mode,
             effort,
+            auto_bypass_policy,
         },
         summary,
     ))
@@ -1824,6 +1846,7 @@ mod tests {
                 model,
                 permission_mode,
                 effort,
+                auto_bypass_policy,
             } => {
                 assert_eq!(r, repo_id);
                 assert_eq!(prompt, "add dark mode");
@@ -1837,6 +1860,9 @@ mod tests {
                 assert!(model.is_none());
                 assert!(permission_mode.is_none());
                 assert!(effort.is_none());
+                // The default-halt path matches the form surface: the
+                // operator opts into hands-off advancement explicitly.
+                assert!(auto_bypass_policy.is_none());
             }
             other => panic!("expected DraftJob, got {other:?}"),
         }
@@ -1878,6 +1904,29 @@ mod tests {
             }
             other => panic!("expected DraftJob, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parser_draft_carries_relentless_policy() {
+        // The chat surface mirrors the form surface (Surface F): a
+        // job submitted from `/draft` must be able to opt into the
+        // `Relentless` policy or the operator has to fall back to
+        // the dialog just to flip one knob.
+        let repo_id = RepoId::new();
+        let line = format!("/draft {repo_id} policy=relentless -- keep going");
+        let (action, summary) = parse_action(&line).expect("parse draft");
+        match action {
+            AssistantAction::DraftJob {
+                auto_bypass_policy, ..
+            } => {
+                assert!(matches!(
+                    auto_bypass_policy,
+                    Some(codeless_types::AutoBypassPolicy::Relentless)
+                ));
+            }
+            other => panic!("expected DraftJob, got {other:?}"),
+        }
+        assert!(summary.contains("Relentless"));
     }
 
     #[test]

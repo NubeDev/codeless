@@ -228,7 +228,15 @@ export type AssistantAction = { tool: "list_jobs"; repo_id?: RepoId | null } | {
  *  surfaced on the card — the user sees exactly what they are
  *  approving instead of guessing what is implicit.
  */
-{ tool: "draft_job"; repo_id: RepoId; prompt: string; runner: string; branch: string; cost_cap_cents: number; wall_clock_cap_ms: number; workspace_mode?: WorkspaceMode | null; model?: string | null; permission_mode?: string | null; effort?: string | null } | 
+{ tool: "draft_job"; repo_id: RepoId; prompt: string; runner: string; branch: string; cost_cap_cents: number; wall_clock_cap_ms: number; workspace_mode?: WorkspaceMode | null; model?: string | null; permission_mode?: string | null; effort?: string | null; 
+/**
+ *  Hands-off advancement policy applied if a stage fails.
+ *  Mirrors the picker in `SubmitJobDialog` (Surface F) so a
+ *  job drafted from chat carries the same opt-in the form
+ *  surface offers. `None` keeps the default — a stage failure
+ *  halts the job and waits for the operator.
+ */
+auto_bypass_policy?: AutoBypassPolicy | null } | 
 /**
  *  Rewrite one of the job's spec files (default `SCOPE.md`) with
  *  new content. Stage-9 "edit-scope": the chat surface proposes
@@ -384,7 +392,18 @@ export type AssistantThreadId = string;
  *  and halt as today — operator-set caps win over auto-bypass per
  *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
  */
-export type AutoBypassPolicy = { type: "quick" } | { type: "long-term" } | { type: "cheap" } | { type: "best-judgement" } | { type: "just-code" } | { type: "custom"; comment: string };
+export type AutoBypassPolicy = { type: "quick" } | { type: "long-term" } | { type: "cheap" } | { type: "best-judgement" } | { type: "just-code" } | { type: "custom"; comment: string } | 
+/**
+ *  Opt out of the two-strikes thrashing guard
+ *  (`AUTO-BYPASS-DECISIONS.md` Q7). Intended for explicitly
+ *  hands-off long-running jobs where the operator accepts that
+ *  the only safety floor is the cost / wall-clock cap. The Q1
+ *  guard still applies to every other policy variant — this is
+ *  the one variant that disables it, and the disable is the
+ *  whole point of the variant. Cap-breach failures continue to
+ *  halt regardless (Q2 is not weakened).
+ */
+{ type: "relentless" };
 
 /**
  *  `assistant.cancelAction`. Flip a pending action card's status to
@@ -654,7 +673,18 @@ export type Event = { type: "repo-added"; repo_id: RepoId } | { type: "repo-remo
  *  resume of a never-stopped row is a programming error;
  *  the RPC enforces it).
  */
-previous_reason?: StopReason | null } | 
+previous_reason?: StopReason | null; 
+/**
+ *  Free-text identifier for the surface that initiated the
+ *  resume. The first consumer is the Slack control plane,
+ *  which sets this to `"slack"` (vs. `"operator"` for direct
+ *  UI/CLI/RPC, `"assistant"` for the assistant-tool path,
+ *  etc.) so audit and dashboard surfaces can distinguish a
+ *  phone-driven resume from a keyboard-driven one. `None`
+ *  preserves the historical event shape; older replayed
+ *  events deserialize unchanged.
+ */
+actor?: string | null } | 
 /**
  *  `reset_job` returned a stuck job (`Queued` whose driver kept
  *  failing, or a terminal `Failed` / `Stopped`) to an editable
@@ -888,7 +918,19 @@ commit_sha: string } |
  *  `stages.bypassed_at` and is the timestamp the recorder
  *  stamped on the row.
  */
-{ type: "stage-auto-bypassed"; stage_id: StageId; policy_name: string; comment_used: string; applied_at: UnixMillis };
+{ type: "stage-auto-bypassed"; stage_id: StageId; policy_name: string; comment_used: string; applied_at: UnixMillis } | 
+/**
+ *  `set_job_policy` replaced (or cleared) the job's
+ *  `auto_bypass_policy`. Emitted only when the value actually
+ *  changes — a same-policy call is a no-op success that publishes
+ *  nothing, keeping cross-window invalidation traffic bounded
+ *  (`DOCS/AUTO-BYPASS-DECISIONS.md` Q5 "Idempotency"). `policy_name`
+ *  mirrors `AutoBypassPolicy::policy_name()` (one of the five preset
+ *  labels or the literal `"Custom"`), or `None` when the policy was
+ *  cleared. Subscribers refresh their per-job badge / submit-form
+ *  state from this event without re-fetching the whole row.
+ */
+{ type: "job-policy-changed"; job_id: JobId; policy_name?: string | null };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -1141,6 +1183,7 @@ export type Job = {
 	 *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
 	 */
 	auto_bypass_policy: AutoBypassPolicy | null,
+	pending_operator_comment: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,
@@ -1912,6 +1955,23 @@ export type Stage = {
 	 *  the template or the persona row.
 	 */
 	persona_id?: string | null,
+	/**
+	 *  Wall-clock millis the operator (or a future auto-bypass
+	 *  policy) marked this stage as bypassed. `None` is the
+	 *  common case; `Some(_)` together with `status: Failed`
+	 *  means "advance past this stage on the next run." The
+	 *  status column stays `Failed` so the audit trail keeps
+	 *  the original outcome; the bypass timestamp is the
+	 *  forward-advance signal.
+	 */
+	bypassed_at?: UnixMillis | null,
+	/**
+	 *  Operator (or policy) reason for the bypass. Free-text;
+	 *  rendered in the run log + the UI gate panel so the audit
+	 *  trail names *why* the bypass happened. `None` when
+	 *  `bypassed_at` is also `None`.
+	 */
+	bypassed_reason?: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.
@@ -1965,7 +2025,19 @@ export type StopJobArgs = {
  *  Why a job left the running set early. `None` while running or after a
  *  clean completion; populated when status is `Stopped` or `Failed`.
  */
-export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash";
+export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash" | 
+/**
+ *  Surface F thrashing guard: the per-job `AutoBypassPolicy` fired
+ *  twice in a row with no `Passed` stage between, so the runtime
+ *  halts the job instead of auto-bypassing a third time. The
+ *  guidance comment thread converged on nothing in two attempts;
+ *  a third would burn more tokens for the same outcome. See
+ *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q1 — two-strikes is the
+ *  canonical window size, written here as the wire-level stop
+ *  reason so the UI can render `policy thrashing` distinctly from
+ *  the other terminal causes.
+ */
+"auto-bypass-thrashing";
 
 export type StopReviewArgs = {
 	review_id: ReviewId,

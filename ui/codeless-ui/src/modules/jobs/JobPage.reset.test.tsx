@@ -38,6 +38,7 @@ function makeJob(status: JobStatus): Job {
     system_prompt: null,
     persona_id: null,
     auto_bypass_policy: null,
+    pending_operator_comment: null,
     started_at: null,
     ended_at: null,
     created_at: Date.now(),

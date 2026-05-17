@@ -25,7 +25,18 @@ pub enum AutoBypassPolicy {
     Cheap,
     BestJudgement,
     JustCode,
-    Custom { comment: String },
+    Custom {
+        comment: String,
+    },
+    /// Opt out of the two-strikes thrashing guard
+    /// (`AUTO-BYPASS-DECISIONS.md` Q7). Intended for explicitly
+    /// hands-off long-running jobs where the operator accepts that
+    /// the only safety floor is the cost / wall-clock cap. The Q1
+    /// guard still applies to every other policy variant — this is
+    /// the one variant that disables it, and the disable is the
+    /// whole point of the variant. Cap-breach failures continue to
+    /// halt regardless (Q2 is not weakened).
+    Relentless,
 }
 
 impl AutoBypassPolicy {
@@ -42,6 +53,17 @@ impl AutoBypassPolicy {
             AutoBypassPolicy::BestJudgement => "Best-judgement",
             AutoBypassPolicy::JustCode => "Just code",
             AutoBypassPolicy::Custom { .. } => "Custom",
+            AutoBypassPolicy::Relentless => "Relentless",
         }
+    }
+
+    /// Whether the two-strikes thrashing guard applies to this
+    /// policy. `Relentless` is the only variant that opts out — see
+    /// `AUTO-BYPASS-DECISIONS.md` Q7. Centralised here so the
+    /// runtime's `classify_stage_failure` does not pattern-match on
+    /// the variant directly and a future relaxation lands in one
+    /// place.
+    pub fn thrash_guard_applies(&self) -> bool {
+        !matches!(self, AutoBypassPolicy::Relentless)
     }
 }

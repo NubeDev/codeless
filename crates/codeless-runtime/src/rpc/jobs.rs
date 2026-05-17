@@ -1210,6 +1210,7 @@ pub(super) async fn draft_job_from_conversation(
         model,
         permission_mode,
         effort,
+        auto_bypass_policy,
     } = card.action
     else {
         // Unreachable: the `find` above already matched the variant.
@@ -1242,7 +1243,7 @@ pub(super) async fn draft_job_from_conversation(
             // promote the draft from the job page.
             system_prompt: None,
             persona_id: None,
-            auto_bypass_policy: None,
+            auto_bypass_policy,
             start_immediately: false,
         },
     )

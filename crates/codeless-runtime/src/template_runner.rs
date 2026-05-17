@@ -198,11 +198,14 @@ impl TemplateRunner {
         task_id: TaskId,
         policy_name: &str,
         comment: &str,
+        thrash_guard_applies: bool,
     ) -> AutoBypassDecision {
-        if let Some(guard) = self.thrashing_guard.as_ref() {
-            if guard.would_breach(ctx.job_id) {
-                record_thrash_halt(self.store.as_deref(), ctx).await;
-                return AutoBypassDecision::Thrash;
+        if thrash_guard_applies {
+            if let Some(guard) = self.thrashing_guard.as_ref() {
+                if guard.would_breach(ctx.job_id) {
+                    record_thrash_halt(self.store.as_deref(), ctx).await;
+                    return AutoBypassDecision::Thrash;
+                }
             }
         }
         emit_auto_bypass(
@@ -213,8 +216,10 @@ impl TemplateRunner {
             comment.to_string(),
         )
         .await;
-        if let Some(guard) = self.thrashing_guard.as_ref() {
-            guard.record_auto_bypass(ctx.job_id);
+        if thrash_guard_applies {
+            if let Some(guard) = self.thrashing_guard.as_ref() {
+                guard.record_auto_bypass(ctx.job_id);
+            }
         }
         AutoBypassDecision::Advanced
     }
@@ -535,6 +540,7 @@ impl Runner for TemplateRunner {
                                     FailureAction::AutoBypass {
                                         policy_name,
                                         comment,
+                                        thrash_guard_applies,
                                     } => {
                                         match self
                                             .try_auto_bypass(
@@ -543,6 +549,7 @@ impl Runner for TemplateRunner {
                                                 task_id,
                                                 &policy_name,
                                                 &comment,
+                                                thrash_guard_applies,
                                             )
                                             .await
                                         {
@@ -732,6 +739,7 @@ impl Runner for TemplateRunner {
                             FailureAction::AutoBypass {
                                 policy_name,
                                 comment,
+                                thrash_guard_applies,
                             } => {
                                 match self
                                     .try_auto_bypass(
@@ -740,6 +748,7 @@ impl Runner for TemplateRunner {
                                         task_id,
                                         &policy_name,
                                         &comment,
+                                        thrash_guard_applies,
                                     )
                                     .await
                                 {
@@ -903,6 +912,7 @@ impl Runner for TemplateRunner {
                                     FailureAction::AutoBypass {
                                         policy_name,
                                         comment,
+                                        thrash_guard_applies,
                                     } => {
                                         match self
                                             .try_auto_bypass(
@@ -911,6 +921,7 @@ impl Runner for TemplateRunner {
                                                 task_id,
                                                 &policy_name,
                                                 &comment,
+                                                thrash_guard_applies,
                                             )
                                             .await
                                         {
@@ -981,6 +992,7 @@ impl Runner for TemplateRunner {
                             FailureAction::AutoBypass {
                                 policy_name,
                                 comment,
+                                thrash_guard_applies,
                             } => {
                                 match self
                                     .try_auto_bypass(
@@ -989,6 +1001,7 @@ impl Runner for TemplateRunner {
                                         task_id,
                                         &policy_name,
                                         &comment,
+                                        thrash_guard_applies,
                                     )
                                     .await
                                 {
@@ -1054,6 +1067,7 @@ impl Runner for TemplateRunner {
                             FailureAction::AutoBypass {
                                 policy_name,
                                 comment,
+                                thrash_guard_applies,
                             } => {
                                 match self
                                     .try_auto_bypass(
@@ -1062,6 +1076,7 @@ impl Runner for TemplateRunner {
                                         task_id,
                                         &policy_name,
                                         &comment,
+                                        thrash_guard_applies,
                                     )
                                     .await
                                 {
@@ -1347,6 +1362,12 @@ enum FailureAction {
     AutoBypass {
         policy_name: String,
         comment: String,
+        /// `false` for the `Relentless` policy variant
+        /// (`AUTO-BYPASS-DECISIONS.md` Q7) — the runner skips
+        /// `ThrashingGuard::would_breach` and never records into the
+        /// per-job counter. Every other policy leaves this `true` and
+        /// goes through the Q1 two-strikes window unchanged.
+        thrash_guard_applies: bool,
     },
 }
 
@@ -1397,9 +1418,11 @@ async fn classify_stage_failure(store: Option<&SqliteStore>, ctx: &RunnerContext
         Some(policy) => {
             let policy_name = policy.policy_name().to_string();
             let comment = crate::auto_bypass_policy::policy_comment(&policy).to_string();
+            let thrash_guard_applies = policy.thrash_guard_applies();
             FailureAction::AutoBypass {
                 policy_name,
                 comment,
+                thrash_guard_applies,
             }
         }
         None => FailureAction::Halt,
@@ -1657,12 +1680,38 @@ mod tests {
             FailureAction::AutoBypass {
                 policy_name,
                 comment,
+                thrash_guard_applies,
             } => {
                 assert_eq!(policy_name, "Quick");
                 assert!(
                     comment.starts_with("Operator policy: Quick."),
                     "unexpected canned comment: {comment}"
                 );
+                // Every preset other than Relentless leaves the
+                // two-strike guard armed.
+                assert!(thrash_guard_applies);
+            }
+            other => panic!("expected AutoBypass, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_under_relentless_opts_out_of_thrash_guard() {
+        // AUTO-BYPASS-DECISIONS.md Q7: the only policy variant where
+        // `thrash_guard_applies` is false. The runner reads this flag
+        // before consulting the guard; the unit test pins the flag at
+        // the classification seam so a future refactor cannot drop it.
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Relentless), None).await;
+        let ctx = test_runner_context(job_id).await;
+        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+            FailureAction::AutoBypass {
+                policy_name,
+                thrash_guard_applies,
+                ..
+            } => {
+                assert_eq!(policy_name, "Relentless");
+                assert!(!thrash_guard_applies);
             }
             other => panic!("expected AutoBypass, got {other:?}"),
         }

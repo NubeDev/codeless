@@ -175,6 +175,11 @@ const POLICY_PRESETS: { id: PresetPolicyKind; label: string; hint: string }[] = 
     label: "Just code",
     hint: "Pick a reasonable approach and ship it; do not block on questions.",
   },
+  {
+    id: "relentless",
+    label: "Relentless",
+    hint: "Never stops on stage failure; only the cost cap and wall-clock cap halt the job.",
+  },
 ];
 
 export function SubmitJobDialog({ repo, trigger }: Props) {

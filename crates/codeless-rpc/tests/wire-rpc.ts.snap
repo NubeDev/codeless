@@ -275,7 +275,18 @@ export type AssistantThreadId = string;
  *  and halt as today — operator-set caps win over auto-bypass per
  *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
  */
-export type AutoBypassPolicy = { type: "quick" } | { type: "long-term" } | { type: "cheap" } | { type: "best-judgement" } | { type: "just-code" } | { type: "custom"; comment: string };
+export type AutoBypassPolicy = { type: "quick" } | { type: "long-term" } | { type: "cheap" } | { type: "best-judgement" } | { type: "just-code" } | { type: "custom"; comment: string } | 
+/**
+ *  Opt out of the two-strikes thrashing guard
+ *  (`AUTO-BYPASS-DECISIONS.md` Q7). Intended for explicitly
+ *  hands-off long-running jobs where the operator accepts that
+ *  the only safety floor is the cost / wall-clock cap. The Q1
+ *  guard still applies to every other policy variant — this is
+ *  the one variant that disables it, and the disable is the
+ *  whole point of the variant. Cap-breach failures continue to
+ *  halt regardless (Q2 is not weakened).
+ */
+{ type: "relentless" };
 
 /**
  *  `assistant.cancelAction`. Flip a pending action card's status to
@@ -739,6 +750,7 @@ export type Job = {
 	 *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
 	 */
 	auto_bypass_policy: AutoBypassPolicy | null,
+	pending_operator_comment: string | null,
 	started_at: UnixMillis | null,
 	ended_at: UnixMillis | null,
 	created_at: UnixMillis,

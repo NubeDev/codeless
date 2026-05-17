@@ -305,6 +305,50 @@ consumer that does not care about the distinction filters on
 "either of the two variants" — cheaper than splitting one variant
 back into two later.
 
+## Q7 — A "never stops" policy that disables the thrashing guard
+
+**Decision: a seventh preset, `Relentless`, is added. It is the
+only `AutoBypassPolicy` variant for which the Q1 two-strike
+thrashing guard is skipped. Cost cap and wall-clock cap remain the
+only stop signals.**
+
+The operator-driven need is a long-running unattended job whose
+only halt conditions are the budget caps. The Q1 guard exists to
+prevent silent loops eating budget while the operator is away from
+the chair; `Relentless` is the explicit opt-in that says "this is
+fine, the caps are the floor, do not halt for thrashing." The
+runtime represents this by:
+
+- `AutoBypassPolicy::Relentless` on the wire (kebab-case
+  `relentless`), tagged the same way as every other preset.
+- `AutoBypassPolicy::thrash_guard_applies()` returns `false` only
+  for `Relentless`. `template_runner` reads this flag at the point
+  it would otherwise call `ThrashingGuard::would_breach` and skips
+  the call entirely; it also skips the matching
+  `record_auto_bypass` call so the per-job counter does not grow
+  spuriously and confuse a later policy switch.
+- The canned comment threaded into the next stage's prompt names
+  the policy by its display name and states explicitly that the
+  guard is disabled and that the caps are the only stop signal, so
+  the model knows the operator's tolerance for forward progress.
+- The cost cap and the wall-clock cap continue to halt the job
+  unconditionally (Q2 is unchanged). `Relentless` does not weaken
+  the budget contract; it only disables the heuristic loop guard.
+
+**Why not "raise the Q1 window to N"?** Because the right behaviour
+for the long-running case is "do not halt for repeated bypass at
+all" — any finite N has the same shape (silent halt mid-run) for
+an N+1 case and is harder to reason about than a single bit. The
+operator who picks `Relentless` is signing the consent that the
+caps are sufficient.
+
+**Cross-link.** This decision opts out of [Q1](#q1--thrashing-window-size)
+for one variant only; the default for every other variant remains
+the two-strike window. A future operator who wants a guard size
+other than two opens a new Q in this file and bumps the const in
+`crates/codeless-runtime/src/thrashing_guard.rs`; they do not flip
+this decision.
+
 ## What is explicitly not decided here
 
 - **Slack integration.** Out of scope for this job per

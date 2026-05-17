@@ -155,6 +155,13 @@ pub enum AssistantAction {
         permission_mode: Option<String>,
         #[serde(default)]
         effort: Option<String>,
+        /// Hands-off advancement policy applied if a stage fails.
+        /// Mirrors the picker in `SubmitJobDialog` (Surface F) so a
+        /// job drafted from chat carries the same opt-in the form
+        /// surface offers. `None` keeps the default — a stage failure
+        /// halts the job and waits for the operator.
+        #[serde(default)]
+        auto_bypass_policy: Option<crate::AutoBypassPolicy>,
     },
     /// Rewrite one of the job's spec files (default `SCOPE.md`) with
     /// new content. Stage-9 "edit-scope": the chat surface proposes

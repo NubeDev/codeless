@@ -37,6 +37,7 @@ function makeJob(
     system_prompt: null,
     persona_id: null,
     auto_bypass_policy: policy,
+    pending_operator_comment: null,
     started_at: null,
     ended_at: null,
     created_at: Date.now(),
@@ -71,9 +72,21 @@ describe("policyDisplayName", () => {
 describe("PolicyBadge", () => {
   afterEach(() => cleanup());
 
-  it("renders nothing when the job has no policy", () => {
-    const { container } = renderBadge(makeJob("draft", null));
-    expect(container.textContent ?? "").not.toMatch(/policy:/i);
+  it("renders an attach affordance when the job has no policy", () => {
+    renderBadge(makeJob("draft", null));
+    // Without a clickable "none" affordance the operator has no
+    // path to opt an existing job into hands-off advancement —
+    // Surface F's whole purpose. The button must be present and
+    // labelled so it's discoverable.
+    const btn = screen.getByRole("button", { name: /policy: none/i });
+    expect(btn).toBeInTheDocument();
+    expect(btn.getAttribute("title")).toMatch(/set an auto-bypass policy/i);
+  });
+
+  it("locks the attach affordance while the job is running", () => {
+    renderBadge(makeJob("running", null));
+    const btn = screen.getByRole("button", { name: /policy: none/i });
+    expect(btn.getAttribute("title")).toMatch(/locked|pause/i);
   });
 
   it("shows the preset label on a job with a policy", () => {
