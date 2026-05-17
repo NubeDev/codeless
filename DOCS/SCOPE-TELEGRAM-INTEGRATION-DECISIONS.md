@@ -266,3 +266,113 @@ stage 4 must re-verify it before writing code.
   slack-integration, that field needs an owner before
   `codeless-bot-core` can render operator-comment audit lines
   in reply formatters.
+
+## Stage 4 — blocked, marked `[!]`
+
+Stage 4's outcome from `template.yaml` is:
+
+> Scaffold Telegram transport (teloxide); bot token + chat_id +
+> allowed_user_ids from secrets store; CLI
+> `--enable-telegram-bot` flag plumbing; long-polling event loop.
+
+This stage cannot write code in this worktree. Two
+independent preconditions are unmet, and both are documented as
+hard sequencing rules earlier in this file and in
+`WORKFLOW.md`:
+
+### Precondition A — the stage-1 RPC-scaffolding gate is still closed
+
+`WORKFLOW.md` defines the gate as four greps that must all match
+on the working tree. Re-running them against this worktree's
+`HEAD` (`90d932e`, branched from `master @ b615115`):
+
+| Grep                                                                          | Required        | Found at this `HEAD`                                                                    |
+| ----------------------------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------------- |
+| `grep -n 'pub bypass' crates/codeless-rpc/src/methods.rs`                     | `ResumeJobArgs` | `pub bypass_failing_stage: bool` (line 142) — a *different* field, from auto-bypass-policy |
+| `grep -n 'pub next_stage_comment' crates/codeless-rpc/src/methods.rs`         | `ResumeJobArgs` | (no matches)                                                                            |
+| `grep -nE 'actor:.*Option<String>' crates/codeless-types/src/event.rs`        | `JobResumed`    | (no matches; `JobResumed` is lines 85–93 and has only `job_id` + `previous_reason`)     |
+| `grep -nE 'comment:.*Option<String>' crates/codeless-types/src/event.rs`      | `JobResumed`    | (no matches; line 263 is `ReviewCommented.comment: String`, unrelated)                  |
+
+Three of the four fields are absent. The fourth (`bypass`) is
+present only by coincidence — `bypass_failing_stage` was added by
+the merged auto-bypass-policy job, not by slack-integration, and
+its semantics are different from the `bypass` field this job
+expects. The gate fails.
+
+`origin/codeless/slack-integration` is not present on origin in
+this worktree's view (only `origin/codeless/telegram-integration`,
+`origin/master`, and a handful of unrelated branches are
+reachable). The local `codeless/slack-integration` branch named
+in earlier handovers is not visible from this worktree either.
+That is consistent with the WORKFLOW.md rule that slack-
+integration's stage 1 must land on `master` (not on the slack
+branch) before this gate opens.
+
+### Precondition B — `codeless-bot-core` extraction has not happened
+
+The Stage-2 decision in this same file states:
+
+> The extraction stage MUST land *before* any Telegram transport
+> code. Otherwise the Telegram crate copies-and-pastes the parser
+> / ThreadMap / reply formatters out of `codeless-slack`, and the
+> "shared via codeless-bot-core" promise becomes a refactor debt
+> the project will never pay back. […] no `codeless-bot/`
+> directory exists in the tree before `codeless-bot-core/` does.
+
+`ls crates/` on this worktree shows neither `codeless-bot/` nor
+`codeless-bot-core/` nor `codeless-slack/`. The extraction cannot
+be performed here because `codeless-slack` itself is not present
+on `master` — it lives only on the unmerged `codeless/slack-
+integration` branch. Performing the extraction here against a
+branch this worktree cannot see would either (i) require
+branch-merging slack-integration in, which `WORKFLOW.md` and
+`CLAUDE.md` R4 forbid, or (ii) re-create `codeless-slack` from
+scratch inside this branch, which would fork the slack code into
+two divergent copies.
+
+### What would have to happen for stage 4 to unblock
+
+The sequence laid out under the Stage-2 "Sequencing constraint"
+section still applies, with no shortcuts available from this
+worktree:
+
+1. slack-integration finishes its remaining stages on its own
+   branch and merges to `master`. That ships
+   `ResumeJobArgs.bypass`, `ResumeJobArgs.next_stage_comment`,
+   `JobResumed.actor`, and `JobResumed.comment`, plus the
+   `crates/codeless-slack/` directory with the nine files named
+   in the Stage-2 inventory.
+2. This worktree rebases (or a fresh worktree is opened) on the
+   updated `master`. The four greps in `WORKFLOW.md` then pass.
+3. A `codeless-bot-core` extraction stage runs in this job. It
+   creates `crates/codeless-bot-core/`, moves `command.rs`,
+   `reply.rs`, `thread_map.rs` (renamed `context_map.rs`),
+   `CommandBackend`, and `RpcServerBackend` out of
+   `codeless-slack`, adds re-exports, runs the full verify trio
+   (`cargo test --workspace`, `cargo clippy --workspace
+   --all-targets -- -D warnings`, `cargo fmt --check`), commits.
+   This is the stage the Stage-2 open follow-ups asked the
+   operator to confirm — insert as a new stage in
+   `template.yaml`, or fold into stage 4's commit.
+4. Only *then* does this stage 4 ("scaffold Telegram transport")
+   actually create `crates/codeless-bot/` with `Cargo.toml`,
+   `lib.rs`, `config.rs`, `long_poll.rs`, `post.rs`,
+   `dispatcher.rs`, the `teloxide` dependency, the
+   `--enable-telegram-bot` CLI flag in `codeless-cli`, and the
+   secrets-store reads for the bot token + chat ID +
+   allowed-user-IDs.
+
+### What this stage produces
+
+This commit. The decisions doc gains this Stage-4 section so the
+audit trail records *why* stage 4 was halted (not just that it
+was). No `crates/` files are touched; no `Cargo.toml` is edited;
+no Rust is written. `cargo test --workspace` was not run for the
+same reason — there is no Rust change in this stage to verify.
+
+Stage 4 is marked `[!]` (blocked) per `CLAUDE.md` R4 ("Do not
+commit a partial implementation with a TODO."). The job halts
+here and waits for the two preconditions above. The next session
+that picks this stage up must re-run the four-grep gate before
+writing any code; if it still fails, the next session also
+halts.
