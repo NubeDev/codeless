@@ -1917,6 +1917,13 @@ function JobActionRow({
   const stopReason = job.stop_reason;
   const isCostCapped = stopReason === "cost-cap";
   const isWallClockCapped = stopReason === "wall-clock";
+  // The diff-verify pre-check is deterministic against the prior
+  // stage's handover: a plain `resume_job` re-runs it against the
+  // same inputs and fails identically. Render the explicit
+  // override-and-resume path instead, and require a comment so the
+  // override is audit-logged and the model sees the justification
+  // when the bypassed stage starts.
+  const isReviewPreCheckFailed = stopReason === "review-pre-check";
   // `paused` is resumable by design (the whole point of pause vs
   // stop). `stopped` / `failed` are also resumable when a session
   // id was captured — resume_job decides at runtime, the UI just
@@ -1967,12 +1974,26 @@ function JobActionRow({
   ) =>
     run("resume", async () => {
       const trimmed = resumeComment.trim();
-      await rpc.call("resume_job", {
-        job_id: job.id,
-        additional_cost_cap_cents: costBump,
-        additional_wall_clock_cap_ms: wallClockBumpMs,
-        next_stage_comment: trimmed === "" ? null : trimmed,
-      });
+      if (isReviewPreCheckFailed) {
+        if (trimmed === "") {
+          throw new Error(
+            "override pre-check requires a comment explaining why the gate is being bypassed",
+          );
+        }
+        await rpc.call("override_pre_check_and_resume", {
+          job_id: job.id,
+          comment: trimmed,
+          additional_cost_cap_cents: costBump,
+          additional_wall_clock_cap_ms: wallClockBumpMs,
+        });
+      } else {
+        await rpc.call("resume_job", {
+          job_id: job.id,
+          additional_cost_cap_cents: costBump,
+          additional_wall_clock_cap_ms: wallClockBumpMs,
+          next_stage_comment: trimmed === "" ? null : trimmed,
+        });
+      }
       setShowResumeForm(false);
       setResumeComment("");
       refetchJob();
@@ -2045,7 +2066,20 @@ function JobActionRow({
     // Terminal — stopped / failed / completed.
     return (
       <div className="flex items-center gap-2">
-        {isResumable && (isCostCapped || isWallClockCapped) && (
+        {isResumable && isReviewPreCheckFailed && (
+          <Button
+            size="sm"
+            onClick={() => setShowResumeForm(true)}
+            disabled={disabled}
+            className="bg-amber-600 hover:bg-amber-700 text-white"
+            title="The REVIEW stage's diff-verify pre-check rejected the prior handover. A plain resume would re-fail. This button bypasses the gate for one re-attempt; a comment is required."
+          >
+            {busy === "resume" ? "resuming…" : "override pre-check ▶ …"}
+          </Button>
+        )}
+        {isResumable &&
+          !isReviewPreCheckFailed &&
+          (isCostCapped || isWallClockCapped) && (
           <Button
             size="sm"
             onClick={() => setShowResumeForm(true)}
@@ -2060,7 +2094,9 @@ function JobActionRow({
             {busy === "resume" ? "resuming…" : "resume ▶ …"}
           </Button>
         )}
-        {isResumable && !(isCostCapped || isWallClockCapped) && (
+        {isResumable &&
+          !isReviewPreCheckFailed &&
+          !(isCostCapped || isWallClockCapped) && (
           <Button
             size="sm"
             onClick={() => setShowResumeForm(true)}
@@ -2089,18 +2125,52 @@ function JobActionRow({
       {showResumeForm && (
         <div className="mb-1.5">
           <label className="text-muted-foreground mb-1 block text-[10px] uppercase tracking-wide">
-            optional comment for next stage
+            {isReviewPreCheckFailed
+              ? "required: why bypass the pre-check"
+              : "optional comment for next stage"}
           </label>
           <textarea
             value={resumeComment}
             onChange={(e) => setResumeComment(e.target.value)}
-            placeholder="e.g. the prior handover claimed paths it never wrote; redo the diff or list what you actually changed"
+            placeholder={
+              isReviewPreCheckFailed
+                ? "e.g. handover described intent; the diff lives across two follow-up commits the gate can't see"
+                : "e.g. the prior handover claimed paths it never wrote; redo the diff or list what you actually changed"
+            }
             className="border-border/40 bg-background w-full resize-y rounded border px-2 py-1 text-[11px] focus:outline-none focus:ring-1"
             rows={2}
           />
         </div>
       )}
-      {showResumeForm && !isCostCapped && !isWallClockCapped && (
+      {showResumeForm && isReviewPreCheckFailed && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+          <Button
+            size="sm"
+            disabled={disabled || resumeComment.trim() === ""}
+            onClick={() => onResume(null)}
+            className="bg-amber-600 hover:bg-amber-700 text-white h-6 px-2 text-[11px]"
+            title="Sets a one-shot server-side flag that skips the diff-verify gate for the next runner build, and threads the comment into the stage prompt."
+          >
+            {busy === "resume" ? "overriding…" : "override & resume ▶"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => {
+              setShowResumeForm(false);
+              setResumeComment("");
+            }}
+            className="h-6 px-2 text-[11px]"
+          >
+            cancel
+          </Button>
+        </div>
+      )}
+      {showResumeForm &&
+        !isReviewPreCheckFailed &&
+        !isCostCapped &&
+        !isWallClockCapped && (
         <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
           <Button
             size="sm"

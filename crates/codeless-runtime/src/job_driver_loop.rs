@@ -599,7 +599,15 @@ async fn mark_job_failed(rpc: &Arc<InProcessRpc>, job_id: JobId) {
     }
     let ended = now_ms();
     job.status = JobStatus::Failed;
-    job.stop_reason = Some(StopReason::RunnerCrash);
+    // Preserve any wire-level stop reason the runner already stamped
+    // on the row (e.g. `ReviewPreCheck` from the diff-verify gate).
+    // `RunnerCrash` is the fallback for the genuine "the runner
+    // panicked / exited without setting a reason" case; overwriting
+    // a more specific reason here would erase the signal the UI uses
+    // to surface the right recovery affordance.
+    if job.stop_reason.is_none() {
+        job.stop_reason = Some(StopReason::RunnerCrash);
+    }
     job.ended_at = Some(ended);
     if let Err(e) = store.update_job(&job).await {
         tracing::warn!(%job_id, error = %e, "mark_job_failed: update_job");

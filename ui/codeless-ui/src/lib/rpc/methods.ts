@@ -253,6 +253,21 @@ export interface ResumeJobArgs {
   next_stage_comment?: string | null;
 }
 
+// Operator-explicit escape from a `StopReason::ReviewPreCheck` halt.
+// The diff-verify pre-check is deterministic against the prior
+// stage's handover, so a plain `resume_job` re-fails identically;
+// this RPC flips a one-shot server-side flag the runner consumes
+// just before the gate. `comment` is required and non-empty — it
+// lands on `pending_operator_comment` so the model sees why the
+// gate was bypassed and so the audit log has the operator's
+// justification.
+export interface OverridePreCheckAndResumeArgs {
+  job_id: JobId;
+  comment: string;
+  additional_cost_cap_cents?: number | null;
+  additional_wall_clock_cap_ms?: number | null;
+}
+
 export interface RerunJobArgs {
   source_job_id: JobId;
 }
@@ -561,6 +576,10 @@ export interface RpcMethodMap {
   pause_job: { args: PauseJobArgs; result: null };
   start_job: { args: StartJobArgs; result: Job };
   resume_job: { args: ResumeJobArgs; result: Job };
+  override_pre_check_and_resume: {
+    args: OverridePreCheckAndResumeArgs;
+    result: Job;
+  };
   // Manual recovery hatch — moves a wedged Queued / Failed / Stopped
   // row back to Draft so the operator can edit and re-start. The
   // captured worktree is reaped best-effort; the button surfaces this

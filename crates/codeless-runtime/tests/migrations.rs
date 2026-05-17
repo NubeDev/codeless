@@ -165,6 +165,7 @@ async fn jobs_columns_match_appendix_a() {
             "persona_id",
             "auto_bypass_policy",
             "pending_operator_comment",
+            "precheck_override_once",
         ],
     );
 }

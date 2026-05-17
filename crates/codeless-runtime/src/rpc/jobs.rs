@@ -6,9 +6,9 @@ use codeless_rpc::{
     DraftJobFromConversationArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobReportArgs, JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage,
     JobReportToolCall, JobReportTurn, ListJobsArgs, ListJobsResult, ListStagesArgs,
-    ListStagesResult, PauseJobArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError, RpcResult,
-    SetJobPolicyArgs, StartJobArgs, StopJobArgs, SubmitJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, WriteJobFileArgs,
+    ListStagesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RpcError, RpcResult, SetJobPolicyArgs, StartJobArgs, StopJobArgs, SubmitJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, WriteJobFileArgs,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantMessageRole, CostCents,
@@ -122,6 +122,7 @@ pub(super) async fn submit_job(rpc: &InProcessRpc, args: SubmitJobArgs) -> RpcRe
         persona_id: args.persona_id.filter(|s| !s.is_empty()),
         auto_bypass_policy: args.auto_bypass_policy,
         pending_operator_comment: None,
+        precheck_override_once: false,
         started_at: None,
         ended_at: None,
         created_at: now,
@@ -309,6 +310,46 @@ pub(super) async fn resume_job(rpc: &InProcessRpc, args: ResumeJobArgs) -> RpcRe
         .await
         .map_err(super::db_err)?;
     Ok(job)
+}
+
+pub(super) async fn override_pre_check_and_resume(
+    rpc: &InProcessRpc,
+    args: OverridePreCheckAndResumeArgs,
+) -> RpcResult<Job> {
+    // Empty / whitespace-only comments are rejected at the wire
+    // boundary: the gate is being asked to skip a deterministic
+    // structural check and the operator's justification is the only
+    // audit trail and the only input the model sees that explains
+    // why the next stage starts without a verified handover. An
+    // empty payload would silently erase both. Validating here (not
+    // in the UI) means CLI / Slack / future surfaces inherit the
+    // same contract for free.
+    let comment = args.comment.trim();
+    if comment.is_empty() {
+        return Err(RpcError::InvalidArgument(
+            "override_pre_check_and_resume requires a non-empty comment explaining why the pre-check is being bypassed".to_string(),
+        ));
+    }
+    rpc.store
+        .set_precheck_override_once(args.job_id)
+        .await
+        .map_err(super::db_err)?;
+    tracing::info!(
+        job_id = %args.job_id,
+        comment_len = comment.len(),
+        "override_pre_check_and_resume: set precheck_override_once and routing through resume_job",
+    );
+    resume_job(
+        rpc,
+        ResumeJobArgs {
+            job_id: args.job_id,
+            additional_cost_cap_cents: args.additional_cost_cap_cents,
+            additional_wall_clock_cap_ms: args.additional_wall_clock_cap_ms,
+            bypass: false,
+            next_stage_comment: Some(comment.to_string()),
+        },
+    )
+    .await
 }
 
 pub(super) async fn get_job(rpc: &InProcessRpc, args: GetJobArgs) -> RpcResult<Job> {
@@ -896,6 +937,7 @@ pub(super) async fn rerun_job(rpc: &InProcessRpc, args: RerunJobArgs) -> RpcResu
         persona_id: source.persona_id,
         auto_bypass_policy: source.auto_bypass_policy,
         pending_operator_comment: None,
+        precheck_override_once: false,
         started_at: None,
         ended_at: None,
         created_at: now,

@@ -255,6 +255,7 @@ fn stop_reason_word(r: StopReason) -> &'static str {
         StopReason::WallClock => "wall-clock exceeded",
         StopReason::RunnerCrash => "runner crashed",
         StopReason::AutoBypassThrashing => "auto-bypass thrashing",
+        StopReason::ReviewPreCheck => "review pre-check failed",
     }
 }
 
@@ -285,6 +286,7 @@ mod tests {
             persona_id: None,
             auto_bypass_policy: None,
             pending_operator_comment: None,
+            precheck_override_once: false,
             started_at: None,
             ended_at: None,
             created_at: codeless_types::time::UnixMillis(0),

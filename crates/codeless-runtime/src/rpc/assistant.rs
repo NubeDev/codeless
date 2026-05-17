@@ -2201,6 +2201,7 @@ mod tests {
                 persona_id: None,
                 auto_bypass_policy: None,
                 pending_operator_comment: None,
+                precheck_override_once: false,
                 started_at: Some(now),
                 ended_at: None,
                 created_at: now,

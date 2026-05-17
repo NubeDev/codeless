@@ -54,7 +54,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeless_types::review_gate::{PreCheckOutcome as WirePreCheck, ReviewVerdict as WireVerdict};
-use codeless_types::{Event, ReviewId, StageId, StageStatus, TaskId};
+use codeless_types::{Event, ReviewId, StageId, StageStatus, StopReason, TaskId};
 use tokio_util::sync::CancellationToken;
 
 use crate::auto_bypass_guard::ThrashingGuard;
@@ -371,9 +371,7 @@ pub(crate) async fn build_prior_failure_context(
                     }
                 }
             }
-            "stage-completed"
-                if value.get("status").and_then(|s| s.as_str()) == Some("failed") =>
-            {
+            "stage-completed" if value.get("status").and_then(|s| s.as_str()) == Some("failed") => {
                 stage_completed_reason = value
                     .get("reason")
                     .and_then(|s| s.as_str())
@@ -620,117 +618,188 @@ impl Runner for TemplateRunner {
             if stage.is_review {
                 if let Some(prev) = prev_stage_id {
                     if let Some(wt) = ctx.worktree_path.as_deref() {
-                        let outcome = run_diff_verify_precheck(wt, ctx.job_id, prev).await;
-                        // Mirror the internal outcome onto the wire so
-                        // Surface A can render the same shape the
-                        // tracing line already records. Emitted before
-                        // any control-flow branch so the event lands
-                        // regardless of whether the stage proceeds or
-                        // auto-fails.
-                        let wire = match &outcome {
-                            PreCheckOutcome::Pass { verified } => WirePreCheck::Pass {
-                                verified: verified.clone(),
-                            },
-                            PreCheckOutcome::Skipped => WirePreCheck::Skipped,
-                            PreCheckOutcome::NothingToVerify => WirePreCheck::NothingToVerify,
-                            PreCheckOutcome::Fail { missing, .. } => WirePreCheck::Fail {
-                                missing: missing.clone(),
-                            },
+                        // One-shot operator override: when the
+                        // `override_pre_check_and_resume` RPC stamped
+                        // the job row, atomically consume the flag
+                        // and skip the diff-verify gate for exactly
+                        // this re-entry. Publishing the `Skipped`
+                        // wire variant gives the same audit trail
+                        // shape the model-skipped-it paths use, so
+                        // the timeline still records that the gate
+                        // ran (and the override is visible in the
+                        // event-log via the prior `JobResumed` plus
+                        // the operator comment that the RPC requires).
+                        let override_consumed = if let Some(store) = self.store.as_deref() {
+                            match store.take_precheck_override_once(ctx.job_id).await {
+                                Ok(v) => v,
+                                Err(err) => {
+                                    tracing::warn!(
+                                        error = %err,
+                                        "failed to take precheck override flag; pre-check will run"
+                                    );
+                                    false
+                                }
+                            }
+                        } else {
+                            false
                         };
-                        publish(
-                            &ctx,
-                            stage_id,
-                            task_id,
-                            Event::ReviewPreCheck {
+                        if override_consumed {
+                            publish(
+                                &ctx,
                                 stage_id,
-                                outcome: wire,
-                            },
-                        )
-                        .await;
-                        match outcome {
-                            PreCheckOutcome::Pass { .. }
-                            | PreCheckOutcome::Skipped
-                            | PreCheckOutcome::NothingToVerify => {}
-                            PreCheckOutcome::Fail { reason, .. } => {
-                                // Pre-check rejection short-circuits
-                                // before the model runs; the gate's
-                                // verdict on the wire is `AutoFail`
-                                // (no model verdict to report). Pairs
-                                // with the ReviewPreCheck::Fail event
-                                // already published above.
-                                publish(
-                                    &ctx,
+                                task_id,
+                                Event::ReviewPreCheck {
                                     stage_id,
-                                    task_id,
-                                    Event::ReviewVerdict {
+                                    outcome: WirePreCheck::Skipped,
+                                },
+                            )
+                            .await;
+                            tracing::info!(
+                                stage = stage.title,
+                                "diff-verify pre-check skipped by operator override"
+                            );
+                        } else {
+                            let outcome = run_diff_verify_precheck(wt, ctx.job_id, prev).await;
+                            // Mirror the internal outcome onto the wire so
+                            // Surface A can render the same shape the
+                            // tracing line already records. Emitted before
+                            // any control-flow branch so the event lands
+                            // regardless of whether the stage proceeds or
+                            // auto-fails.
+                            let wire = match &outcome {
+                                PreCheckOutcome::Pass { verified } => WirePreCheck::Pass {
+                                    verified: verified.clone(),
+                                },
+                                PreCheckOutcome::Skipped => WirePreCheck::Skipped,
+                                PreCheckOutcome::NothingToVerify => WirePreCheck::NothingToVerify,
+                                PreCheckOutcome::Fail { missing, .. } => WirePreCheck::Fail {
+                                    missing: missing.clone(),
+                                },
+                            };
+                            publish(
+                                &ctx,
+                                stage_id,
+                                task_id,
+                                Event::ReviewPreCheck {
+                                    stage_id,
+                                    outcome: wire,
+                                },
+                            )
+                            .await;
+                            match outcome {
+                                PreCheckOutcome::Pass { .. }
+                                | PreCheckOutcome::Skipped
+                                | PreCheckOutcome::NothingToVerify => {}
+                                PreCheckOutcome::Fail { reason, .. } => {
+                                    // Pre-check rejection short-circuits
+                                    // before the model runs; the gate's
+                                    // verdict on the wire is `AutoFail`
+                                    // (no model verdict to report). Pairs
+                                    // with the ReviewPreCheck::Fail event
+                                    // already published above.
+                                    publish(
+                                        &ctx,
                                         stage_id,
-                                        verdict: WireVerdict::AutoFail {
-                                            reason: reason.clone(),
+                                        task_id,
+                                        Event::ReviewVerdict {
+                                            stage_id,
+                                            verdict: WireVerdict::AutoFail {
+                                                reason: reason.clone(),
+                                            },
                                         },
-                                    },
-                                )
-                                .await;
-                                publish(
-                                    &ctx,
-                                    stage_id,
-                                    task_id,
-                                    Event::StageCompleted {
+                                    )
+                                    .await;
+                                    publish(
+                                        &ctx,
                                         stage_id,
-                                        status: StageStatus::Failed,
-                                    },
-                                )
-                                .await;
-                                tracing::warn!(
-                                    stage = stage.title,
-                                    %reason,
-                                    "diff-verify pre-check failed; review stage auto-failed without invoking model"
-                                );
-                                let failure_reason =
-                                    format!("diff-verify pre-check failed: {reason}");
-                                match classify_stage_failure(self.store.as_deref(), &ctx).await {
-                                    FailureAction::Halt => {
-                                        return RunnerOutcome::Failed {
-                                            reason: failure_reason,
-                                        };
-                                    }
-                                    FailureAction::AutoBypass {
-                                        policy_name,
-                                        comment,
-                                        thrash_guard_applies,
-                                    } => {
-                                        match self
-                                            .try_auto_bypass(
-                                                &ctx,
-                                                stage_id,
-                                                task_id,
-                                                &policy_name,
-                                                &comment,
-                                                thrash_guard_applies,
-                                            )
-                                            .await
-                                        {
-                                            AutoBypassDecision::Thrash => {
-                                                tracing::warn!(
-                                                    stage = stage.title,
-                                                    policy = %policy_name,
-                                                    %failure_reason,
-                                                    "auto-bypass thrashing guard fired at pre-check failure; halting job"
-                                                );
-                                                return RunnerOutcome::Failed {
-                                                    reason: format!(
+                                        task_id,
+                                        Event::StageCompleted {
+                                            stage_id,
+                                            status: StageStatus::Failed,
+                                        },
+                                    )
+                                    .await;
+                                    tracing::warn!(
+                                        stage = stage.title,
+                                        %reason,
+                                        "diff-verify pre-check failed; review stage auto-failed without invoking model"
+                                    );
+                                    let failure_reason =
+                                        format!("diff-verify pre-check failed: {reason}");
+                                    match classify_stage_failure(self.store.as_deref(), &ctx).await
+                                    {
+                                        FailureAction::Halt => {
+                                            // Stamp the wire-level stop
+                                            // reason before returning so
+                                            // the UI can distinguish a
+                                            // structural pre-check
+                                            // rejection from a runner
+                                            // crash and surface the
+                                            // `override_pre_check_and_resume`
+                                            // affordance. Best-effort:
+                                            // a stamp failure here still
+                                            // halts the job — the
+                                            // driver's fallback writes
+                                            // `RunnerCrash` and the
+                                            // operator falls back to
+                                            // the cancel-and-rerun flow.
+                                            if let Some(store) = self.store.as_deref() {
+                                                if let Ok(Some(mut job)) =
+                                                    store.get_job(ctx.job_id).await
+                                                {
+                                                    job.stop_reason =
+                                                        Some(StopReason::ReviewPreCheck);
+                                                    if let Err(err) = store.update_job(&job).await {
+                                                        tracing::warn!(
+                                                            error = %err,
+                                                            "failed to stamp ReviewPreCheck stop_reason"
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            return RunnerOutcome::Failed {
+                                                reason: failure_reason,
+                                            };
+                                        }
+                                        FailureAction::AutoBypass {
+                                            policy_name,
+                                            comment,
+                                            thrash_guard_applies,
+                                        } => {
+                                            match self
+                                                .try_auto_bypass(
+                                                    &ctx,
+                                                    stage_id,
+                                                    task_id,
+                                                    &policy_name,
+                                                    &comment,
+                                                    thrash_guard_applies,
+                                                )
+                                                .await
+                                            {
+                                                AutoBypassDecision::Thrash => {
+                                                    tracing::warn!(
+                                                        stage = stage.title,
+                                                        policy = %policy_name,
+                                                        %failure_reason,
+                                                        "auto-bypass thrashing guard fired at pre-check failure; halting job"
+                                                    );
+                                                    return RunnerOutcome::Failed {
+                                                        reason: format!(
                                                         "auto-bypass thrashing: {failure_reason}"
                                                     ),
-                                                };
-                                            }
-                                            AutoBypassDecision::Advanced => {
-                                                tracing::info!(
-                                                    stage = stage.title,
-                                                    policy = %policy_name,
-                                                    %failure_reason,
-                                                    "auto-bypass: advancing past pre-check failure"
-                                                );
-                                                next_stage_prefix = Some(comment);
-                                                continue;
+                                                    };
+                                                }
+                                                AutoBypassDecision::Advanced => {
+                                                    tracing::info!(
+                                                        stage = stage.title,
+                                                        policy = %policy_name,
+                                                        %failure_reason,
+                                                        "auto-bypass: advancing past pre-check failure"
+                                                    );
+                                                    next_stage_prefix = Some(comment);
+                                                    continue;
+                                                }
                                             }
                                         }
                                     }
@@ -1814,6 +1883,7 @@ mod tests {
             persona_id: None,
             auto_bypass_policy: policy,
             pending_operator_comment: None,
+            precheck_override_once: false,
             started_at: None,
             ended_at: None,
             created_at: UnixMillis(0),

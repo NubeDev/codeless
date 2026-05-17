@@ -15,14 +15,14 @@ use codeless_rpc::{
     JobReportArgs, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
-    RpcError, RpcResult, RpcServer, SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
+    RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
+    SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review, TaskId};
 use sqlx::SqlitePool;
@@ -245,6 +245,13 @@ impl RpcServer for InProcessRpc {
 
     async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job> {
         jobs::resume_job(self, args).await
+    }
+
+    async fn override_pre_check_and_resume(
+        &self,
+        args: OverridePreCheckAndResumeArgs,
+    ) -> RpcResult<Job> {
+        jobs::override_pre_check_and_resume(self, args).await
     }
 
     async fn get_job(&self, args: GetJobArgs) -> RpcResult<Job> {

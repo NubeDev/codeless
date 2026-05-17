@@ -20,15 +20,16 @@ use codeless_rpc::{
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
     ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
-    ListStagesResult, ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
-    RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
-    RevertScopePatchArgs, RevertScopePatchResult, RpcError, ScopePatchActionResult, ServerInfo,
-    SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ListStagesResult, ListWorkspacesResult, OverridePreCheckAndResumeArgs, PauseJobArgs,
+    ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs,
+    ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError,
+    ScopePatchActionResult, ServerInfo, SetJobPolicyArgs, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use serde_json::Value;
@@ -51,6 +52,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/pause_job", post(pause_job))
         .route("/rpc/start_job", post(start_job))
         .route("/rpc/resume_job", post(resume_job))
+        .route(
+            "/rpc/override_pre_check_and_resume",
+            post(override_pre_check_and_resume),
+        )
         .route("/rpc/rerun_job", post(rerun_job))
         .route("/rpc/reset_job", post(reset_job))
         .route("/rpc/update_job", post(update_job))
@@ -327,6 +332,17 @@ async fn resume_job(
     Json(args): Json<ResumeJobArgs>,
 ) -> HandlerResult<Job> {
     st.rpc.resume_job(args).await.map(Json).map_err(map_err)
+}
+
+async fn override_pre_check_and_resume(
+    State(st): State<AppState>,
+    Json(args): Json<OverridePreCheckAndResumeArgs>,
+) -> HandlerResult<Job> {
+    st.rpc
+        .override_pre_check_and_resume(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
 }
 
 async fn gc_worktrees(

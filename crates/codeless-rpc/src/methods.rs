@@ -155,6 +155,28 @@ pub struct ResumeJobArgs {
     pub next_stage_comment: Option<String>,
 }
 
+/// Operator-explicit escape hatch for a REVIEW stage's diff-verify
+/// pre-check failure. A plain `resume_job` re-runs the same
+/// deterministic pre-check against the same handover and fails
+/// identically — the gate has no inputs left to change. This RPC
+/// flips a one-shot `precheck_override_once` flag on the job row
+/// that the runner consumes atomically just before the gate runs,
+/// then enters the resume path so the rest of the recovery (caps,
+/// comment threading, status transition) flows through the same
+/// code as a normal resume. The required `comment` lands on the
+/// pending-operator-comment slot so the model sees why the gate
+/// was bypassed; the runtime refuses an empty comment because
+/// "override silently" is never the right operator intent here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct OverridePreCheckAndResumeArgs {
+    pub job_id: JobId,
+    pub comment: String,
+    #[serde(default)]
+    pub additional_cost_cap_cents: Option<i64>,
+    #[serde(default)]
+    pub additional_wall_clock_cap_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct GetJobArgs {
     pub job_id: JobId,

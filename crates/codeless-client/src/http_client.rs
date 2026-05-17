@@ -14,15 +14,16 @@ use codeless_rpc::{
     ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
     ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult,
     ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ListWorkspacesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs,
-    RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs,
-    RevertScopePatchResult, RpcError, RpcResult, RpcServer, ScopePatchActionResult,
-    SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    ListWorkspacesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, RpcResult, RpcServer,
+    ScopePatchActionResult, SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use futures_util::StreamExt;
@@ -212,6 +213,13 @@ impl RpcServer for HttpRpcClient {
 
     async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job> {
         self.call("resume_job", &args).await
+    }
+
+    async fn override_pre_check_and_resume(
+        &self,
+        args: OverridePreCheckAndResumeArgs,
+    ) -> RpcResult<Job> {
+        self.call("override_pre_check_and_resume", &args).await
     }
 
     async fn rerun_job(&self, args: RerunJobArgs) -> RpcResult<Job> {

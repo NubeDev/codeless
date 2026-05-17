@@ -95,8 +95,8 @@ impl SqliteStore {
              (id, repo_id, status, stop_reason, template_yaml, prompt, runner, branch, \
               workspace_mode, worktree_path, cost_cap_cents, wall_clock_cap_ms, cost_cents, \
               model, permission_mode, effort, system_prompt, persona_id, \
-              auto_bypass_policy, pending_operator_comment, started_at, ended_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              auto_bypass_policy, pending_operator_comment, precheck_override_once, started_at, ended_at, created_at) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(job.id.to_string())
         .bind(job.repo_id.to_string())
@@ -118,6 +118,7 @@ impl SqliteStore {
         .bind(&job.persona_id)
         .bind(&auto_bypass_policy)
         .bind(&job.pending_operator_comment)
+        .bind(i64::from(job.precheck_override_once))
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -143,7 +144,7 @@ impl SqliteStore {
                 repo_id=?, status=?, stop_reason=?, template_yaml=?, prompt=?, runner=?, \
                 branch=?, workspace_mode=?, worktree_path=?, cost_cap_cents=?, wall_clock_cap_ms=?, \
                 cost_cents=?, model=?, permission_mode=?, effort=?, system_prompt=?, \
-                persona_id=?, auto_bypass_policy=?, pending_operator_comment=?, started_at=?, ended_at=?, created_at=? \
+                persona_id=?, auto_bypass_policy=?, pending_operator_comment=?, precheck_override_once=?, started_at=?, ended_at=?, created_at=? \
              WHERE id=?",
         )
         .bind(job.repo_id.to_string())
@@ -165,6 +166,7 @@ impl SqliteStore {
         .bind(&job.persona_id)
         .bind(&auto_bypass_policy)
         .bind(&job.pending_operator_comment)
+        .bind(i64::from(job.precheck_override_once))
         .bind(job.started_at.map(|t| t.0))
         .bind(job.ended_at.map(|t| t.0))
         .bind(job.created_at.0)
@@ -214,6 +216,39 @@ impl SqliteStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.and_then(|(c,)| c))
+    }
+
+    /// One-shot opt-in to advance past a REVIEW stage's diff-verify
+    /// pre-check failure. Persisted on the job row so a driver
+    /// restart between the operator's click and the next runner
+    /// build does not lose the authorisation; consumed atomically by
+    /// `take_precheck_override_once` on the runner side so the flag
+    /// burns down after exactly one re-attempt.
+    pub async fn set_precheck_override_once(&self, job_id: JobId) -> sqlx::Result<bool> {
+        let res = sqlx::query("UPDATE jobs SET precheck_override_once = 1 WHERE id = ?")
+            .bind(job_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Atomically read-and-clear the override flag. Returns `true`
+    /// exactly once after the operator opted in; subsequent calls
+    /// return `false` until the operator opts in again. The single
+    /// `UPDATE ... RETURNING` statement keeps the read+clear race-
+    /// free without a transaction, matching the
+    /// `take_pending_operator_comment` pattern.
+    pub async fn take_precheck_override_once(&self, job_id: JobId) -> sqlx::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "UPDATE jobs \
+             SET precheck_override_once = 0 \
+             WHERE id = ? AND precheck_override_once = 1 \
+             RETURNING precheck_override_once",
+        )
+        .bind(job_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
     }
 
     /// Hard-delete a job row and all associated events, stages, and
@@ -1347,6 +1382,7 @@ fn job_from_row(row: SqliteRow) -> sqlx::Result<Job> {
         persona_id: row.try_get("persona_id")?,
         auto_bypass_policy: decode_auto_bypass_policy(row.try_get("auto_bypass_policy")?)?,
         pending_operator_comment: row.try_get("pending_operator_comment")?,
+        precheck_override_once: row.try_get::<i64, _>("precheck_override_once").unwrap_or(0) != 0,
         started_at: started_at.map(UnixMillis),
         ended_at: ended_at.map(UnixMillis),
         created_at: UnixMillis(row.try_get("created_at")?),
@@ -1505,6 +1541,7 @@ fn stop_reason_label(s: StopReason) -> &'static str {
         StopReason::WallClock => "wall-clock",
         StopReason::RunnerCrash => "runner-crash",
         StopReason::AutoBypassThrashing => "auto-bypass-thrashing",
+        StopReason::ReviewPreCheck => "review-pre-check",
     }
 }
 
@@ -1574,6 +1611,7 @@ fn parse_stop_reason(s: &str) -> sqlx::Result<StopReason> {
         "wall-clock" => StopReason::WallClock,
         "runner-crash" => StopReason::RunnerCrash,
         "auto-bypass-thrashing" => StopReason::AutoBypassThrashing,
+        "review-pre-check" => StopReason::ReviewPreCheck,
         other => {
             return Err(sqlx::Error::Decode(
                 format!("unknown stop reason: {other}").into(),

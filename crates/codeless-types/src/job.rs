@@ -64,6 +64,16 @@ pub enum StopReason {
     /// reason so the UI can render `policy thrashing` distinctly from
     /// the other terminal causes.
     AutoBypassThrashing,
+    /// A REVIEW stage's structural diff-verify pre-check rejected the
+    /// prior stage's handover before the model ran. Distinct from
+    /// `RunnerCrash` because the runner never executed: a plain
+    /// resume re-runs the same deterministic pre-check against the
+    /// same handover and fails identically. The recovery path is the
+    /// explicit `override_pre_check_and_resume` RPC, which requires
+    /// the operator to acknowledge the gap and supply a comment that
+    /// threads into the stage prompt; the override is a one-shot
+    /// audit-logged opt-in, not a sticky flag.
+    ReviewPreCheck,
 }
 
 /// One unit of work the user kicked off — see SCOPE.md Appendix A `jobs`.
@@ -131,6 +141,16 @@ pub struct Job {
     /// `DOCS/AUTO-BYPASS-DECISIONS.md` Q2.
     pub auto_bypass_policy: Option<AutoBypassPolicy>,
     pub pending_operator_comment: Option<String>,
+    /// One-shot flag set by `override_pre_check_and_resume`: the
+    /// operator has acknowledged that the REVIEW stage's diff-verify
+    /// pre-check will fail against the existing handover and wants
+    /// the stage to run anyway. Consumed atomically by the runner on
+    /// the first re-entry into the REVIEW stage so a subsequent run
+    /// (or a later REVIEW stage) does not silently inherit the
+    /// override. `false` is the default and the value on every fresh
+    /// row.
+    #[serde(default)]
+    pub precheck_override_once: bool,
     pub started_at: Option<UnixMillis>,
     pub ended_at: Option<UnixMillis>,
     pub created_at: UnixMillis,

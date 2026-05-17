@@ -272,6 +272,23 @@ export class MockRpcClient implements RpcClient {
         return job as RpcResultOf<M>;
       }
 
+      case "override_pre_check_and_resume": {
+        const a = args as RpcArgs<"override_pre_check_and_resume">;
+        const comment = (a.comment ?? "").trim();
+        if (!comment) {
+          throw new RpcError(
+            "invalid_argument",
+            "override_pre_check_and_resume requires a non-empty comment",
+          );
+        }
+        return (await this.call("resume_job", {
+          job_id: a.job_id,
+          additional_cost_cap_cents: a.additional_cost_cap_cents,
+          additional_wall_clock_cap_ms: a.additional_wall_clock_cap_ms,
+          next_stage_comment: comment,
+        })) as RpcResultOf<M>;
+      }
+
       case "reset_job": {
         const a = args as RpcArgs<"reset_job">;
         const job = this.jobs.find((j) => j.id === a.job_id);

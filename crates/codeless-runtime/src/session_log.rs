@@ -215,6 +215,7 @@ mod tests {
             persona_id: None,
             auto_bypass_policy: None,
             pending_operator_comment: None,
+            precheck_override_once: false,
             cost_cents: CostCents(42),
             started_at: Some(UnixMillis(1_778_000_000_000)),
             ended_at: Some(UnixMillis(1_778_000_060_000)),

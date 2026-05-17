@@ -19,14 +19,14 @@ use crate::methods::{
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
     ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
-    ListStagesResult, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs,
-    RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs,
-    RevertScopePatchResult, ScopePatchActionResult, SetJobPolicyArgs, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ListStagesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, ScopePatchActionResult,
+    SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -93,6 +93,20 @@ pub trait RpcServer: Send + Sync + 'static {
     /// `Conflict` if the job is not in a resumable state (`Stopped`
     /// or `Failed`), `NotFound` for an unknown id.
     async fn resume_job(&self, args: ResumeJobArgs) -> RpcResult<Job>;
+
+    /// Operator-explicit recovery from a `StopReason::ReviewPreCheck`
+    /// failure. Sets the one-shot `precheck_override_once` flag, then
+    /// runs the same resume path as `resume_job` (so caps bump,
+    /// pending-operator-comment threading, status transition, and
+    /// `JobResumed` publish all share one implementation). Refuses an
+    /// empty `comment` because the audit signal — and the model
+    /// guidance — depends on the operator stating *why* the gate is
+    /// being bypassed. `Conflict` if the job is not in a resumable
+    /// state; `NotFound` for an unknown id.
+    async fn override_pre_check_and_resume(
+        &self,
+        args: OverridePreCheckAndResumeArgs,
+    ) -> RpcResult<Job>;
 
     /// Manual recovery hatch for jobs the driver loop could not move
     /// out of `Queued` (worktree provisioning kept failing past the
