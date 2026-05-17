@@ -685,6 +685,8 @@ mod tests {
                 persona_id: None,
                 bypassed_at: None,
                 bypassed_reason: None,
+                failure_class: None,
+                failure_detail: None,
             },
             cost_cents: 0,
             task_count: 0,

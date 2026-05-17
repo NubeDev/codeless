@@ -855,7 +855,10 @@ mod tests {
     #[test]
     fn chat_in_thread_treats_whole_input_as_message() {
         let id = fresh_id();
-        let cmd = must_parse("chat what does the diff look like", ThreadContext::for_job(id));
+        let cmd = must_parse(
+            "chat what does the diff look like",
+            ThreadContext::for_job(id),
+        );
         assert_eq!(
             cmd,
             Command::Chat {

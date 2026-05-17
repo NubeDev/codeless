@@ -14,6 +14,49 @@ pub enum StageStatus {
     Failed,
 }
 
+/// Why a stage row ended `Failed`. Persisted on `stages.failure_class`
+/// when `status = Failed`; `None` for `Passed` rows and for legacy
+/// rows written before the column existed. The variant list is the
+/// vocabulary the UI / CLI render from — a coarser set than the
+/// per-site free-text `failure_detail` but precise enough that
+/// dashboards do not have to substring-match on log lines.
+///
+/// Distinct from `StopReason` (which is per-*job*): a job can halt
+/// for `RunnerCrash` while individual stages along the way have any
+/// of the failure classes below. The two columns coexist; the
+/// stage-level `failure_class` is what the per-stage UI badge reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureClass {
+    /// Layer-1 diff-verify pre-check rejected the prior stage's
+    /// handover before the REVIEW model ran. Paired with
+    /// `StopReason::ReviewPreCheck` at the job level.
+    PreCheckFailed,
+    /// The runner subprocess exited non-zero or the in-process
+    /// runner returned `RunnerOutcome::Failed`. The `failure_detail`
+    /// carries the runner's reason string (typically the last
+    /// non-empty line of its stderr / transcript tail).
+    RunnerError,
+    /// REVIEW model emitted `PASS` but the scope-patch validator
+    /// rejected the proposed patch (parse failure, predicate
+    /// missing on a tightening patch, etc.). The verdict on the
+    /// wire is `AutoFail` with the validator's reason.
+    ReviewPatchInvalid,
+    /// REVIEW model emitted `FAIL` as its verdict. The
+    /// `failure_detail` carries the model's reason string verbatim.
+    ReviewFail,
+    /// REVIEW sentinel parser could not extract a verdict from the
+    /// handover tail. The `failure_detail` carries the parser
+    /// error.
+    ReviewUnparseable,
+    /// Crash recovery flipped a `Running` stage row to `Failed`
+    /// because the core process restarted without a clean exit.
+    /// Distinct from `RunnerError` so the UI can render
+    /// `interrupted by core restart` rather than a runner-side
+    /// failure, and the operator knows a plain resume is safe.
+    OrphanReap,
+}
+
 /// A verify-gated chunk of a job — see SCOPE.md Appendix A `stages`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct Stage {
@@ -92,4 +135,20 @@ pub struct Stage {
     /// `bypassed_at` is also `None`.
     #[serde(default)]
     pub bypassed_reason: Option<String>,
+    /// Coarse machine-readable classification of *why* this stage
+    /// ended `Failed`. `None` when `status != Failed` and on rows
+    /// written before the column existed; the UI treats `None +
+    /// Failed` as "legacy / unclassified failure" and falls back to
+    /// the event stream. See `FailureClass` for the variant
+    /// contract.
+    #[serde(default)]
+    pub failure_class: Option<FailureClass>,
+    /// Short human-readable failure description (one line, ~200
+    /// chars). Typically the runner's reason string, the REVIEW
+    /// model's FAIL reason, or the pre-check validator's error.
+    /// Truncated by the writer if the source is longer; the full
+    /// transcript stays on disk. `None` when no detail was captured
+    /// or when `status != Failed`.
+    #[serde(default)]
+    pub failure_detail: Option<String>,
 }

@@ -79,6 +79,8 @@ async fn seed_stage_with_tasks(store: &SqliteStore, job_id: JobId, n: usize) -> 
         persona_id: None,
         bypassed_at: None,
         bypassed_reason: None,
+        failure_class: None,
+        failure_detail: None,
     };
     store.insert_stage(&stage).await.unwrap();
     let mut ids = Vec::with_capacity(n);

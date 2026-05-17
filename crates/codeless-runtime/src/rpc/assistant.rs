@@ -4,8 +4,9 @@ use codeless_rpc::{
     CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DraftJobFromConversationArgs, GetJobArgs,
     ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
     ListAssistantThreadsResult, ListJobsArgs, PauseJobArgs, ReadJobFileArgs, RerunJobArgs,
-    ResumeJobArgs, RpcError, RpcResult, RpcServer, StartJobArgs, StopJobArgs, UpdateJobArgs,
-    UpdateJobScopeArgs, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    ResumeJobArgs, RpcError, RpcResult, RpcServer, SetJobPolicyArgs, StartJobArgs, StopJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
@@ -412,6 +413,21 @@ fn describe_action(action: &AssistantAction) -> String {
             job_id, filename, ..
         } => {
             format!("Proposed: rewrite `{filename}` on job `{job_id}`")
+        }
+        AssistantAction::SetPolicy {
+            job_id,
+            policy: None,
+        } => {
+            format!("Proposed: clear auto-bypass policy on job `{job_id}`")
+        }
+        AssistantAction::SetPolicy {
+            job_id,
+            policy: Some(p),
+        } => {
+            format!(
+                "Proposed: set auto-bypass policy on job `{job_id}` to `{}`",
+                p.policy_name(),
+            )
         }
     }
 }
@@ -1053,6 +1069,32 @@ async fn dispatch_action(
                     "job_id": job_id,
                     "filename": result.filename,
                     "diff": diff,
+                }),
+            ))
+        }
+        AssistantAction::SetPolicy { job_id, policy } => {
+            // Mirrors the SubmitJobDialog picker so an operator can
+            // toggle the per-job auto-bypass policy from chat the same
+            // way they would from the form. The underlying RPC owns
+            // the running/queued guard (AUTO-BYPASS-DECISIONS.md Q5),
+            // so a confirmation against a job that just started runs
+            // through and surfaces a Conflict on the resolved card
+            // rather than the chat duplicating the state check.
+            rpc.set_job_policy(SetJobPolicyArgs {
+                job_id: *job_id,
+                policy: policy.clone(),
+            })
+            .await?;
+            let label = policy
+                .as_ref()
+                .map(|p| p.policy_name().to_owned())
+                .unwrap_or_else(|| "cleared".to_owned());
+            Ok((
+                format!("Set auto-bypass policy on job `{job_id}` to `{label}`."),
+                json!({
+                    "tool": "set_policy",
+                    "job_id": job_id,
+                    "policy": policy,
                 }),
             ))
         }

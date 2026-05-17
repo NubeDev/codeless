@@ -183,6 +183,23 @@ pub enum AssistantAction {
         filename: String,
         new_content: String,
     },
+    /// Change the per-job auto-bypass policy. Mirrors the picker the
+    /// `SubmitJobDialog` exposes at submit time (`AutoBypassPolicy`),
+    /// so the assistant can propose policy changes the same way a
+    /// human would set them in the form: "if this stage fails again,
+    /// switch the job to long-term so it auto-recovers."
+    ///
+    /// `policy: None` clears the policy entirely (the job reverts to
+    /// the default halt-on-failure behaviour). The underlying
+    /// `set_job_policy` RPC refuses the change while the job is
+    /// `Running` or `Queued` (`AUTO-BYPASS-DECISIONS.md` Q5); the
+    /// chat surface inherits that guard — a confirmation against a
+    /// running job surfaces as a `Conflict` on the resolved card.
+    SetPolicy {
+        job_id: JobId,
+        #[serde(default)]
+        policy: Option<crate::AutoBypassPolicy>,
+    },
 }
 
 impl AssistantAction {
@@ -202,7 +219,8 @@ impl AssistantAction {
             | AssistantAction::RestartJob { .. }
             | AssistantAction::UpdateJob { .. }
             | AssistantAction::DraftJob { .. }
-            | AssistantAction::EditScope { .. } => true,
+            | AssistantAction::EditScope { .. }
+            | AssistantAction::SetPolicy { .. } => true,
         }
     }
 }

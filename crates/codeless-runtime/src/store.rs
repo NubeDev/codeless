@@ -305,8 +305,9 @@ impl SqliteStore {
         sqlx::query(
             "INSERT OR REPLACE INTO stages \
              (id, job_id, ordinal, name, status, verify_cmd, started_at, ended_at, session_id, \
-              goal, acceptance, last_activity_at, archived, persona_id) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              goal, acceptance, last_activity_at, archived, persona_id, \
+              failure_class, failure_detail) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(stage.id.to_string())
         .bind(stage.job_id.to_string())
@@ -322,6 +323,8 @@ impl SqliteStore {
         .bind(stage.last_activity_at.map(|t| t.0))
         .bind(stage.archived as i64)
         .bind(&stage.persona_id)
+        .bind(stage.failure_class.map(failure_class_label))
+        .bind(&stage.failure_detail)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -359,13 +362,27 @@ impl SqliteStore {
         id: codeless_types::StageId,
         status: StageStatus,
         ended_at: codeless_types::UnixMillis,
+        failure_class: Option<codeless_types::FailureClass>,
+        failure_detail: Option<&str>,
     ) -> sqlx::Result<bool> {
-        let res = sqlx::query("UPDATE stages SET status = ?, ended_at = ? WHERE id = ?")
-            .bind(stage_status_label(status))
-            .bind(ended_at.0)
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
+        // The `failure_*` columns are written on every terminal
+        // transition. On `Passed` both are NULL; on `Failed` they
+        // carry the class + short detail the emit site produced.
+        // Writing both unconditionally (rather than guarding on
+        // status) makes the SQL a single update and keeps the row
+        // honest if a stage row is being replaced after a partial
+        // earlier write.
+        let res = sqlx::query(
+            "UPDATE stages SET status = ?, ended_at = ?, \
+             failure_class = ?, failure_detail = ? WHERE id = ?",
+        )
+        .bind(stage_status_label(status))
+        .bind(ended_at.0)
+        .bind(failure_class.map(failure_class_label))
+        .bind(failure_detail)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
         Ok(res.rows_affected() > 0)
     }
 
@@ -557,6 +574,7 @@ impl SqliteStore {
                     s.started_at, s.ended_at, s.session_id, s.goal, s.acceptance, \
                     s.last_activity_at, s.archived, s.persona_id, \
                     s.bypassed_at, s.bypassed_reason, \
+                    s.failure_class, s.failure_detail, \
                     COALESCE(SUM(t.cost_cents), 0) AS cost_cents, \
                     COUNT(t.id) AS task_count \
              FROM stages s \
@@ -607,6 +625,11 @@ impl SqliteStore {
                             .try_get::<Option<i64>, _>("bypassed_at")?
                             .map(codeless_types::UnixMillis),
                         bypassed_reason: row.try_get("bypassed_reason")?,
+                        failure_class: row
+                            .try_get::<Option<String>, _>("failure_class")?
+                            .as_deref()
+                            .and_then(parse_failure_class),
+                        failure_detail: row.try_get("failure_detail")?,
                     },
                     cost_cents: row.try_get::<i64, _>("cost_cents")?,
                     task_count: row.try_get::<i64, _>("task_count")? as u32,
@@ -626,7 +649,8 @@ impl SqliteStore {
             "SELECT id, job_id, ordinal, name, status, verify_cmd, \
                     started_at, ended_at, session_id, goal, acceptance, \
                     last_activity_at, archived, persona_id, \
-                    bypassed_at, bypassed_reason \
+                    bypassed_at, bypassed_reason, \
+                    failure_class, failure_detail \
              FROM stages WHERE id = ?",
         )
         .bind(id.to_string())
@@ -663,6 +687,11 @@ impl SqliteStore {
                 .try_get::<Option<i64>, _>("bypassed_at")?
                 .map(codeless_types::UnixMillis),
             bypassed_reason: row.try_get("bypassed_reason")?,
+            failure_class: row
+                .try_get::<Option<String>, _>("failure_class")?
+                .as_deref()
+                .and_then(parse_failure_class),
+            failure_detail: row.try_get("failure_detail")?,
         }))
     }
 
@@ -862,6 +891,53 @@ impl SqliteStore {
         .bind(now.0)
         .execute(&self.pool)
         .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Flip every `running` stage row to `failed`. Crash-only call:
+    /// safe exclusively at startup, before any driver loop spins up,
+    /// because in steady state a `running` row corresponds to a live
+    /// runner process. After a core crash the row is orphaned — no
+    /// process holds it, and `latest_terminal_stage` skips it because
+    /// it only considers Passed/Failed/AwaitingReview, so a fresh
+    /// resume would spawn a duplicate stage at the same ordinal
+    /// (observed in the wild: see the duplicate PS5 rows on job
+    /// 01KRT965MV…). Flipping to `failed` makes the orphan visible
+    /// to the resume path: `latest_terminal_stage` now sees it, and
+    /// the operator either bypasses via `resume_job { bypass: true }`
+    /// or the TemplateRunner retries it as the highest-ordinal failed
+    /// row. Returns the number of rows reaped so startup can log it.
+    pub async fn reap_orphan_running_stages(&self, now: UnixMillis) -> sqlx::Result<u64> {
+        // The reaped row is `Failed` with `failure_class =
+        // 'orphan-reap'` so the UI / CLI can distinguish a core-
+        // restart interrupt from a runner-side failure and tell the
+        // operator that a plain resume is safe. The detail string is
+        // short and stable — the recorder has no transcript to quote
+        // here.
+        let res = sqlx::query(
+            "UPDATE stages SET status = 'failed', ended_at = ?, \
+             failure_class = 'orphan-reap', \
+             failure_detail = COALESCE(failure_detail, 'core process restarted while stage was running') \
+             WHERE status = 'running'",
+        )
+        .bind(now.0)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Return every `running` job row to `queued`. Crash-only,
+    /// startup-only twin of `reap_orphan_running_stages`. The
+    /// `replay_backlog` pass only picks up `Queued` rows, so a job
+    /// stuck `Running` after a core crash would otherwise stay
+    /// invisible to the driver forever. `stop_reason` is left alone:
+    /// it is already `None` for a `Running` row by construction (set
+    /// by `pause_job` / `stop_job`, both of which transition out of
+    /// `Running` first), so nothing to clear.
+    pub async fn reap_orphan_running_jobs(&self) -> sqlx::Result<u64> {
+        let res = sqlx::query("UPDATE jobs SET status = 'queued' WHERE status = 'running'")
+            .execute(&self.pool)
+            .await?;
         Ok(res.rows_affected())
     }
 
@@ -1465,6 +1541,31 @@ fn parse_stage_status(s: &str) -> StageStatus {
         "passed" => StageStatus::Passed,
         "failed" => StageStatus::Failed,
         _ => StageStatus::Pending,
+    }
+}
+
+fn failure_class_label(c: codeless_types::FailureClass) -> &'static str {
+    use codeless_types::FailureClass::*;
+    match c {
+        PreCheckFailed => "pre-check-failed",
+        RunnerError => "runner-error",
+        ReviewPatchInvalid => "review-patch-invalid",
+        ReviewFail => "review-fail",
+        ReviewUnparseable => "review-unparseable",
+        OrphanReap => "orphan-reap",
+    }
+}
+
+fn parse_failure_class(s: &str) -> Option<codeless_types::FailureClass> {
+    use codeless_types::FailureClass::*;
+    match s {
+        "pre-check-failed" => Some(PreCheckFailed),
+        "runner-error" => Some(RunnerError),
+        "review-patch-invalid" => Some(ReviewPatchInvalid),
+        "review-fail" => Some(ReviewFail),
+        "review-unparseable" => Some(ReviewUnparseable),
+        "orphan-reap" => Some(OrphanReap),
+        _ => None,
     }
 }
 

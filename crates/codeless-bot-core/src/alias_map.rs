@@ -39,10 +39,7 @@ impl AliasMap {
             return None;
         }
         let guard = self.inner.read().expect("AliasMap lock poisoned");
-        guard
-            .get(chat)
-            .and_then(|ids| ids.get(alias - 1))
-            .copied()
+        guard.get(chat).and_then(|ids| ids.get(alias - 1)).copied()
     }
 }
 

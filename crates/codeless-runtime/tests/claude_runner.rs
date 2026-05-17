@@ -64,6 +64,14 @@ where
 async fn claude_runner_streams_events_via_bridge() {
     let fake_dir = TempDir::new().unwrap();
     let fake = install_fake_claude(fake_dir.path());
+    // `claude-wrapper` spawns the fake binary with `cwd =
+    // repo.local_path`; the kernel rejects the spawn with ENOENT if
+    // the directory does not exist, before the bash script can emit
+    // any NDJSON. The placeholder path the test used to pass
+    // (`/tmp/codeless-demo-not-used`) tripped that exact failure on
+    // hosts where the directory is absent. Use a real TempDir
+    // instead so the spawn succeeds and the run goes the happy path.
+    let repo_dir = TempDir::new().unwrap();
 
     // CLAUDE_BINARY honours the explicit override (`ai_runner::runners::
     // claude::discover_claude_binary`). Set + remove in one test means
@@ -77,7 +85,7 @@ async fn claude_runner_streams_events_via_bridge() {
             name: "demo".into(),
             clone_url: "https://example.test/demo.git".into(),
             default_branch: "main".into(),
-            local_path: "/tmp/codeless-demo-not-used".into(),
+            local_path: repo_dir.path().to_string_lossy().into_owned(),
             git_auth: GitAuth::Token {
                 env_var: "GITHUB_TOKEN".into(),
             },

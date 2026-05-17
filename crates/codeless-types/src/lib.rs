@@ -45,7 +45,7 @@ pub use review_gate::{PreCheckOutcome, ReviewVerdict};
 pub use scope_patch::{
     ProposedScopePatch, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget,
 };
-pub use stage::{Stage, StageStatus};
+pub use stage::{FailureClass, Stage, StageStatus};
 pub use task::{Task, TaskStatus};
 pub use time::UnixMillis;
 pub use workspace::{
