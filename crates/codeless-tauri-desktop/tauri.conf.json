@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Codeless",
+  "version": "0.0.0",
+  "identifier": "dev.codeless.desktop",
+  "build": {
+    "frontendDist": "../../ui/codeless-ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm -C ../../ui/codeless-ui dev",
+    "beforeBuildCommand": "pnpm -C ../../ui/codeless-ui build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Codeless",
+        "width": 1400,
+        "height": 900
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

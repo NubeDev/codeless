@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Codeless: Tauri 2 desktop shell. Phase 5 — currently an empty binary that proves the workspace compiles without pulling in tauri yet."
+description = "Codeless: Tauri 2 desktop shell — native window backed by an embedded codeless-runtime via Tauri IPC."
 
 [[bin]]
 name = "codeless-tauri-desktop"
@@ -13,3 +13,23 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = "0.12"
+directories = "5"
+thiserror = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures-util = { workspace = true }
+tracing = { workspace = true }
+codeless-types = { path = "../codeless-types" }
+codeless-rpc = { path = "../codeless-rpc" }
+codeless-runtime = { path = "../codeless-runtime" }
+codeless-adapters-host = { path = "../codeless-adapters-host" }
+ai-runner = { path = "../../../ai-runner" }
