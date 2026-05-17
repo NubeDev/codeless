@@ -696,6 +696,7 @@ name = "codeless-slack"
 version = "0.0.0"
 dependencies = [
  "codeless-adapters-host",
+ "codeless-types",
  "futures-util",
  "reqwest",
  "serde",

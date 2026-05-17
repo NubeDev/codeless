@@ -1,19 +1,26 @@
 //! Slack control-plane adapter for the Codeless server. The full
-//! surface — command parser, RPC dispatch, outbound failure
+//! surface — command dispatch into `RpcServer`, outbound failure
 //! notifications — lands in later stages of the slack-integration
-//! job; this crate currently exposes only the transport seam:
+//! job; this crate currently exposes:
 //!
 //!   - [`SlackConfig::from_secrets`] reads the bot/app tokens and the
 //!     configured channel out of the shared `SecretStore`.
 //!   - [`SlackBot::spawn`] establishes a Slack Socket Mode WebSocket
 //!     and keeps it open with reconnect/backoff. Inbound envelopes are
-//!     logged and acked; nothing is dispatched to the runtime yet.
+//!     logged and acked; the parsed command is not yet wired to the
+//!     dispatcher.
+//!   - [`command::parse`] turns a raw Slack message body plus
+//!     thread-context into a typed [`Command`] for Surface 1
+//!     (`status`, `start`, `stop`, `resume [bypass] ["<comment>"]`).
+//!     The dispatcher seam in stage 4 will hand the result to
+//!     `RpcServer`.
 //!
 //! Host-only per R1 (the WebSocket sits next to `codeless-server`).
 //! The crate is excluded from the mobile-safe column of the crate
 //! table because mobile shells reach the same RPC surface through the
 //! HTTP/SSE transport — they do not need the Slack bridge.
 
+pub mod command;
 pub mod config;
 pub mod socket_mode;
 
@@ -22,6 +29,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+pub use command::{parse as parse_command, Command, ParseError, ThreadContext};
 pub use config::{
     SlackConfig, SlackConfigError, SLACK_APP_TOKEN_KEY, SLACK_BOT_TOKEN_KEY, SLACK_CHANNEL_KEY,
 };
