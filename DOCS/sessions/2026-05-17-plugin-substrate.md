@@ -40,7 +40,7 @@ Goal:        a new workflow ships as `crates/codeless-plugin-<id>/` + a
 3. [!] PS4 — chat state moves server-side (R4 compliance).
    **Halted. See "Stage 3 (PS4) — halt notes" below.**
 4. [x] PS5 — persona / thread-kind data model.
-5. [ ] PS6 — plugin manifest + registry.
+5. [x] PS6 — plugin manifest + registry.
 6. [ ] PS7 — tool-result attachments.
 7. [ ] PS8 — Assistant agent loop.
 8. [ ] Plugin #0 `notes` end-to-end.
@@ -312,6 +312,83 @@ is enforced now rather than at PS8 wiring time.
 UI call sites (`AssistantPage`, `AssistantFooterBar`) now pass
 `persona_id: "builtin:general"` at create time; a UI persona picker is
 deferred to PS6 when plugin manifests register additional personas.
+
+## Stage 5 (PS6) — landed
+
+The substrate's plugin loader lives under
+`crates/codeless-tools/src/plugin/` with four submodules:
+
+- `manifest.rs` — `plugin.toml` parser. `deny_unknown_fields` on every
+  table; `plugin.id` is restricted to `^[a-z_][a-z0-9_]*$` so the
+  table-name-prefix check in `migrations.rs` cannot be tricked by
+  exotic identifiers; `personas[].allowed_tools` is validated through
+  the existing `codeless_types::allowed_tools::validate_patterns`
+  matcher (PS3) so syntax skew between plugin authoring and runtime
+  enforcement is impossible by construction;
+  `default_model_family` is rejected if not one of the known aliases
+  (`fast`/`smart`/`reasoning`) — the substrate-doc rule against
+  hardcoded provider model ids enforced at load time, not first use.
+- `migrations.rs` — static SQL prefix check. Strips line + block
+  comments, splits statements on `;` outside of `'..'`/`"..."`/`` `..` ``
+  quoted regions, tokenises just enough to spot
+  `CREATE TABLE [IF NOT EXISTS]`, `ALTER TABLE`,
+  `DROP TABLE [IF EXISTS]`, plus the matching INDEX/TRIGGER/VIEW
+  forms, and rejects any whose target name lacks the `<plugin_id>_`
+  prefix (substrate-doc OQ-PS-4). Schema-qualified targets
+  (`main.personas`) and quoted targets normalise before the check so
+  `"personas"` and ``main.`personas` `` both fail. `INSERT` / `PRAGMA`
+  are left alone — plugin seed migrations need them.
+- `model_family.rs` — codeless-side alias resolver. Built-in defaults
+  cover the three known aliases against current Anthropic tiers; an
+  operator overlays via a TOML `[model_families]` table loaded from
+  `$CODELESS_CONFIG` (or any explicit `--config` path). The resolver
+  refuses to introduce unknown aliases — the alias set is the single
+  source of truth shared with the manifest validator.
+- `registry.rs` — `PluginRegistry::load_plugin(path, &RegistrationTable)`.
+  Plugins register via a `PluginToolSink` (staged Vec, collision
+  check against the host's `ToolRegistry`, then atomic merge) so a
+  plugin colliding on one of its tool ids does not leave a partial
+  registration behind. Manifest personas with bare ids are prefixed
+  `<plugin_id>:` on insertion; namespaced personas (`<plugin>:<slug>`,
+  `builtin:<slug>`) pass through. The applied migrations are
+  returned as a `Vec<PluginMigration>` for the runtime to feed sqlx
+  -- keeping the SQL apply out of `codeless-tools` is what lets the
+  plugin layer compile without a sqlx dep.
+
+The CLI surfaces are `codeless plugin list` and `codeless plugin info
+<id>`, both backed by the registry. The host-binary registration
+table lives in `crates/codeless-cli/src/plugin.rs::host_registration_table`
+and is empty in this commit -- plugin #0 (`notes`) will insert its
+`notes_register` here in a follow-up stage. `list` therefore reports
+discovered manifests as "no registration entry"; once the entry
+lands the same row flips to "loaded" with the tool count.
+
+Tests pin every seam:
+
+- 5 manifest unit tests (substrate-doc shape, uppercase id rejection,
+  unknown model family rejection, regex-in-allowed_tools rejection,
+  duplicate persona, unknown top-level field).
+- 13 migration unit tests (accept prefixed, reject unprefixed CREATE
+  / ALTER / DROP, IF EXISTS / IF NOT EXISTS, UNIQUE INDEX,
+  schema-qualified, quoted, line + block comments, semicolons inside
+  strings).
+- 5 model family unit tests (known aliases round-trip, defaults
+  cover every family, override layering, unknown alias rejection,
+  empty model rejection).
+- 5 registry unit tests (end-to-end load, missing registration is an
+  error, codeless-table migration rejected, duplicate plugin id,
+  duplicate tool id).
+- 2 in-tree `plugin_smoke.rs` tests building a `notes`-shaped tempdir
+  end-to-end through `PluginRegistry`.
+- 3 CLI integration tests in `crates/codeless-cli/tests/plugin_cli.rs`
+  (list with a discovered manifest, info errors when the registry is
+  empty, list reports the "no plugins compiled in" path).
+
+`cargo test -p codeless-tools -p codeless-cli` green;
+`cargo clippy -p codeless-tools --all-targets -- -D warnings` clean
+(the pre-existing `codeless-bot-core::dispatcher::manual_range_contains`
+warning on this branch is unchanged by this stage); `cargo fmt
+--check` clean.
 
 `cargo test -p codeless-runtime -- --skip claude_runner` is green; the
 two pre-existing failures on this branch (`claude_runner` CLI smoke
