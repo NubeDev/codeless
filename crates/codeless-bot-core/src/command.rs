@@ -41,6 +41,7 @@
 
 use std::str::FromStr;
 
+use codeless_rpc::methods::ChatMode;
 use codeless_types::JobId;
 use thiserror::Error;
 
@@ -98,6 +99,16 @@ pub enum Command {
         bypass: bool,
         comment: Option<String>,
     },
+    /// `chat <id> <message…>` (or bare `chat <message…>` inside a
+    /// thread) — one-shot agent_chat turn against the job. `mode`
+    /// distinguishes `Work` (verb `chat`) from `Spec` (verb `spec`).
+    /// The message is the rest of the line verbatim — no quoting,
+    /// since chat is the one verb whose payload is free-form prose.
+    Chat {
+        job_id: JobId,
+        mode: ChatMode,
+        message: String,
+    },
     /// `help` (or any bare mention with no other tokens). The
     /// dispatcher renders the canned help block; emitting a variant
     /// rather than returning `None` keeps unknown input
@@ -149,6 +160,12 @@ pub enum ParseError {
     /// and knows to fix the quoting.
     #[error("comment is missing its closing `\"`")]
     UnclosedComment,
+
+    /// `chat` / `spec` was issued without any message body.
+    /// Surfacing this separately from `Empty` lets the reply point
+    /// the operator at the right grammar (`chat <N> <message>`).
+    #[error("`{verb}` needs a message body")]
+    EmptyChatMessage { verb: &'static str },
 }
 
 /// Entry point. Consumes one Slack message body plus the
@@ -193,6 +210,8 @@ pub fn parse(input: &str, ctx: ThreadContext) -> Result<Command, ParseError> {
                 comment,
             }
         }),
+        "chat" => parse_chat(rest, ctx, "chat", ChatMode::Work),
+        "spec" => parse_chat(rest, ctx, "spec", ChatMode::Spec),
         _ => Err(ParseError::UnknownVerb {
             verb: verb_raw.to_string(),
         }),
@@ -241,6 +260,47 @@ fn parse_action_verb(
     let (bypass, after_bypass) = parse_optional_bypass(cursor);
     let comment = parse_optional_comment(after_bypass)?;
     Ok(build(job_id, bypass, comment))
+}
+
+/// `chat` / `spec` have a different shape from `start`/`stop`/
+/// `resume`: the payload is free-form prose, not a quoted comment,
+/// so the parser does not require quoting or reject trailing
+/// tokens. The id, if present, is the first whitespace-delimited
+/// token; everything after it (verbatim, with internal whitespace
+/// preserved) is the message. If the first token does not parse
+/// as a ULID the parser falls back to the thread context rather
+/// than erroring — `chat what is up` in a thread treats `what is
+/// up` as the entire message, which is the shape that makes the
+/// in-thread shortcut feel natural.
+fn parse_chat(
+    rest: &str,
+    ctx: ThreadContext,
+    verb: &'static str,
+    mode: ChatMode,
+) -> Result<Command, ParseError> {
+    if rest.is_empty() {
+        return Err(ParseError::EmptyChatMessage { verb });
+    }
+
+    let (first, after) = split_first_token(rest);
+    let (job_id, message) = match JobId::from_str(first) {
+        Ok(id) => (id, after.trim_start()),
+        Err(_) => {
+            let id = ctx.job_id.ok_or(ParseError::MissingJobId { verb })?;
+            (id, rest)
+        }
+    };
+
+    let message = message.trim();
+    if message.is_empty() {
+        return Err(ParseError::EmptyChatMessage { verb });
+    }
+
+    Ok(Command::Chat {
+        job_id,
+        mode,
+        message: message.to_string(),
+    })
 }
 
 /// Consumes the first token off `cursor` when it parses as a ULID;
@@ -761,6 +821,69 @@ mod tests {
                 bypass: true,
                 comment: Some("comment".into()),
             }
+        );
+    }
+
+    #[test]
+    fn chat_with_explicit_id_takes_message_tail() {
+        let id = fresh_id();
+        let cmd = must_parse(&format!("chat {id} how many rows"), ThreadContext::COLD);
+        assert_eq!(
+            cmd,
+            Command::Chat {
+                job_id: id,
+                mode: ChatMode::Work,
+                message: "how many rows".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn spec_picks_up_spec_mode() {
+        let id = fresh_id();
+        let cmd = must_parse(&format!("spec {id} tighten the SCOPE"), ThreadContext::COLD);
+        assert_eq!(
+            cmd,
+            Command::Chat {
+                job_id: id,
+                mode: ChatMode::Spec,
+                message: "tighten the SCOPE".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn chat_in_thread_treats_whole_input_as_message() {
+        let id = fresh_id();
+        let cmd = must_parse("chat what does the diff look like", ThreadContext::for_job(id));
+        assert_eq!(
+            cmd,
+            Command::Chat {
+                job_id: id,
+                mode: ChatMode::Work,
+                message: "what does the diff look like".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn chat_without_message_errors() {
+        let id = fresh_id();
+        assert_eq!(
+            parse(&format!("chat {id}"), ThreadContext::COLD).unwrap_err(),
+            ParseError::EmptyChatMessage { verb: "chat" }
+        );
+        assert_eq!(
+            parse("chat", ThreadContext::for_job(fresh_id())).unwrap_err(),
+            ParseError::EmptyChatMessage { verb: "chat" }
+        );
+    }
+
+    #[test]
+    fn chat_cold_with_no_id_errors() {
+        assert_eq!(
+            parse("chat hello", ThreadContext::COLD).unwrap_err(),
+            ParseError::MissingJobId { verb: "chat" }
         );
     }
 }

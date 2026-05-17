@@ -34,12 +34,13 @@ use async_trait::async_trait;
 use codeless_rpc::{
     error::RpcResult,
     methods::{
-        GetJobArgs, ListJobsArgs, ListJobsResult, ListStagesArgs, ListStagesResult, ResumeJobArgs,
-        StartJobArgs, StopJobArgs,
+        AgentChatArgs, AgentChatResult, ChatMode, GetJobArgs, ListJobsArgs, ListJobsResult,
+        ListStagesArgs, ListStagesResult, ResumeJobArgs, StartJobArgs, StopJobArgs,
     },
+    subscribe::{EventFilter, EventStream, Since},
     RpcServer,
 };
-use codeless_types::Job;
+use codeless_types::{Event, Job, JobId};
 
 use crate::alias_map::AliasMap;
 use crate::command::{parse, Command, ParseError, ThreadContext};
@@ -71,6 +72,15 @@ pub trait CommandBackend: Send + Sync + 'static {
     /// the publisher falls back to a bare header when this fails
     /// rather than dropping the post entirely.
     async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult>;
+    /// One-shot agent chat turn. The dispatcher subscribes to the
+    /// session's event stream first, then issues this call, then
+    /// aggregates streamed `AiToken` deltas into a single reply.
+    async fn agent_chat(&self, args: AgentChatArgs) -> RpcResult<AgentChatResult>;
+    /// Streaming event subscription, used by the chat aggregator.
+    /// Pass `EventFilter::Job { job_id: session_id }` with `since:
+    /// None` to see only the events that belong to a freshly-minted
+    /// chat turn.
+    async fn subscribe(&self, filter: EventFilter, since: Since) -> RpcResult<EventStream>;
 }
 
 /// Forward `CommandBackend` to any `RpcServer` implementor. The
@@ -105,6 +115,12 @@ impl CommandBackend for RpcServerBackend {
     }
     async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult> {
         self.inner.list_stages(args).await
+    }
+    async fn agent_chat(&self, args: AgentChatArgs) -> RpcResult<AgentChatResult> {
+        self.inner.agent_chat(args).await
+    }
+    async fn subscribe(&self, filter: EventFilter, since: Since) -> RpcResult<EventStream> {
+        self.inner.subscribe(filter, since).await
     }
 }
 
@@ -226,7 +242,7 @@ impl Dispatcher {
         let maybe_alias = parts[1].trim();
         if !matches!(
             verb.as_str(),
-            "status" | "start" | "stop" | "resume"
+            "status" | "start" | "stop" | "resume" | "chat" | "spec"
         ) {
             return text.to_string();
         }
@@ -258,7 +274,18 @@ impl Dispatcher {
             }
             Command::GetJob { job_id } => {
                 let job = self.backend.get_job(GetJobArgs { job_id }).await?;
-                Ok(reply::format_get_job(&job))
+                // Stage rollup is best-effort: a transient backend
+                // error must not turn a status reply into a wall of
+                // [fail]. Empty stages render as "Stages: 0" with no
+                // Current/Last lines, which is also the right answer
+                // for a job that has not started.
+                let stages = self
+                    .backend
+                    .list_stages(ListStagesArgs { job_id })
+                    .await
+                    .map(|r| r.stages)
+                    .unwrap_or_default();
+                Ok(reply::format_get_job(&job, &stages))
             }
             Command::StartJob { job_id } => {
                 let job = self.backend.start_job(StartJobArgs { job_id }).await?;
@@ -293,8 +320,90 @@ impl Dispatcher {
                     .await?;
                 Ok(reply::format_resume_job(&job, bypass, comment.as_deref()))
             }
+            Command::Chat {
+                job_id,
+                mode,
+                message,
+            } => self.run_chat(job_id, mode, message).await,
         }
     }
+
+    /// One-shot chat turn against an existing job. Subscribes to the
+    /// session event stream *before* issuing `agent_chat` so no early
+    /// `AiToken` deltas are missed (the runner can emit before the
+    /// call returns). Aggregation stops on the first
+    /// `Event::TaskCompleted` for our task id, on stream end, or on
+    /// the wall-clock cap — whichever fires first.
+    async fn run_chat(
+        &self,
+        job_id: JobId,
+        mode: ChatMode,
+        message: String,
+    ) -> RpcResult<String> {
+        let job = self.backend.get_job(GetJobArgs { job_id }).await?;
+        let cwd = job.worktree_path.clone();
+        let runner = job.runner.clone();
+        let session_id = JobId::new();
+
+        let stream = self
+            .backend
+            .subscribe(EventFilter::Job { job_id: session_id }, None)
+            .await?;
+
+        let chat_args = AgentChatArgs {
+            runner,
+            prompt: message,
+            session_id,
+            cwd,
+            context: None,
+            mode: Some(mode),
+        };
+        let result = self.backend.agent_chat(chat_args).await?;
+
+        let aggregated = aggregate_chat_reply(stream, result.task_id).await;
+        Ok(reply::format_chat_reply(mode, &aggregated))
+    }
+}
+
+/// Hard upper bound on how long the bot waits for a chat turn to
+/// finish. Telegram bots that take longer than this feel broken;
+/// the operator can still see the full reply in the UI.
+const CHAT_AGGREGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Drain an event stream until the runner reports the task done
+/// (or the timeout fires), concatenating every `AiToken` delta
+/// tagged with our `task_id`. Other tasks sharing the session id
+/// are ignored — the filter is per-job, not per-task. Returns an
+/// empty string when nothing streamed; the reply formatter turns
+/// that into a "(no reply)" placeholder so the operator still gets
+/// an ack.
+async fn aggregate_chat_reply(
+    mut stream: EventStream,
+    task_id: codeless_types::TaskId,
+) -> String {
+    use futures_util::StreamExt;
+
+    let mut out = String::new();
+    let deadline = tokio::time::sleep(CHAT_AGGREGATION_TIMEOUT);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            next = stream.next() => match next {
+                None => break,
+                Some(Err(_)) => break,
+                Some(Ok(env)) => match env.event {
+                    Event::AiToken { task_id: tid, delta } if tid == task_id => {
+                        out.push_str(&delta);
+                    }
+                    Event::TaskCompleted { task_id: tid, .. } if tid == task_id => break,
+                    _ => {}
+                },
+            },
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -303,7 +412,7 @@ mod tests {
     use crate::transport::{BotPostError, BotTransport, PostedMessage};
     use async_trait::async_trait;
     use codeless_rpc::error::RpcError;
-    use codeless_types::{CostCents, JobId, JobStatus, RepoId, WorkspaceMode};
+    use codeless_types::{CostCents, EventEnvelope, JobId, JobStatus, RepoId, WorkspaceMode};
     use std::sync::Mutex;
 
     fn sample_job(name: &str, status: JobStatus) -> Job {
@@ -344,6 +453,9 @@ mod tests {
         stop_job: Mutex<Option<RpcResult<()>>>,
         resume_job: Mutex<Option<RpcResult<Job>>>,
         last_resume: Mutex<Option<ResumeJobArgs>>,
+        agent_chat: Mutex<Option<RpcResult<AgentChatResult>>>,
+        last_agent_chat: Mutex<Option<AgentChatArgs>>,
+        subscribe_events: Mutex<Option<Vec<EventEnvelope>>>,
     }
 
     impl FakeBackend {
@@ -395,6 +507,25 @@ mod tests {
         async fn list_stages(&self, _args: ListStagesArgs) -> RpcResult<ListStagesResult> {
             self.record("list_stages");
             Ok(ListStagesResult { stages: vec![] })
+        }
+        async fn agent_chat(&self, args: AgentChatArgs) -> RpcResult<AgentChatResult> {
+            self.record("agent_chat");
+            *self.last_agent_chat.lock().unwrap() = Some(args.clone());
+            self.agent_chat
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| Err(RpcError::NotFound("unset".into())))
+        }
+        async fn subscribe(
+            &self,
+            _filter: EventFilter,
+            _since: Since,
+        ) -> RpcResult<EventStream> {
+            self.record("subscribe");
+            let events = self.subscribe_events.lock().unwrap().take().unwrap_or_default();
+            let stream = futures_util::stream::iter(events.into_iter().map(Ok));
+            Ok(Box::pin(stream))
         }
     }
 
@@ -623,5 +754,75 @@ mod tests {
             posts[0].1,
         );
         assert!(posts[0].2.is_none());
+    }
+
+    fn ai_envelope(task_id: codeless_types::TaskId, delta: &str) -> EventEnvelope {
+        EventEnvelope {
+            cursor: codeless_types::EventCursor(1),
+            job_id: None,
+            stage_id: None,
+            task_id: Some(task_id),
+            created_at: codeless_types::time::UnixMillis(0),
+            event: Event::AiToken {
+                task_id,
+                delta: delta.to_string(),
+            },
+        }
+    }
+
+    fn done_envelope(task_id: codeless_types::TaskId) -> EventEnvelope {
+        EventEnvelope {
+            cursor: codeless_types::EventCursor(2),
+            job_id: None,
+            stage_id: None,
+            task_id: Some(task_id),
+            created_at: codeless_types::time::UnixMillis(0),
+            event: Event::TaskCompleted {
+                task_id,
+                status: codeless_types::TaskStatus::Completed,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_command_aggregates_streamed_deltas() {
+        let job = sample_job("smoke", JobStatus::Running);
+        let job_id = job.id;
+        let task_id = codeless_types::TaskId::new();
+
+        let backend = Arc::new(FakeBackend::default());
+        *backend.get_job.lock().unwrap() = Some(Ok(job));
+        *backend.agent_chat.lock().unwrap() = Some(Ok(AgentChatResult {
+            session_id: JobId::new(),
+            task_id,
+        }));
+        *backend.subscribe_events.lock().unwrap() = Some(vec![
+            ai_envelope(task_id, "hello "),
+            ai_envelope(task_id, "world"),
+            done_envelope(task_id),
+        ]);
+
+        let transport = Arc::new(CapturingTransport::default());
+        let dispatcher = Dispatcher::new(
+            backend.clone(),
+            transport.clone(),
+            crate::thread_map::ThreadMap::new(),
+        );
+
+        let reply = dispatcher
+            .build_reply(&InboundMessage {
+                chat: "C1".into(),
+                user: None,
+                text: format!("chat {job_id} ping"),
+                reply_to: None,
+            })
+            .await;
+
+        assert!(reply.starts_with("[chat]"), "got: {reply}");
+        assert!(reply.contains("hello world"), "got: {reply}");
+
+        let sent = backend.last_agent_chat.lock().unwrap().clone().unwrap();
+        assert_eq!(sent.prompt, "ping");
+        assert_eq!(sent.mode, Some(ChatMode::Work));
     }
 }

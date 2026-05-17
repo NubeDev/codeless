@@ -621,6 +621,19 @@ mod tests {
                 stages: self.stages.lock().unwrap().clone(),
             })
         }
+        async fn agent_chat(
+            &self,
+            _args: codeless_rpc::methods::AgentChatArgs,
+        ) -> RpcResult<codeless_rpc::methods::AgentChatResult> {
+            unreachable!("publisher should not call agent_chat")
+        }
+        async fn subscribe(
+            &self,
+            _filter: codeless_rpc::subscribe::EventFilter,
+            _since: codeless_rpc::subscribe::Since,
+        ) -> RpcResult<codeless_rpc::subscribe::EventStream> {
+            unreachable!("publisher should not call subscribe")
+        }
     }
 
     /// Records every post for assertion. Returns a sequential

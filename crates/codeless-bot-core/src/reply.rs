@@ -16,8 +16,9 @@
 //! operator catches a wrong-id mistake before the runtime acts.
 
 use codeless_rpc::error::RpcError;
-use codeless_rpc::methods::ListJobsResult;
-use codeless_types::{Job, JobStatus, StopReason};
+use codeless_rpc::methods::{ChatMode, ListJobsResult, StageRollup};
+use codeless_types::{Job, JobStatus, StageStatus, StopReason};
+use codeless_types::time::UnixMillis;
 
 use crate::command::ParseError;
 
@@ -62,24 +63,129 @@ pub fn format_list_jobs(result: &ListJobsResult) -> String {
 }
 
 /// Format `status <id>` (or the in-thread bare `status`). One short
-/// block: name, status, cost, optional stop reason. The detail surface
-/// is intentionally not a full dashboard; if the operator needs that
-/// they open the web UI.
-pub fn format_get_job(job: &Job) -> String {
+/// block: name, status, wall-clock duration vs allowance, stage
+/// count, and (when present) the currently-running stage plus the
+/// last stage that ended. Cost is intentionally omitted — operators
+/// who care open the UI; the bot reply is for the timing/progress
+/// signal that drives the "is it stuck?" question.
+pub fn format_get_job(job: &Job, stages: &[StageRollup]) -> String {
     let name = template_name(job).unwrap_or_else(|| "(no-template)".to_string());
+    let now = now_millis();
+    let elapsed = job
+        .started_at
+        .map(|s| (job.ended_at.unwrap_or(UnixMillis(now)).as_i64() - s.as_i64()).max(0));
     let mut out = format!(
-        "Job `{id}` ({name})\n  Status: {status}\n  Cost:   ${cost:.2} / ${cap:.2} cap\n",
+        "Job `{id}` ({name})\n  Status: {status}\n  Time:   {elapsed} / {allowance}\n  Stages: {count}\n",
         id = short_id(&job.id.to_string()),
         name = name,
         status = status_word(job.status),
-        cost = (job.cost_cents.as_i64() as f64) / 100.0,
-        cap = (job.cost_cap_cents.as_i64() as f64) / 100.0,
+        elapsed = elapsed.map(fmt_duration_ms).unwrap_or_else(|| "—".into()),
+        allowance = if job.wall_clock_cap_ms > 0 {
+            fmt_duration_ms(job.wall_clock_cap_ms)
+        } else {
+            "—".into()
+        },
+        count = stages.len(),
     );
+    if let Some(current) = current_stage(stages) {
+        out.push_str(&format!("  Current: {}\n", fmt_stage_line(current, now)));
+    }
+    if let Some(last) = last_stage(stages) {
+        out.push_str(&format!("  Last:    {}\n", fmt_stage_line(last, now)));
+    }
     if let Some(reason) = job.stop_reason {
-        out.push_str(&format!("  Reason: {}\n", stop_reason_word(reason)));
+        out.push_str(&format!("  Reason:  {}\n", stop_reason_word(reason)));
     }
     out.push_str("\nReply: `resume [bypass | \"<comment>\"]` or `stop`.");
     out
+}
+
+/// First stage still in flight, in ordinal order. `Running` outranks
+/// `AwaitingReview` so a stage with a pending verify gate but no
+/// active runner is surfaced as the current focus rather than hidden
+/// behind a later `Running` stage (which shouldn't happen in linear
+/// mode, but the ordering keeps the renderer total).
+fn current_stage(stages: &[StageRollup]) -> Option<&StageRollup> {
+    let mut sorted: Vec<&StageRollup> = stages.iter().collect();
+    sorted.sort_by_key(|s| s.stage.ordinal);
+    sorted
+        .iter()
+        .find(|s| matches!(s.stage.status, StageStatus::Running))
+        .or_else(|| {
+            sorted
+                .iter()
+                .find(|s| matches!(s.stage.status, StageStatus::AwaitingReview))
+        })
+        .copied()
+}
+
+/// Most recently ended stage (`Passed` or `Failed`), by `ended_at`.
+/// Falls back to highest ordinal among terminal stages so a row
+/// with a missing `ended_at` (legacy data) still surfaces.
+fn last_stage(stages: &[StageRollup]) -> Option<&StageRollup> {
+    stages
+        .iter()
+        .filter(|s| matches!(s.stage.status, StageStatus::Passed | StageStatus::Failed))
+        .max_by_key(|s| {
+            (
+                s.stage.ended_at.map(|t| t.as_i64()).unwrap_or(0),
+                s.stage.ordinal as i64,
+            )
+        })
+}
+
+fn fmt_stage_line(s: &StageRollup, now: i64) -> String {
+    let dur = match (s.stage.started_at, s.stage.ended_at) {
+        (Some(start), Some(end)) => Some((end.as_i64() - start.as_i64()).max(0)),
+        (Some(start), None) => Some((now - start.as_i64()).max(0)),
+        _ => None,
+    };
+    format!(
+        "{ord}. {name} ({status}) {dur}",
+        ord = s.stage.ordinal,
+        name = s.stage.name,
+        status = stage_status_word(s.stage.status),
+        dur = dur.map(fmt_duration_ms).unwrap_or_else(|| "—".into()),
+    )
+}
+
+fn stage_status_word(s: StageStatus) -> &'static str {
+    match s {
+        StageStatus::Pending => "pending",
+        StageStatus::Running => "running",
+        StageStatus::AwaitingReview => "awaiting-review",
+        StageStatus::Passed => "passed",
+        StageStatus::Failed => "failed",
+    }
+}
+
+/// Render a wall-clock duration in millis as a short two-unit
+/// string. The renderer picks the largest non-zero unit and pairs
+/// it with the next one down so the operator gets a single token
+/// that's both readable and roughly accurate (`1h 23m`, `12m 4s`,
+/// `37s`). Anything under a second collapses to `<1s` rather than
+/// a noisy `0s`.
+fn fmt_duration_ms(ms: i64) -> String {
+    if ms < 1000 {
+        return "<1s".into();
+    }
+    let secs = ms / 1000;
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+fn now_millis() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Format the `start <id>` reply. The job is now `Queued`; the runtime
@@ -144,6 +250,8 @@ pub fn format_help() -> String {
         "  stop [<N or id>]       stop a Running/Queued job",
         "  resume [<N or id>] [bypass] [\"<comment>\"]",
         "                         re-queue a Stopped/Failed/Paused job",
+        "  chat [<N or id>] <msg> one-shot agent chat against the job",
+        "  spec [<N or id>] <msg> agent chat clamped to .codeless/jobs/<name>/",
         "",
         "Use the number from the last `status` list (e.g. `resume 3`).",
         "In a notification thread the job is implied by the thread.",
@@ -167,6 +275,35 @@ pub fn format_parse_error(err: &ParseError) -> String {
 /// name the offending state.
 pub fn format_rpc_error(err: &RpcError) -> String {
     format!("[fail] {err}")
+}
+
+/// Soft cap on the chat reply length. Telegram's message limit is
+/// 4096 chars; we leave headroom for the header and the truncation
+/// notice. Operators who need the full transcript can read it in
+/// the UI, which subscribes to the same event stream.
+const CHAT_REPLY_SOFT_CAP: usize = 3500;
+
+/// Render an aggregated chat reply for transport. The header tags
+/// the mode so an operator running both verbs in one thread can
+/// tell which turn replied. An empty body becomes a placeholder
+/// rather than a bare header.
+pub fn format_chat_reply(mode: ChatMode, body: &str) -> String {
+    let tag = match mode {
+        ChatMode::Work => "[chat]",
+        ChatMode::Spec => "[spec]",
+    };
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return format!("{tag} (no reply within timeout — check the UI for the full transcript)");
+    }
+    let body = if trimmed.chars().count() > CHAT_REPLY_SOFT_CAP {
+        let mut cut: String = trimmed.chars().take(CHAT_REPLY_SOFT_CAP).collect();
+        cut.push_str("\n…(truncated, see UI)");
+        cut
+    } else {
+        trimmed.to_string()
+    };
+    format!("{tag}\n{body}")
 }
 
 /// Extract the `name:` value from the job's `template_yaml`. A full
@@ -347,16 +484,71 @@ mod tests {
     }
 
     #[test]
-    fn format_get_job_renders_cost_and_reason() {
+    fn format_get_job_renders_duration_and_stages() {
         let mut job = sample_job("smscope-smoke");
         job.status = JobStatus::Failed;
         job.stop_reason = Some(StopReason::CostCap);
-        let body = format_get_job(&job);
+        job.started_at = Some(UnixMillis(0));
+        job.ended_at = Some(UnixMillis(125_000));
+        job.wall_clock_cap_ms = 3_600_000;
+        let body = format_get_job(&job, &[]);
         assert!(body.contains("smscope-smoke"));
         assert!(body.contains("failed"));
-        assert!(body.contains("$52.64"));
-        assert!(body.contains("$150.00"));
+        assert!(body.contains("Time:"));
+        assert!(body.contains("2m 5s"));
+        assert!(body.contains("1h 0m"));
+        assert!(body.contains("Stages: 0"));
         assert!(body.contains("cost-cap exceeded"));
+        assert!(!body.contains("Cost:"));
+    }
+
+    fn stage_row(
+        ordinal: u32,
+        name: &str,
+        status: StageStatus,
+        started: Option<i64>,
+        ended: Option<i64>,
+    ) -> StageRollup {
+        use codeless_types::id::{JobId, StageId};
+        StageRollup {
+            stage: codeless_types::Stage {
+                id: StageId::new(),
+                job_id: JobId::new(),
+                ordinal,
+                name: name.to_string(),
+                status,
+                verify_cmd: None,
+                started_at: started.map(UnixMillis),
+                ended_at: ended.map(UnixMillis),
+                session_id: None,
+                goal: None,
+                acceptance: None,
+                last_activity_at: None,
+                archived: false,
+                persona_id: None,
+                bypassed_at: None,
+                bypassed_reason: None,
+            },
+            cost_cents: 0,
+            task_count: 0,
+        }
+    }
+
+    #[test]
+    fn format_get_job_surfaces_current_and_last_stage() {
+        let mut job = sample_job("plugin-substrate");
+        job.started_at = Some(UnixMillis(0));
+        let stages = vec![
+            stage_row(1, "PS2", StageStatus::Passed, Some(0), Some(60_000)),
+            stage_row(2, "PS3", StageStatus::Passed, Some(60_000), Some(180_000)),
+            stage_row(3, "PS4", StageStatus::Running, Some(180_000), None),
+            stage_row(4, "PS5", StageStatus::Pending, None, None),
+        ];
+        let body = format_get_job(&job, &stages);
+        assert!(body.contains("Stages: 4"), "body: {body}");
+        assert!(body.contains("Current: 3. PS4"), "body: {body}");
+        assert!(body.contains("Last:    2. PS3"), "body: {body}");
+        assert!(body.contains("2m 0s"), "body: {body}");
     }
 
     #[test]
