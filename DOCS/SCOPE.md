@@ -110,6 +110,7 @@ The Rust side is **explicitly split into reusable crates** so that browser, desk
 | `codeless-adapters-desktop` | OS-keychain secrets backend, native file dialogs. **Created when there is more than one thing to put in it** — until then, lives inside `codeless-tauri-desktop`. | ❌ | ❌ | Most things first thought of as "desktop" actually live in `adapters-host`. |
 | `codeless-server` | Hosted HTTP binary: axum SSE + REST + WS surface, auth middleware. Depends on `runtime` + `adapters-host`. | n/a | n/a | The MVP shell. |
 | `codeless-mcp` | MCP server binary (stdio + Streamable HTTP). Exposes the **same RPC trait** as `codeless-server` as MCP tools/resources/prompts. Depends on `runtime` + `adapters-host` for local mode, or on `client` when proxying to a remote hosted core. | n/a | n/a | The headless agent-driven surface. Parity with CLI is enforced in CI — see "MCP surface" below. |
+| `codeless-tools` | Every LLM-callable tool impl (filesystem, shell, HTTP, headless browser, …). Each tool implements the `Tool` trait and is registered with `codeless-mcp` at runtime startup; the MCP server dispatches `tools/call` into the registry. Some tool files are ported from moxxy (see [`TOOLS-PORTING.md`](./TOOLS-PORTING.md) and `NOTICE`); others are native. | ❌ | ❌ | Host-only — process spawn, FS access, and network calls all live here. **R1 enforcement:** mobile-safe crates (`codeless-types`, `codeless-rpc`, `codeless-client`, `codeless-tauri-mobile`) must not declare `codeless-tools` as a dependency. CI runs `grep -E 'codeless-tools' codeless/crates/codeless-{types,rpc,client,tauri-mobile}/Cargo.toml` and fails on any match. |
 | `codeless-client` | SSE + REST + WS client. Used by browser and mobile webview. | ✅ | ✅ | The single thin-client library. |
 | `codeless-cli` | CLI binary; calls `runtime` in-process, or `client` over network when pointed at a hosted core. Bundles `codeless mcp` as a subcommand that execs `codeless-mcp` so a single binary serves both surfaces. | — | — | |
 | `codeless-tauri-desktop` | Tauri app; depends on `runtime` + `adapters-host` (+ `adapters-desktop` once it exists). | — | — | Phase 5. |
@@ -153,6 +154,7 @@ codeless/
 │   ├── codeless-server/                # axum SSE+REST+WS binary (Phase 3)
 │   ├── codeless-client/                # SSE+REST+WS client — used by browser + mobile
 │   ├── codeless-cli/                   # CLI binary
+│   ├── codeless-tools/                 # LLM-callable tools registered into codeless-mcp — host-only
 │   └── codeless-tauri-desktop/         # Tauri 2 shell (Phase 5, stubbed in Phase 1)
 ├── ui/
 │   └── codeless-ui/                    # single React + TS codebase, RpcClient interface
