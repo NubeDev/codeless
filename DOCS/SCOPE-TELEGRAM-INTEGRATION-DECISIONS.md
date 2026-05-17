@@ -555,3 +555,270 @@ the post-extraction stage), and only then add the three concrete
 parser extensions listed under "What would have to happen for
 stage 5 to unblock" above; if any precondition still fails, that
 session also halts.
+
+## Stage 6 — blocked, marked `[!]`
+
+Stage 6's outcome from `template.yaml` is:
+
+> Wire parsed commands through the shared `BotTransport` trait to
+> `RpcClient` calls; format and post synchronous command replies.
+
+This stage cannot write code in this worktree. It inherits every
+blocker that halted stages 4 and 5, plus two stage-6-specific
+constraints rooted in the Stage-2 decision and `WORKFLOW.md`.
+
+### Precondition A (carried) — gate still closed
+
+The four `WORKFLOW.md` greps were re-run against this worktree's
+`HEAD` (`c2c4efb`, branched from `master @ b615115`). The result
+is identical to the tables recorded under "Stage 4 — blocked"
+and "Stage 5 — blocked" in this file:
+
+- `grep -n 'pub bypass' crates/codeless-rpc/src/methods.rs` →
+  only `pub bypass_failing_stage: bool` (line 142), the unrelated
+  auto-bypass-policy field.
+- `grep -n 'pub next_stage_comment' crates/codeless-rpc/src/methods.rs`
+  → no matches.
+- `grep -nE 'actor:.*Option<String>' crates/codeless-types/src/event.rs`
+  → no matches.
+- `grep -nE 'comment:.*Option<String>' crates/codeless-types/src/event.rs`
+  → no matches.
+
+`fetch origin` reports `origin/master` unchanged at `b615115`;
+`origin/codeless/slack-integration` is still not visible.
+Slack-integration's stage 1 commit `245a228` has not landed on
+`master` between the previous session (`c2c4efb`) and this one.
+The `RpcServer` methods stage 6 would call still do not accept
+the `bypass` and `next_stage_comment` arguments the parser is
+expected to emit, so the dispatcher → RPC seam has no contract
+to wire against.
+
+### Precondition B (carried) — no `codeless-bot-core`, no `codeless-bot`
+
+`ls crates/` still returns no `codeless-bot/`, `codeless-bot-core/`,
+or `codeless-slack/`. The Stage-2 sequencing constraint stands
+verbatim: no `codeless-bot/` directory may exist before
+`codeless-bot-core/` does, and the extraction cannot run here
+until `codeless-slack` is on `master`. Stage 6's deliverable
+is the *Telegram-side dispatcher inside* `crates/codeless-bot/`,
+so there is no directory to add files to.
+
+### Precondition C (carried) — no Telegram parser
+
+Stage 5 is blocked, so the Telegram-flavoured extensions of the
+`codeless-bot-core` parser (slash-stripping `ParseOptions`,
+`ReplyContext::TelegramReply { chat_id, message_id }`) do not
+exist. Stage 6 consumes those types at the dispatcher entry point
+when it decodes the inbound Telegram update into a `ReplyContext`
+and calls `parse(text, ParseOptions { strip_leading_slash: true,
+… }, reply_ctx)`. Without them the dispatcher cannot be written
+in a form that survives stage 5 landing later.
+
+### Precondition D (new at stage 6) — no `BotTransport` trait
+
+The stage-6 task names *the shared `BotTransport` trait* as the
+seam the parsed commands flow through to `RpcClient` and back out
+as posted replies. That trait is one of the six items the
+Stage-2 decision lists for the `codeless-bot-core` extraction:
+
+> ```
+> crates/codeless-bot-core/src/
+> ├── transport.rs       # BotTransport trait
+> ├── backend.rs         # CommandBackend trait + RpcServerBackend
+> ├── command.rs         # parser
+> ├── reply.rs           # renderers
+> ├── context_map.rs     # generalised ThreadMap
+> └── rate_limit.rs
+> ```
+
+Neither `transport.rs` nor `backend.rs` exists in this worktree
+(no `codeless-bot-core/` at all). The slack-side analogues that
+will move out (`codeless-slack/src/dispatcher.rs` defines
+`CommandBackend` + `RpcServerBackend`; the trait the dispatcher
+posts replies through is still inlined as the `ChatPoster` struct
+in `codeless-slack/src/web_api.rs`, not yet a trait) live only on
+the unmerged `codeless/slack-integration` branch at commit
+`ffa11bd`. The extraction stage is what generalises `ChatPoster`'s
+shape into `BotTransport`, with Slack providing one impl
+(`chat.postMessage` over `https://slack.com/api`) and Telegram
+providing the other (`sendMessage` over
+`https://api.telegram.org/bot<token>/`).
+
+Writing a Telegram-only `BotTransport` definition inside
+`crates/codeless-bot/` now would commit the project to a trait
+shape that the extraction is then forced to either ratify or
+rewrite — either outcome wastes work and risks the two halves
+drifting in the same way the parser duplication risks.
+
+### Precondition E (new at stage 6) — no `CommandBackend`, no `RpcServer` in this worktree's bot path
+
+The dispatcher's other input is `CommandBackend` — the
+5-method slice of `RpcServer` (`list_jobs`, `get_job`,
+`start_job`, `stop_job`, `resume_job`) the bot actually calls.
+The Slack stage-4 commit (`ffa11bd`) defines this trait at
+`codeless-slack/src/dispatcher.rs:46-56` with a blanket
+`RpcServerBackend` that wraps `Arc<dyn RpcServer>` so the
+in-process runtime drives the bot in production while tests fake
+five methods instead of ~80. The extraction moves this trait
+into `codeless-bot-core::backend`; stage 6 imports it from there.
+Both the trait and the blanket impl are absent from this
+worktree because their slack-side originals are not on `master`.
+
+### What stage 6 will actually produce when it unblocks
+
+The Slack equivalent (commit `ffa11bd`, +1560/-61 lines across
+9 files) is the working template. The Telegram stage 6 maps to
+it file-for-file via the post-extraction layout. The expected
+shape:
+
+```
+crates/codeless-bot/src/
+├── dispatcher.rs   # NEW — Telegram update decode → reply_to_message_id
+│                   #   lookup → parse() → CommandBackend call → reply
+│                   #   render → BotTransport::send_message
+├── post.rs         # NEW — sendMessage poster impl of BotTransport;
+│                   #   MarkdownV2 escaping; per-chat 30 msg/sec bucket
+│                   #   (the rate-limit bucket itself lives in
+│                   #   codeless-bot-core::rate_limit, this file is the
+│                   #   Telegram-side consumer)
+├── long_poll.rs    # CHANGED — handle_update spawns dispatcher into a
+│                   #   detached task per update so a slow reply post
+│                   #   does not stall the next getUpdates batch
+├── lib.rs          # CHANGED — TelegramBot::spawn grows an
+│                   #   Arc<dyn RpcServer> parameter; exposes
+│                   #   reply_context_map() clone for stage 8's outbound
+│                   #   notification poster
+└── config.rs       # unchanged at this stage
+```
+
+And, on the consumer side:
+
+```
+crates/codeless-cli/src/serve.rs
+  # CHANGED — when --enable-telegram-bot is set, pass
+  # state.rpc.clone() into TelegramBot::spawn so Telegram
+  # commands hit the same RpcServer code path the web UI uses.
+```
+
+The dispatcher path mirrors the Slack one exactly, with the
+transport-specific bits parameterised through `BotTransport`:
+
+1. Decode the inbound Telegram `Update`, extract `chat.id`,
+   `from.id`, `text`, and `reply_to_message.message_id`.
+2. Reject if `from.id` is not in the configured
+   `allowed_user_ids` set (defence-in-depth, fail-closed per
+   `SCOPE.md`).
+3. Resolve the reply-context job id via the
+   `ReplyContextMap::get(ReplyContext::TelegramReply {
+   chat_id, message_id: reply_to_message_id })` lookup.
+4. Call `codeless_bot_core::command::parse(text,
+   ParseOptions { strip_leading_slash: true, … }, reply_ctx)`.
+5. Dispatch on the resulting `Command` to one of
+   `CommandBackend`'s five methods.
+6. Render the result via `codeless_bot_core::reply::*`,
+   wrapping the returned `String` in MarkdownV2 escaping before
+   handing it to `BotTransport::send_message(chat_id,
+   reply_to_message_id, text)`.
+7. Posting failures are logged and dropped — same rationale as
+   the Slack stage-4 dispatcher: the runtime has already
+   advanced, so refusing to ack the update would just produce a
+   duplicate dispatch on Telegram's retry of the next
+   `getUpdates`, which is the wrong recovery for a transient
+   post failure against state the runtime has already mutated.
+
+Tests live with the code (R5):
+
+- `dispatcher.rs` gets per-`Command` unit tests using a fake
+  `CommandBackend` (the five-method seam) and a recording
+  `BotTransport` (capturing `send_message` calls in-memory).
+  No HTTP and no Tokio runtime spawn the dispatcher itself
+  needs; the long-poll integration is tested separately.
+- `post.rs` gets a `wiremock`-backed test pointing at the same
+  base-URL pattern the production `TelegramPoster` uses,
+  asserting that the JSON body contains the correct
+  `chat_id`, `reply_to_message_id`, `parse_mode: "MarkdownV2"`,
+  and that MarkdownV2-reserved characters in the rendered text
+  are backslash-escaped per
+  <https://core.telegram.org/bots/api#markdownv2-style>.
+- Telegram-specific reply tests are *not* added in
+  `crates/codeless-bot/`. The renderers live in
+  `codeless_bot_core::reply` and are transport-agnostic; the
+  Slack tests added at slack stage 4 stay the only renderer
+  tests, and Telegram inherits the rendering correctness
+  guarantee through the shared crate (see SCOPE-MUTABLE-UI R2:
+  the reply body emits ASCII tags `[ok]` / `[fail]` / `[!]`,
+  not Slack-mrkdwn-only syntax, so the same string is correct
+  in both transports once Telegram's MarkdownV2 escape pass
+  wraps the metadata characters).
+
+### What would have to happen for stage 6 to unblock
+
+Same sequence as stage 5, with stage 5 added at the front:
+
+1. slack-integration finishes its remaining stages on its own
+   branch and merges to `master`. Ships
+   `ResumeJobArgs.bypass`, `ResumeJobArgs.next_stage_comment`,
+   `JobResumed.actor`, `JobResumed.comment`, and the
+   `crates/codeless-slack/` directory (nine source files
+   including stage-4's dispatcher + reply + thread_map +
+   web_api).
+2. This worktree rebases (or a fresh worktree opens) on the
+   updated `master`. The four-grep gate then passes.
+3. The `codeless-bot-core` extraction runs: creates
+   `crates/codeless-bot-core/`, moves `command.rs`, `reply.rs`,
+   `thread_map.rs` (renamed `context_map.rs`), `CommandBackend`,
+   `RpcServerBackend`, and generalises `ChatPoster` into the
+   `BotTransport` trait. Slack's `ChatPoster` becomes the
+   `impl BotTransport for SlackChatPoster` in
+   `codeless-slack/src/web_api.rs`. Verify trio, commit.
+4. Stage 4 (scaffold Telegram transport) creates
+   `crates/codeless-bot/` with `Cargo.toml`, `lib.rs`,
+   `config.rs`, `long_poll.rs`, `post.rs`, and the `teloxide`
+   (or hand-rolled `reqwest`) dep, plus the
+   `--enable-telegram-bot` CLI flag.
+5. Stage 5 (Telegram parser extensions) adds the three concrete
+   widenings inside `codeless-bot-core` enumerated in that
+   stage's blocked-doc section (ReplyContext enum,
+   ParseOptions, Telegram-flavoured unit tests).
+6. *Then* this stage 6 makes its two concrete additions:
+
+   a. `crates/codeless-bot/src/dispatcher.rs` with the
+      6-step pipeline above, plus the per-`Command` unit tests
+      against the fake `CommandBackend` + recording
+      `BotTransport`.
+   b. `crates/codeless-bot/src/post.rs` with the Telegram
+      `BotTransport` impl, MarkdownV2 escaping, and the
+      `wiremock`-backed JSON-body test.
+   c. Touch `crates/codeless-bot/src/lib.rs` to grow
+      `TelegramBot::spawn` an `Arc<dyn RpcServer>` parameter
+      and expose `reply_context_map()` for stage 8's outbound
+      notification poster (the writer-side; stage 6 only reads).
+   d. Touch `crates/codeless-cli/src/serve.rs` to pass
+      `state.rpc.clone()` into `TelegramBot::spawn` when
+      `--enable-telegram-bot` is set.
+
+   The verify trio (`cargo test --workspace`, `cargo clippy
+   --workspace --all-targets -- -D warnings`, `cargo fmt
+   --check`) must be green before commit.
+
+### What this stage produces
+
+This commit. The decisions doc gains this Stage-6 section so the
+audit trail records *why* stage 6 was halted in the same form as
+stages 4 and 5's records. No `crates/` files are touched; no
+`Cargo.toml` is edited; no Rust is written. `cargo test
+--workspace` was not run for the same reason — there is no Rust
+change in this stage to verify.
+
+Stage 6 is marked `[!]` (blocked) per `CLAUDE.md` R4. The job
+halts here and waits for the five preconditions above (A through
+E, including stages 4 and 5's own completion). The next session
+that picks this stage up must re-run the four-grep gate before
+writing any code, confirm `crates/codeless-bot-core/src/{backend,
+transport,command,reply,context_map}.rs` all exist (from the
+post-extraction and stage-5 commits), confirm
+`crates/codeless-bot/src/{lib,config,long_poll,post}.rs` all
+exist (from stage 4) — and only then add the two new dispatcher /
+post files listed under "What would have to happen for stage 6
+to unblock" above; if any precondition still fails, that session
+also halts.
