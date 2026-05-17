@@ -7,6 +7,8 @@ goal: |
   shape end-to-end. This is item 1 of PLUGIN-SUBSTRATE.md and the
   strict prerequisite for the rest of that doc.
 
+docs:
+  - CHAT.md
 stages:
   - T1 (S) new codeless-tools crate as workspace member, host feature wired, empty lib.rs with crate docs, workspace builds clean
   - T2 (M) Tool trait, ToolCtx, ToolError, registration mechanism, testing::fake_ctx() harness with no tool impls yet
