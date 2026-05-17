@@ -376,3 +376,182 @@ here and waits for the two preconditions above. The next session
 that picks this stage up must re-run the four-grep gate before
 writing any code; if it still fails, the next session also
 halts.
+
+## Stage 5 — blocked, marked `[!]`
+
+Stage 5's outcome from `template.yaml` is:
+
+> Implement Telegram command parser for Surface 1 grammar:
+> `/status`, `/start`, `/stop`, `/resume` with bypass/comment;
+> `reply_to_message_id` job-ID resolution mirroring Slack's
+> `thread_ts` logic.
+
+This stage cannot write code in this worktree. It inherits every
+blocker that halted stage 4, plus a stage-5-specific reason
+called out as an anti-pattern in `WORKFLOW.md`.
+
+### Precondition A (carried from stage 4) — gate still closed
+
+The four `WORKFLOW.md` greps were re-run against this worktree's
+`HEAD` (`acc8dd0`, branched from `master @ b615115`). The result
+is identical to the table recorded under "Stage 4 — blocked" in
+this file:
+
+- `grep -n 'pub bypass' crates/codeless-rpc/src/methods.rs` →
+  only `pub bypass_failing_stage: bool` (line 142), the unrelated
+  auto-bypass-policy field.
+- `grep -n 'pub next_stage_comment' crates/codeless-rpc/src/methods.rs`
+  → no matches.
+- `grep -nE 'actor:.*Option<String>' crates/codeless-types/src/event.rs`
+  → no matches.
+- `grep -nE 'comment:.*Option<String>' crates/codeless-types/src/event.rs`
+  → no matches.
+
+Three of four required fields absent. The gate is still closed.
+Slack-integration has not landed on `master` between the previous
+session (`acc8dd0`) and this one (`fetch origin` reports
+`origin/master` unchanged at `b615115`; `origin/codeless/slack-
+integration` is still not visible). The `Command` enum stage 5
+would emit needs `ResumeJobArgs.bypass` and
+`ResumeJobArgs.next_stage_comment` as its destination types in
+stage 6, so building the parser against fields that do not exist
+on `master` would either invent placeholder field names (which
+the next session would have to rewrite) or be untestable end-
+to-end against the RPC server.
+
+### Precondition B (carried from stage 4) — no `codeless-bot-core`
+
+`ls crates/` still returns no `codeless-bot/`, `codeless-bot-core/`,
+or `codeless-slack/`. The Stage-2 sequencing constraint stands
+verbatim: no `codeless-bot/` directory may exist before
+`codeless-bot-core/` does, and the extraction cannot run here
+until `codeless-slack` is on `master`.
+
+### Precondition C (new at stage 5) — the parser cannot land outside `codeless-bot-core`
+
+Stage 5 is the first stage whose output is *the shared
+abstraction itself* — the parser, `Command` enum, and reply-
+context map. `WORKFLOW.md` calls this out under "Anti-patterns
+specific to this job":
+
+> **Re-implementing the parser inside `transport/telegram.rs`.**
+> The whole point of the shared adapter is that the parser is
+> written once. If the Telegram-side grammar diverges from
+> Slack's, fix the parser, not by duplicating it.
+
+The Stage-2 decision recorded in this file picked Approach 1
+specifically so the parser lives in `codeless-bot-core` and both
+transports re-export it. Implementing a standalone Telegram
+parser in `crates/codeless-bot/src/command.rs` *now*, before the
+extraction stage, would:
+
+1. Fork the parser. The Slack version (`codeless-slack/src/command.rs`,
+   visible on the unmerged `codeless/slack-integration` branch at
+   commit `129054a`, 766 lines including 20 unit tests covering
+   mention-stripping, case folding, both context branches of
+   every verb, keyword-vs-comment disambiguation, escape
+   handling, unicode comments, and every error variant) and the
+   Telegram version would drift the moment either side fixed a
+   bug. The "shared via codeless-bot-core" promise becomes
+   refactor debt that the project has explicitly committed to
+   avoid.
+
+2. Misalign the `Command` enum with the RPC argument types it is
+   supposed to feed. The Slack parser emits
+   `Command::ResumeJob { job_id, bypass, comment }` mapping
+   directly to `ResumeJobArgs.bypass` and
+   `ResumeJobArgs.next_stage_comment` (precondition A above).
+   With neither field present, the Telegram-only `Command` enum
+   would have to invent its own field names, then either rewrite
+   them to match the canonical ones once stage 1 lands, or feed
+   the dispatcher fake intermediate types — neither is
+   acceptable under CLAUDE.md R4.
+
+3. Foreclose the only generalisation that makes the Slack and
+   Telegram parsers a single piece of code: `ThreadContext`
+   widening to `ReplyContext` keyed on a typed-enum
+   (`SlackThread { channel, thread_ts }` or `TelegramReply {
+   chat_id, message_id }`). The stage-5 task explicitly names
+   `reply_to_message_id` as the Telegram-side analogue of
+   `thread_ts`; that mapping belongs inside
+   `codeless-bot-core::context_map`, not in two parallel
+   per-transport files.
+
+The stage-5 task also names a small but load-bearing grammar
+delta from Slack: Telegram messages arrive with `/`-prefixed
+verbs (BotFather convention) instead of bare verbs, and Telegram
+has no analogue of Slack's `<@U…>` leading-mention envelope.
+Both deltas are one-line changes inside a shared parser
+(strip-leading-slash vs. strip-leading-mention helper, swapped
+at the entry point); they are not justifications for a separate
+parser file.
+
+### What would have to happen for stage 5 to unblock
+
+Same sequence as stage 4, with stage 4 added at the front:
+
+1. slack-integration finishes its remaining stages on its own
+   branch and merges to `master`. Ships
+   `ResumeJobArgs.bypass`, `ResumeJobArgs.next_stage_comment`,
+   `JobResumed.actor`, `JobResumed.comment`, and the
+   `crates/codeless-slack/` directory (nine source files,
+   including the 766-line `command.rs` with its 20 unit tests).
+2. This worktree rebases (or a fresh worktree opens) on the
+   updated `master`. The four-grep gate then passes.
+3. The `codeless-bot-core` extraction runs: creates
+   `crates/codeless-bot-core/`, moves `command.rs`, `reply.rs`,
+   `thread_map.rs` (renamed `context_map.rs`), `CommandBackend`,
+   and `RpcServerBackend` out of `codeless-slack`, adds
+   re-exports, runs the verify trio, commits.
+4. Stage 4 (scaffold Telegram transport) creates
+   `crates/codeless-bot/` with `Cargo.toml`, `lib.rs`,
+   `config.rs`, `long_poll.rs`, `post.rs`, `dispatcher.rs`, the
+   `teloxide` dep, and the `--enable-telegram-bot` CLI flag.
+5. *Then* this stage 5 ("Telegram command parser for Surface 1")
+   makes its three concrete additions inside `codeless-bot-core`:
+
+   a. Generalise `ThreadContext` to `ReplyContext` keyed on a
+      transport-tagged enum, with `SlackThread { channel,
+      thread_ts }` and `TelegramReply { chat_id, message_id }`
+      variants both resolving to the same optional `JobId`.
+      Existing `ThreadContext` is kept as a type alias so the
+      Slack call sites don't churn.
+   b. Extend the `parse` entry point to accept an optional
+      leading-`/` strip (Telegram's BotFather convention) in
+      addition to the existing leading-`<@U…>` strip (Slack's
+      mention envelope). The cleanest shape is a `ParseOptions`
+      struct with a `strip_leading_slash: bool` field passed
+      from the per-transport dispatcher; each transport flips
+      one flag at its call site.
+   c. Add Telegram-specific unit tests in
+      `codeless-bot-core/src/command.rs` that cover the slash-
+      prefixed verbs, the `reply_to_message_id`-based short
+      forms (`/stop`, `/resume`, `/resume bypass`,
+      `/resume "<comment>"`), and the cold-context
+      `MissingJobId` cases. The Slack tests on the same module
+      stay green unchanged.
+
+   No new file is created under `crates/codeless-bot/src/` for
+   the parser. The Telegram dispatcher imports the parser
+   verbatim from `codeless_bot_core::command::parse` and only
+   supplies the Telegram-shaped `ReplyContext` it constructed
+   from the inbound update.
+
+### What this stage produces
+
+This commit. The decisions doc gains this Stage-5 section so the
+audit trail records *why* stage 5 was halted in the same form as
+stage 4's record. No `crates/` files are touched; no `Cargo.toml`
+is edited; no Rust is written. `cargo test --workspace` was not
+run for the same reason — there is no Rust change in this stage
+to verify.
+
+Stage 5 is marked `[!]` (blocked) per `CLAUDE.md` R4. The job
+halts here and waits for the four preconditions above (A, B,
+plus stage 4's own completion). The next session that picks this
+stage up must re-run the four-grep gate before writing any code,
+confirm `crates/codeless-bot-core/src/command.rs` exists (from
+the post-extraction stage), and only then add the three concrete
+parser extensions listed under "What would have to happen for
+stage 5 to unblock" above; if any precondition still fails, that
+session also halts.
