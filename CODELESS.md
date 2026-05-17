@@ -203,6 +203,42 @@ it.
   field rejection, tail replay-and-exit driven by `MockRunner`,
   and a wiremock webhook fixture that verifies the HMAC against
   the shared key.
+- **2026-05-17** — Stage 2 of the `slack-integration` job adds the
+  `codeless-slack` crate (host-only, listed under `crates/` in the
+  workspace `Cargo.toml`). The crate wraps a Slack Socket Mode
+  client (`reqwest` + `tokio-tungstenite/rustls`) and exposes
+  `SlackConfig::from_secrets` (reading `slack_app_token` /
+  `slack_bot_token` / optional `slack_channel_id` from the existing
+  `SecretStore`) plus `SlackBot::spawn` / `spawn_with`, which drive
+  a reconnecting Socket Mode session that acks every envelope and
+  drops the payload. Command parsing and outbound notifications
+  arrive in stages 3/6 of the same job. `codeless serve` grows
+  `--enable-slack`; when set, missing secrets surface a warning and
+  the server still boots (the bot is additive). `setup/init-session.sh`
+  forwards `CODELESS_ENABLE_SLACK=1` as `--enable-slack`. Mobile-safe
+  status: crate is host-only per R1 and is not on the mobile compile
+  path (mobile shells reach the same RPC surface over HTTP/SSE).
+- **2026-05-17** — Stage 3 of the `slack-integration` job adds
+  `codeless_slack::command` (pure parser; no I/O). `parse(input,
+  ThreadContext)` turns a raw Slack message body into a `Command`
+  enum (`ListJobs`, `GetJob`, `StartJob`, `StopJob`, `ResumeJob {
+  bypass, comment }`, `Help`) for Surface 1 of SCOPE-SLACK-
+  INTEGRATION.md. Thread context resolution: `ThreadContext::for_job`
+  supplies an implicit job id for in-thread short forms (`stop`,
+  `resume`, `resume bypass`, `resume "<comment>"`); `ThreadContext::
+  COLD` rejects those with a precise `MissingJobId` error rather
+  than a malformed-id false positive. The `bypass` keyword is a
+  positional slot between the ULID and the optional trailing
+  quoted comment — `resume <id> bypass "..."` sets bypass=true,
+  `resume <id> "comment about bypass"` does not. The quoted-comment
+  tokenizer accepts `\"` / `\\` escapes, propagates UTF-8, and
+  surfaces an `UnclosedComment` error so the operator's typed
+  message is fixable on retry. The parser strips a leading
+  `<@USERID>` / `<@USERID|alias>` mention so Slack's `@bot`
+  rewrite arrives as plain text. 20 unit tests pin the grammar
+  end-to-end; `cargo test --workspace`, `cargo clippy -p
+  codeless-slack --all-targets -- -D warnings`, `cargo fmt --check`
+  all green. Dispatch wiring lives in stage 4.
 - **2026-05-12** — Phase 2b (real runners + worktree threading +
   cost) complete on `feat/phase-2a-persistence` stacked on Phase 2a
   (7 stages, see `../DOCS/sessions/2026-05-12-phase-2b-runners.md`).

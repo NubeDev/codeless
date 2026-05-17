@@ -110,6 +110,17 @@ pub struct ServeArgs {
     #[arg(long, env = "CODELESS_FS_ROOT")]
     pub fs_root: Option<PathBuf>,
 
+    /// Enable the Slack control-plane adapter. When set, the server
+    /// opens a Slack Socket Mode connection at boot using the
+    /// `slack_app_token` + `slack_bot_token` keys from the secrets
+    /// file. Stage 2 of the slack-integration job lands only the
+    /// transport: later stages wire the command parser and the
+    /// outbound failure notifications. Missing-token errors are
+    /// surfaced as a warning so the rest of the server still boots —
+    /// the bot is additive, not load-bearing for the runtime.
+    #[arg(long)]
+    pub enable_slack: bool,
+
     /// Force bearer-token authentication even on loopback binds.
     /// Loopback is unauthenticated by default because the trust
     /// boundary is already the same-user same-host process; this
@@ -449,6 +460,36 @@ async fn run_server(
                 .await
                 .map_err(|e| anyhow!("driver init: {e}"))?,
         )
+    };
+
+    // Slack adapter is opt-in via `--enable-slack`. Missing tokens
+    // produce a warning rather than a hard failure so the rest of the
+    // server still boots — the bot is additive to the runtime and the
+    // operator should be able to land Slack later by setting two
+    // secrets and restarting. The handle stays alive in this scope so
+    // the spawned task is not dropped before `serve_with_shutdown`
+    // returns; process exit is the teardown path.
+    let _slack = if args.enable_slack {
+        match codeless_slack::SlackConfig::from_secrets(&store) {
+            Ok(cfg) => {
+                eprintln!(
+                    "codeless-server: slack adapter enabled (channel={})",
+                    cfg.channel_id.as_deref().unwrap_or("unset"),
+                );
+                // The dispatcher reaches the in-process runtime via
+                // the same `RpcServer` handle the HTTP transport
+                // serves; commands typed in Slack hit the exact same
+                // code path as the web UI. Cloning is cheap (the
+                // handle is an `Arc<dyn RpcServer>`).
+                Some(codeless_slack::SlackBot::spawn(cfg, state.rpc.clone()))
+            }
+            Err(err) => {
+                eprintln!("codeless-server: --enable-slack ignored: {err}");
+                None
+            }
+        }
+    } else {
+        None
     };
 
     serve_with_shutdown(args.bind, state, |addr| {
