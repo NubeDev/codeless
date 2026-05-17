@@ -94,36 +94,62 @@ That doc is the source of truth for the *why*; this scope is the
 
 ## Approach — shared code with slack-integration
 
-The design doc recommends Option B: a single `codeless-bot` crate
-with `transport/slack.rs` and `transport/telegram.rs` modules
-behind a `BotTransport` trait, so the parser, event subscriber,
-rate limiter, and `reply_to → job_id` table are written once.
+**Locked in stage 2: Approach path 1 — extract a `codeless-bot-core`
+crate.** Rationale and the planned crate / module layout live in
+[`DOCS/SCOPE-TELEGRAM-INTEGRATION-DECISIONS.md`](../../../DOCS/SCOPE-TELEGRAM-INTEGRATION-DECISIONS.md).
+Summary:
 
-Two paths depending on the state of `slack-integration` when this
-job starts:
+- `codeless-bot-core` (new, host-only) — transport-agnostic
+  parser, `BotTransport` trait, `CommandBackend` slice of
+  `RpcServer`, `ReplyContextMap<K>` (was `ThreadMap`), reply
+  renderers, and the inbound + outbound rate limiters. Both
+  transports depend on it.
+- `codeless-slack` (existing, on `codeless/slack-integration`)
+  rebases to depend on `codeless-bot-core`. Keeps `socket_mode`,
+  `web_api`, `config`, and the Slack-shape envelope decoder.
+  The crate's public API is preserved via re-exports from
+  `codeless-bot-core` so slack-integration's stages 5+ rebase
+  trivially.
+- `codeless-bot` (new, this job) — the Telegram transport. Owns
+  the long-poll client, the `teloxide` (or equivalent) glue,
+  the Telegram-shape envelope decoder, and the
+  `codeless-bot-core::BotTransport` impl. The name `codeless-bot`
+  is reserved on the assumption that further transports (Matrix,
+  Discord, SMS, …) join as sibling crates under the same core
+  rather than as more modules inside one crate.
 
-1. **slack-integration already shipped as `codeless-slack`** —
-   extract the transport-agnostic pieces into a new
-   `codeless-bot-core` crate. Both `codeless-slack` and the new
-   `codeless-telegram` (or `codeless-bot`) depend on it. Do this
-   in a separate stage *before* touching Telegram code so the
-   refactor is a single atomic change.
-2. **slack-integration not yet shipped** — coordinate with that
-   job: it should land its scaffold as `codeless-bot` with
-   `transport/slack.rs` from day one. If that coordination is
-   blocked, fall back to (1) once Slack lands.
+Path 2 (single `codeless-bot` crate with
+`transport/{slack,telegram}.rs`) was rejected because
+`codeless-slack` already exists with shipped stages on the
+`codeless/slack-integration` branch (commits `293ff33`, `129054a`,
+`ffa11bd`). Folding it into a transport module would touch every
+file in `codeless-slack` and force a rebase of every slack-
+integration stage from 5 onward; extraction touches only the
+crate's re-export surface.
 
-Stage 2 of this job is the decision point; the REVIEW gate after
-it locks the choice in with the operator before any Telegram code
-is written.
+The REVIEW gate after this stage locks the choice in with the
+operator before any Telegram code is written. The actual
+extraction (creation of `codeless-bot-core`, moving files out of
+`codeless-slack`) is its own stage, and it MUST wait until
+slack-integration's stage-1..N work is merged to `master` —
+performing the refactor against the in-flight `codeless/slack-
+integration` branch from this worktree would re-introduce exactly
+the cross-branch coupling the gate is there to prevent.
 
 ## Open questions
 
-1. **Branch naming.** Slack job uses `codeless/slack-integration`.
-   This job uses `codeless/telegram-integration`. If the shared-
-   crate refactor (Approach path 1) is its own job, give it
-   `codeless/codeless-bot-core` and let both this and the Slack
-   job's follow-up rebase on it.
+1. **Branch naming for the extraction stage.** The
+   `codeless-bot-core` extraction is its own stage *inside* this
+   job, not a separate job; it lands on
+   `codeless/telegram-integration` after slack-integration merges
+   to `master`. The slack-integration branch is then expected to
+   rebase onto the post-extraction `master` (its stage 5 onward
+   imports from `codeless-bot-core` instead of redefining the
+   shared types in-crate). If the slack-integration owner pushes
+   back on that rebase, the fallback is to spin
+   `codeless/codeless-bot-core` as a tiny intermediary branch
+   that both this job and slack-integration rebase onto — but the
+   default is "one extraction stage in telegram-integration."
 2. **Where does `--enable-telegram-bot` live in the CLI?** Next
    to `--enable-slack` in `crates/codeless-cli/src/serve.rs` is
    the obvious place; confirm at scaffold time.
