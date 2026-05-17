@@ -476,7 +476,12 @@ async fn run_server(
                     "codeless-server: slack adapter enabled (channel={})",
                     cfg.channel_id.as_deref().unwrap_or("unset"),
                 );
-                Some(codeless_slack::SlackBot::spawn(cfg))
+                // The dispatcher reaches the in-process runtime via
+                // the same `RpcServer` handle the HTTP transport
+                // serves; commands typed in Slack hit the exact same
+                // code path as the web UI. Cloning is cheap (the
+                // handle is an `Arc<dyn RpcServer>`).
+                Some(codeless_slack::SlackBot::spawn(cfg, state.rpc.clone()))
             }
             Err(err) => {
                 eprintln!("codeless-server: --enable-slack ignored: {err}");

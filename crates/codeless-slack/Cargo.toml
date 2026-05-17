@@ -5,13 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Codeless: Slack control-plane adapter. Host-only; subscribes via the in-process RpcServer once later stages wire the command parser + event-bus surface. Stage 2 lands only the Socket Mode transport and the --enable-slack plumbing."
+description = "Codeless: Slack control-plane adapter. Host-only; subscribes via the in-process RpcServer once later stages wire the command parser + event-bus surface. Stage 2 lands the Socket Mode transport and the --enable-slack plumbing; stage 4 wires inbound events through the RpcServer surface and posts synchronous replies via chat.postMessage."
 
 [lints]
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 codeless-adapters-host = { path = "../codeless-adapters-host" }
+codeless-rpc = { path = "../codeless-rpc" }
 codeless-types = { path = "../codeless-types" }
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -26,3 +28,4 @@ url = "2"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
+wiremock = "0.6"

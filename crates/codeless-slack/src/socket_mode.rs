@@ -14,11 +14,13 @@
 //!    `refresh_requested` after ~30 minutes of uptime) signals the
 //!    client to reopen via step 1.
 //!
-//! Stage 2 wires the transport and the reconnect loop but parks the
-//! dispatch surface — every non-control envelope is acked and dropped.
-//! Stage 3 of the slack-integration job replaces the drop with command
-//! parsing; stage 6 fans outbound notifications into the same socket
-//! via the Web API.
+//! Stage 4 wires the [`Dispatcher`] in between the ack and the drop:
+//! every `events_api` envelope is acked first (so Slack stops
+//! retrying) and then handed to the dispatcher in a detached task so
+//! a slow `chat.postMessage` reply does not stall the next inbound
+//! envelope. Without a dispatcher attached (older callers, or tests
+//! that only exercise the transport) the envelopes are still acked
+//! but their bodies are discarded.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +33,7 @@ use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::SlackConfig;
+use crate::dispatcher::{decode_envelope, Dispatcher};
 
 /// Endpoint that mints a single-use `wss_url`. Overridden by tests via
 /// `SocketModeSession::with_connect_endpoint`.
@@ -75,15 +78,17 @@ struct Ack<'a> {
     envelope_id: &'a str,
 }
 
-/// Long-lived Slack Socket Mode session. Owns the config and a shared
-/// `reqwest::Client`; spawn it via [`crate::SlackBot::spawn`] for
-/// production wiring, or call [`SocketModeSession::run_until_shutdown`]
-/// directly in tests after wiring a stub endpoint with
+/// Long-lived Slack Socket Mode session. Owns the config, a shared
+/// `reqwest::Client`, and an optional dispatcher. Spawn it via
+/// [`crate::SlackBot::spawn`] for production wiring, or call
+/// [`SocketModeSession::run_until_shutdown`] directly in tests after
+/// wiring a stub endpoint with
 /// [`SocketModeSession::with_connect_endpoint`].
 pub struct SocketModeSession {
     config: SlackConfig,
     http: Arc<reqwest::Client>,
     connect_endpoint: String,
+    dispatcher: Option<Dispatcher>,
 }
 
 impl SocketModeSession {
@@ -92,6 +97,7 @@ impl SocketModeSession {
             config,
             http,
             connect_endpoint: DEFAULT_CONNECT_ENDPOINT.to_string(),
+            dispatcher: None,
         }
     }
 
@@ -100,6 +106,14 @@ impl SocketModeSession {
     /// not touch this.
     pub fn with_connect_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.connect_endpoint = endpoint.into();
+        self
+    }
+
+    /// Attach a dispatcher. Without one the session still acks every
+    /// envelope it receives but does not run the command parser
+    /// against the body — used by transport-only tests.
+    pub fn with_dispatcher(mut self, dispatcher: Dispatcher) -> Self {
+        self.dispatcher = Some(dispatcher);
         self
     }
 
@@ -138,9 +152,6 @@ impl SocketModeSession {
                         backoff_ms = backoff.as_millis() as u64,
                         "slack: socket-mode error; will retry",
                     );
-                    // Capping at MAX_BACKOFF keeps the loop recoverable
-                    // but avoids hammering Slack during a sustained
-                    // outage.
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
             }
@@ -203,14 +214,12 @@ impl SocketModeSession {
             tokio::select! {
                 biased;
                 _ = &mut *shutdown => {
-                    // Close the socket cleanly so Slack does not flag the
-                    // app as unhealthy on the way out.
                     let _ = socket.close(None).await;
                     return Ok(ConnectOutcome::Shutdown);
                 }
                 frame = socket.next() => match frame {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(envelope_id) = handle_text_frame(&text) {
+                        if let Some(envelope_id) = handle_text_frame(&text, self.dispatcher.as_ref()) {
                             let ack = serde_json::to_string(&Ack { envelope_id: &envelope_id })
                                 .expect("Ack serialises");
                             if let Err(e) = socket.send(Message::Text(ack)).await {
@@ -220,9 +229,6 @@ impl SocketModeSession {
                         }
                     }
                     Some(Ok(Message::Ping(payload))) => {
-                        // Reply to keepalives explicitly. tokio-tungstenite
-                        // does this automatically on most paths but the
-                        // explicit handler keeps the trace log honest.
                         if let Err(e) = socket.send(Message::Pong(payload)).await {
                             return Err(SocketModeError::WebSocket(e));
                         }
@@ -269,24 +275,17 @@ enum ConnectOutcome {
     Disconnected,
 }
 
-/// Slack Socket Mode envelopes carry a `type` discriminator and, for
-/// dispatchable events, an `envelope_id` that the client must echo
-/// back. The `hello` envelope at session start has no id and needs no
-/// ack; `disconnect` carries an id but Slack closes the socket right
-/// after sending it, so acking is harmless and the next-iteration
-/// reconnect drives recovery.
+/// Decode a Slack envelope, kick off dispatch (if a dispatcher is
+/// attached), and return the envelope id for the caller to ack.
 ///
-/// Returns `Some(envelope_id)` when an ack is needed, `None` otherwise.
-/// Stage 2 only acks; the actual dispatch lands in stage 3 once the
-/// command parser is in place.
-fn handle_text_frame(text: &str) -> Option<String> {
-    #[derive(Deserialize)]
-    struct Envelope {
-        #[serde(rename = "type")]
-        kind: Option<String>,
-        envelope_id: Option<String>,
-    }
-    let envelope: Envelope = match serde_json::from_str(text) {
+/// Dispatch runs in a detached task so a slow `chat.postMessage`
+/// reply does not block the next inbound envelope. The ack always
+/// races ahead of the dispatch so Slack stops retrying immediately —
+/// the SCOPE doc explicitly trades "synchronous reply latency" for
+/// "reliable envelope processing" because the operator already sees
+/// the action commit in Slack via the eventual reply post.
+fn handle_text_frame(text: &str, dispatcher: Option<&Dispatcher>) -> Option<String> {
+    let envelope = match decode_envelope(text) {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!(error = %e, raw = %text, "slack: failed to decode envelope");
@@ -294,7 +293,19 @@ fn handle_text_frame(text: &str) -> Option<String> {
         }
     };
     tracing::debug!(kind = ?envelope.kind, "slack: inbound envelope");
-    envelope.envelope_id
+    let envelope_id = envelope.envelope_id.clone();
+    if let Some(disp) = dispatcher {
+        let disp = disp.clone();
+        // The envelope decode above clones the parts the dispatcher
+        // reads; spawning a detached task here keeps the ack on the
+        // hot path and folds the dispatch into the runtime's
+        // scheduler. The dispatcher logs and swallows its own
+        // failures, so this fire-and-forget is safe.
+        tokio::spawn(async move {
+            disp.dispatch_envelope(&envelope).await;
+        });
+    }
+    envelope_id
 }
 
 #[cfg(test)]
@@ -312,13 +323,13 @@ mod tests {
     #[test]
     fn handle_text_frame_returns_envelope_id_when_present() {
         let frame = r#"{"type":"events_api","envelope_id":"abc-123","payload":{}}"#;
-        assert_eq!(handle_text_frame(frame).as_deref(), Some("abc-123"));
+        assert_eq!(handle_text_frame(frame, None).as_deref(), Some("abc-123"));
     }
 
     #[test]
     fn handle_text_frame_returns_none_for_hello() {
         let frame = r#"{"type":"hello","num_connections":1}"#;
-        assert!(handle_text_frame(frame).is_none());
+        assert!(handle_text_frame(frame, None).is_none());
     }
 
     #[test]
@@ -326,7 +337,7 @@ mod tests {
         // Slack will never send this, but a partial/corrupt frame must
         // not crash the pump loop — the warn-and-skip path is
         // exercised here.
-        assert!(handle_text_frame("not json").is_none());
+        assert!(handle_text_frame("not json", None).is_none());
     }
 
     #[tokio::test]
