@@ -52,6 +52,16 @@ pub(super) async fn upsert_persona(
         default_model: args.default_model,
         allowed_subagents: args.allowed_subagents,
         default_snippets: args.default_snippets,
+        // PS5: the upsert RPC is the user-edited-persona path. The
+        // substrate-doc allowed-tools / model-family / attachments-
+        // policy columns are server-resident concepts populated by
+        // plugin manifests (PS6); user-authored personas land with
+        // safe defaults (no MCP tool grants, no model preference,
+        // thread-scoped attachments). The UI gets a separate setter
+        // path when it grows controls for these.
+        allowed_tools: Vec::new(),
+        default_model_family: None,
+        default_attachments_policy: "inline-thread-scoped".to_owned(),
         built_in: false,
         created_at: now,
         updated_at: now,

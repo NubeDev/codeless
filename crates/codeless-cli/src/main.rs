@@ -13,6 +13,7 @@ mod demo;
 mod job;
 mod jobs;
 mod patches;
+mod plugin;
 mod repos;
 mod review;
 mod rpc_open;
@@ -140,6 +141,14 @@ enum Cmd {
         #[command(subcommand)]
         verb: patches::Verb,
     },
+    /// Inspect statically-linked plugins (DOCS/PLUGIN-SUBSTRATE.md
+    /// item 6). `list` enumerates plugins discovered under
+    /// `--plugins-dir`; `info <id>` dumps the manifest plus the tools
+    /// the plugin contributes to the shared registry.
+    Plugin {
+        #[command(subcommand)]
+        verb: plugin::Verb,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -226,6 +235,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Cmd::Cost { verb } => cost::handle(verb, cli.core, cli.token, cli.db),
         Cmd::Demo { verb } => demo::handle(verb, cli.db),
         Cmd::Patches { verb } => patches::handle(verb),
+        Cmd::Plugin { verb } => plugin::handle(verb),
     }
 }
 

@@ -43,9 +43,31 @@ pub(super) async fn create_assistant_thread(
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_THREAD_TITLE)
         .to_owned();
+
+    // PS5: hard-error if the caller omitted the persona. There is no
+    // silent fallback -- the runner reads the system prompt and the
+    // allowed-tools list off this row at agent-call time, and an
+    // unbound persona would either crash later or fall back to a
+    // covertly-chosen default. Both are worse than refusing the
+    // create.
+    let persona_id = args.persona_id.trim();
+    if persona_id.is_empty() {
+        return Err(RpcError::InvalidArgument(
+            "persona_id is required (DOCS/PLUGIN-SUBSTRATE.md item 5: \
+             a thread declares its persona at creation)"
+                .to_owned(),
+        ));
+    }
+    rpc.store
+        .get_persona(persona_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("persona {persona_id}")))?;
+
     let thread = AssistantThread {
         id: AssistantThreadId::new(),
         title,
+        persona_id: persona_id.to_owned(),
         created_at: now,
         updated_at: now,
     };
@@ -54,6 +76,45 @@ pub(super) async fn create_assistant_thread(
         .await
         .map_err(super::db_err)?;
     Ok(thread)
+}
+
+/// PS5 (DOCS/PLUGIN-SUBSTRATE.md item 5): the one place the assistant
+/// path reads a thread's persona at agent-call time. Returns the live
+/// `Persona` row so the caller can compose `(system_prompt,
+/// allowed_tools, default_model_family, default_attachments_policy)`
+/// from a single source of truth. PS8 (the Assistant agent loop) is
+/// the eventual consumer; landing the seam here means the persona
+/// model is exercisable now and PS8 is a wiring change, not a
+/// rewrite.
+///
+/// Returns `NotFound` when the thread does not exist; the FK on
+/// `assistant_threads.persona_id` makes a dangling persona reference
+/// schema-impossible, so a present thread always resolves to a
+/// persona.
+pub(super) async fn resolve_thread_persona(
+    rpc: &InProcessRpc,
+    thread_id: AssistantThreadId,
+) -> RpcResult<codeless_types::Persona> {
+    let thread = rpc
+        .store
+        .get_assistant_thread(thread_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| RpcError::NotFound(format!("assistant thread {thread_id}")))?;
+    rpc.store
+        .get_persona(&thread.persona_id)
+        .await
+        .map_err(super::db_err)?
+        .ok_or_else(|| {
+            // ON DELETE RESTRICT prevents the schema from getting
+            // here, but a hand-edited DB or a future migration could.
+            // Surface it as Internal rather than NotFound -- the
+            // caller cannot fix this from the wire side.
+            RpcError::Internal(format!(
+                "thread {thread_id} references persona {} which is missing",
+                thread.persona_id
+            ))
+        })
 }
 
 pub(super) async fn delete_assistant_thread(
@@ -256,6 +317,12 @@ pub(super) async fn append_assistant_message(
             }
         }
         None if super::assistant_planner::planner_configured(rpc) => {
+            // PS8: load the persona pinned to this thread once per turn.
+            // The persona supplies the planner's system instructions and
+            // the `allowed_tools` cap; the resolver is the substrate-doc
+            // single seam (`resolve_thread_persona`) so the contract
+            // tested under PS5 is what the loop honours here.
+            let persona = resolve_thread_persona(rpc, args.thread_id).await?;
             // History fold deliberately excludes the user row we just
             // inserted: the planner takes the new turn as its `Current
             // user message` trailer so the model treats it as the
@@ -269,9 +336,14 @@ pub(super) async fn append_assistant_message(
                 .into_iter()
                 .filter(|m| m.id != user_message.id)
                 .collect();
-            let turn =
-                super::assistant_planner::run_planner_turn(rpc, args.thread_id, &prior, trimmed)
-                    .await?;
+            let turn = super::assistant_planner::run_planner_turn(
+                rpc,
+                args.thread_id,
+                &persona,
+                &prior,
+                trimmed,
+            )
+            .await?;
             Reply::Planner {
                 content: turn.content,
                 cards: turn.cards,
@@ -1192,11 +1264,108 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_rejects_empty_persona_id() {
+        // PS5: omitting `persona_id` is a hard error; the substrate
+        // doc explicitly forbids a silent default.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let err = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "   ".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, RpcError::InvalidArgument(ref m) if m.contains("persona_id")),
+            "expected InvalidArgument(persona_id…), got {err:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_rejects_unknown_persona() {
+        // PS5: persona must resolve at create time; the runner cannot
+        // reproduce the agent posture for an unknown id.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let err = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:does-not-exist".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, RpcError::NotFound(_)),
+            "expected NotFound, got {err:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resolve_thread_persona_returns_seeded_row_with_substrate_fields() {
+        // PS5 acceptance: the runner loads tools and system prompt
+        // from the persona at agent-call time. The resolver is the
+        // one place that hop happens; pin the seam so PS8 wiring has
+        // a stable contract to consume.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:coding".into(),
+            })
+            .await
+            .unwrap();
+        let persona = super::resolve_thread_persona(&rpc, thread.id)
+            .await
+            .expect("resolve");
+        assert_eq!(persona.id, "builtin:coding");
+        assert!(
+            !persona.instructions.is_empty(),
+            "coding persona ships a system prompt",
+        );
+        assert!(
+            persona.allowed_tools.iter().any(|t| t == "fs.*"),
+            "coding persona seeds the fs.* tool grant; got {:?}",
+            persona.allowed_tools,
+        );
+        assert_eq!(
+            persona.default_attachments_policy, "inline-thread-scoped",
+            "coding persona seeds the substrate-doc default policy",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persona_is_immutable_for_thread_lifetime() {
+        // PS5: persona is pinned at creation and SQLite-side
+        // ON DELETE RESTRICT refuses to remove a persona that any
+        // thread still points at -- the substrate doc requires the
+        // agent posture be reproducible for the lifetime of the
+        // thread.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
+            .await
+            .unwrap();
+
+        // A second read returns the same persona id; there is no RPC
+        // path to mutate it post-creation.
+        let again = rpc
+            .store
+            .get_assistant_thread(thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.persona_id, "builtin:general");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn create_lists_and_deletes() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let a = rpc
             .create_assistant_thread(CreateAssistantThreadArgs {
                 title: Some("alpha".into()),
+                persona_id: "builtin:general".into(),
             })
             .await
             .unwrap();
@@ -1206,7 +1375,10 @@ mod tests {
         // assertion on a fast host.
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         let b = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         assert_eq!(b.title, DEFAULT_THREAD_TITLE);
@@ -1248,7 +1420,10 @@ mod tests {
         use base64::Engine as _;
         let (rpc, data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
 
@@ -1321,7 +1496,10 @@ mod tests {
         use base64::Engine as _;
         let (rpc, data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let body = b"payload";
@@ -1357,7 +1535,10 @@ mod tests {
     async fn upload_rejects_bad_filename() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let err = rpc
@@ -1376,7 +1557,10 @@ mod tests {
     async fn append_persists_user_and_assistant_and_lists_them() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
 
@@ -1417,7 +1601,10 @@ mod tests {
     async fn append_rejects_empty_content() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let err = rpc
@@ -1443,7 +1630,10 @@ mod tests {
             .unwrap()
             .with_agent_chat(Arc::new(registry), std::env::temp_dir());
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
 
@@ -1496,7 +1686,10 @@ mod tests {
             .unwrap()
             .with_agent_chat(Arc::new(registry), std::env::temp_dir());
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
 
@@ -1581,7 +1774,10 @@ mod tests {
             .unwrap()
             .with_agent_chat(Arc::new(registry), std::env::temp_dir());
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
 
@@ -1631,7 +1827,10 @@ mod tests {
     async fn list_messages_empty_thread() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let listed = rpc
@@ -1648,7 +1847,10 @@ mod tests {
     async fn upload_rejects_bad_base64() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let err = rpc
@@ -1715,7 +1917,10 @@ mod tests {
     async fn append_with_slash_command_produces_pending_card() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let job_id = JobId::new();
@@ -1741,7 +1946,10 @@ mod tests {
     async fn cancel_marks_card_cancelled_and_appends_no_tool_message() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let res = rpc
@@ -1785,7 +1993,10 @@ mod tests {
     async fn confirm_dispatches_list_jobs_and_writes_tool_message() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let res = rpc
@@ -1829,7 +2040,10 @@ mod tests {
     async fn confirm_records_failed_card_when_inner_rpc_errors() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         // `/get <unknown>` will reach `get_job` and return NotFound.
@@ -1858,7 +2072,10 @@ mod tests {
     async fn cancel_unknown_message_is_not_found() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let err = rpc
@@ -1988,7 +2205,10 @@ mod tests {
     async fn append_with_draft_command_emits_pending_card() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let repo_id = RepoId::new();
@@ -2021,7 +2241,10 @@ mod tests {
         // the UI to be able to rely on.
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let phantom_repo = RepoId::new();
@@ -2053,7 +2276,10 @@ mod tests {
     async fn cancel_draft_card_writes_no_job() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let repo_id = RepoId::new();
@@ -2084,7 +2310,10 @@ mod tests {
     async fn confirm_rejects_non_card_message() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         // Plain chat — assistant turn has no meta_json.
@@ -2158,7 +2387,10 @@ mod tests {
     async fn confirm_edit_scope_unknown_job_records_failed() {
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
         let phantom = JobId::new();
@@ -2194,7 +2426,10 @@ mod tests {
         use codeless_types::{CostCents, GitAuth, Job, Repo};
         let (rpc, _data) = rpc_with_data_dir().await;
         let thread = rpc
-            .create_assistant_thread(CreateAssistantThreadArgs { title: None })
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
             .await
             .unwrap();
 

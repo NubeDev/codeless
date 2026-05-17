@@ -77,7 +77,7 @@ async fn assistant_tables_match_stage_5_schema() {
     let pool = fresh_db().await;
     assert_eq!(
         columns(&pool, "assistant_threads").await,
-        vec!["id", "title", "created_at", "updated_at"],
+        vec!["id", "title", "persona_id", "created_at", "updated_at"],
     );
     assert_eq!(
         columns(&pool, "assistant_messages").await,
@@ -277,6 +277,16 @@ async fn personas_table_matches_schema_sketch_and_seeds_built_ins() {
             "built_in",
             "created_at",
             "updated_at",
+            // PS5 (DOCS/PLUGIN-SUBSTRATE.md item 5) — the substrate-
+            // doc allowed-tools list, model-family alias the runner
+            // resolves at call time, and per-thread attachments
+            // policy. Slotted at the tail because SQLite's ALTER
+            // TABLE ADD COLUMN appends; the order is migration-
+            // driven and the on-disk contract, so do not reorder
+            // without a fresh table-rebuild migration.
+            "allowed_tools",
+            "default_model_family",
+            "default_attachments_policy",
         ],
     );
     assert!(
@@ -299,7 +309,15 @@ async fn personas_table_matches_schema_sketch_and_seeds_built_ins() {
         vec![
             ("builtin:architect".to_string(), 1),
             ("builtin:coder".to_string(), 1),
+            // PS5: substrate-doc-mandated default Assistant personas
+            // (`general` and `coding`) seeded alongside the legacy
+            // five job-runner personas. The two sets coexist —
+            // `general` / `coding` are the Assistant defaults the
+            // substrate doc names, the legacy five are referenced by
+            // the existing job-side persona picker.
+            ("builtin:coding".to_string(), 1),
             ("builtin:designer".to_string(), 1),
+            ("builtin:general".to_string(), 1),
             ("builtin:reviewer".to_string(), 1),
             ("builtin:security".to_string(), 1),
         ],
@@ -353,6 +371,74 @@ async fn stages_table_carries_persona_id_with_fk_to_personas() {
             .any(|(t, f)| t == "personas" && f == "persona_id"),
         "stages.persona_id missing FK to personas; got {fks:?}",
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assistant_threads_persona_id_carries_fk_to_personas() {
+    // PS5 acceptance (DOCS/PLUGIN-SUBSTRATE.md item 5): the column is
+    // NOT NULL and points at `personas(id)`. The FK is ON DELETE
+    // RESTRICT so deleting a persona while threads point at it is
+    // refused at the schema level -- the runner must be able to
+    // reproduce the agent posture for the lifetime of the thread.
+    let pool = fresh_db().await;
+    let fks: Vec<(String, String, String)> =
+        sqlx::query("PRAGMA foreign_key_list(assistant_threads)")
+            .fetch_all(&pool)
+            .await
+            .expect("fk list")
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("table"),
+                    r.get::<String, _>("from"),
+                    r.get::<String, _>("on_delete"),
+                )
+            })
+            .collect();
+    assert!(
+        fks.iter()
+            .any(|(t, f, od)| t == "personas" && f == "persona_id" && od == "RESTRICT"),
+        "assistant_threads.persona_id missing FK to personas (ON DELETE RESTRICT); got {fks:?}",
+    );
+
+    let notnull: i64 = sqlx::query(
+        "SELECT \"notnull\" FROM pragma_table_info('assistant_threads') WHERE name = 'persona_id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("table_info row for persona_id")
+    .get("notnull");
+    assert_eq!(notnull, 1, "assistant_threads.persona_id must be NOT NULL");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn substrate_doc_personas_are_seeded_with_new_columns() {
+    // PS5 (DOCS/PLUGIN-SUBSTRATE.md item 5): `builtin:general` and
+    // `builtin:coding` are the substrate-doc-mandated defaults; the
+    // migration must seed them with valid JSON `allowed_tools` and a
+    // populated `default_attachments_policy` so the read path needs
+    // no fallback.
+    let pool = fresh_db().await;
+    for id in ["builtin:general", "builtin:coding"] {
+        let row = sqlx::query(
+            "SELECT allowed_tools, default_model_family, default_attachments_policy \
+             FROM personas WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|_| panic!("seeded persona {id} present"));
+        let raw: String = row.get("allowed_tools");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("allowed_tools parses as JSON");
+        assert!(parsed.is_array(), "{id}.allowed_tools must be a JSON array",);
+        let policy: String = row.get("default_attachments_policy");
+        assert!(
+            !policy.is_empty(),
+            "{id}.default_attachments_policy must be populated",
+        );
+        let _model_family: Option<String> = row.get("default_model_family");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

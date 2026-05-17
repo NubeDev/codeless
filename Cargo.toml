@@ -20,6 +20,10 @@ members = [
     "crates/codeless-bot-core",
     "crates/codeless-slack",
     "crates/codeless-telegram",
+    # Plugin #0 — the substrate's own smoke test. Lives in-tree per
+    # DOCS/PLUGIN-SUBSTRATE.md "Plugin #0: notes" so substrate
+    # breakage fails CI here before it reaches a real workflow plugin.
+    "crates/codeless-plugin-notes",
     # Vendored from rubix-agent. Path is `../ai-runner` because the
     # crate lives one level up in `codeless-workspace/` alongside
     # this inner repo. Treated as read-only here — updates flow from

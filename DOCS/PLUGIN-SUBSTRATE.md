@@ -435,3 +435,57 @@ The substrate is done when all of the following are true:
    regresses silently the next time the substrate is touched.
 
 Until all three are true, the estimating plugin does not start.
+
+### Status (stage PS-ACCEPT, 2026-05-17)
+
+Items 1, 3, 5, 6, 7, 8 are **complete**, with the load-bearing
+integration coverage living in:
+
+| Item | Integration test |
+|---|---|
+| 1. Tools layer | `crates/codeless-tools` unit tests + `crates/codeless-plugin-notes/tests/plugin_smoke.rs` (on-disk plugin round-trips through `PluginRegistry::load_plugin`). |
+| 3. Capability derivation | `crates/codeless-runtime/src/rpc/chat_capability.rs` unit tests + `plugin_substrate_e2e::persona_allowed_tools_admit_plugin_namespace_only` (PS3 acceptance: removing the `kind` prop cannot change which tools the runner executes). |
+| 5. Persona / thread-kind | `crates/codeless-runtime/tests/personas_rpc.rs` + `tests/migrations.rs` (0017 + 0018 columns) + `plugin_substrate_e2e::notes_plugin_loads_and_seeds_persona_addressable_by_thread`. |
+| 6. Plugin manifest + registry | `crates/codeless-tools` unit tests (manifest / migration / model-family / registry) + `crates/codeless-cli/tests/plugin_cli.rs` + `plugin_substrate_e2e::notes_plugin_directory_shape_matches_substrate_contract`. |
+| 7. Tool-result attachments | `crates/codeless-runtime/src/rpc/attachment.rs` unit tests + `plugin_substrate_e2e::plugin_tool_output_schema_round_trips_through_attachment_reconciler` (stored row wins over tool hints, end-to-end through an upload). |
+| 8. Assistant agent loop | `crates/codeless-runtime/src/rpc/assistant_planner.rs` unit tests (persona-bound prompt, persona-filtered catalogue, cap on emit-time tool calls) + `plugin_substrate_e2e::planner_allow_filter_admits_plugin_tool_under_persona_namespace` (load-time grant survives through SQLite to agent-call time). |
+
+Items 2 and 4 are **partially landed**; the remaining work is
+documented in
+[`sessions/2026-05-17-plugin-substrate.md`](./sessions/2026-05-17-plugin-substrate.md):
+
+- **Item 2 (CommonChat extraction).** PS2a shipped — every call site
+  passes a `threadId` matching its server-resident id, pinned by
+  `ui/codeless-ui/src/modules/chat/CommonChat.test.tsx`. PS2b–PS2d
+  (the actual three-way collapse of `JobChat` / `AiChat` /
+  `AssistantThreadView`) is halted on a server-side message model
+  that does not exist yet, which is item 4 (PS4).
+- **Item 4 (chat state moves server-side).** Halted. The in-editor
+  AI panel's agent loop still runs in the browser
+  (`@ai-sdk/react`). The shape of the migration (server-side
+  `chat_threads` + agent-runtime adapter + tool ports + SSE event
+  format extension + UI rewrite + data migration) is recorded in the
+  session doc. Acceptance §3's "MockRpcClient or its server-side
+  equivalent" half is satisfied via `InProcessRpc` in
+  `plugin_substrate_e2e.rs` for the persona / tool / attachment
+  path; the browser-resident chat state is the open piece.
+
+Plugin #0 (`notes`) ships at `plugins/notes/` and
+`crates/codeless-plugin-notes/`; the runtime wiring that mints
+`notes_entries` rows + attachment-bound results from inside the tool
+body is deferred (`NotesAppend::call` returns a structured `Failed`
+naming this stage as the gap, see
+`crates/codeless-plugin-notes/src/lib.rs`). The substrate seams the
+tool sits on — persona-grant, registry dispatch, attachment marker —
+are exercised end-to-end by `plugin_substrate_e2e.rs`; landing the
+table writer + attachment mint is a one-tick follow-up that does not
+touch the substrate contract.
+
+The estimating plugin is unblocked on items 1, 3, 5–8; it remains
+gated on items 2 + 4 because the worked-example flow ("user drags
+PDFs into the composer, talks to the Estimating persona, gets a
+quote PDF inline") presupposes the in-editor panel and the assistant
+surface share one server-resident thread model. Estimator work can
+begin against the Assistant page alone (which is already R4-
+compliant) once a job author signs off on shipping it without
+in-job-chat parity.

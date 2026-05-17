@@ -349,6 +349,7 @@ export function JobPage({
           <div className="flex h-full flex-col px-4 py-4 md:px-8">
             <CommonChat
               kind="job"
+              threadId={job.id}
               job={job}
               uiLocation={`jobs/${job.id}`}
               refetchJob={refetchJob}

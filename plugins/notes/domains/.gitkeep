@@ -1,0 +1,4 @@
+# Reserved for future per-domain assets the notes plugin may grow
+# (templates, snippets). Empty today; the manifest's `[data]` block
+# expects the directory to exist so the persona picker can scan it
+# without a stat-error.

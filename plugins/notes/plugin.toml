@@ -1,0 +1,27 @@
+# Plugin #0 (`notes`) — the substrate's own smoke test.
+#
+# See DOCS/PLUGIN-SUBSTRATE.md "Plugin #0: notes". The persona grants
+# the `notes.*` namespace plus scoped `attachments.read`; raw `fs.read`
+# stays off the example deliberately (substrate-doc item 6: prefer
+# attachment-scoped access over host-FS access).
+
+[plugin]
+id        = "notes"
+version   = "0.1.0"
+crate     = "codeless-plugin-notes"
+
+[[personas]]
+id                          = "notes"
+name                        = "Notes"
+description                 = "Capture and append free-form markdown notes; the substrate's plugin-#0 testbed."
+icon                        = "spark"
+prompt_file                 = "prompts/system.md"
+allowed_tools               = ["notes.*", "attachments.read"]
+default_model_family        = "fast"
+default_attachments_policy  = "inline-thread-scoped"
+
+[migrations]
+dir = "migrations"
+
+[data]
+dir = "domains"

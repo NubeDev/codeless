@@ -149,6 +149,7 @@ function Body({
           <div className="flex min-h-0 flex-1 flex-col [&_.text-sm]:text-[12px] [&_p]:leading-relaxed">
             <CommonChat
               kind="ai"
+              threadId={sessionId}
               messages={helpers.messages}
               status={helpers.status}
               error={helpers.error}

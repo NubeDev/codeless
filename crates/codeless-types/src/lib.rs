@@ -4,6 +4,7 @@
 //! `codeless-client`, and adding host-only deps (tokio, std::process,
 //! sqlx, ...) here would break that path.
 
+pub mod allowed_tools;
 pub mod assistant;
 pub mod auto_bypass;
 pub mod event;
@@ -25,7 +26,8 @@ pub mod workspace;
 
 pub use assistant::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
-    AssistantMessage, AssistantMessageRole, AssistantThread,
+    AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantMessage, AssistantMessageRole,
+    AssistantThread, AttachmentRef,
 };
 pub use auto_bypass::AutoBypassPolicy;
 pub use event::{Event, EventCursor, EventEnvelope};

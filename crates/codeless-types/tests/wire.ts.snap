@@ -145,6 +145,39 @@ export type AssistantAttachment = {
 	created_at: UnixMillis,
 };
 
+/**
+ *  Structured payload of an `Assistant`- or `Tool`-role message whose
+ *  `meta_json` declares one or more reconciled attachments produced by
+ *  a tool call (PS7). The renderer dispatches on `kind ==
+ *  META_KIND` and shows a download card (plus inline preview for
+ *  recognised mime types) without any per-plugin UI code.
+ * 
+ *  Lives next to [`AssistantActionCard`] so the two meta-kind variants
+ *  the substrate carries on `assistant_messages.meta_json` share a
+ *  header and a single `kind` discriminator namespace.
+ */
+export type AssistantAttachmentCard = {
+	/**
+	 *  Discriminator. Always [`AssistantAttachmentCard::META_KIND`];
+	 *  the UI parser checks this before deserialising the rest.
+	 */
+	kind: string,
+	items: AssistantAttachmentCardItem[],
+};
+
+/**
+ *  One reconciled attachment item the UI renders inside an
+ *  [`AssistantAttachmentCard`]. Fields are populated from the stored
+ *  `assistant_attachments` row (authoritative); any tool-supplied
+ *  hint that disagrees was dropped during reconciliation.
+ */
+export type AssistantAttachmentCardItem = {
+	attachment_id: AssistantAttachmentId,
+	filename: string,
+	mime?: string | null,
+	size_bytes: number,
+};
+
 //Identity of one file uploaded into an assistant thread (`<codeless-data>/threads/<thread_id>/attachments/`).
 export type AssistantAttachmentId = string;
 
@@ -195,6 +228,18 @@ export type AssistantMessageRole = "user" | "assistant" |
 export type AssistantThread = {
 	id: AssistantThreadId,
 	title: string,
+	/**
+	 *  Persona this thread runs under, declared at creation and
+	 *  immutable for the thread lifetime (PS5, see
+	 *  `DOCS/PLUGIN-SUBSTRATE.md` item 5). The runner reads
+	 *  `system_prompt`, `allowed_tools`, `default_model_family`, and
+	 *  `default_attachments_policy` off the persona row keyed by this
+	 *  id at agent-call time. The column is NOT NULL on the SQLite
+	 *  side and `create_assistant_thread` returns
+	 *  `InvalidArgument` when the caller omits it -- there is no
+	 *  silent fallback.
+	 */
+	persona_id: string,
 	created_at: UnixMillis,
 	updated_at: UnixMillis,
 };
@@ -235,6 +280,29 @@ export type AttachedWorkspace = {
 	 *  adapter layer, not this wire crate.
 	 */
 	default_runner: string | null,
+};
+
+/**
+ *  One attachment reference as returned by a plugin tool (PS7,
+ *  `DOCS/PLUGIN-SUBSTRATE.md` item 7). `attachment_id` is the
+ *  authoritative server-minted id of an existing row in
+ *  `assistant_attachments`; `mime` and `filename` are *advisory* hints
+ *  the renderer may use as a fast path. The substrate-doc rule is that
+ *  the server reconciles every advisory hint against the stored row
+ *  (`reconcile_attachment_refs`) and the stored value wins -- a tool
+ *  that mistypes the mime or renames the file in flight cannot trick
+ *  the renderer into a bogus content-type or path.
+ * 
+ *  Tools opt into this shape by declaring their output schema with the
+ *  `{"$ref": "codeless://attachment"}` marker (see
+ *  `codeless_tools::attachment::ATTACHMENT_SCHEMA_REF`). A tool that
+ *  returns multiple attachments returns an array of these objects or
+ *  wraps them in a field whose schema is the array form.
+ */
+export type AttachmentRef = {
+	attachment_id: AssistantAttachmentId,
+	mime?: string | null,
+	filename?: string | null,
 };
 
 /**
@@ -428,7 +496,21 @@ tail: string } |
  *  string so future reasons (e.g. timeout, cancelled) can land
  *  without a wire-format change.
  */
-reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | 
+reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageStatus; 
+/**
+ *  Coarse classification when `status = Failed`. The
+ *  StageRecorder writes this onto `stages.failure_class`
+ *  in the same SQL update as `status`. `None` for
+ *  `Passed` and for replayed events from before the field
+ *  existed (which decode unchanged via `serde(default)`).
+ */
+failure_class?: FailureClass | null; 
+/**
+ *  Short human-readable failure description paired with
+ *  `failure_class`. Truncated to ~200 chars at the emit
+ *  site. `None` for `Passed` and for legacy events.
+ */
+failure_detail?: string | null } | 
 /**
  *  First-and-only-time capture of the runner-supplied session id
  *  for this stage. Emitted by `StageRecorder` the first time a
@@ -623,6 +705,60 @@ export type EventEnvelope = {
 	created_at: UnixMillis,
 	event: Event,
 };
+
+/**
+ *  Why a stage row ended `Failed`. Persisted on `stages.failure_class`
+ *  when `status = Failed`; `None` for `Passed` rows and for legacy
+ *  rows written before the column existed. The variant list is the
+ *  vocabulary the UI / CLI render from — a coarser set than the
+ *  per-site free-text `failure_detail` but precise enough that
+ *  dashboards do not have to substring-match on log lines.
+ * 
+ *  Distinct from `StopReason` (which is per-*job*): a job can halt
+ *  for `RunnerCrash` while individual stages along the way have any
+ *  of the failure classes below. The two columns coexist; the
+ *  stage-level `failure_class` is what the per-stage UI badge reads.
+ */
+export type FailureClass = 
+/**
+ *  Layer-1 diff-verify pre-check rejected the prior stage's
+ *  handover before the REVIEW model ran. Paired with
+ *  `StopReason::ReviewPreCheck` at the job level.
+ */
+"pre-check-failed" | 
+/**
+ *  The runner subprocess exited non-zero or the in-process
+ *  runner returned `RunnerOutcome::Failed`. The `failure_detail`
+ *  carries the runner's reason string (typically the last
+ *  non-empty line of its stderr / transcript tail).
+ */
+"runner-error" | 
+/**
+ *  REVIEW model emitted `PASS` but the scope-patch validator
+ *  rejected the proposed patch (parse failure, predicate
+ *  missing on a tightening patch, etc.). The verdict on the
+ *  wire is `AutoFail` with the validator's reason.
+ */
+"review-patch-invalid" | 
+/**
+ *  REVIEW model emitted `FAIL` as its verdict. The
+ *  `failure_detail` carries the model's reason string verbatim.
+ */
+"review-fail" | 
+/**
+ *  REVIEW sentinel parser could not extract a verdict from the
+ *  handover tail. The `failure_detail` carries the parser
+ *  error.
+ */
+"review-unparseable" | 
+/**
+ *  Crash recovery flipped a `Running` stage row to `Failed`
+ *  because the core process restarted without a clean exit.
+ *  Distinct from `RunnerError` so the UI can render
+ *  `interrupted by core restart` rather than a runner-side
+ *  failure, and the operator knows a plain resume is safe.
+ */
+"orphan-reap";
 
 /**
  *  One entry from a directory listing. `size` and `mtime` are
@@ -1167,6 +1303,24 @@ export type Stage = {
 	 *  `bypassed_at` is also `None`.
 	 */
 	bypassed_reason?: string | null,
+	/**
+	 *  Coarse machine-readable classification of *why* this stage
+	 *  ended `Failed`. `None` when `status != Failed` and on rows
+	 *  written before the column existed; the UI treats `None +
+	 *  Failed` as "legacy / unclassified failure" and falls back to
+	 *  the event stream. See `FailureClass` for the variant
+	 *  contract.
+	 */
+	failure_class?: FailureClass | null,
+	/**
+	 *  Short human-readable failure description (one line, ~200
+	 *  chars). Typically the runner's reason string, the REVIEW
+	 *  model's FAIL reason, or the pre-check validator's error.
+	 *  Truncated by the writer if the source is longer; the full
+	 *  transcript stays on disk. `None` when no detail was captured
+	 *  or when `status != Failed`.
+	 */
+	failure_detail?: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.

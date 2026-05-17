@@ -739,11 +739,13 @@ dependencies = [
  "clap",
  "codeless-adapters-host",
  "codeless-client",
+ "codeless-plugin-notes",
  "codeless-rpc",
  "codeless-runtime",
  "codeless-server",
  "codeless-slack",
  "codeless-telegram",
+ "codeless-tools",
  "codeless-types",
  "futures-util",
  "getrandom 0.2.17",
@@ -801,6 +803,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "codeless-plugin-notes"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "codeless-tools",
+ "codeless-types",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "codeless-predicates"
 version = "0.0.0"
 dependencies = [
@@ -828,8 +845,10 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "codeless-adapters-host",
+ "codeless-plugin-notes",
  "codeless-predicates",
  "codeless-rpc",
+ "codeless-tools",
  "codeless-types",
  "futures-core",
  "futures-util",
@@ -962,6 +981,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tracing",
  "url",
 ]
