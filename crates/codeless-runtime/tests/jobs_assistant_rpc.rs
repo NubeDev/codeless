@@ -201,7 +201,10 @@ async fn draft_from_conversation_consumes_latest_pending_card() {
         .await
         .unwrap();
     let thread = rpc
-        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs {
+            title: None,
+            persona_id: "builtin:general".into(),
+        })
         .await
         .unwrap();
     // Slash-command parser plants a pending DraftJob card on the thread.
@@ -237,7 +240,10 @@ async fn draft_from_conversation_consumes_latest_pending_card() {
 async fn draft_from_conversation_errors_without_pending_card() {
     let rpc = InProcessRpc::new().await.unwrap();
     let thread = rpc
-        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs {
+            title: None,
+            persona_id: "builtin:general".into(),
+        })
         .await
         .unwrap();
     // Plain prose, no card. The call must distinguish this from a
@@ -279,7 +285,10 @@ async fn draft_from_conversation_skips_non_draft_cards() {
     // the RPC bounces.
     let rpc = InProcessRpc::new().await.unwrap();
     let thread = rpc
-        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs {
+            title: None,
+            persona_id: "builtin:general".into(),
+        })
         .await
         .unwrap();
     let other_job = JobId::new();
@@ -343,7 +352,10 @@ async fn draft_from_conversation_picks_most_recent_proposal() {
         .await
         .unwrap();
     let thread = rpc
-        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs {
+            title: None,
+            persona_id: "builtin:general".into(),
+        })
         .await
         .unwrap();
     rpc.append_assistant_message(AppendAssistantMessageArgs {
@@ -391,7 +403,10 @@ async fn confirm_edit_scope_routes_through_update_job_scope() {
     // dispatcher reached the new RPC rather than an inline write.
     let (rpc, tmp, job_id) = fixture_with_template_job().await;
     let thread = rpc
-        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs {
+            title: None,
+            persona_id: "builtin:general".into(),
+        })
         .await
         .unwrap();
     // The slash parser trims trailing whitespace from the body so the
@@ -445,7 +460,10 @@ async fn confirm_edit_scope_rejects_running_job_with_pause_hint() {
     let (rpc, _tmp, job_id) = fixture_with_template_job().await;
     set_status(&rpc, job_id, JobStatus::Running).await;
     let thread = rpc
-        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs {
+            title: None,
+            persona_id: "builtin:general".into(),
+        })
         .await
         .unwrap();
     let appended = rpc
@@ -480,7 +498,10 @@ async fn confirm_edit_scope_rejects_non_scope_filename() {
     // sneaking through to `write_job_file`.
     let (rpc, _tmp, job_id) = fixture_with_template_job().await;
     let thread = rpc
-        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs {
+            title: None,
+            persona_id: "builtin:general".into(),
+        })
         .await
         .unwrap();
     let appended = rpc
@@ -534,7 +555,10 @@ async fn confirm_draft_routes_through_draft_job_from_conversation() {
         .await
         .unwrap();
     let thread = rpc
-        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs { title: None })
+        .create_assistant_thread(codeless_rpc::CreateAssistantThreadArgs {
+            title: None,
+            persona_id: "builtin:general".into(),
+        })
         .await
         .unwrap();
     let appended = rpc

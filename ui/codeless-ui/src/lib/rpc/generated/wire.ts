@@ -381,6 +381,18 @@ export type AssistantMessageRole = "user" | "assistant" |
 export type AssistantThread = {
 	id: AssistantThreadId,
 	title: string,
+	/**
+	 *  Persona this thread runs under, declared at creation and
+	 *  immutable for the thread lifetime (PS5, see
+	 *  `DOCS/PLUGIN-SUBSTRATE.md` item 5). The runner reads
+	 *  `system_prompt`, `allowed_tools`, `default_model_family`, and
+	 *  `default_attachments_policy` off the persona row keyed by this
+	 *  id at agent-call time. The column is NOT NULL on the SQLite
+	 *  side and `create_assistant_thread` returns
+	 *  `InvalidArgument` when the caller omits it -- there is no
+	 *  silent fallback.
+	 */
+	persona_id: string,
 	created_at: UnixMillis,
 	updated_at: UnixMillis,
 };
@@ -594,9 +606,19 @@ export type CostCents = number;
  *  pick a title later (or leave the default). Empty / all-whitespace
  *  titles are normalised to the default "New thread" so listings
  *  never render a blank rail entry.
+ * 
+ *  `persona_id` is required (PS5 -- `DOCS/PLUGIN-SUBSTRATE.md` item
+ *  5): a thread declares its persona at creation and the runner reads
+ *  `system_prompt`, `allowed_tools`, `default_model_family`, and
+ *  `default_attachments_policy` off that row at agent-call time. The
+ *  substrate doc explicitly forbids a silent default, so an omitted
+ *  or empty `persona_id` returns `InvalidArgument`; an unknown
+ *  persona returns `NotFound`. The persona is immutable for the
+ *  thread's lifetime once persisted.
  */
 export type CreateAssistantThreadArgs = {
 	title?: string | null,
+	persona_id: string,
 };
 
 /**

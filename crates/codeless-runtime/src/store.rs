@@ -1053,11 +1053,12 @@ impl SqliteStore {
 
     pub async fn insert_assistant_thread(&self, thread: &AssistantThread) -> sqlx::Result<()> {
         sqlx::query(
-            "INSERT INTO assistant_threads (id, title, created_at, updated_at) \
-             VALUES (?,?,?,?)",
+            "INSERT INTO assistant_threads (id, title, persona_id, created_at, updated_at) \
+             VALUES (?,?,?,?,?)",
         )
         .bind(thread.id.to_string())
         .bind(&thread.title)
+        .bind(&thread.persona_id)
         .bind(thread.created_at.0)
         .bind(thread.updated_at.0)
         .execute(&self.pool)
@@ -1256,6 +1257,7 @@ impl SqliteStore {
     pub async fn upsert_persona(&self, persona: &Persona) -> sqlx::Result<Persona> {
         let allowed = serde_json::to_string(&persona.allowed_subagents).map_err(serde_err)?;
         let snippets = serde_json::to_string(&persona.default_snippets).map_err(serde_err)?;
+        let allowed_tools = serde_json::to_string(&persona.allowed_tools).map_err(serde_err)?;
         let existing = self.get_persona(&persona.id).await?;
         match existing {
             Some(prev) => {
@@ -1263,7 +1265,9 @@ impl SqliteStore {
                     "UPDATE personas SET \
                         name=?, description=?, icon=?, instructions=?, \
                         use_for_jobs=?, default_model=?, allowed_subagents=?, \
-                        default_snippets=?, updated_at=? \
+                        default_snippets=?, allowed_tools=?, \
+                        default_model_family=?, default_attachments_policy=?, \
+                        updated_at=? \
                      WHERE id=?",
                 )
                 .bind(&persona.name)
@@ -1274,6 +1278,9 @@ impl SqliteStore {
                 .bind(&persona.default_model)
                 .bind(&allowed)
                 .bind(&snippets)
+                .bind(&allowed_tools)
+                .bind(&persona.default_model_family)
+                .bind(&persona.default_attachments_policy)
                 .bind(persona.updated_at.0)
                 .bind(&persona.id)
                 .execute(&self.pool)
@@ -1289,8 +1296,9 @@ impl SqliteStore {
                     "INSERT INTO personas \
                         (id, name, description, icon, instructions, use_for_jobs, \
                          default_model, allowed_subagents, default_snippets, built_in, \
-                         created_at, updated_at) \
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         allowed_tools, default_model_family, \
+                         default_attachments_policy, created_at, updated_at) \
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 )
                 .bind(&persona.id)
                 .bind(&persona.name)
@@ -1302,6 +1310,9 @@ impl SqliteStore {
                 .bind(&allowed)
                 .bind(&snippets)
                 .bind(0_i64)
+                .bind(&allowed_tools)
+                .bind(&persona.default_model_family)
+                .bind(&persona.default_attachments_policy)
                 .bind(persona.created_at.0)
                 .bind(persona.updated_at.0)
                 .execute(&self.pool)
@@ -1332,6 +1343,7 @@ fn assistant_thread_from_row(row: SqliteRow) -> sqlx::Result<AssistantThread> {
     Ok(AssistantThread {
         id: parse_id(&id)?,
         title: row.try_get("title")?,
+        persona_id: row.try_get("persona_id")?,
         created_at: UnixMillis(row.try_get("created_at")?),
         updated_at: UnixMillis(row.try_get("updated_at")?),
     })
@@ -1391,8 +1403,10 @@ fn parse_assistant_role(s: &str) -> sqlx::Result<AssistantMessageRole> {
 fn persona_from_row(row: SqliteRow) -> sqlx::Result<Persona> {
     let allowed_raw: String = row.try_get("allowed_subagents")?;
     let snippets_raw: String = row.try_get("default_snippets")?;
+    let allowed_tools_raw: String = row.try_get("allowed_tools")?;
     let allowed_subagents: Vec<String> = serde_json::from_str(&allowed_raw).map_err(serde_err)?;
     let default_snippets: Vec<String> = serde_json::from_str(&snippets_raw).map_err(serde_err)?;
+    let allowed_tools: Vec<String> = serde_json::from_str(&allowed_tools_raw).map_err(serde_err)?;
     let use_for_jobs: i64 = row.try_get("use_for_jobs")?;
     let built_in: i64 = row.try_get("built_in")?;
     Ok(Persona {
@@ -1405,6 +1419,9 @@ fn persona_from_row(row: SqliteRow) -> sqlx::Result<Persona> {
         default_model: row.try_get("default_model")?,
         allowed_subagents,
         default_snippets,
+        allowed_tools,
+        default_model_family: row.try_get("default_model_family")?,
+        default_attachments_policy: row.try_get("default_attachments_policy")?,
         built_in: built_in != 0,
         created_at: UnixMillis(row.try_get("created_at")?),
         updated_at: UnixMillis(row.try_get("updated_at")?),

@@ -1117,10 +1117,20 @@ pub struct ListAssistantThreadsResult {
 /// pick a title later (or leave the default). Empty / all-whitespace
 /// titles are normalised to the default "New thread" so listings
 /// never render a blank rail entry.
+///
+/// `persona_id` is required (PS5 -- `DOCS/PLUGIN-SUBSTRATE.md` item
+/// 5): a thread declares its persona at creation and the runner reads
+/// `system_prompt`, `allowed_tools`, `default_model_family`, and
+/// `default_attachments_policy` off that row at agent-call time. The
+/// substrate doc explicitly forbids a silent default, so an omitted
+/// or empty `persona_id` returns `InvalidArgument`; an unknown
+/// persona returns `NotFound`. The persona is immutable for the
+/// thread's lifetime once persisted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct CreateAssistantThreadArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    pub persona_id: String,
 }
 
 /// `assistant.deleteThread`. Cascades through `assistant_messages` and

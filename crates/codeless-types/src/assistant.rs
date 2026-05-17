@@ -12,6 +12,16 @@ use crate::time::UnixMillis;
 pub struct AssistantThread {
     pub id: AssistantThreadId,
     pub title: String,
+    /// Persona this thread runs under, declared at creation and
+    /// immutable for the thread lifetime (PS5, see
+    /// `DOCS/PLUGIN-SUBSTRATE.md` item 5). The runner reads
+    /// `system_prompt`, `allowed_tools`, `default_model_family`, and
+    /// `default_attachments_policy` off the persona row keyed by this
+    /// id at agent-call time. The column is NOT NULL on the SQLite
+    /// side and `create_assistant_thread` returns
+    /// `InvalidArgument` when the caller omits it -- there is no
+    /// silent fallback.
+    pub persona_id: String,
     pub created_at: UnixMillis,
     pub updated_at: UnixMillis,
 }

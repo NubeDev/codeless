@@ -22,14 +22,18 @@ async fn list_personas_returns_seeded_built_ins() {
         .await
         .expect("list_personas");
     let ids: Vec<&str> = listed.personas.iter().map(|p| p.id.as_str()).collect();
-    // Migration 0011 seeds these five and nothing else; built-ins come
-    // first per the ORDER BY in `list_personas`.
+    // Migration 0011 seeds the five legacy job-runner personas;
+    // PS5's migration 0017 adds `builtin:general` and
+    // `builtin:coding` (the substrate-doc Assistant defaults).
+    // Built-ins come first per the ORDER BY in `list_personas`.
     assert_eq!(
         ids,
         vec![
             "builtin:architect",
             "builtin:coder",
+            "builtin:coding",
             "builtin:designer",
+            "builtin:general",
             "builtin:reviewer",
             "builtin:security",
         ]

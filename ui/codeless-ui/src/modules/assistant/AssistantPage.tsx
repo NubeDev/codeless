@@ -74,7 +74,13 @@ export function AssistantPage() {
     setBusy(true);
     setErr(null);
     try {
-      const created = await rpc.call("create_assistant_thread", {});
+      // PS5: a thread declares its persona at creation. The Assistant
+      // surface uses the seeded `builtin:general` row until the UI
+      // grows a persona picker (PS6's plugin manifest registers more
+      // personas and the picker reads from `list_personas`).
+      const created = await rpc.call("create_assistant_thread", {
+        persona_id: "builtin:general",
+      });
       await refresh(created.id);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));

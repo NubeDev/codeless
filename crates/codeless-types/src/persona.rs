@@ -44,10 +44,34 @@ pub struct Persona {
     /// Chat-only for MVP (D4); the column exists so a future runtime
     /// change does not need a migration.
     pub default_snippets: Vec<String>,
-    /// `true` for the five seeded rows. Built-in rows are not
-    /// deletable through `delete_persona`; the rule is enforced at
-    /// the RPC layer so the column does not have to grow a CHECK
-    /// constraint when a future stage relaxes it.
+    /// Substrate-doc allowed-tools list
+    /// (`DOCS/PLUGIN-SUBSTRATE.md` items 3 + 5). Each entry is either
+    /// a literal tool id (`fs.read`) or a dotted-prefix glob ending in
+    /// `.*` (`estimate.*`); no shell globbing, no regex. The matcher
+    /// in `codeless_types::allowed_tools` is the single source of
+    /// truth -- plugin manifests (item 6) reject any other syntax at
+    /// load time. Empty vec is "no MCP tools granted on this
+    /// persona", which is the safe default for built-ins that do not
+    /// opt in.
+    pub allowed_tools: Vec<String>,
+    /// Codeless-side model family alias (`fast` / `smart` /
+    /// `reasoning`) the runner resolves to a concrete provider model
+    /// at call time. Plugins must not hardcode provider model ids --
+    /// the mapping lives in codeless config and changes when models
+    /// do. `None` means "no preference, use the runner default" and
+    /// is a real value distinct from any named alias.
+    pub default_model_family: Option<String>,
+    /// How thread attachments are surfaced into the prompt at
+    /// agent-call time. The substrate doc example
+    /// `inline-thread-scoped` is the only value the MVP runner reads;
+    /// the column is plain TEXT (no enum) so a future policy
+    /// (e.g. `referenced-only`, `vector-indexed`) ships without a
+    /// migration.
+    pub default_attachments_policy: String,
+    /// `true` for seeded rows. Built-in rows are not deletable through
+    /// `delete_persona`; the rule is enforced at the RPC layer so the
+    /// column does not have to grow a CHECK constraint when a future
+    /// stage relaxes it.
     pub built_in: bool,
     pub created_at: UnixMillis,
     pub updated_at: UnixMillis,

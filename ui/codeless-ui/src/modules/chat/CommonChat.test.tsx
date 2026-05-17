@@ -63,6 +63,9 @@ function threadFixture(): AssistantThread {
   return {
     id: "01HMOCKTHREAD0000000000000000",
     title: "thread",
+    // PS5: persona_id is NOT NULL on the wire type; the fixture
+    // uses the seeded `builtin:general` row.
+    persona_id: "builtin:general",
     created_at: 0,
     updated_at: 0,
   };

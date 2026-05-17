@@ -97,7 +97,11 @@ export function AssistantFooterBar({ onOpenAssistant }: AssistantFooterBarProps)
     setSending(true);
     setErr(null);
     try {
-      const created = await rpc.call("create_assistant_thread", {});
+      // PS5: persona is required at creation; the footer bar uses
+      // the seeded general persona until the UI grows a picker.
+      const created = await rpc.call("create_assistant_thread", {
+        persona_id: "builtin:general",
+      });
       setCurrentThreadId(created.id);
       bumpRefresh();
       textareaRef.current?.focus();
@@ -122,7 +126,9 @@ export function AssistantFooterBar({ onOpenAssistant }: AssistantFooterBarProps)
           // state honest — the user doesn't have to click "New" before
           // saying hello. The created id is persisted so the next
           // launch keeps the same conversation focused.
-          const created = await rpc.call("create_assistant_thread", {});
+          const created = await rpc.call("create_assistant_thread", {
+            persona_id: "builtin:general",
+          });
           threadId = created.id;
           setCurrentThreadId(threadId);
         }

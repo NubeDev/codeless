@@ -39,7 +39,7 @@ Goal:        a new workflow ships as `crates/codeless-plugin-<id>/` + a
    seam.
 3. [!] PS4 — chat state moves server-side (R4 compliance).
    **Halted. See "Stage 3 (PS4) — halt notes" below.**
-4. [ ] PS5 — persona / thread-kind data model.
+4. [x] PS5 — persona / thread-kind data model.
 5. [ ] PS6 — plugin manifest + registry.
 6. [ ] PS7 — tool-result attachments.
 7. [ ] PS8 — Assistant agent loop.
@@ -283,3 +283,38 @@ data sources" shape Stage 1 halted on for `CommonChat`.
 
 No code change committed — per CLAUDE.md R4, a half-finished
 implementation with TODOs is worse than a documented halt.
+
+## Stage 4 (PS5) — landed
+
+Migration `0017_assistant_thread_persona.sql` extends `personas` with
+the three substrate-doc columns (`allowed_tools`, `default_model_family`,
+`default_attachments_policy`) and rebuilds `assistant_threads` so
+`persona_id` is NOT NULL with `REFERENCES personas(id) ON DELETE
+RESTRICT`. SQLite cannot ADD COLUMN NOT NULL REFERENCES with a sensible
+default, so the table rebuild is the only credible path; existing rows
+back-fill to `builtin:general` (the seeded Assistant default).
+
+`CreateAssistantThreadArgs` grows a required `persona_id` field. The
+RPC validates: empty / whitespace returns `InvalidArgument` with a
+substrate-doc citation, unknown id returns `NotFound`. The two seeded
+substrate-doc personas (`builtin:general`, `builtin:coding`) ship
+alongside the five legacy job-runner personas; the latter back-fill
+the new columns via the migration's column-level DEFAULTs.
+
+The "runner reads tools and system prompt from persona at agent-call
+time" half of the acceptance lands as
+`rpc::assistant::resolve_thread_persona`, the single seam PS8 will
+consume. Today it has no production caller (the Assistant agent loop
+is PS8) so it carries `#[allow(dead_code)]` with a pointer; unit tests
+cover the lookup and the seeded `allowed_tools` shape so the contract
+is enforced now rather than at PS8 wiring time.
+
+UI call sites (`AssistantPage`, `AssistantFooterBar`) now pass
+`persona_id: "builtin:general"` at create time; a UI persona picker is
+deferred to PS6 when plugin manifests register additional personas.
+
+`cargo test -p codeless-runtime -- --skip claude_runner` is green; the
+two pre-existing failures on this branch (`claude_runner` CLI smoke
+test and `codeless-bot-core::reply::format_parse_error_routes_empty_to_help`)
+are unchanged by this stage. The Specta wire snapshot and
+`ui/codeless-ui/src/lib/rpc/generated/wire.ts` are regenerated.
