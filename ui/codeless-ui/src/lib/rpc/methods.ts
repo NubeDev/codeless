@@ -246,6 +246,11 @@ export interface ResumeJobArgs {
   job_id: JobId;
   additional_cost_cap_cents?: number | null;
   additional_wall_clock_cap_ms?: number | null;
+  // Operator-supplied free-text comment threaded into the next
+  // stage's prompt under an `# Operator comment` heading. Same
+  // envelope auto-bypass uses, so the model parses one form, not
+  // two. Empty string is treated as null by the runtime.
+  next_stage_comment?: string | null;
 }
 
 export interface RerunJobArgs {

@@ -528,7 +528,7 @@ impl SqliteStore {
              LEFT JOIN tasks t ON t.stage_id = s.id \
              WHERE s.job_id = ? \
              GROUP BY s.id \
-             ORDER BY s.ordinal",
+             ORDER BY s.ordinal, COALESCE(s.started_at, 0), s.id",
         )
         .bind(job_id.to_string())
         .fetch_all(&self.pool)

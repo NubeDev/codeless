@@ -1906,6 +1906,13 @@ function JobActionRow({
   >(null);
   const [err, setErr] = useState<string | null>(null);
   const [showResumeForm, setShowResumeForm] = useState(false);
+  // Free-text comment threaded into the next stage's prompt under an
+  // `# Operator comment` heading (server-side wiring lives in
+  // `template_runner::stage_prompt`). Persists across the resume
+  // form's open/close so the operator can fiddle with the cost bump
+  // buttons without losing what they typed. Cleared on a successful
+  // resume.
+  const [resumeComment, setResumeComment] = useState("");
   const status = job.status;
   const stopReason = job.stop_reason;
   const isCostCapped = stopReason === "cost-cap";
@@ -1959,12 +1966,15 @@ function JobActionRow({
     wallClockBumpMs: number | null = null,
   ) =>
     run("resume", async () => {
+      const trimmed = resumeComment.trim();
       await rpc.call("resume_job", {
         job_id: job.id,
         additional_cost_cap_cents: costBump,
         additional_wall_clock_cap_ms: wallClockBumpMs,
+        next_stage_comment: trimmed === "" ? null : trimmed,
       });
       setShowResumeForm(false);
+      setResumeComment("");
       refetchJob();
     });
 
@@ -2053,10 +2063,10 @@ function JobActionRow({
         {isResumable && !(isCostCapped || isWallClockCapped) && (
           <Button
             size="sm"
-            onClick={() => onResume(null)}
+            onClick={() => setShowResumeForm(true)}
             disabled={disabled}
             className="bg-emerald-600 hover:bg-emerald-700 text-white"
-            title="Resume with the same caps; the captured session id continues the same claude conversation."
+            title="Resume from the captured session id. Optionally add a comment threaded into the next stage's prompt."
           >
             {busy === "resume" ? "resuming…" : "resume ▶"}
           </Button>
@@ -2076,6 +2086,44 @@ function JobActionRow({
 
   return (
     <div className="border-border/40 bg-muted/10 shrink-0 rounded border px-2 py-1.5">
+      {showResumeForm && (
+        <div className="mb-1.5">
+          <label className="text-muted-foreground mb-1 block text-[10px] uppercase tracking-wide">
+            optional comment for next stage
+          </label>
+          <textarea
+            value={resumeComment}
+            onChange={(e) => setResumeComment(e.target.value)}
+            placeholder="e.g. the prior handover claimed paths it never wrote; redo the diff or list what you actually changed"
+            className="border-border/40 bg-background w-full resize-y rounded border px-2 py-1 text-[11px] focus:outline-none focus:ring-1"
+            rows={2}
+          />
+        </div>
+      )}
+      {showResumeForm && !isCostCapped && !isWallClockCapped && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+          <Button
+            size="sm"
+            disabled={disabled}
+            onClick={() => onResume(null)}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white h-6 px-2 text-[11px]"
+          >
+            {busy === "resume" ? "resuming…" : "resume ▶"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => {
+              setShowResumeForm(false);
+              setResumeComment("");
+            }}
+            className="h-6 px-2 text-[11px]"
+          >
+            cancel
+          </Button>
+        </div>
+      )}
       {showResumeForm && isCostCapped && (
         <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
           <span className="text-muted-foreground">

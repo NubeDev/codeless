@@ -230,6 +230,7 @@ impl TemplateRunner {
         total: usize,
         worktree: Option<&std::path::Path>,
         operator_comment: Option<&str>,
+        prior_failure: Option<&str>,
     ) -> String {
         let stage_num = planned.index + 1;
         // REVIEW stages get an explicit sentinel contract appended to
@@ -283,8 +284,20 @@ impl TemplateRunner {
             _ => String::new(),
         };
 
+        // Prior-attempt failure context: when the runner is re-
+        // entering an ordinal whose latest attempt failed, the
+        // failure summary (pre-check missing list + verdict reason +
+        // stage-completed reason) is prepended above everything else
+        // so the model reads what went wrong before it reads the
+        // goal. Authored by `build_prior_failure_context`; absent on
+        // fresh runs and on re-runs of bypassed stages.
+        let prior_failure_block = match prior_failure {
+            Some(text) if !text.is_empty() => format!("{text}\n\n"),
+            _ => String::new(),
+        };
+
         format!(
-            "{operator_block}{stage_docs_block}\
+            "{prior_failure_block}{operator_block}{stage_docs_block}\
              # Job goal\n\n{}\n\n\
              # Stage {stage_num} of {total}\n\n{}\n\
              \n\
@@ -295,6 +308,111 @@ impl TemplateRunner {
             self.template.goal, planned.title,
         )
     }
+}
+
+/// Build a markdown block summarising the previous failed attempt of
+/// a stage so the next attempt's prompt carries the diagnosis. Reads
+/// the same `events` table the wire log writes to (no separate
+/// failure store) and collects, in order: review-pre-check `missing`
+/// paths, review-verdict `reason`, stage-completed `reason` /
+/// `status`. Returns `None` when no informative events exist for the
+/// stage_id so a noise-only failure (e.g. crash before any event)
+/// does not stamp an empty heading on the next prompt.
+///
+/// Failures here are warn-only at the call site: an unreadable
+/// events table degrades to "no prior-failure block," not to a
+/// runner abort. The next attempt then runs without the context,
+/// matching pre-feature behaviour rather than blocking the resume.
+pub(crate) async fn build_prior_failure_context(
+    store: &SqliteStore,
+    stage_id: StageId,
+    ordinal: u32,
+) -> sqlx::Result<Option<String>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT type, payload FROM events \
+         WHERE stage_id = ? ORDER BY cursor",
+    )
+    .bind(stage_id.to_string())
+    .fetch_all(store.pool())
+    .await?;
+    let mut pre_check_missing: Option<Vec<String>> = None;
+    let mut verdict_reason: Option<String> = None;
+    let mut stage_completed_reason: Option<String> = None;
+    for row in rows {
+        let ty: String = row.try_get("type")?;
+        let payload: String = row.try_get("payload")?;
+        let value: serde_json::Value = match serde_json::from_str(&payload) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match ty.as_str() {
+            "review-pre-check" => {
+                if let Some(outcome) = value.get("outcome") {
+                    if outcome.get("outcome").and_then(|s| s.as_str()) == Some("fail") {
+                        if let Some(missing) = outcome.get("missing").and_then(|m| m.as_array()) {
+                            pre_check_missing = Some(
+                                missing
+                                    .iter()
+                                    .filter_map(|v| v.as_str().map(str::to_owned))
+                                    .collect(),
+                            );
+                        }
+                    }
+                }
+            }
+            "review-verdict" => {
+                if let Some(verdict) = value.get("verdict") {
+                    if verdict.get("verdict").and_then(|s| s.as_str()) != Some("pass") {
+                        verdict_reason = verdict
+                            .get("reason")
+                            .and_then(|s| s.as_str())
+                            .map(str::to_owned);
+                    }
+                }
+            }
+            "stage-completed"
+                if value.get("status").and_then(|s| s.as_str()) == Some("failed") =>
+            {
+                stage_completed_reason = value
+                    .get("reason")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_owned);
+            }
+            _ => {}
+        }
+    }
+    if pre_check_missing.is_none() && verdict_reason.is_none() && stage_completed_reason.is_none() {
+        return Ok(None);
+    }
+    let stage_num = ordinal + 1;
+    let mut out = format!(
+        "# Prior attempt failed (stage {stage_num})\n\n\
+         This stage failed on the previous run. The failure context \
+         below is provided so you can address the specific issue \
+         rather than repeat it.\n"
+    );
+    if let Some(missing) = pre_check_missing {
+        if !missing.is_empty() {
+            out.push_str("\n## REVIEW pre-check: handover claimed paths not in diff\n\n");
+            for path in missing {
+                out.push_str("- ");
+                out.push_str(&path);
+                out.push('\n');
+            }
+        }
+    }
+    if let Some(reason) = verdict_reason {
+        out.push_str("\n## REVIEW verdict\n\n");
+        out.push_str(&reason);
+        out.push('\n');
+    }
+    if let Some(reason) = stage_completed_reason {
+        out.push_str("\n## Stage failure reason\n\n");
+        out.push_str(&reason);
+        out.push('\n');
+    }
+    Ok(Some(out))
 }
 
 #[async_trait]
@@ -326,11 +444,26 @@ impl Runner for TemplateRunner {
         // reads the correct prior handover. Without this, every
         // resume restarts at ordinal 0, re-running already-passed
         // stages as expensive no-ops.
-        let prior_passed_by_ord: std::collections::HashMap<u32, StageId> = match self.store.as_ref()
-        {
+        // Both maps are derived from the same `list_stages_for_job`
+        // query so they stay consistent on which attempt of an
+        // ordinal "won". An ordinal can be in at most one map: the
+        // latest attempt wins, and `Passed`/bypassed beats `Failed`
+        // even if a stale Failed row appears earlier in insertion
+        // order. The Failed map drives the prior-failure-context
+        // block injected into the re-attempt prompt (so the next run
+        // sees what the previous run got wrong).
+        let (prior_passed_by_ord, prior_failed_by_ord): (
+            std::collections::HashMap<u32, StageId>,
+            std::collections::HashMap<u32, StageId>,
+        ) = match self.store.as_ref() {
             Some(store) => match store.list_stages_for_job(ctx.job_id).await {
                 Ok(rows) => {
-                    let mut map: std::collections::HashMap<u32, StageId> =
+                    #[derive(Clone, Copy)]
+                    enum LatestKind {
+                        SkipEligible,
+                        Failed,
+                    }
+                    let mut latest: std::collections::HashMap<u32, (StageId, LatestKind)> =
                         std::collections::HashMap::new();
                     for s in rows {
                         // Passed stages are skipped (success short-
@@ -341,29 +474,52 @@ impl Runner for TemplateRunner {
                         // failure or invent a different one. Bypass
                         // is the forward-advance signal; status stays
                         // Failed for audit.
-                        let skip_eligible = matches!(s.stage.status, StageStatus::Passed)
-                            || s.stage.bypassed_at.is_some();
-                        if skip_eligible {
+                        let kind = if matches!(s.stage.status, StageStatus::Passed)
+                            || s.stage.bypassed_at.is_some()
+                        {
+                            Some(LatestKind::SkipEligible)
+                        } else if matches!(s.stage.status, StageStatus::Failed) {
+                            Some(LatestKind::Failed)
+                        } else {
+                            None
+                        };
+                        if let Some(kind) = kind {
                             // Last write wins; list_stages_for_job
-                            // returns ORDER BY ordinal so multiple
-                            // attempts at the same ordinal arrive in
-                            // insertion order. The latest skip-
-                            // eligible row is the one whose handover
-                            // the next REVIEW gate should read.
-                            map.insert(s.stage.ordinal, s.stage.id);
+                            // returns rows in insertion order so the
+                            // latest attempt overwrites any earlier
+                            // entry for the same ordinal.
+                            latest.insert(s.stage.ordinal, (s.stage.id, kind));
                         }
                     }
-                    map
+                    let mut passed = std::collections::HashMap::new();
+                    let mut failed = std::collections::HashMap::new();
+                    for (ord, (id, kind)) in latest {
+                        match kind {
+                            LatestKind::SkipEligible => {
+                                passed.insert(ord, id);
+                            }
+                            LatestKind::Failed => {
+                                failed.insert(ord, id);
+                            }
+                        }
+                    }
+                    (passed, failed)
                 }
                 Err(err) => {
                     tracing::warn!(
                         ?err,
                         "resume-skip: list_stages_for_job failed; will re-run all stages"
                     );
-                    std::collections::HashMap::new()
+                    (
+                        std::collections::HashMap::new(),
+                        std::collections::HashMap::new(),
+                    )
                 }
             },
-            None => std::collections::HashMap::new(),
+            None => (
+                std::collections::HashMap::new(),
+                std::collections::HashMap::new(),
+            ),
         };
         // Tracks the stage_id of the most recent stage that finished
         // (Passed) so a REVIEW stage's diff-verify pre-check can read
@@ -593,11 +749,37 @@ impl Runner for TemplateRunner {
             // invocation for REVIEW stages, which made the gate a
             // theatre rather than a real check.
             {
+                // Prior-failure context: when re-entering an ordinal
+                // whose latest attempt failed (not bypassed), thread
+                // the failure summary forward as a separate prompt
+                // block above the operator comment. The map was
+                // computed once at run-start from
+                // `list_stages_for_job`; failures to read events
+                // here degrade to "no block," not to a runner abort.
+                let prior_failure = if let (Some(store), Some(prior_id)) = (
+                    self.store.as_ref(),
+                    prior_failed_by_ord.get(&(stage.index as u32)),
+                ) {
+                    match build_prior_failure_context(store, *prior_id, stage.index as u32).await {
+                        Ok(block) => block,
+                        Err(err) => {
+                            tracing::warn!(
+                                ?err,
+                                prior_stage_id = %prior_id,
+                                "prior-failure-context: query failed; re-attempt will run without context"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 let prompt = self.stage_prompt(
                     *stage,
                     total,
                     ctx.worktree_path.as_deref(),
                     next_stage_prefix.as_deref(),
+                    prior_failure.as_deref(),
                 );
                 // The operator-comment prefix threads exactly one stage
                 // forward (Surface F). Clear it now so a stage that
@@ -1543,7 +1725,7 @@ mod tests {
     fn stage_prompt_includes_goal_and_position() {
         let r = TemplateRunner::new(template_with_stages(&["one", "two"]));
         let planned = r.template.planned_stages();
-        let prompt = r.stage_prompt(planned[1], 2, None, None);
+        let prompt = r.stage_prompt(planned[1], 2, None, None, None);
         assert!(prompt.contains("Stage 2 of 2"));
         assert!(prompt.contains("two"));
         assert!(prompt.contains("test goal"));
@@ -1563,6 +1745,7 @@ mod tests {
             2,
             None,
             Some("Operator policy: Quick. ship it."),
+            None,
         );
         let op_idx = prompt
             .find("# Operator comment")
@@ -1755,7 +1938,7 @@ mod tests {
         // policy-triggered auto-bypass should see that envelope.
         let r = TemplateRunner::new(template_with_stages(&["one", "two"]));
         let planned = r.template.planned_stages();
-        let prompt = r.stage_prompt(planned[1], 2, None, None);
+        let prompt = r.stage_prompt(planned[1], 2, None, None, None);
         assert!(!prompt.contains("# Operator comment"));
     }
 
@@ -1787,7 +1970,13 @@ mod tests {
         let r = TemplateRunner::new(template_with_stages(&["one", "two"]))
             .with_pending_operator_comment(Some("ship it".into()));
         let planned = r.template.planned_stages();
-        let prompt = r.stage_prompt(planned[0], 2, None, r.pending_operator_comment.as_deref());
+        let prompt = r.stage_prompt(
+            planned[0],
+            2,
+            None,
+            r.pending_operator_comment.as_deref(),
+            None,
+        );
         let op_idx = prompt
             .find("# Operator comment")
             .expect("operator-comment heading missing on first-stage prompt");
@@ -1808,7 +1997,7 @@ mod tests {
         // between the prompt and `review_gate::parse_review_verdict`.
         let r = TemplateRunner::new(template_with_stages(&["REVIEW gate", "after"]));
         let planned = r.template.planned_stages();
-        let prompt = r.stage_prompt(planned[0], 2, None, None);
+        let prompt = r.stage_prompt(planned[0], 2, None, None, None);
         assert!(prompt.contains("REVIEW stage"));
         assert!(prompt.contains("PASS:"));
         assert!(prompt.contains("FAIL:"));
@@ -1975,7 +2164,7 @@ stages:
         let planned = r.template.planned_stages();
 
         // Stage 1 sees routing.md, not handlers.md.
-        let p1 = r.stage_prompt(planned[0], 2, Some(tmp.path()), None);
+        let p1 = r.stage_prompt(planned[0], 2, Some(tmp.path()), None, None);
         assert!(
             p1.contains("# Stage 1 docs"),
             "missing stage-docs heading: {p1}"
@@ -1984,7 +2173,7 @@ stages:
         assert!(!p1.contains("HANDLERS DOC BODY"));
 
         // Stage 2 sees handlers.md, not routing.md.
-        let p2 = r.stage_prompt(planned[1], 2, Some(tmp.path()), None);
+        let p2 = r.stage_prompt(planned[1], 2, Some(tmp.path()), None, None);
         assert!(p2.contains("# Stage 2 docs"));
         assert!(p2.contains("HANDLERS DOC BODY"));
         assert!(!p2.contains("ROUTING DOC BODY"));
@@ -1994,7 +2183,7 @@ stages:
     fn stage_prompt_omits_docs_block_when_stage_has_none() {
         let r = TemplateRunner::new(template_with_stages(&["one", "two"]));
         let planned = r.template.planned_stages();
-        let prompt = r.stage_prompt(planned[0], 2, None, None);
+        let prompt = r.stage_prompt(planned[0], 2, None, None, None);
         assert!(!prompt.contains("# Stage 1 docs"));
         assert!(!prompt.contains("# Job docs"));
     }
@@ -2203,5 +2392,99 @@ stages:
             vec![(0, Some("builtin:coder".to_string())), (1, None)],
             "stage 0 carries its override; stage 1 inherits",
         );
+    }
+
+    #[test]
+    fn stage_prompt_prepends_prior_failure_block_above_operator_and_goal() {
+        // The prior-failure block (authored by
+        // `build_prior_failure_context`) is the first thing the model
+        // sees when an ordinal is being re-attempted. It must sit
+        // above the operator-comment block (which is in turn above
+        // the goal) so the read order is: what went wrong → operator
+        // guidance → goal.
+        let r = TemplateRunner::new(template_with_stages(&["one", "two"]));
+        let planned = r.template.planned_stages();
+        let block = "# Prior attempt failed (stage 1)\n\nhandover claimed paths missing\n";
+        let prompt = r.stage_prompt(planned[0], 2, None, Some("ship it"), Some(block));
+        let pf = prompt
+            .find("# Prior attempt failed")
+            .expect("prior-failure heading missing");
+        let op = prompt
+            .find("# Operator comment")
+            .expect("operator-comment heading missing");
+        let goal = prompt.find("# Job goal").expect("job-goal heading missing");
+        assert!(
+            pf < op && op < goal,
+            "ordering must be prior-failure < operator < goal; got prompt: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_prior_failure_context_extracts_review_diagnostics() {
+        // Pin the wire-level contract that consumes the same
+        // `events` rows the UI renders: pre-check `missing`, verdict
+        // `reason`, stage-completed `reason`. A missing field
+        // degrades to a partial block; an empty events query
+        // degrades to `None` (no empty heading).
+        use crate::store::SqliteStore;
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let store = SqliteStore::new(pool.clone());
+        let stage_id = StageId::new();
+        let job_id = codeless_types::JobId::new();
+        let now = now_ms();
+        // Insert three events for the same stage_id.
+        for (ty, payload) in [
+            (
+                "review-pre-check",
+                serde_json::json!({
+                    "stage_id": stage_id.to_string(),
+                    "outcome": {"outcome": "fail", "missing": ["foo.rs", "bar.rs"]}
+                }),
+            ),
+            (
+                "review-verdict",
+                serde_json::json!({
+                    "stage_id": stage_id.to_string(),
+                    "verdict": {"verdict": "auto-fail", "reason": "claimed paths absent"}
+                }),
+            ),
+            (
+                "stage-completed",
+                serde_json::json!({"stage_id": stage_id.to_string(), "status": "failed"}),
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO events (job_id, stage_id, type, payload, created_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(job_id.to_string())
+            .bind(stage_id.to_string())
+            .bind(ty)
+            .bind(payload.to_string())
+            .bind(now.0)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let block = build_prior_failure_context(&store, stage_id, 6)
+            .await
+            .unwrap()
+            .expect("expected a block from three diagnostic events");
+        assert!(block.contains("# Prior attempt failed (stage 7)"));
+        assert!(block.contains("foo.rs"));
+        assert!(block.contains("bar.rs"));
+        assert!(block.contains("claimed paths absent"));
+        // Empty stage_id (no events) returns None so the runner does
+        // not stamp an empty heading.
+        let empty = build_prior_failure_context(&store, StageId::new(), 0)
+            .await
+            .unwrap();
+        assert!(empty.is_none());
     }
 }
