@@ -36,10 +36,15 @@ The check at stage 1 is a real grep against the working tree:
   → must find the field on `ResumeJobArgs`.
 - `grep -nE 'actor:.*Option<String>' crates/codeless-types/src/event.rs`
   → must find it on `JobResumed`.
-- `grep -nE 'comment:.*Option<String>' crates/codeless-types/src/event.rs`
-  → must find it on `JobResumed`.
 
-All four must pass. If any fails, stop. Do not move to stage 2.
+All three must pass. If any fails, stop. Do not move to stage 2.
+
+The operator comment lives on `ResumeJobArgs.next_stage_comment`
+(input) and threads into the next stage's prompt via
+`TemplateRunner::pending_operator_comment`; it is intentionally not
+re-emitted on `JobResumed` (which carries `actor` only for audit).
+Telegram mirrors the same shape — do not re-add a `comment` field
+to the event.
 
 ## Per-stage discipline
 
