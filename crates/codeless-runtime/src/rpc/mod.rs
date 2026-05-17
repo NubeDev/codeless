@@ -144,6 +144,24 @@ impl InProcessRpc {
         if reclaimed > 0 {
             tracing::info!(reclaimed, "released expired task leases at startup");
         }
+        // Same intent at the stage and job grain. A `running` row at
+        // boot is by definition orphaned (no driver loop has spun up
+        // yet on this process). Without these two reapers the resume
+        // path's `latest_terminal_stage` skips the orphan and the
+        // TemplateRunner spawns a duplicate stage at the same
+        // ordinal — the bug that produced the duplicate PS5 rows on
+        // job 01KRT965MV…
+        let reaped_stages = store.reap_orphan_running_stages(now_ms()).await?;
+        if reaped_stages > 0 {
+            tracing::info!(reaped_stages, "reaped orphan running stages at startup",);
+        }
+        let reaped_jobs = store.reap_orphan_running_jobs().await?;
+        if reaped_jobs > 0 {
+            tracing::info!(
+                reaped_jobs,
+                "reaped orphan running jobs back to Queued at startup",
+            );
+        }
         Ok(Self {
             store,
             bus,

@@ -225,3 +225,78 @@ async fn startup_reaper_reclaims_expired_running_tasks() {
     assert!(reaped.lease_holder.is_none());
     assert!(reaped.lease_expires_at.is_none());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_reaper_flips_orphan_running_stages_to_failed() {
+    // Reproduces the duplicate-PS5 bug: a `running` stage row whose
+    // owning core died never reached a terminal state, so on resume
+    // `latest_terminal_stage` skipped it and the TemplateRunner
+    // spawned a second stage at the same ordinal. The reaper must
+    // make the orphan visible by flipping it to `failed`.
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    let rpc = InProcessRpc::with_db(pool.clone()).await.unwrap();
+    let job = fresh_job(&rpc).await;
+    let store = Arc::clone(rpc.store());
+    let running = Stage {
+        id: StageId::new(),
+        job_id: job,
+        ordinal: 0,
+        name: "orphan".into(),
+        status: StageStatus::Running,
+        verify_cmd: None,
+        started_at: Some(UnixMillis(1)),
+        ended_at: None,
+        session_id: None,
+        goal: None,
+        acceptance: None,
+        last_activity_at: None,
+        archived: false,
+        persona_id: None,
+        bypassed_at: None,
+        bypassed_reason: None,
+    };
+    store.insert_stage(&running).await.unwrap();
+
+    drop(rpc);
+    let _resumed = InProcessRpc::with_db(pool.clone()).await.unwrap();
+
+    let stages = store.list_stages_for_job(job).await.unwrap();
+    let row = stages
+        .iter()
+        .find(|s| s.stage.id == running.id)
+        .expect("orphan stage still present");
+    assert_eq!(row.stage.status, StageStatus::Failed);
+    assert!(row.stage.ended_at.is_some(), "ended_at stamped by reaper");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_reaper_returns_orphan_running_jobs_to_queued() {
+    // Twin of the stage reaper: a `running` job at boot has no
+    // driver attached, so `replay_backlog` (which scans only Queued)
+    // would skip it forever. The reaper flips it back to Queued.
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    let rpc = InProcessRpc::with_db(pool.clone()).await.unwrap();
+    let job_id = fresh_job(&rpc).await;
+    // `fresh_job` submits with `start_immediately: true`, leaving the
+    // row at `Queued`. Forge `running` directly on the row to stand
+    // in for "previous core had this job in flight when it died".
+    sqlx::query("UPDATE jobs SET status = 'running' WHERE id = ?")
+        .bind(job_id.to_string())
+        .execute(rpc.pool())
+        .await
+        .unwrap();
+
+    drop(rpc);
+    let resumed = InProcessRpc::with_db(pool.clone()).await.unwrap();
+
+    let listed = resumed
+        .list_jobs(codeless_rpc::ListJobsArgs { repo_id: None })
+        .await
+        .unwrap();
+    let row = listed
+        .jobs
+        .into_iter()
+        .find(|j| j.id == job_id)
+        .expect("orphan job present");
+    assert_eq!(row.status, codeless_types::JobStatus::Queued);
+}

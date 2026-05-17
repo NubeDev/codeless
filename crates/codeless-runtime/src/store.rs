@@ -865,6 +865,45 @@ impl SqliteStore {
         Ok(res.rows_affected())
     }
 
+    /// Flip every `running` stage row to `failed`. Crash-only call:
+    /// safe exclusively at startup, before any driver loop spins up,
+    /// because in steady state a `running` row corresponds to a live
+    /// runner process. After a core crash the row is orphaned — no
+    /// process holds it, and `latest_terminal_stage` skips it because
+    /// it only considers Passed/Failed/AwaitingReview, so a fresh
+    /// resume would spawn a duplicate stage at the same ordinal
+    /// (observed in the wild: see the duplicate PS5 rows on job
+    /// 01KRT965MV…). Flipping to `failed` makes the orphan visible
+    /// to the resume path: `latest_terminal_stage` now sees it, and
+    /// the operator either bypasses via `resume_job { bypass: true }`
+    /// or the TemplateRunner retries it as the highest-ordinal failed
+    /// row. Returns the number of rows reaped so startup can log it.
+    pub async fn reap_orphan_running_stages(&self, now: UnixMillis) -> sqlx::Result<u64> {
+        let res = sqlx::query(
+            "UPDATE stages SET status = 'failed', ended_at = ? \
+             WHERE status = 'running'",
+        )
+        .bind(now.0)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Return every `running` job row to `queued`. Crash-only,
+    /// startup-only twin of `reap_orphan_running_stages`. The
+    /// `replay_backlog` pass only picks up `Queued` rows, so a job
+    /// stuck `Running` after a core crash would otherwise stay
+    /// invisible to the driver forever. `stop_reason` is left alone:
+    /// it is already `None` for a `Running` row by construction (set
+    /// by `pause_job` / `stop_job`, both of which transition out of
+    /// `Running` first), so nothing to clear.
+    pub async fn reap_orphan_running_jobs(&self) -> sqlx::Result<u64> {
+        let res = sqlx::query("UPDATE jobs SET status = 'queued' WHERE status = 'running'")
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn get_task(&self, id: TaskId) -> sqlx::Result<Option<Task>> {
         let row = sqlx::query("SELECT * FROM tasks WHERE id = ?")
             .bind(id.to_string())
