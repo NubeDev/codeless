@@ -194,6 +194,56 @@ fold the extraction into the same commit as stage 3's scaffold.
 Either is fine; the constraint is that no `codeless-bot/`
 directory exists in the tree before `codeless-bot-core/` does.
 
+## Stage 3 — REVIEW gate verdict (PASS)
+
+Stage 3 is a blocking review of the diff produced by stages 1 and 2,
+not a human pause. The check is the Layer-1 invariant set named in
+the stage instructions: R1 crate dependency direction, R2 single
+transport per crate, R4/R5 trust boundary, wire formats untouched.
+
+Diff under review: `e442d61..c0c59b1` (scaffold through stage 2).
+Files touched, all docs:
+
+- `.codeless/jobs/telegram-integration/SCOPE.md`
+- `.codeless/jobs/telegram-integration/WORKFLOW.md`
+- `DOCS/SCOPE-TELEGRAM-INTEGRATION-DECISIONS.md`
+- `runs/.../handover.md`
+
+Zero files under `crates/` were modified. `codeless-bot`,
+`codeless-bot-core`, and `codeless-slack` do not exist in this
+worktree (slack-integration is unmerged); `codeless-types` and
+`codeless-rpc` are unchanged.
+
+Invariant-by-invariant:
+
+- **R1 — crate dependency direction.** No new crates, no new deps,
+  no `tokio::process` / `std::process::Command` imports introduced.
+  The planned layout puts `codeless-bot-core` host-only alongside
+  the existing host-only crates with both transport crates
+  depending on it, which is consistent with the R1 enforcement
+  predicate.
+- **R2 — single transport per crate.** Approach 1 was picked
+  *specifically* to preserve this: one transport per crate
+  (`codeless-slack` for Slack, `codeless-bot` for Telegram).
+  Approach 2 (multi-transport in one crate) was rejected on the
+  grounds that it compounds feature flags and weakens the
+  per-crate predicate.
+- **R4/R5 — operator trust boundary.** SCOPE.md preserves the
+  single-operator boundary: bot token via `SecretStore` only,
+  `allowed_user_ids` is defence-in-depth not authorisation,
+  fail-closed if empty, `JobResumed.actor` is audit-only. No code
+  exists yet that could violate it.
+- **Wire formats untouched.** `crates/codeless-types/` and
+  `crates/codeless-rpc/` are not in the diff. SCOPE explicitly
+  states "No new RPC fields. Everything Telegram needs already
+  lands in slack-integration stage 1."
+
+Verdict: **PASS**. The job may proceed to stage 4 (scaffold
+Telegram transport) once its own preconditions — slack-integration
+merged to `master`, then the codeless-bot-core extraction —
+clear. The closed stage-1 gate is unaffected by this verdict;
+stage 4 must re-verify it before writing code.
+
 ## Open follow-ups for the REVIEW after stage 2
 
 - Confirm with the operator that the crate name `codeless-bot`
