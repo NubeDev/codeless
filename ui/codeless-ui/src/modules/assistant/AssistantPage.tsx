@@ -165,6 +165,7 @@ export function AssistantPage() {
         {selected ? (
           <CommonChat
             kind="assistant"
+            threadId={selected.id}
             thread={selected}
             onThreadTouched={() => void refresh(selected.id)}
           />

@@ -165,7 +165,12 @@ export function RunPane({ job, refetchJob, onOpenJobTab, onEditSpec }: Props) {
           </div>
           {showChat && (
             <aside className="min-w-0 lg:sticky lg:top-4 lg:self-start">
-              <CommonChat kind="job" job={job} onOpenJobTab={onOpenJobTab} />
+              <CommonChat
+                kind="job"
+                threadId={job.id}
+                job={job}
+                onOpenJobTab={onOpenJobTab}
+              />
             </aside>
           )}
         </div>
