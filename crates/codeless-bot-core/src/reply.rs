@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn format_parse_error_routes_empty_to_help() {
         let body = format_parse_error(&ParseError::Empty);
-        assert!(body.contains("Codeless Slack commands"));
+        assert!(body.contains("Codeless bot commands"));
     }
 
     #[test]

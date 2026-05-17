@@ -231,7 +231,7 @@ impl Dispatcher {
             return text.to_string();
         }
         if let Ok(n) = maybe_alias.parse::<usize>() {
-            if n >= 1 && n <= 99 {
+            if (1..=99).contains(&n) {
                 if let Some(job_id) = self.aliases.resolve(chat, n) {
                     let rest = if parts.len() == 3 { parts[2] } else { "" };
                     if rest.is_empty() {
