@@ -114,15 +114,21 @@ pub(super) async fn agent_chat(
         mode,
         &args.prompt,
     );
-    // Spec mode: clamp the agent to read + edit tools so it can author
-    // the job spec but cannot run Bash, hit the network, or git commit.
-    // `tools` maps to `--tools` on the claude binary which restricts the
-    // available built-in tool set — not `--allowed-tools` which is for
-    // MCP server permissions only and does not block Bash.
-    let tools = match mode {
-        ChatMode::Spec => Some(SPEC_MODE_ALLOWED_TOOLS.to_owned()),
-        ChatMode::Work => None,
-    };
+    // Capability derivation is server-side and keyed off the durable
+    // job row resolved above (when one exists) plus the per-turn
+    // `ChatMode` intent. No UI routing prop influences the answer —
+    // `derive_chat_capabilities` is the only branch on mode for
+    // capability purposes (PS3, `DOCS/PLUGIN-SUBSTRATE.md` item 3),
+    // and PS5 fills in the persona's MCP allowed-tools list through
+    // the same seam.
+    // `caps.allowed_tools` is the substrate-doc MCP allowed-tools list
+    // and is unused here today — PS5 wires the persona's column into
+    // the value and the MCP layer's per-thread filter consumes it from
+    // there. The destructure documents the seam.
+    let super::chat_capability::ChatCapabilities {
+        cli_tool_clamp: tools,
+        allowed_tools: _allowed_tools,
+    } = super::chat_capability::derive_chat_capabilities(active_job.as_ref(), mode);
 
     // Register the cancel token before the spawn so a racing
     // `cancel_chat_task` still finds an entry to fire. The drop-guard
@@ -630,11 +636,6 @@ If the user asks you to implement something rather than describe it, \
 remind them they are in spec mode and either (a) capture the request \
 as a stage in `template.yaml` for them to run later, or (b) suggest \
 they flip back to work mode.\n";
-
-/// Tool list passed to the CLI wrapper via `CliCfg::allowed_tools`
-/// when the chat turn is spec-mode. Keep in sync with the banner above —
-/// if a tool is mentioned there as "available" it must be in this list.
-const SPEC_MODE_ALLOWED_TOOLS: &str = "Read,Edit,Write,Glob,Grep,LS,TodoWrite";
 
 /// Tells the chat agent it owns the job's spec files and how to edit
 /// them safely. Appended after the spec fold so the agent has the

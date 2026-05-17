@@ -26,7 +26,17 @@ Goal:        a new workflow ships as `crates/codeless-plugin-<id>/` + a
    1b. [ ] PS2b — see "Recommended re-split" below; requires PS4.
    1c. [ ] PS2c — same; requires PS2b.
    1d. [ ] PS2d — collapse the kind-dispatch facade once b+c land.
-2. [ ] PS3 — server-side capability derivation.
+2. [x] PS3 — server-side capability derivation: pattern grammar +
+   matcher in `codeless_types::allowed_tools` (literal id or
+   `prefix.*` only, no regex, no shell globbing); chat-path tool
+   selection extracted into `runtime::rpc::chat_capability::
+   derive_chat_capabilities`, the one place the chat path decides
+   what a thread may invoke. The function is pure over
+   `(active_job, ChatMode)`; no UI routing prop reaches it, so
+   removing the `CommonChat` `kind` prop from a call site cannot
+   change which tools the runner executes. PS5 fills
+   `caps.allowed_tools` from the persona's column through the same
+   seam.
 3. [ ] PS4 — chat state moves server-side (R4 compliance).
 4. [ ] PS5 — persona / thread-kind data model.
 5. [ ] PS6 — plugin manifest + registry.

@@ -35,6 +35,7 @@ use crate::time::now_ms;
 pub(crate) mod assistant;
 pub(crate) mod assistant_planner;
 pub(crate) mod chat;
+pub(crate) mod chat_capability;
 pub(crate) mod fs;
 pub(crate) mod job_files;
 pub(crate) mod jobs;
