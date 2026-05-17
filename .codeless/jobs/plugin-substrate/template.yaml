@@ -1,0 +1,28 @@
+name: plugin-substrate
+goal: |
+  Land the rest of DOCS/PLUGIN-SUBSTRATE.md so any new workflow ships as
+  a self-contained plugin (data + small Rust crate) instead of a fork of
+  the runner. Item 1 (tools layer) already shipped via the tools-layer
+  job, and per-job MCP wiring is now live. This job covers items 2-8
+  and lands plugin #0 (notes) end-to-end. Acceptance: a new plugin is
+  one PR touching only its own crate + plugin.toml + domains/; the
+  notes plugin exercises items 1-8 end-to-end through the Assistant.
+
+docs:
+  - DOCS/PLUGIN-SUBSTRATE.md
+  - DOCS/ASSISTANT-SCOPE.md
+  - DOCS/SCOPE.md
+
+stages:
+  - "PS2 (M) extract CommonChat: JobChat (RunPane.tsx), AiChat, and the chat store collapse into one CommonChat component bound to a server-resident thread id; assistant page + in-job chat + in-editor AI panel all render the same component"
+  - "PS3 (S) server-side capability derivation: thread's allowed-tools list derived from the thread row, never trusted from the client kind prop; removing kind from a CommonChat call site must not change which tools the runner executes; matching rule per substrate doc (literal id or prefix.* only, no regex)"
+  - "PS4 (M) chat state moves server-side: drop modules/ai/store/chatStore.ts client-side conversation state; SQLite is the truth (R4); closing browser then reopening reproduces the full thread including in-flight tool calls via RpcClient.subscribe()"
+  - REVIEW Assistant chat surface (PS2-PS4) before persona/plugin layers depend on it
+  - "PS5 (M) persona / thread-kind data model: assistant_threads.persona_id column (NOT NULL, hard error if omitted); persona is server-resident (system_prompt, allowed_tools[], default_model_family, default_attachments_policy); built-in personas: general, coding; persona immutable for the thread lifetime; runner loads tools and system prompt from persona at agent-call time"
+  - "PS6 (L) plugin manifest + registry: plugin.toml parser; codeless-tools::load_plugin(path) entry point that discovers statically-linked registration entry, calls it so register_tool fires, runs migrations (rejects any CREATE/ALTER/DROP whose table name does not start with <plugin_id>_), registers personas from manifest; default_model_family resolves to a concrete provider model via codeless config; codeless plugin list and codeless plugin info CLI surfaces backed by the registry"
+  - "PS7 (S) tool-result attachments: tool output schema declaring {\"$ref\":\"codeless://attachment\"} causes the Assistant to render a download card and inline preview without per-plugin UI code; tool returns {attachment_id, mime?, filename?} or an array of them; advisory mime/filename hints reconciled against the stored attachment row"
+  - "PS8 (M) Assistant agent loop: drives tool calls from Assistant conversations using existing ai-runner with the persona's system prompt, history from SQLite, and persona's allowed-tools list; tool-call events stream as action cards via existing eventFormat; user confirms; result appended to thread; no planner / stuck detection / recovery (job loop owns that); one turn = one model response with N tool-call requests, each gated by an action card; iteration / cost caps inherit from existing ai-runner settings"
+  - REVIEW Assistant agent loop (PS5-PS8) green end-to-end with general persona calling a read-only tool before plugin #0 starts
+  - "PS-NOTES create plugin #0 codeless-plugin-notes in-tree: one tool (notes.append), one persona (notes), one migration (notes_entries table named per the namespace rule), markdown attachment as the rendered output; exercises substrate items 1-8 end-to-end; lives alongside the substrate so substrate breakage fails CI immediately"
+  - "PS-ACCEPT integration-test coverage for items 2-8; notes plugin end-to-end test drives Assistant -> persona -> tool -> attachment through MockRpcClient or its server-side equivalent; update DOCS/PLUGIN-SUBSTRATE.md Acceptance section to mark the substrate complete"
+  - REVIEW final substrate acceptance review before declaring plugin substrate done and unblocking estimating plugin
