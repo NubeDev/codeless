@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  useEventStream,
   useRpc,
   type AssistantAction,
   type AssistantActionCard,
   type AssistantActionStatus,
   type AssistantMessage,
   type AssistantThread,
+  type EventEnvelope,
+  type JobId,
 } from "@/lib/rpc";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
+import { MarkdownBubble } from "../chat";
 import { useAssistantFocus } from "./focusStore";
 
 // Stage-6 assistant view. Renders the persisted transcript for one
@@ -43,6 +47,16 @@ export function AssistantThreadView({
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Live planner output. The assistant RPC blocks until the turn
+  // finishes; without an event subscription the user would stare at
+  // "Sending…" for the full latency of a model call. The planner
+  // publishes `ai-token` deltas onto the bus keyed on the thread id
+  // reused as a synthetic JobId (see assistant_planner.rs), so the
+  // same SSE channel that powers job chats also feeds this view. The
+  // streaming buffer is cleared the moment the awaited result lands
+  // — at that point the persisted messages are authoritative.
+  const [streamingText, setStreamingText] = useState("");
+  const [streamingActive, setStreamingActive] = useState(false);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // Reload when the parent rail swaps in a different thread, *or*
@@ -76,7 +90,38 @@ export function AssistantThreadView({
   // to drag the scrollbar.
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length]);
+  }, [messages.length, streamingText]);
+
+  // Reset the streaming buffer when the parent rail swaps threads so
+  // tokens from a prior turn don't bleed into the new transcript.
+  useEffect(() => {
+    setStreamingText("");
+    setStreamingActive(false);
+  }, [thread.id]);
+
+  const onAssistantEvent = useCallback(
+    (env: EventEnvelope) => {
+      const ev = env.event;
+      if (ev.type === "ai-token") {
+        setStreamingText((prev) => prev + ev.delta);
+        setStreamingActive(true);
+      } else if (ev.type === "ai-message-complete") {
+        // Completion handshake — the awaited RPC result will arrive
+        // imminently with the persisted final message; freezing the
+        // pulse here avoids a flicker between the last token and the
+        // bubble being replaced by the real row.
+        setStreamingActive(false);
+      }
+    },
+    [],
+  );
+  // `since: 0` replays the full thread history on subscribe; the
+  // accumulator only renders while `sending` is true so a replay of
+  // an old turn doesn't surface as a phantom bubble.
+  useEventStream(
+    { scope: "job", job_id: thread.id as unknown as JobId },
+    onAssistantEvent,
+  );
 
   const onSubmit = useCallback(
     async (e?: React.FormEvent) => {
@@ -84,6 +129,8 @@ export function AssistantThreadView({
       const content = input.trim();
       if (!content || sending) return;
       setSending(true);
+      setStreamingText("");
+      setStreamingActive(false);
       setErr(null);
       try {
         const res = await rpc.call("append_assistant_message", {
@@ -107,6 +154,12 @@ export function AssistantThreadView({
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
         setSending(false);
+        // Drop the in-flight buffer — on success the persisted
+        // assistant message just rendered through `messages`; on
+        // failure the partial text would otherwise stick around
+        // alongside the error banner with no way to dismiss it.
+        setStreamingText("");
+        setStreamingActive(false);
       }
     },
     [rpc, thread.id, input, sending, onThreadTouched],
@@ -186,6 +239,13 @@ export function AssistantThreadView({
               />
             ))
           )}
+          {sending && streamingText.length > 0 && (
+            <MarkdownBubble
+              role="assistant"
+              content={streamingText}
+              streaming={streamingActive}
+            />
+          )}
           <div ref={scrollAnchorRef} />
         </div>
       </ScrollArea>
@@ -254,25 +314,14 @@ function MessageBubble({
   if (message.role === "tool") {
     return <ToolResultView message={message} />;
   }
-  const isUser = message.role === "user";
+  // Plain prose turn. Routed through the shared MarkdownBubble so the
+  // assistant transcript renders the same markdown surface area as the
+  // job chat instead of dumping raw asterisks and fences as text.
   return (
-    <div
-      className={cn(
-        "flex w-full",
-        isUser ? "justify-end" : "justify-start",
-      )}
-    >
-      <div
-        className={cn(
-          "max-w-[85%] whitespace-pre-wrap rounded-md px-3 py-2 text-sm",
-          isUser
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted text-foreground",
-        )}
-      >
-        {message.content}
-      </div>
-    </div>
+    <MarkdownBubble
+      role={message.role === "user" ? "user" : "assistant"}
+      content={message.content}
+    />
   );
 }
 

@@ -271,8 +271,32 @@ matching the documented arg keys:\n\
 - `update_job` { job_id: JobId, runner?, model?, permission_mode?, \
 effort?, cost_cap_cents?, wall_clock_cap_ms?, branch? }\n\
 - `draft_job` { repo_id, prompt, runner, branch, cost_cap_cents, \
-wall_clock_cap_ms, workspace_mode?, model?, permission_mode?, effort? }\n\
+wall_clock_cap_ms, workspace_mode?, model?, permission_mode?, effort?, \
+auto_bypass_policy? }\n\
 - `edit_scope` { job_id: JobId, filename: string, new_content: string }\n\
+- `set_policy` { job_id: JobId, policy?: AutoBypassPolicy }\n\
+\n\
+Auto-bypass policies control what the job does when a stage fails for \
+a non-cap reason. Cap-breach failures (cost / wall-clock) always halt \
+regardless. The picker the user sees on the new-job form is the same \
+set you may propose here:\n\
+- `{\"type\":\"quick\"}` — fastest forward progress, light analysis\n\
+- `{\"type\":\"long-term\"}` — hands-off, will iterate on its own\n\
+- `{\"type\":\"cheap\"}` — prefers low-cost actions; halts before \
+spending\n\
+- `{\"type\":\"best-judgement\"}` — model decides per failure\n\
+- `{\"type\":\"just-code\"}` — keep editing code, skip ambient chores\n\
+- `{\"type\":\"relentless\"}` — disables the two-strikes thrashing \
+guard; only caps stop it\n\
+- `{\"type\":\"custom\",\"comment\":\"...\"}` — free-text guidance \
+threaded into the next stage's prompt verbatim\n\
+\n\
+Propose `set_policy` when the user describes a recovery posture (\"if \
+this fails again, keep going\", \"be hands-off\", \"halt if it gets \
+expensive\"). `set_policy` with `policy` omitted clears the policy and \
+restores the default halt-on-failure behaviour. The runtime refuses the \
+change while the job is Running or Queued — pause first if the user \
+wants the change to apply mid-flight.\n\
 The runtime persists each tool call as a confirmable card; the user \
 clicks Confirm to dispatch it. Do not invent tool names.\n";
 

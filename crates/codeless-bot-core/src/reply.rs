@@ -17,8 +17,8 @@
 
 use codeless_rpc::error::RpcError;
 use codeless_rpc::methods::{ChatMode, ListJobsResult, StageRollup};
-use codeless_types::{Job, JobStatus, StageStatus, StopReason};
 use codeless_types::time::UnixMillis;
+use codeless_types::{Job, JobStatus, StageStatus, StopReason};
 
 use crate::command::ParseError;
 
@@ -56,9 +56,7 @@ pub fn format_list_jobs(result: &ListJobsResult) -> String {
     if total > STATUS_LIST_CAP {
         out.push_str(&format!("  …and {} more\n", total - STATUS_LIST_CAP));
     }
-    out.push_str(
-        "\nReply with the number: `status 3`, `resume 6 bypass`, `stop 2`.",
-    );
+    out.push_str("\nReply with the number: `status 3`, `resume 6 bypass`, `stop 2`.");
     out
 }
 

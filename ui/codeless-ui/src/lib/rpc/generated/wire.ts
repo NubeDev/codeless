@@ -257,7 +257,22 @@ auto_bypass_policy?: AutoBypassPolicy | null } |
  *  server rejects `template.yaml` — `update_job_template` is
  *  the correct path for the spec (renames refused there too).
  */
-filename: string; new_content: string };
+filename: string; new_content: string } | 
+/**
+ *  Change the per-job auto-bypass policy. Mirrors the picker the
+ *  `SubmitJobDialog` exposes at submit time (`AutoBypassPolicy`),
+ *  so the assistant can propose policy changes the same way a
+ *  human would set them in the form: "if this stage fails again,
+ *  switch the job to long-term so it auto-recovers."
+ * 
+ *  `policy: None` clears the policy entirely (the job reverts to
+ *  the default halt-on-failure behaviour). The underlying
+ *  `set_job_policy` RPC refuses the change while the job is
+ *  `Running` or `Queued` (`AUTO-BYPASS-DECISIONS.md` Q5); the
+ *  chat surface inherits that guard — a confirmation against a
+ *  running job surfaces as a `Conflict` on the resolved card.
+ */
+{ tool: "set_policy"; job_id: JobId; policy?: AutoBypassPolicy | null };
 
 /**
  *  The structured payload of an `Assistant`-role message that

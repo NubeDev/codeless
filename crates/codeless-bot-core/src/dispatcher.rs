@@ -334,12 +334,7 @@ impl Dispatcher {
     /// call returns). Aggregation stops on the first
     /// `Event::TaskCompleted` for our task id, on stream end, or on
     /// the wall-clock cap — whichever fires first.
-    async fn run_chat(
-        &self,
-        job_id: JobId,
-        mode: ChatMode,
-        message: String,
-    ) -> RpcResult<String> {
+    async fn run_chat(&self, job_id: JobId, mode: ChatMode, message: String) -> RpcResult<String> {
         let job = self.backend.get_job(GetJobArgs { job_id }).await?;
         let cwd = job.worktree_path.clone();
         let runner = job.runner.clone();
@@ -377,10 +372,7 @@ const CHAT_AGGREGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// empty string when nothing streamed; the reply formatter turns
 /// that into a "(no reply)" placeholder so the operator still gets
 /// an ack.
-async fn aggregate_chat_reply(
-    mut stream: EventStream,
-    task_id: codeless_types::TaskId,
-) -> String {
+async fn aggregate_chat_reply(mut stream: EventStream, task_id: codeless_types::TaskId) -> String {
     use futures_util::StreamExt;
 
     let mut out = String::new();
@@ -517,13 +509,14 @@ mod tests {
                 .take()
                 .unwrap_or_else(|| Err(RpcError::NotFound("unset".into())))
         }
-        async fn subscribe(
-            &self,
-            _filter: EventFilter,
-            _since: Since,
-        ) -> RpcResult<EventStream> {
+        async fn subscribe(&self, _filter: EventFilter, _since: Since) -> RpcResult<EventStream> {
             self.record("subscribe");
-            let events = self.subscribe_events.lock().unwrap().take().unwrap_or_default();
+            let events = self
+                .subscribe_events
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_default();
             let stream = futures_util::stream::iter(events.into_iter().map(Ok));
             Ok(Box::pin(stream))
         }
