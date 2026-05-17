@@ -464,6 +464,7 @@ async fn run_server(
             anthropic_api_key,
             claude_system_prompt,
             store: rpc.store().clone(),
+            mcp_binary_path: resolve_mcp_binary(),
         });
         Some(
             spawn_job_driver_loop(rpc.clone(), factory, worktrees, args.driver_concurrency)
@@ -653,6 +654,50 @@ fn maybe_webhook_config(store: &SecretStore) -> Result<Option<WebhookConfig>> {
     }
 }
 
+/// Resolve the `codeless-mcp` binary path. Checks:
+/// 1. `CODELESS_MCP_BINARY` env var (explicit override).
+/// 2. Sibling of the current executable (same directory as the
+///    `codeless` server binary — the standard `cargo build` layout).
+/// 3. `codeless-mcp` on `PATH`.
+/// Returns `None` with a tracing warning if not found.
+fn resolve_mcp_binary() -> Option<String> {
+    use std::path::PathBuf;
+
+    if let Ok(explicit) = std::env::var("CODELESS_MCP_BINARY") {
+        if PathBuf::from(&explicit).is_file() {
+            tracing::info!(path = %explicit, "codeless-mcp binary (env override)");
+            return Some(explicit);
+        }
+    }
+
+    // Sibling of this process's binary (target/debug/codeless-mcp).
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name("codeless-mcp");
+        if sibling.is_file() {
+            let path = sibling.to_string_lossy().into_owned();
+            tracing::info!(path = %path, "codeless-mcp binary (sibling)");
+            return Some(path);
+        }
+    }
+
+    // Fall back to PATH.
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("codeless-mcp")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                tracing::info!(path = %path, "codeless-mcp binary (PATH)");
+                return Some(path);
+            }
+        }
+    }
+
+    tracing::warn!("codeless-mcp binary not found; jobs will not have access to codeless tools");
+    None
+}
+
 /// Built-in runner factory. `mock` is always on so the demo works
 /// without external dependencies; `claude` and `anthropic` are
 /// opt-in via `--enable-claude` / `--enable-anthropic` because each
@@ -680,6 +725,10 @@ struct DefaultRunnerFactory {
     /// stage resumes the same conversation via `--continue`. A0
     /// per SCOPE.md hard rule #1.
     store: Arc<codeless_runtime::store::SqliteStore>,
+    /// Resolved path to the `codeless-mcp` binary. When set, every
+    /// Claude runner gets a per-job MCP config (stdio transport) so
+    /// codeless-registered tools are available alongside built-in tools.
+    mcp_binary_path: Option<String>,
 }
 
 /// Build a `MockRunner` script that emits enough events to be visibly
@@ -782,6 +831,9 @@ impl RunnerFactory for DefaultRunnerFactory {
                     ) {
                         runner = runner.with_system_prompt(sp);
                     }
+                    if let Some(ref mcp) = self.mcp_binary_path {
+                        runner = runner.with_mcp_binary(mcp.clone());
+                    }
                     return Some(Arc::new(runner));
                 }
                 Ok(template) => {
@@ -846,6 +898,9 @@ impl RunnerFactory for DefaultRunnerFactory {
                 }
                 if let Some(e) = job.effort.as_deref() {
                     adapter = adapter.with_effort(e);
+                }
+                if let Some(ref mcp) = self.mcp_binary_path {
+                    adapter = adapter.with_mcp_binary(mcp.clone());
                 }
                 Some(Arc::new(adapter))
             }

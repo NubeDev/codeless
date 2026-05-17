@@ -34,7 +34,7 @@ use crate::time::now_ms;
 /// `drive_job` builds a fresh `ClaudeRunnerAdapter` for the job it is
 /// about to invoke. The shape stays minimal on purpose: more
 /// upstream knobs land here only when a job-row column gives them a
-/// home. Tools, MCP, model selection are explicit-future work.
+/// home.
 pub struct ClaudeRunnerAdapter {
     pub prompt: String,
     pub task_id: TaskId,
@@ -78,6 +78,11 @@ pub struct ClaudeRunnerAdapter {
     /// same half-formed plan — rather than re-deriving from
     /// scratch. `None` (default) means a fresh session.
     pub resume_id: Option<String>,
+    /// Path to the `codeless-mcp` binary. When set, the adapter
+    /// generates a per-job MCP config file pointing at this binary
+    /// (stdio transport) so the runner can invoke codeless-registered
+    /// tools alongside its built-in set.
+    pub mcp_binary_path: Option<String>,
 }
 
 /// Headless default. Codeless's runner has no human at the TTY to
@@ -151,6 +156,7 @@ impl ClaudeRunnerAdapter {
             permission_mode: None,
             thinking_budget: None,
             resume_id: None,
+            mcp_binary_path: None,
         }
     }
 
@@ -195,6 +201,47 @@ impl ClaudeRunnerAdapter {
         let s = effort.into();
         self.thinking_budget = if s.is_empty() { None } else { Some(s) };
         self
+    }
+
+    /// Path to the `codeless-mcp` binary. When set, the adapter
+    /// writes a per-job MCP config (stdio transport) and passes it
+    /// to the runner so codeless-registered tools are available.
+    pub fn with_mcp_binary(mut self, path: impl Into<String>) -> Self {
+        let s = path.into();
+        self.mcp_binary_path = if s.is_empty() { None } else { Some(s) };
+        self
+    }
+
+    /// Generate a temp MCP config JSON pointing at the codeless-mcp
+    /// binary (stdio transport). Returns `None` when no binary path
+    /// is configured.
+    fn build_mcp_config(&self, worktree: Option<&std::path::Path>) -> Option<String> {
+        let bin = self.mcp_binary_path.as_deref()?;
+
+        let worktree_str = worktree
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".to_string());
+
+        let json = serde_json::json!({
+            "mcpServers": {
+                "codeless": {
+                    "command": bin,
+                    "args": [],
+                    "env": {
+                        "CODELESS_WORKTREE_ROOT": worktree_str
+                    }
+                }
+            }
+        });
+
+        let path = std::env::temp_dir().join(format!(
+            "codeless-mcp-{}-{}.json",
+            std::process::id(),
+            self.task_id
+        ));
+        let bytes = serde_json::to_vec_pretty(&json).ok()?;
+        std::fs::write(&path, bytes).ok()?;
+        Some(path.to_string_lossy().into_owned())
     }
 }
 
@@ -248,6 +295,7 @@ impl Runner for ClaudeRunnerAdapter {
             permission_mode: Some(self.permission_mode.unwrap_or(PermissionMode::Bypass)),
             thinking_budget: self.thinking_budget.clone(),
             resume_id: self.resume_id.clone(),
+            mcp_config_path: self.build_mcp_config(ctx.worktree_path.as_deref()),
             ..Default::default()
         });
 

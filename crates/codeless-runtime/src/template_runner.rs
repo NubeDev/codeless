@@ -117,6 +117,10 @@ pub struct TemplateRunner {
     /// and clears the prefix after the next `stage_prompt` call so
     /// the guidance does not bleed into later, unrelated stages.
     pub pending_operator_comment: Option<String>,
+    /// Path to the `codeless-mcp` binary. Threaded into each
+    /// per-stage `ClaudeRunnerAdapter` so codeless-registered tools
+    /// are available via MCP (stdio transport).
+    pub mcp_binary_path: Option<String>,
 }
 
 impl TemplateRunner {
@@ -128,6 +132,7 @@ impl TemplateRunner {
             store: None,
             thrashing_guard: None,
             pending_operator_comment: None,
+            mcp_binary_path: None,
         }
     }
 
@@ -170,6 +175,13 @@ impl TemplateRunner {
     /// Opt into per-stage `MockRunner` for development / demos.
     pub fn with_mock_runner(mut self) -> Self {
         self.use_mock_runner = true;
+        self
+    }
+
+    /// Set the `codeless-mcp` binary path for per-stage tool access.
+    pub fn with_mcp_binary(mut self, path: impl Into<String>) -> Self {
+        let s = path.into();
+        self.mcp_binary_path = if s.is_empty() { None } else { Some(s) };
         self
     }
 
@@ -962,6 +974,9 @@ impl Runner for TemplateRunner {
                                 }
                             }
                         }
+                    }
+                    if let Some(ref mcp) = self.mcp_binary_path {
+                        adapter = adapter.with_mcp_binary(mcp.clone());
                     }
                     adapter.run(sub_ctx).await
                 };

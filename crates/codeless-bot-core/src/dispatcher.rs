@@ -41,6 +41,7 @@ use codeless_rpc::{
 };
 use codeless_types::Job;
 
+use crate::alias_map::AliasMap;
 use crate::command::{parse, Command, ParseError, ThreadContext};
 use crate::reply;
 use crate::thread_map::ThreadMap;
@@ -138,6 +139,7 @@ pub struct Dispatcher {
     backend: Arc<dyn CommandBackend>,
     transport: Arc<dyn BotTransport>,
     threads: ThreadMap,
+    aliases: AliasMap,
 }
 
 impl Dispatcher {
@@ -150,6 +152,7 @@ impl Dispatcher {
             backend,
             transport,
             threads,
+            aliases: AliasMap::new(),
         }
     }
 
@@ -186,12 +189,13 @@ impl Dispatcher {
     /// so tests can assert the reply text without a transport.
     pub async fn build_reply(&self, msg: &InboundMessage) -> String {
         let ctx = self.thread_context(msg);
-        let cmd = match parse(&msg.text, ctx) {
+        let expanded = self.expand_aliases(&msg.chat, &msg.text);
+        let cmd = match parse(&expanded, ctx) {
             Ok(c) => c,
             Err(ParseError::Empty) => return String::new(),
             Err(err) => return reply::format_parse_error(&err),
         };
-        match self.run_command(cmd).await {
+        match self.run_command(&msg.chat, cmd).await {
             Ok(text) => text,
             Err(err) => reply::format_rpc_error(&err),
         }
@@ -207,7 +211,40 @@ impl Dispatcher {
         }
     }
 
-    async fn run_command(&self, cmd: Command) -> RpcResult<String> {
+    /// Replace bare numeric tokens (1-99) with the full ULID from the
+    /// alias map so the parser sees a valid job ID. Only the first
+    /// token that looks like a small number and sits in the "id slot"
+    /// is expanded — this avoids mangling quoted comments or other
+    /// numeric values.
+    fn expand_aliases(&self, chat: &str, text: &str) -> String {
+        let trimmed = text.trim();
+        let parts: Vec<&str> = trimmed.splitn(3, char::is_whitespace).collect();
+        if parts.len() < 2 {
+            return text.to_string();
+        }
+        let verb = parts[0].to_ascii_lowercase();
+        let maybe_alias = parts[1].trim();
+        if !matches!(
+            verb.as_str(),
+            "status" | "start" | "stop" | "resume"
+        ) {
+            return text.to_string();
+        }
+        if let Ok(n) = maybe_alias.parse::<usize>() {
+            if n >= 1 && n <= 99 {
+                if let Some(job_id) = self.aliases.resolve(chat, n) {
+                    let rest = if parts.len() == 3 { parts[2] } else { "" };
+                    if rest.is_empty() {
+                        return format!("{} {}", parts[0], job_id);
+                    }
+                    return format!("{} {} {}", parts[0], job_id, rest);
+                }
+            }
+        }
+        text.to_string()
+    }
+
+    async fn run_command(&self, chat: &str, cmd: Command) -> RpcResult<String> {
         match cmd {
             Command::Help => Ok(reply::format_help()),
             Command::ListJobs => {
@@ -215,6 +252,8 @@ impl Dispatcher {
                     .backend
                     .list_jobs(ListJobsArgs { repo_id: None })
                     .await?;
+                let ids: Vec<_> = res.jobs.iter().map(|j| j.id).collect();
+                self.aliases.set(chat, ids);
                 Ok(reply::format_list_jobs(&res))
             }
             Command::GetJob { job_id } => {
@@ -579,7 +618,7 @@ mod tests {
         // it (rather than a specific verb line) keeps the test stable
         // against future re-wording of individual command rows.
         assert!(
-            posts[0].1.contains("Codeless Slack commands"),
+            posts[0].1.contains("Codeless bot commands"),
             "got: {}",
             posts[0].1,
         );

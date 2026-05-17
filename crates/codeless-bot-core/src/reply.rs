@@ -43,10 +43,10 @@ pub fn format_list_jobs(result: &ListJobsResult) -> String {
         total,
         if total == 1 { "" } else { "s" }
     ));
-    for job in result.jobs.iter().take(STATUS_LIST_CAP) {
+    for (idx, job) in result.jobs.iter().take(STATUS_LIST_CAP).enumerate() {
         out.push_str(&format!(
-            "  - {id}  {status:<14}  {name}  ${cost:.2}\n",
-            id = short_id(&job.id.to_string()),
+            "  {n}. {status:<14}  {name}  ${cost:.2}\n",
+            n = idx + 1,
             status = status_word(job.status),
             name = template_name(job).unwrap_or_else(|| "(no-template)".to_string()),
             cost = (job.cost_cents.as_i64() as f64) / 100.0,
@@ -56,8 +56,7 @@ pub fn format_list_jobs(result: &ListJobsResult) -> String {
         out.push_str(&format!("  …and {} more\n", total - STATUS_LIST_CAP));
     }
     out.push_str(
-        "\nReply: `status <id>` for details, \
-         `resume <id> [bypass | \"<comment>\"]` to act.",
+        "\nReply with the number: `status 3`, `resume 6 bypass`, `stop 2`.",
     );
     out
 }
@@ -137,19 +136,18 @@ pub fn format_resume_job(job: &Job, bypass: bool, comment: Option<&str>) -> Stri
 /// conventions for exactly this reason).
 pub fn format_help() -> String {
     [
-        "Codeless Slack commands (Surface 1 — keep-it-running):",
+        "Codeless bot commands:",
         "",
-        "  status                 list active jobs",
-        "  status <id>            one-job detail",
-        "  start <id>             promote Draft -> Queued",
-        "  stop [<id>]            stop a Running/Queued job",
-        "  resume [<id>] [bypass] [\"<comment>\"]",
+        "  status                 list active jobs (numbered)",
+        "  status <N or id>       one-job detail",
+        "  start <N or id>        promote Draft -> Queued",
+        "  stop [<N or id>]       stop a Running/Queued job",
+        "  resume [<N or id>] [bypass] [\"<comment>\"]",
         "                         re-queue a Stopped/Failed/Paused job",
         "",
-        "In a notification thread the <id> is implied by the thread.",
-        "Outside a thread every action takes an explicit <id>.",
-        "Quote the optional comment with double quotes; escape an",
-        "embedded `\"` as `\\\"`.",
+        "Use the number from the last `status` list (e.g. `resume 3`).",
+        "In a notification thread the job is implied by the thread.",
+        "Full 26-char ULIDs also accepted.",
     ]
     .join("\n")
 }

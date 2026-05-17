@@ -35,6 +35,7 @@
 //! `std::process` / `tokio::process` calls and is excluded from the
 //! mobile-safe column of the crate table.
 
+pub mod alias_map;
 pub mod command;
 pub mod dispatcher;
 pub mod notify;
@@ -43,6 +44,7 @@ pub mod reply;
 pub mod thread_map;
 pub mod transport;
 
+pub use alias_map::AliasMap;
 pub use command::{parse as parse_command, Command, ParseError, ThreadContext};
 pub use dispatcher::{
     CommandBackend, Dispatcher, DispatcherConfig, InboundMessage, RpcServerBackend,
