@@ -19,7 +19,10 @@
 use std::sync::Arc;
 
 use codeless_rpc::RpcError;
-use codeless_types::{CostCents, Event, Stage, StageStatus, Task, TaskId, TaskStatus, UnixMillis};
+use codeless_types::{
+    CostCents, Event, Stage, StageStatus, Task, TaskId, TaskStatus, Todo, TodoId, TodoStatus,
+    UnixMillis,
+};
 use futures_util::StreamExt;
 use tokio::task::JoinHandle;
 
@@ -165,6 +168,38 @@ async fn handle_event(
         Event::TaskCompleted { task_id, status } => {
             update_task_completed(store, *task_id, *status, env.created_at).await?;
         }
+        Event::TodoAdded {
+            todo_id,
+            task_id,
+            ordinal,
+            title,
+            kind,
+        } => {
+            // `insert_todo` is `INSERT OR IGNORE` on `(task_id, ordinal)`,
+            // so a replayed `TodoAdded` on recorder restart silently
+            // no-ops. The row starts in `Pending` with no started/ended
+            // timestamps; the `TodoUpdated` / `TodoCompleted` arms fill
+            // those columns via `update_todo_status`.
+            store
+                .insert_todo(&Todo {
+                    id: *todo_id,
+                    task_id: *task_id,
+                    ordinal: *ordinal,
+                    title: title.clone(),
+                    status: TodoStatus::Pending,
+                    kind: *kind,
+                    created_at: env.created_at,
+                    started_at: None,
+                    ended_at: None,
+                })
+                .await?;
+        }
+        Event::TodoUpdated { todo_id, status } => {
+            update_todo(store, *todo_id, *status, env.created_at).await?;
+        }
+        Event::TodoCompleted { todo_id, status } => {
+            update_todo(store, *todo_id, *status, env.created_at).await?;
+        }
         _ => {}
     }
     Ok(())
@@ -232,6 +267,25 @@ async fn add_message_cost(
     store
         .add_task_cost(task_id, cost, input_tokens, output_tokens)
         .await?;
+    Ok(())
+}
+
+/// Apply a `TodoUpdated` or `TodoCompleted` envelope. The store call
+/// is the same for both — `update_todo_status` keys timestamp writes
+/// on the supplied status, so a terminal status writes `ended_at`
+/// while a non-terminal one only touches `started_at`. A miss on
+/// `todo_id` (row never inserted) returns `Ok(false)`; we log and
+/// move on rather than tearing the loop down.
+async fn update_todo(
+    store: &SqliteStore,
+    todo_id: TodoId,
+    status: TodoStatus,
+    at: UnixMillis,
+) -> sqlx::Result<()> {
+    let updated = store.update_todo_status(todo_id, status, at).await?;
+    if !updated {
+        tracing::trace!(?todo_id, ?status, "todo status update missed unknown row");
+    }
     Ok(())
 }
 
@@ -453,6 +507,159 @@ mod tests {
         let rows = store.list_stages_for_job(job_id).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].stage.session_id.as_deref(), Some("sess-first"));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn persists_todo_lifecycle_to_sqlite() {
+        // Drives one trio item end-to-end through the bus: `TodoAdded`
+        // creates the row, `TodoUpdated(InProgress)` sets `started_at`,
+        // `TodoCompleted(Done)` sets `ended_at`. Confirms the recorder
+        // wires the three Todo arms into the existing store methods.
+        use codeless_types::{TodoKind, TodoStatus};
+
+        let rpc = InProcessRpc::new().await.unwrap();
+        let store = rpc.store().clone();
+        let bus = rpc.bus().clone();
+
+        let repo = codeless_types::Repo {
+            id: codeless_types::RepoId::new(),
+            name: "demo".into(),
+            clone_url: "file:///dev/null".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp".into(),
+            git_auth: codeless_types::GitAuth::Token {
+                env_var: "X".into(),
+            },
+            concurrency_cap: None,
+            default_runner: Some("mock".into()),
+            created_at: now_ms(),
+            updated_at: now_ms(),
+        };
+        store.insert_repo(&repo).await.unwrap();
+        let job = codeless_types::Job {
+            id: codeless_types::JobId::new(),
+            repo_id: repo.id,
+            status: codeless_types::JobStatus::Queued,
+            stop_reason: None,
+            template_yaml: None,
+            prompt: Some("p".into()),
+            runner: "mock".into(),
+            branch: "".into(),
+            workspace_mode: WorkspaceMode::default(),
+            worktree_path: None,
+            cost_cap_cents: CostCents::ZERO,
+            wall_clock_cap_ms: 0,
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            auto_bypass_policy: None,
+            pending_operator_comment: None,
+            precheck_override_once: false,
+            cost_cents: CostCents::ZERO,
+            started_at: None,
+            ended_at: None,
+            created_at: now_ms(),
+        };
+        store.insert_job(&job).await.unwrap();
+
+        let stage_id = StageId::new();
+        let stage = Stage {
+            id: stage_id,
+            job_id: job.id,
+            ordinal: 0,
+            name: "s".into(),
+            status: StageStatus::Running,
+            verify_cmd: None,
+            started_at: None,
+            ended_at: None,
+            session_id: None,
+            goal: None,
+            acceptance: None,
+            last_activity_at: None,
+            archived: false,
+            persona_id: None,
+            failure_class: None,
+            failure_detail: None,
+            bypassed_at: None,
+            bypassed_reason: None,
+        };
+        store.insert_stage(&stage).await.unwrap();
+
+        let task_id = TaskId::new();
+        let task = Task {
+            id: task_id,
+            stage_id,
+            ordinal: 0,
+            status: TaskStatus::Running,
+            depends_on: vec![],
+            lease_holder: None,
+            lease_expires_at: None,
+            cost_cents: CostCents::ZERO,
+            input_tokens: 0,
+            output_tokens: 0,
+            started_at: Some(now_ms()),
+            ended_at: None,
+        };
+        store.insert_task_minimal(&task).await.unwrap();
+
+        let handle = spawn_stage_recorder(bus.clone(), store.clone())
+            .await
+            .unwrap();
+
+        let todo_id = TodoId::new();
+        bus.publish(
+            Some(job.id),
+            Some(stage_id),
+            Some(task_id),
+            Event::TodoAdded {
+                todo_id,
+                task_id,
+                ordinal: 10,
+                title: "checks".into(),
+                kind: TodoKind::Checks,
+            },
+            UnixMillis(100),
+        )
+        .await
+        .unwrap();
+        bus.publish(
+            Some(job.id),
+            Some(stage_id),
+            Some(task_id),
+            Event::TodoUpdated {
+                todo_id,
+                status: TodoStatus::InProgress,
+            },
+            UnixMillis(200),
+        )
+        .await
+        .unwrap();
+        bus.publish(
+            Some(job.id),
+            Some(stage_id),
+            Some(task_id),
+            Event::TodoCompleted {
+                todo_id,
+                status: TodoStatus::Done,
+            },
+            UnixMillis(300),
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let row = store.get_todo(todo_id).await.unwrap().expect("todo row");
+        assert_eq!(row.task_id, task_id);
+        assert_eq!(row.ordinal, 10);
+        assert_eq!(row.title, "checks");
+        assert_eq!(row.kind, TodoKind::Checks);
+        assert_eq!(row.status, TodoStatus::Done);
+        assert_eq!(row.started_at, Some(UnixMillis(200)));
+        assert_eq!(row.ended_at, Some(UnixMillis(300)));
 
         handle.abort();
     }
