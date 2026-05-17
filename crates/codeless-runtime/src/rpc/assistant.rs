@@ -91,9 +91,6 @@ pub(super) async fn create_assistant_thread(
 /// `assistant_threads.persona_id` makes a dangling persona reference
 /// schema-impossible, so a present thread always resolves to a
 /// persona.
-#[allow(dead_code)] // PS8 wires this into the agent loop; until then
-                    // the lib build sees no caller outside the unit
-                    // tests in this file.
 pub(super) async fn resolve_thread_persona(
     rpc: &InProcessRpc,
     thread_id: AssistantThreadId,
@@ -320,6 +317,12 @@ pub(super) async fn append_assistant_message(
             }
         }
         None if super::assistant_planner::planner_configured(rpc) => {
+            // PS8: load the persona pinned to this thread once per turn.
+            // The persona supplies the planner's system instructions and
+            // the `allowed_tools` cap; the resolver is the substrate-doc
+            // single seam (`resolve_thread_persona`) so the contract
+            // tested under PS5 is what the loop honours here.
+            let persona = resolve_thread_persona(rpc, args.thread_id).await?;
             // History fold deliberately excludes the user row we just
             // inserted: the planner takes the new turn as its `Current
             // user message` trailer so the model treats it as the
@@ -333,9 +336,14 @@ pub(super) async fn append_assistant_message(
                 .into_iter()
                 .filter(|m| m.id != user_message.id)
                 .collect();
-            let turn =
-                super::assistant_planner::run_planner_turn(rpc, args.thread_id, &prior, trimmed)
-                    .await?;
+            let turn = super::assistant_planner::run_planner_turn(
+                rpc,
+                args.thread_id,
+                &persona,
+                &prior,
+                trimmed,
+            )
+            .await?;
             Reply::Planner {
                 content: turn.content,
                 cards: turn.cards,

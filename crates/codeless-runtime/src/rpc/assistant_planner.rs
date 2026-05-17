@@ -17,8 +17,8 @@ use ai_runner::Provider;
 use codeless_adapters_host::ChatRunCfg;
 use codeless_rpc::{RpcError, RpcResult};
 use codeless_types::{
-    AssistantAction, AssistantActionCard, AssistantMessage, AssistantMessageRole,
-    AssistantThreadId, JobId, TaskId,
+    allowed_tools::tool_allowed, AssistantAction, AssistantActionCard, AssistantMessage,
+    AssistantMessageRole, AssistantThreadId, JobId, Persona, TaskId,
 };
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -73,6 +73,7 @@ pub(super) fn planner_configured(rpc: &InProcessRpc) -> bool {
 pub(super) async fn run_planner_turn(
     rpc: &InProcessRpc,
     thread_id: AssistantThreadId,
+    persona: &Persona,
     history: &[AssistantMessage],
     user_content: &str,
 ) -> RpcResult<PlannerTurn> {
@@ -91,7 +92,14 @@ pub(super) async fn run_planner_turn(
         )
     })?;
 
-    let prompt = build_planner_prompt(history, user_content);
+    let prompt = build_planner_prompt(persona, history, user_content);
+    // Snapshot the persona's allowed-tools list once per turn so the
+    // event-bus publisher closure can filter incoming `ToolCall` envelopes
+    // without re-reading the DB on every event. Empty list means "no
+    // built-in actions reachable from this persona"; the planner still
+    // runs (the user might just be chatting) and any tool calls the
+    // model attempts are dropped with a logged warning.
+    let allowed_patterns: Arc<Vec<String>> = Arc::new(persona.allowed_tools.clone());
     let task_id = TaskId::new();
     // Bus envelopes key on `Option<JobId>`; the assistant surface has
     // no jobs row, so the synthetic id reuses the thread's ulid bytes.
@@ -108,6 +116,7 @@ pub(super) async fn run_planner_turn(
         let bus = Arc::clone(&bus);
         let text_sink = Arc::clone(&text_sink);
         let card_sink = Arc::clone(&card_sink);
+        let allowed_patterns = Arc::clone(&allowed_patterns);
         async move {
             match &event {
                 codeless_types::Event::AiToken { delta, .. } => {
@@ -119,18 +128,40 @@ pub(super) async fn run_planner_turn(
                 // turn, since the surrounding text reply may still be
                 // useful and a stricter caller can always cancel the
                 // turn through the (forthcoming) abort surface.
+                //
+                // PS8: persona's `allowed_tools` is the cap. A tool the
+                // persona has not been granted is dropped with a logged
+                // warning rather than landed as a card — the substrate-
+                // doc rule is that the runner cannot invoke a tool a
+                // persona did not declare, and the planner is the seam
+                // where that filter lands for the Assistant surface. The
+                // built-in action catalogue lives under the synthetic
+                // `assistant.<verb>` namespace; plugin tools (PS6+) keep
+                // their own `<plugin>.<verb>` namespace and pass through
+                // the same `tool_allowed` check.
                 codeless_types::Event::ToolCall {
                     tool, args_json, ..
-                } => match parse_tool_call(tool, args_json) {
-                    Ok(action) => card_sink.lock().push(AssistantActionCard::new(action)),
-                    Err(e) => {
+                } => {
+                    let qualified = assistant_tool_id(tool);
+                    if !tool_allowed(allowed_patterns.as_slice(), &qualified) {
                         tracing::warn!(
                             tool = %tool,
-                            error = %e,
-                            "assistant planner: dropping unrecognised tool call",
+                            qualified = %qualified,
+                            "assistant planner: persona disallowed tool, dropping call",
                         );
+                    } else {
+                        match parse_tool_call(tool, args_json) {
+                            Ok(action) => card_sink.lock().push(AssistantActionCard::new(action)),
+                            Err(e) => {
+                                tracing::warn!(
+                                    tool = %tool,
+                                    error = %e,
+                                    "assistant planner: dropping unrecognised tool call",
+                                );
+                            }
+                        }
                     }
-                },
+                }
                 _ => {}
             }
             bus.publish(Some(bus_job_id), None, Some(task_id), event, now_ms())
@@ -211,14 +242,33 @@ fn parse_tool_call(name: &str, args_json: &str) -> Result<AssistantAction, Strin
     serde_json::from_value::<AssistantAction>(value).map_err(|e| format!("decode action: {e}"))
 }
 
-/// Render a single-shot prompt from the thread's prior turns and the
-/// new user message. The shape is plain labelled blocks so a CLI
-/// runner that does not natively understand role-tagged transcripts
-/// still produces a coherent reply; the trailer separates the live
-/// turn from history so the model does not mistake it for another
-/// historical entry.
-fn build_planner_prompt(history: &[AssistantMessage], user_content: &str) -> String {
-    let mut out = String::from(PLANNER_SYSTEM_PREAMBLE);
+/// Render a single-shot prompt from the persona, the thread's prior
+/// turns, and the new user message. The shape is plain labelled blocks
+/// so a CLI runner that does not natively understand role-tagged
+/// transcripts still produces a coherent reply; the trailer separates
+/// the live turn from history so the model does not mistake it for
+/// another historical entry.
+///
+/// PS8 (DOCS/PLUGIN-SUBSTRATE.md item 8): the persona supplies both the
+/// system instructions and the allowed-tools cap, so the prompt's
+/// preamble and tool catalogue both vary by persona. A persona with no
+/// allowed tools gets a catalogue-less prompt — the runner can still
+/// answer in prose, it just cannot propose actions.
+fn build_planner_prompt(
+    persona: &Persona,
+    history: &[AssistantMessage],
+    user_content: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str(PLANNER_FRAMING_PREAMBLE);
+    let instructions = persona.instructions.trim();
+    if !instructions.is_empty() {
+        out.push_str("\n\n## Persona\n");
+        out.push_str(instructions);
+        if !instructions.ends_with('\n') {
+            out.push('\n');
+        }
+    }
     if !history.is_empty() {
         out.push_str("\n\n## Conversation so far\n");
         for msg in history {
@@ -239,43 +289,147 @@ fn build_planner_prompt(history: &[AssistantMessage], user_content: &str) -> Str
     }
     out.push_str("\n\n## Current user message\n");
     out.push_str(user_content);
-    out.push_str(PLANNER_TOOL_TRAILER);
+    append_tool_trailer(&mut out, &persona.allowed_tools);
     out
 }
 
-const PLANNER_SYSTEM_PREAMBLE: &str = "You are Codeless's in-app assistant. \
-The user is talking to you from the workspace assistant pane. \
-Answer their questions about jobs, repos, and the codebase concisely. \
-When the user wants to view or change job state, propose a tool call \
-instead of describing the action in prose — confirmation lives on the \
-user side. Each tool invocation surfaces as an action card the user \
-must confirm before the runtime dispatches the underlying RPC.";
+/// Append the persona-filtered tool catalogue trailer. The full
+/// catalogue is the built-in assistant action set
+/// (`BUILTIN_ASSISTANT_TOOLS`); each entry survives only if the
+/// persona's `allowed_tools` matches its `assistant.<verb>` namespaced
+/// id. An empty surviving catalogue suppresses the whole "you may emit
+/// tool calls" block — telling a model it can call zero tools is worse
+/// than not bringing the topic up at all.
+fn append_tool_trailer(out: &mut String, allowed: &[String]) {
+    let visible: Vec<&BuiltinAssistantTool> = BUILTIN_ASSISTANT_TOOLS
+        .iter()
+        .filter(|t| tool_allowed(allowed, &assistant_tool_id(t.name)))
+        .collect();
+    if visible.is_empty() {
+        out.push_str(PLANNER_TOOLS_DISABLED_TRAILER);
+        return;
+    }
+    let policy_visible = visible.iter().any(|t| t.name == "set_policy");
+    out.push_str(PLANNER_TOOL_TRAILER_HEAD);
+    for tool in visible {
+        out.push_str("- `");
+        out.push_str(tool.name);
+        out.push_str("` ");
+        out.push_str(tool.args);
+        out.push('\n');
+    }
+    if policy_visible {
+        out.push_str(PLANNER_AUTO_BYPASS_POLICY_DOC);
+    }
+    out.push_str(PLANNER_TOOL_TRAILER_TAIL);
+}
 
-/// Catalogue of tool calls the planner is allowed to emit. The names
-/// match `AssistantAction`'s serde tag (snake_case); the args block of
-/// each tool must be a JSON object whose keys match the variant's
-/// fields. Surfaced inside the prompt so a CLI runner (which does not
-/// see a structured tools list the way a REST provider does) still has
-/// the schema in-band.
-const PLANNER_TOOL_TRAILER: &str = "\n\nReply to the user. \
+/// Translate a runner-emitted tool name into the namespaced id the
+/// `allowed_tools` matcher consumes. Built-in assistant actions live
+/// under the synthetic `assistant.<verb>` namespace; the planner does
+/// not register MCP tools today, so any non-built-in name passes
+/// through unchanged (a plugin tool already arrives namespaced as
+/// `<plugin>.<verb>`). Kept in one place so the publish-closure filter
+/// and the prompt-trailer filter agree byte-for-byte on what to look
+/// up.
+pub(super) fn assistant_tool_id(tool: &str) -> String {
+    if BUILTIN_ASSISTANT_TOOLS.iter().any(|t| t.name == tool) {
+        format!("assistant.{tool}")
+    } else {
+        tool.to_owned()
+    }
+}
+
+/// One entry in the built-in assistant action catalogue. `name` is the
+/// runner-side discriminator (matches `AssistantAction`'s serde tag);
+/// `args` is the human-readable arg-shape line surfaced in the prompt
+/// trailer for CLI runners that do not see a structured tools list.
+struct BuiltinAssistantTool {
+    name: &'static str,
+    args: &'static str,
+}
+
+const BUILTIN_ASSISTANT_TOOLS: &[BuiltinAssistantTool] = &[
+    BuiltinAssistantTool {
+        name: "list_jobs",
+        args: "{ repo_id?: RepoId }",
+    },
+    BuiltinAssistantTool {
+        name: "get_job",
+        args: "{ job_id: JobId }",
+    },
+    BuiltinAssistantTool {
+        name: "start_job",
+        args: "{ job_id: JobId }",
+    },
+    BuiltinAssistantTool {
+        name: "stop_job",
+        args: "{ job_id: JobId }",
+    },
+    BuiltinAssistantTool {
+        name: "pause_job",
+        args: "{ job_id: JobId }",
+    },
+    BuiltinAssistantTool {
+        name: "resume_job",
+        args: "{ job_id: JobId }",
+    },
+    BuiltinAssistantTool {
+        name: "restart_job",
+        args: "{ job_id: JobId }",
+    },
+    BuiltinAssistantTool {
+        name: "update_job",
+        args: "{ job_id: JobId, runner?, model?, permission_mode?, effort?, \
+               cost_cap_cents?, wall_clock_cap_ms?, branch? }",
+    },
+    BuiltinAssistantTool {
+        name: "draft_job",
+        args: "{ repo_id, prompt, runner, branch, cost_cap_cents, \
+               wall_clock_cap_ms, workspace_mode?, model?, permission_mode?, effort?, \
+               auto_bypass_policy? }",
+    },
+    BuiltinAssistantTool {
+        name: "edit_scope",
+        args: "{ job_id: JobId, filename: string, new_content: string }",
+    },
+    BuiltinAssistantTool {
+        name: "set_policy",
+        args: "{ job_id: JobId, policy?: AutoBypassPolicy }",
+    },
+];
+
+/// Framing preamble every persona shares: locates the model inside the
+/// Codeless Assistant surface and pins the "tool call ⇒ confirmable
+/// card" contract so a persona prompt doesn't have to re-explain
+/// confirmation semantics on every thread. Persona-specific
+/// instructions follow under the `## Persona` block.
+const PLANNER_FRAMING_PREAMBLE: &str = "You are operating inside the Codeless Assistant. \
+The user is talking to you from the workspace assistant pane. \
+When the user wants to view or change runtime state, propose a tool call \
+instead of describing the action in prose — every tool call surfaces as \
+an action card the user must confirm before the runtime dispatches the \
+underlying RPC.";
+
+/// Trailer head when the persona has at least one allowed tool. Each
+/// allowed entry is appended below as `- name args`; the tail closes
+/// with the confirmation rule the runner-side bus depends on.
+const PLANNER_TOOL_TRAILER_HEAD: &str = "\n\nReply to the user. \
 You may emit one or more tool calls in addition to (or in place of) \
 prose. Each tool call must use one of these names with a JSON object \
-matching the documented arg keys:\n\
-- `list_jobs` { repo_id?: RepoId }\n\
-- `get_job` { job_id: JobId }\n\
-- `start_job` { job_id: JobId }\n\
-- `stop_job` { job_id: JobId }\n\
-- `pause_job` { job_id: JobId }\n\
-- `resume_job` { job_id: JobId }\n\
-- `restart_job` { job_id: JobId }\n\
-- `update_job` { job_id: JobId, runner?, model?, permission_mode?, \
-effort?, cost_cap_cents?, wall_clock_cap_ms?, branch? }\n\
-- `draft_job` { repo_id, prompt, runner, branch, cost_cap_cents, \
-wall_clock_cap_ms, workspace_mode?, model?, permission_mode?, effort?, \
-auto_bypass_policy? }\n\
-- `edit_scope` { job_id: JobId, filename: string, new_content: string }\n\
-- `set_policy` { job_id: JobId, policy?: AutoBypassPolicy }\n\
-\n\
+matching the documented arg keys:\n";
+
+const PLANNER_TOOL_TRAILER_TAIL: &str =
+    "The runtime persists each tool call as a confirmable card; the user \
+clicks Confirm to dispatch it. Do not invent tool names.\n";
+
+/// Appended when `set_policy` is in the persona's visible tool set.
+/// The variant catalogue and the "when to propose" guidance are not
+/// derivable from the tool's one-line arg signature; kept as its own
+/// const rather than baked into `BuiltinAssistantTool::args` because
+/// the catalogue is much longer than one line and the dynamic trailer
+/// consumes only the per-tool args shape.
+const PLANNER_AUTO_BYPASS_POLICY_DOC: &str = "\n\
 Auto-bypass policies control what the job does when a stage fails for \
 a non-cap reason. Cap-breach failures (cost / wall-clock) always halt \
 regardless. The picker the user sees on the new-job form is the same \
@@ -296,9 +450,16 @@ this fails again, keep going\", \"be hands-off\", \"halt if it gets \
 expensive\"). `set_policy` with `policy` omitted clears the policy and \
 restores the default halt-on-failure behaviour. The runtime refuses the \
 change while the job is Running or Queued — pause first if the user \
-wants the change to apply mid-flight.\n\
-The runtime persists each tool call as a confirmable card; the user \
-clicks Confirm to dispatch it. Do not invent tool names.\n";
+wants the change to apply mid-flight.\n";
+
+/// Trailer used when the persona's `allowed_tools` does not match any
+/// built-in action. The model is told there are no tools to emit; this
+/// is preferable to listing the full catalogue (which the runner would
+/// then drop on the floor) or to silence (which leaves the model
+/// guessing at tool names that no longer work).
+const PLANNER_TOOLS_DISABLED_TRAILER: &str = "\n\nReply to the user in prose. \
+This persona has no tool grants — do not propose tool calls; the runner \
+will drop any you emit.\n";
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -421,6 +582,41 @@ pub(crate) mod tests {
         Arc::new(r)
     }
 
+    /// Persona stub used by the planner unit tests. Pre-PS8 the
+    /// preamble + tool catalogue were hard-coded; PS8 binds both to a
+    /// persona row so every test now builds its own. The default
+    /// instructions match the framing the production seed has on
+    /// `builtin:general`; tests that need a different cap (no tools,
+    /// only-list-jobs) override the fields directly.
+    pub(crate) fn test_persona(allowed: &[&str], instructions: &str) -> Persona {
+        Persona {
+            id: "builtin:test".into(),
+            name: "Test".into(),
+            description: "test persona".into(),
+            icon: "spark".into(),
+            instructions: instructions.into(),
+            use_for_jobs: false,
+            default_model: None,
+            allowed_subagents: Vec::new(),
+            default_snippets: Vec::new(),
+            allowed_tools: allowed.iter().map(|s| (*s).to_owned()).collect(),
+            default_model_family: Some("smart".into()),
+            default_attachments_policy: "inline-thread-scoped".into(),
+            built_in: true,
+            created_at: codeless_types::UnixMillis(0),
+            updated_at: codeless_types::UnixMillis(0),
+        }
+    }
+
+    /// Persona stub granting the full built-in action catalogue. Most
+    /// pre-PS8 tests assumed the planner could emit any of `list_jobs`
+    /// / `start_job` / ... ; passing this through preserves that
+    /// behaviour without requiring every test to enumerate the ten
+    /// tool names.
+    pub(crate) fn full_access_persona() -> Persona {
+        test_persona(&["assistant.*"], "Test persona with all tool grants.")
+    }
+
     async fn rpc_with_planner(
         chunks: Vec<&'static str>,
     ) -> (InProcessRpc, Arc<StdMutex<Option<String>>>) {
@@ -439,7 +635,7 @@ pub(crate) mod tests {
         let (rpc, seen) = rpc_with_planner(vec!["hello, ", "world", "!"]).await;
         let thread_id = AssistantThreadId::new();
 
-        let turn = run_planner_turn(&rpc, thread_id, &[], "hi there")
+        let turn = run_planner_turn(&rpc, thread_id, &full_access_persona(), &[], "hi there")
             .await
             .unwrap();
         assert_eq!(turn.content, "hello, world!");
@@ -464,7 +660,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let turn = run_planner_turn(&rpc, thread_id, &[], "ping")
+        let turn = run_planner_turn(&rpc, thread_id, &full_access_persona(), &[], "ping")
             .await
             .unwrap();
         assert_eq!(turn.content, "alpha-beta");
@@ -524,9 +720,15 @@ pub(crate) mod tests {
                 created_at: now_ms(),
             },
         ];
-        let _ = run_planner_turn(&rpc, thread_id, &history, "follow-up")
-            .await
-            .unwrap();
+        let _ = run_planner_turn(
+            &rpc,
+            thread_id,
+            &full_access_persona(),
+            &history,
+            "follow-up",
+        )
+        .await
+        .unwrap();
         let prompt = seen.lock().unwrap().clone().unwrap();
         assert!(prompt.contains("prior question"));
         assert!(prompt.contains("prior reply"));
@@ -541,9 +743,15 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn planner_rejects_empty_reply() {
         let (rpc, _seen) = rpc_with_planner(vec!["", "   ", "\n"]).await;
-        let err = run_planner_turn(&rpc, AssistantThreadId::new(), &[], "hi")
-            .await
-            .unwrap_err();
+        let err = run_planner_turn(
+            &rpc,
+            AssistantThreadId::new(),
+            &full_access_persona(),
+            &[],
+            "hi",
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, RpcError::Internal(_)), "got {err:?}");
     }
 
@@ -567,9 +775,15 @@ pub(crate) mod tests {
             },
         ])
         .await;
-        let turn = run_planner_turn(&rpc, AssistantThreadId::new(), &[], "kick off the job")
-            .await
-            .unwrap();
+        let turn = run_planner_turn(
+            &rpc,
+            AssistantThreadId::new(),
+            &full_access_persona(),
+            &[],
+            "kick off the job",
+        )
+        .await
+        .unwrap();
         assert_eq!(turn.content, "Sure, starting it now.");
         assert_eq!(turn.cards.len(), 1);
         match &turn.cards[0].action {
@@ -586,9 +800,15 @@ pub(crate) mod tests {
             input: serde_json::json!({ "job_id": job_id }),
         }])
         .await;
-        let turn = run_planner_turn(&rpc, AssistantThreadId::new(), &[], "pause it")
-            .await
-            .unwrap();
+        let turn = run_planner_turn(
+            &rpc,
+            AssistantThreadId::new(),
+            &full_access_persona(),
+            &[],
+            "pause it",
+        )
+        .await
+        .unwrap();
         // No `Text` envelopes were emitted, but a tool call alone is a
         // valid turn — the card row carries the model's response.
         assert!(turn.content.is_empty());
@@ -609,9 +829,15 @@ pub(crate) mod tests {
             FakeStep::Text("fallback prose".into()),
         ])
         .await;
-        let turn = run_planner_turn(&rpc, AssistantThreadId::new(), &[], "do a thing")
-            .await
-            .unwrap();
+        let turn = run_planner_turn(
+            &rpc,
+            AssistantThreadId::new(),
+            &full_access_persona(),
+            &[],
+            "do a thing",
+        )
+        .await
+        .unwrap();
         assert_eq!(turn.content, "fallback prose");
         // Unknown tool names are logged and dropped so the surrounding
         // prose still lands; failing the whole turn would swallow what
@@ -652,9 +878,143 @@ pub(crate) mod tests {
     async fn planner_unconfigured_returns_internal() {
         let rpc = InProcessRpc::new().await.unwrap();
         assert!(!planner_configured(&rpc));
-        let err = run_planner_turn(&rpc, AssistantThreadId::new(), &[], "hi")
-            .await
-            .unwrap_err();
+        let err = run_planner_turn(
+            &rpc,
+            AssistantThreadId::new(),
+            &full_access_persona(),
+            &[],
+            "hi",
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, RpcError::Internal(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_prompt_renders_persona_instructions() {
+        // PS8: the persona supplies the system prompt. The planner used
+        // to ship a hardcoded preamble; now the persona's `instructions`
+        // field has to show up in the rendered prompt the runner sees.
+        let (rpc, seen) = rpc_with_planner(vec!["ok"]).await;
+        let persona = test_persona(
+            &["assistant.*"],
+            "You are the HVAC estimator. Speak in BOM lines.",
+        );
+        let _ = run_planner_turn(&rpc, AssistantThreadId::new(), &persona, &[], "hi")
+            .await
+            .unwrap();
+        let prompt = seen.lock().unwrap().clone().unwrap();
+        assert!(
+            prompt.contains("HVAC estimator"),
+            "persona instructions must appear in the prompt: {prompt}",
+        );
+        assert!(prompt.contains("## Persona"), "prompt: {prompt}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_prompt_lists_only_persona_allowed_tools() {
+        // PS8: the prompt's tool catalogue must be filtered by the
+        // persona's `allowed_tools`. A persona allowed only
+        // `assistant.list_jobs` sees that one tool and nothing else.
+        let (rpc, seen) = rpc_with_planner(vec!["ok"]).await;
+        let persona = test_persona(&["assistant.list_jobs"], "Read-only viewer.");
+        let _ = run_planner_turn(&rpc, AssistantThreadId::new(), &persona, &[], "what's up")
+            .await
+            .unwrap();
+        let prompt = seen.lock().unwrap().clone().unwrap();
+        assert!(prompt.contains("`list_jobs`"));
+        // Every other built-in is gone from the catalogue.
+        for hidden in [
+            "`start_job`",
+            "`stop_job`",
+            "`pause_job`",
+            "`resume_job`",
+            "`restart_job`",
+            "`update_job`",
+            "`draft_job`",
+            "`edit_scope`",
+            "`get_job`",
+        ] {
+            assert!(
+                !prompt.contains(hidden),
+                "persona allowed only list_jobs; {hidden} should be absent: {prompt}",
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_prompt_suppresses_catalogue_when_no_tools_allowed() {
+        // PS8: a persona with no allowed tools (`builtin:general` before
+        // 0018) gets a catalogue-suppressing trailer instead of the
+        // full list — the model would otherwise be told it can call
+        // tools the runner will drop.
+        let (rpc, seen) = rpc_with_planner(vec!["ok"]).await;
+        let persona = test_persona(&[], "Chat only. No tool grants.");
+        let _ = run_planner_turn(&rpc, AssistantThreadId::new(), &persona, &[], "hi")
+            .await
+            .unwrap();
+        let prompt = seen.lock().unwrap().clone().unwrap();
+        assert!(prompt.contains("no tool grants"), "prompt: {prompt}");
+        assert!(
+            !prompt.contains("`list_jobs`"),
+            "no-tool persona must not advertise tools: {prompt}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_drops_tool_calls_outside_persona_allow_list() {
+        // PS8 acceptance trailer: a tool the persona has not granted
+        // never lands as a card, even if the model emits it. The
+        // surrounding prose still survives so the user sees the model's
+        // explanation.
+        let job_id = JobId::new();
+        let rpc = rpc_with_steps(vec![
+            FakeStep::Text("Cannot pause from this persona.".into()),
+            FakeStep::Tool {
+                name: "pause_job".into(),
+                input: serde_json::json!({ "job_id": job_id }),
+            },
+        ])
+        .await;
+        let persona = test_persona(&["assistant.list_jobs"], "Read-only viewer.");
+        let turn = run_planner_turn(&rpc, AssistantThreadId::new(), &persona, &[], "pause it")
+            .await
+            .unwrap();
+        assert_eq!(turn.content, "Cannot pause from this persona.");
+        assert!(turn.cards.is_empty(), "pause_job is not in allow list");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planner_keeps_tool_calls_inside_persona_allow_list() {
+        // Complement to the drop test: when the persona does grant the
+        // tool, the card lands as before.
+        let rpc = rpc_with_steps(vec![FakeStep::Tool {
+            name: "list_jobs".into(),
+            input: serde_json::json!({}),
+        }])
+        .await;
+        let persona = test_persona(&["assistant.list_jobs"], "Read-only viewer.");
+        let turn = run_planner_turn(&rpc, AssistantThreadId::new(), &persona, &[], "what's up")
+            .await
+            .unwrap();
+        assert_eq!(turn.cards.len(), 1);
+        assert!(matches!(
+            turn.cards[0].action,
+            AssistantAction::ListJobs { repo_id: None }
+        ));
+    }
+
+    #[test]
+    fn assistant_tool_id_namespaces_builtins() {
+        // PS8: the substrate-doc allowed_tools matcher operates on
+        // dotted ids; built-in assistant actions get the synthetic
+        // `assistant.` prefix so a persona can grant the whole set with
+        // `assistant.*` or pick individual tools with
+        // `assistant.list_jobs`. An unknown name (a plugin tool, or a
+        // misspelling) passes through unchanged.
+        assert_eq!(assistant_tool_id("list_jobs"), "assistant.list_jobs");
+        assert_eq!(assistant_tool_id("start_job"), "assistant.start_job");
+        assert_eq!(assistant_tool_id("notes.append"), "notes.append");
+        assert_eq!(assistant_tool_id("unknown"), "unknown");
     }
 }

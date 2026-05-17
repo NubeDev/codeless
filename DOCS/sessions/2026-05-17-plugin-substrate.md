@@ -42,7 +42,7 @@ Goal:        a new workflow ships as `crates/codeless-plugin-<id>/` + a
 4. [x] PS5 — persona / thread-kind data model.
 5. [x] PS6 — plugin manifest + registry.
 6. [x] PS7 — tool-result attachments.
-7. [ ] PS8 — Assistant agent loop.
+7. [x] PS8 — Assistant agent loop.
 8. [ ] Plugin #0 `notes` end-to-end.
 
 ## Stage 1 — halt notes
@@ -460,3 +460,59 @@ typecheck` and `pnpm vitest run src/modules/chat` green.
 
 The pre-existing `claude_runner` integration-test failure on this
 branch is unchanged by this stage.
+
+## Stage 7 (PS8) — landed
+
+The Assistant agent loop now binds the planner to the thread's persona
+(DOCS/PLUGIN-SUBSTRATE.md item 8): the persona's `instructions` column
+becomes the system prompt and the `allowed_tools` column caps which
+built-in actions the planner advertises and accepts.
+
+- `assistant_planner::run_planner_turn` grows a `persona: &Persona`
+  parameter. The hard-coded `PLANNER_SYSTEM_PREAMBLE` splits into
+  `PLANNER_FRAMING_PREAMBLE` (one framing line everyone shares: "you
+  are the Codeless Assistant; tool calls are confirmable cards") plus
+  a `## Persona` block carrying `persona.instructions`. The tool
+  trailer is rebuilt per turn from the built-in catalogue
+  (`BUILTIN_ASSISTANT_TOOLS`) filtered through
+  `codeless_types::allowed_tools::tool_allowed` against the persona's
+  list. An empty surviving catalogue swaps to a "no tool grants;
+  reply in prose" trailer rather than advertising tools the runner
+  would drop.
+- Incoming `Event::ToolCall` envelopes are filtered through the same
+  matcher in the publish closure: `assistant_tool_id` namespaces the
+  built-in catalogue under `assistant.<verb>` and passes plugin tool
+  names (`notes.append`, ...) through unchanged, so one
+  `tool_allowed` check covers both worlds. A disallowed tool is
+  logged and dropped -- surrounding prose still lands so the user
+  sees the model's explanation.
+- `assistant::append_assistant_message` resolves the thread's persona
+  via the existing PS5 seam (`resolve_thread_persona`, the
+  `#[allow(dead_code)]` marker is removed since the production
+  caller now exists) and passes it into the planner. Built-in
+  action dispatch on confirm is unchanged -- the cap is at emit
+  time, not at execute time, so a card the user has already seen
+  always runs.
+- Migration `0018_assistant_persona_builtin_tools.sql` updates the
+  two seeded built-ins so PS8 acceptance ("an Assistant thread with
+  the `general` persona can call one read-only tool, e.g.
+  `list_jobs`, end-to-end") matches the seed: `builtin:general`
+  gets `["assistant.*"]` and `builtin:coding` gets its existing
+  `fs.*`/`shell.*`/`attachments.read` plus `assistant.*`. Append-only,
+  per OQ-PS-5.
+
+Tests (all 271 runtime lib tests green):
+- 5 new planner tests (persona instructions in prompt, catalogue
+  filtered to allowed tools only, no-tools trailer suppresses
+  catalogue, disallowed tool calls dropped, allowed tool calls
+  retained), 1 unit on `assistant_tool_id` namespacing.
+- The existing `planner_tool_call_persists_as_card_and_dispatches_on_confirm`
+  test still passes -- exercising the PS8 acceptance end-to-end on
+  the seeded `builtin:general` persona with `list_jobs`.
+
+`cargo test -p codeless-runtime --lib -- --skip claude_runner` green
+(271 / 271); `cargo clippy -p codeless-runtime -p codeless-types -p
+codeless-tools --all-targets -- -D warnings` clean; `cargo fmt --all
+-- --check` clean. The pre-existing `codeless-bot-core::dispatcher`
+`manual_range_contains` warning on this branch is unchanged by this
+stage; the `claude_runner` integration-test failure is unchanged.
