@@ -1,0 +1,57 @@
+# Windows cross-compilation image for codeless-tauri-desktop
+# Builds a Windows .exe from Linux using cargo-xwin (MSVC target)
+# Build context must be the workspace root (codeless-workspace/)
+#
+# Usage:
+#   docker build -f codeless/crates/codeless-tauri-desktop/docker/Dockerfile.windows \
+#     -t codeless-desktop-windows .
+
+FROM rust:1.78-bookworm AS builder
+
+# System deps for cross-compilation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    curl \
+    wget \
+    file \
+    lld \
+    llvm \
+    clang \
+    cmake \
+    # wine is needed for some build scripts that probe the target
+    wine64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js + pnpm for building the UI
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g pnpm@9 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-xwin for Windows MSVC cross-compilation
+# cargo-xwin downloads the Windows SDK and CRT headers automatically
+RUN cargo install cargo-xwin
+
+# Add the Windows MSVC target
+RUN rustup target add x86_64-pc-windows-msvc
+
+WORKDIR /build
+
+# Copy the full workspace (ai-runner + codeless)
+COPY ai-runner/ /build/ai-runner/
+COPY codeless/ /build/codeless/
+
+# Build the UI frontend
+WORKDIR /build/codeless/ui/codeless-ui
+RUN pnpm install --frozen-lockfile && pnpm build
+
+# Build the Rust binary for Windows
+WORKDIR /build/codeless
+
+# cargo-xwin handles linking against Windows SDK/CRT
+RUN cargo xwin build --release -p codeless-tauri-desktop --target x86_64-pc-windows-msvc
+
+# Output stage — extract the .exe
+FROM scratch AS output
+COPY --from=builder /build/codeless/target/x86_64-pc-windows-msvc/release/codeless-tauri-desktop.exe /codeless-tauri-desktop.exe

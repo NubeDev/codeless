@@ -1,0 +1,6 @@
+# Applied when build context is the workspace root
+**/target/
+**/node_modules/
+**/.git/
+**/dist/
+docker/dist/
