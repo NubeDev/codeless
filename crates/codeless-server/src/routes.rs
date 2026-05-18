@@ -8,8 +8,8 @@ use axum::{
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
     AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs, AttachWorkspaceArgs,
-    AttachWorkspaceResult, CancelAssistantActionArgs, CancelAssistantActionResult,
-    CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    AttachWorkspaceResult, BindChatThreadArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
     DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs,
     DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs,
@@ -18,10 +18,11 @@ use codeless_rpc::{
     GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
     JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
-    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListScheduledPausePointsArgs, ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
-    ListWorkspacesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs,
+    ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
+    ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListScheduledPausePointsArgs,
+    ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
+    OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, ScopePatchActionResult,
     ServerInfo, SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
@@ -31,7 +32,7 @@ use codeless_rpc::{
     UpsertPersonaArgs, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
     WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
-use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
+use codeless_types::{AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -140,6 +141,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/revert_scope_patch", post(revert_scope_patch))
         .route("/rpc/list_proposed_patches", post(list_proposed_patches))
         .route("/rpc/set_job_policy", post(set_job_policy))
+        .route("/rpc/post_job_message", post(post_job_message))
+        .route("/rpc/list_job_messages", post(list_job_messages))
+        .route("/rpc/bind_chat_thread", post(bind_chat_thread))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -829,5 +833,38 @@ async fn set_job_policy(
         .set_job_policy(args)
         .await
         .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn post_job_message(
+    State(st): State<AppState>,
+    Json(args): Json<PostJobMessageArgs>,
+) -> HandlerResult<ChatMessage> {
+    st.rpc
+        .post_job_message(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_job_messages(
+    State(st): State<AppState>,
+    Json(args): Json<ListJobMessagesArgs>,
+) -> HandlerResult<ListJobMessagesResult> {
+    st.rpc
+        .list_job_messages(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn bind_chat_thread(
+    State(st): State<AppState>,
+    Json(args): Json<BindChatThreadArgs>,
+) -> HandlerResult<ChatBinding> {
+    st.rpc
+        .bind_chat_thread(args)
+        .await
+        .map(Json)
         .map_err(map_err)
 }

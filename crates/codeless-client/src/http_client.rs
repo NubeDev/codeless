@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
     AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs, AttachWorkspaceArgs,
-    AttachWorkspaceResult, CancelAssistantActionArgs, CancelAssistantActionResult,
-    CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    AttachWorkspaceResult, BindChatThreadArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
     DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs, DraftJobFromConversationArgs,
     EditScopePatchArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult,
@@ -11,10 +11,11 @@ use codeless_rpc::{
     FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
     ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult,
-    ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult,
-    ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
-    ListWorkspacesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs,
+    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobMessagesArgs,
+    ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult,
+    ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
+    OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, RpcResult, RpcServer,
     ScopePatchActionResult, SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs,
@@ -25,7 +26,7 @@ use codeless_rpc::{
     ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
     WriteJobFileArgs, WriteJobFileResult,
 };
-use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
+use codeless_types::{AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review};
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde::Serialize;
@@ -521,6 +522,21 @@ impl RpcServer for HttpRpcClient {
 
     async fn set_job_policy(&self, args: SetJobPolicyArgs) -> RpcResult<()> {
         self.call_void("set_job_policy", &args).await
+    }
+
+    async fn post_job_message(&self, args: PostJobMessageArgs) -> RpcResult<ChatMessage> {
+        self.call("post_job_message", &args).await
+    }
+
+    async fn list_job_messages(
+        &self,
+        args: ListJobMessagesArgs,
+    ) -> RpcResult<ListJobMessagesResult> {
+        self.call("list_job_messages", &args).await
+    }
+
+    async fn bind_chat_thread(&self, args: BindChatThreadArgs) -> RpcResult<ChatBinding> {
+        self.call("bind_chat_thread", &args).await
     }
 }
 

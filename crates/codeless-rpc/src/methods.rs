@@ -1,9 +1,10 @@
 use codeless_types::pause_point::PausePoint;
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
-    AssistantMessageId, AssistantThread, AssistantThreadId, AutoBypassPolicy, FsEntry, FsEntryKind,
-    GitAuth, Job, JobId, Persona, ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus,
-    ScopePatchId, Stage, StageId, TaskId, UnixMillis, WorkspaceMode,
+    AssistantMessageId, AssistantThread, AssistantThreadId, AutoBypassPolicy, ChatMessage,
+    ChatRole, ChatTransport, FsEntry, FsEntryKind, GitAuth, Job, JobId, MessageId, Persona,
+    ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatchId, Stage, StageId,
+    TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1569,4 +1570,96 @@ pub struct SetJobPolicyArgs {
     /// New policy, or `None` to clear the existing one.
     #[serde(default)]
     pub policy: Option<AutoBypassPolicy>,
+}
+
+/// Append one message to the per-Job chat thread (`DOCS/JOB-CHAT.md`).
+/// Used by the web chat input, the Telegram and Slack adapters, the
+/// CLI, and the supervisor agent — every voice ends up as one row in
+/// `chat_messages`. The ULID `MessageId` and the `created_at` stamp
+/// are minted server-side so a clock-skewed transport cannot reorder
+/// the thread.
+///
+/// `external_id` is the transport-native message id (Telegram
+/// `chat:id`, Slack `ts`). Required on Telegram and Slack by SQL
+/// invariant — the partial unique index narrows
+/// `(transport, external_id)` to non-NULL rows, so a redelivered
+/// inbound message would land on a `Conflict` error rather than
+/// double-ingest. Web, CLI, and supervisor rows leave it NULL.
+///
+/// `role` defaults to `User` because that is the overwhelmingly
+/// common case (every human transport); the supervisor sets it
+/// explicitly to `Assistant`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct PostJobMessageArgs {
+    pub job_id: JobId,
+    pub transport: ChatTransport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_key: Option<String>,
+    pub author: String,
+    #[serde(default = "default_post_role")]
+    pub role: ChatRole,
+    pub body: String,
+    /// Raw transport-extras JSON text (attachments, formatting,
+    /// outbound delivery receipts). Passed through verbatim to the
+    /// `metadata_json` column so the substrate stays opaque per
+    /// `codeless_types::chat::ChatMessage::metadata_json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_json: Option<String>,
+}
+
+fn default_post_role() -> ChatRole {
+    ChatRole::User
+}
+
+/// Paginate one Job's chat history newest-first by `created_at` with
+/// the message id as tiebreaker. The web `CHAT` tab calls this on
+/// mount; Telegram and Slack adapters call it on `/codeless bind` to
+/// compose a single condensed "joining mid-thread" summary (full
+/// replay would spam the channel — see `JOB-CHAT.md` "Cold-load").
+///
+/// `before` is the seek cursor: pass `None` to fetch the most recent
+/// `limit` rows, then pass the oldest returned `MessageId` to walk
+/// further back. The runtime caps `limit` so a runaway caller cannot
+/// pull the whole table in one shot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListJobMessagesArgs {
+    pub job_id: JobId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<MessageId>,
+    pub limit: u32,
+}
+
+/// Returned messages are ordered oldest-first within the returned
+/// page so a UI can render top-to-bottom without sorting. To walk
+/// further back, the caller passes the *oldest* id of this page as
+/// the next `before`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListJobMessagesResult {
+    pub messages: Vec<ChatMessage>,
+}
+
+/// Bind `(transport, channel_id, thread_id)` to a Job so the
+/// adapter's inbound path can resolve an arriving message to the
+/// right chat thread (`JOB-CHAT.md` "Data model"). Called by
+/// `/codeless bind <job_id>` on Telegram / Slack. The web UI never
+/// needs this — it already has `job_id` from the URL.
+///
+/// `thread_id` is normalised to the empty string `""` on the server
+/// side when omitted to match the primary-key invariant on
+/// `chat_bindings`. The call is idempotent on the PK: a second bind
+/// of the same `(transport, channel, thread)` to the same Job
+/// returns the existing row stamped with the new `bound_at` /
+/// `bound_by`; binding the same key to a *different* Job overwrites
+/// (the user re-pointed the channel) and emits `ChatBindingCreated`
+/// once goal events land. The runtime stamps `bound_at` itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct BindChatThreadArgs {
+    pub transport: ChatTransport,
+    pub channel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    pub job_id: JobId,
+    pub bound_by: String,
 }

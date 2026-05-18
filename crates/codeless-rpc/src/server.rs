@@ -1,13 +1,14 @@
 use async_trait::async_trait;
 use codeless_types::{
-    AttachWorkspaceArgs, AttachWorkspaceResult, DetachWorkspaceArgs, Job, ListWorkspacesResult,
-    Persona, Repo, Review, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    AttachWorkspaceArgs, AttachWorkspaceResult, ChatBinding, ChatMessage, DetachWorkspaceArgs, Job,
+    ListWorkspacesResult, Persona, Repo, Review, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult,
 };
 
 use crate::error::RpcResult;
 use crate::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs, BindChatThreadArgs,
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
     ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
     DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs,
@@ -17,14 +18,15 @@ use crate::methods::{
     GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
     JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
-    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListScheduledPausePointsArgs, ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
-    OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
-    RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
-    RevertScopePatchArgs, RevertScopePatchResult, ScopePatchActionResult, SetJobPolicyArgs,
-    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
+    ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListScheduledPausePointsArgs,
+    ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
+    OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
+    ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, ScopePatchActionResult,
+    SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
     UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
     UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
     WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
@@ -559,4 +561,41 @@ pub trait RpcServer: Send + Sync + 'static {
     /// `JobPolicyChanged`, so a defensive UI write never floods the
     /// bus. `NotFound` for an unknown job id.
     async fn set_job_policy(&self, args: SetJobPolicyArgs) -> RpcResult<()>;
+
+    /// Append one message to the per-Job chat thread
+    /// (`DOCS/JOB-CHAT.md`). Used by the web chat input, the Telegram
+    /// and Slack adapters, the CLI, and the supervisor agent — every
+    /// voice ends up as one row in `chat_messages` keyed by `job_id`.
+    /// The runtime mints the `MessageId` ULID and stamps `created_at`
+    /// so a clock-skewed transport cannot reorder the thread.
+    ///
+    /// Returns `NotFound` for an unknown `job_id`. Returns `Conflict`
+    /// when a redelivered inbound on Telegram or Slack collides on the
+    /// partial unique index over `(transport, external_id)` — that is
+    /// the duplicate-ingest defence and lets the adapter skip the
+    /// re-send idempotently.
+    async fn post_job_message(&self, args: PostJobMessageArgs) -> RpcResult<ChatMessage>;
+
+    /// Paginate one Job's chat history newest-first by `created_at`
+    /// (id as tiebreaker). `before = None` returns the most recent
+    /// `limit` rows; pass the oldest returned id back as `before` to
+    /// walk further into the past. Returned messages are ordered
+    /// oldest-first within the page so a UI renders top-to-bottom
+    /// without sorting. `limit` is capped server-side so a runaway
+    /// caller cannot pull the whole table. `NotFound` for an unknown
+    /// `job_id`.
+    async fn list_job_messages(
+        &self,
+        args: ListJobMessagesArgs,
+    ) -> RpcResult<ListJobMessagesResult>;
+
+    /// Bind `(transport, channel_id, thread_id)` to a Job so the
+    /// adapter's inbound path can resolve an arriving message to the
+    /// right chat thread. Idempotent on the PK: a second bind of the
+    /// same key to the same Job returns the existing row stamped with
+    /// the new `bound_at` / `bound_by`. Re-pointing the same
+    /// `(transport, channel, thread)` at a different Job overwrites —
+    /// the row's PK guarantees only one Job can own a given channel
+    /// thread at a time. `NotFound` for an unknown `job_id`.
+    async fn bind_chat_thread(&self, args: BindChatThreadArgs) -> RpcResult<ChatBinding>;
 }

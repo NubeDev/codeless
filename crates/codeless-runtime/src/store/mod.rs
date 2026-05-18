@@ -4,6 +4,7 @@ use sqlx::SqlitePool;
 use crate::queue_config::QueueConfig;
 
 mod assistant;
+mod chat;
 mod codec;
 mod jobs;
 mod personas;
@@ -15,6 +16,7 @@ mod stages;
 mod tasks;
 mod todos;
 
+pub use chat::InsertChatMessage;
 pub use todos::{TrioFailure, TrioGateOutcome};
 
 /// SQLite-backed persistence for repos and jobs. Status enums are
