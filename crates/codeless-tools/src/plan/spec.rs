@@ -35,16 +35,11 @@ impl StepId {
 /// → `Transition::Step(StepId)`. Field omission in `PlanStep` defaults
 /// to `Stop` so the linear/terminal case stays terse (the last step
 /// of a chain has no `on_success`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Transition {
     Step(StepId),
+    #[default]
     Stop,
-}
-
-impl Default for Transition {
-    fn default() -> Self {
-        Transition::Stop
-    }
 }
 
 impl Serialize for Transition {

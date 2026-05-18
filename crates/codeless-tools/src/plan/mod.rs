@@ -5,6 +5,11 @@
 //! and event-bus wiring. See `DOCS/JOB-WORKFLOW.md` "Job chaining"
 //! for the P1 → P3 sequencing.
 
+pub mod engine;
 pub mod spec;
 
+pub use engine::{
+    JobSpawner, Outcome, PlanEngine, PlanEngineError, PlanId, PlanRunId, PlanRunState,
+    PlanRunStatus, SpawnError,
+};
 pub use spec::{PlanSpec, PlanSpecError, PlanStep, StepId, Transition};
