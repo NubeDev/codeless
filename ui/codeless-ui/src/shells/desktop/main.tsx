@@ -22,6 +22,7 @@ import { tauriCrossWindowEvents } from "./cross-window-events";
 import { tauriExternalOpener } from "./external-opener";
 import { tauriKVFactory } from "./kv-store";
 import { tauriNetworkProbe } from "./network-probe";
+import { tauriPathPicker } from "./path-picker";
 import { tauriPaths } from "./paths";
 import { tauriSettingsWindow } from "./settings-window";
 import { tauriUpdater } from "./updater";
@@ -53,6 +54,7 @@ function mount(appInfo: AppInfo) {
       updater={tauriUpdater}
       appInfo={appInfo}
       paths={tauriPaths}
+      pathPicker={tauriPathPicker}
       autostart={tauriAutostart}
       settingsWindow={tauriSettingsWindow}
       networkProbe={tauriNetworkProbe}
