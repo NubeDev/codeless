@@ -851,7 +851,29 @@ commit_sha: string } |
  *  same turn. Subscribers that need touches across every thread
  *  (the rail) subscribe with `scope: "all"`.
  */
-{ type: "assistant-thread-touched"; thread_id: AssistantThreadId };
+{ type: "assistant-thread-touched"; thread_id: AssistantThreadId } | 
+/**
+ *  A row was appended to `chat_messages`. Published by
+ *  `post_job_message` immediately after the INSERT lands, so every
+ *  transport adapter (web UI, Telegram, Slack, CLI, supervisor)
+ *  sees the same fan-out signal regardless of which surface
+ *  originated the message. The full `ChatMessage` rides on the
+ *  envelope so subscribers can render without a follow-up read;
+ *  the asymmetric echo-suppression rule in `DOCS/JOB-CHAT.md`
+ *  "Transport adapters" lives in the bot-core helper, not in the
+ *  event payload — every adapter sees every append and decides
+ *  per-message whether to forward.
+ */
+{ type: "chat-message-appended"; job_id: JobId; message: ChatMessage } | 
+/**
+ *  A `(transport, channel_id, thread_id)` tuple was bound (or
+ *  re-bound) to a Job via `bind_chat_thread`. Cross-window
+ *  invalidation signal for the web UI's "this Job is also being
+ *  watched in #ops-codeless" banner; the Telegram / Slack
+ *  adapters do not need it on the inbound path (they look the
+ *  binding up directly on each message).
+ */
+{ type: "chat-binding-created"; transport: ChatTransport; channel_id: string; thread_id: string; job_id: JobId };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER

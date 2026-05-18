@@ -2,7 +2,7 @@ use codeless_rpc::{
     BindChatThreadArgs, ListJobMessagesArgs, ListJobMessagesResult, PostJobMessageArgs, RpcError,
     RpcResult,
 };
-use codeless_types::{ChatBinding, ChatMessage, MessageId};
+use codeless_types::{ChatBinding, ChatMessage, Event, MessageId};
 
 use super::InProcessRpc;
 use crate::store::InsertChatMessage;
@@ -57,7 +57,28 @@ pub(super) async fn post_job_message(
         .await
         .map_err(super::db_err)?
     {
-        InsertChatMessage::Inserted => Ok(msg),
+        InsertChatMessage::Inserted => {
+            // Publish exactly once per successful INSERT — the
+            // duplicate-external-id branch below returns `Conflict`
+            // without an event, so a redelivered Telegram message
+            // does not double-fan-out. `job_id` rides on the envelope
+            // so a `subscribe(Job { job_id })` filter sees the append
+            // alongside the run's other events.
+            rpc.bus
+                .publish(
+                    Some(msg.job_id),
+                    None,
+                    None,
+                    Event::ChatMessageAppended {
+                        job_id: msg.job_id,
+                        message: msg.clone(),
+                    },
+                    now,
+                )
+                .await
+                .map_err(super::db_err)?;
+            Ok(msg)
+        }
         // Redelivery of an already-ingested Telegram / Slack message.
         // Surfaced as `Conflict` so the adapter recognises the
         // duplicate-ingest defence without sniffing error strings;
@@ -125,15 +146,38 @@ pub(super) async fn bind_chat_thread(
         .upsert_chat_binding(&binding)
         .await
         .map_err(super::db_err)?;
+    // Re-binding the same `(transport, channel_id, thread_id)` to a
+    // different Job is the intended re-pointing path (per
+    // `upsert_chat_binding`); the event fires every time so a
+    // subscriber watching the Job it was re-pointed *to* sees the
+    // signal without having to also subscribe to the prior Job.
+    rpc.bus
+        .publish(
+            Some(binding.job_id),
+            None,
+            None,
+            Event::ChatBindingCreated {
+                transport: binding.transport,
+                channel_id: binding.channel_id.clone(),
+                thread_id: binding.thread_id.clone(),
+                job_id: binding.job_id,
+            },
+            binding.bound_at,
+        )
+        .await
+        .map_err(super::db_err)?;
     Ok(binding)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event_bus::SubscribeFilter;
     use crate::rpc::InProcessRpc;
+    use crate::stage_recorder::spawn_stage_recorder;
     use codeless_rpc::{AddRepoArgs, RpcError, RpcServer, SubmitJobArgs};
-    use codeless_types::{ChatRole, ChatTransport, GitAuth};
+    use codeless_types::{ChatRole, ChatTransport, Event, GitAuth};
+    use futures_util::{FutureExt, StreamExt};
 
     async fn fresh_rpc_with_job() -> (InProcessRpc, codeless_types::JobId) {
         let rpc = InProcessRpc::new().await.unwrap();
@@ -267,6 +311,86 @@ mod tests {
         post_job_message(&rpc, args.clone()).await.unwrap();
         let err = post_job_message(&rpc, args).await.unwrap_err();
         assert!(matches!(err, RpcError::Conflict(_)), "got {err:?}");
+    }
+
+    /// One `post_job_message` must publish exactly one
+    /// `ChatMessageAppended` on the bus, and the `StageRecorder`
+    /// (which has no chat responsibility) staying alive — or being
+    /// aborted and respawned — must not generate additional chat
+    /// events. This is the integration-shaped guard against a future
+    /// refactor wiring chat through the recorder by accident.
+    #[tokio::test]
+    async fn post_publishes_one_event_and_recorder_restart_is_a_noop() {
+        let (rpc, job_id) = fresh_rpc_with_job().await;
+        let bus = rpc.bus.clone();
+        let store = rpc.store.clone();
+
+        // Subscribe before any chat post so the live tail captures the
+        // append; `SubscribeFilter::All` keeps the matcher simple and
+        // lets the test count *all* chat events on the bus, which is
+        // the property the spec requires.
+        let mut sub = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+
+        let recorder = spawn_stage_recorder(bus.clone(), store.clone())
+            .await
+            .unwrap();
+
+        let posted = post_job_message(&rpc, web_args(job_id, "hi"))
+            .await
+            .unwrap();
+
+        let first = tokio::time::timeout(std::time::Duration::from_millis(200), sub.next())
+            .await
+            .expect("event arrives")
+            .expect("stream item")
+            .expect("envelope");
+        match first.event {
+            Event::ChatMessageAppended {
+                job_id: ev_job,
+                ref message,
+            } => {
+                assert_eq!(ev_job, job_id);
+                assert_eq!(message.id, posted.id);
+                assert_eq!(message.body, "hi");
+            }
+            other => panic!("expected ChatMessageAppended, got {other:?}"),
+        }
+        assert_eq!(first.job_id, Some(job_id));
+
+        // No further chat events for that single post; settle a beat
+        // so any erroneous follow-on append from the recorder would
+        // have time to land.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            sub.next().now_or_never().is_none(),
+            "no extra events after a single post"
+        );
+
+        // Abort the recorder, respawn it, and confirm the chat table
+        // is unchanged and no replay-style append fires. The recorder
+        // subscribes live-only (`subscribe_since(All, None)`), so the
+        // assertion encodes the design contract: chat has its own
+        // write path and the recorder's lifecycle does not touch it.
+        recorder.abort();
+        let _ = recorder.await;
+        let before = store.list_chat_messages(job_id, None, 100).await.unwrap();
+        assert_eq!(before.len(), 1);
+
+        let recorder2 = spawn_stage_recorder(bus.clone(), store.clone())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let after = store.list_chat_messages(job_id, None, 100).await.unwrap();
+        assert_eq!(after, before, "recorder restart must not touch chat rows");
+        assert!(
+            sub.next().now_or_never().is_none(),
+            "recorder restart must not publish chat events"
+        );
+        recorder2.abort();
+        let _ = recorder2.await;
     }
 
     #[tokio::test]

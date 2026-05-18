@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::chat::{ChatMessage, ChatTransport};
 use crate::id::{AssistantThreadId, JobId, RepoId, ReviewId, StageId, TaskId, TodoId};
 use crate::job::StopReason;
 use crate::money::CostCents;
@@ -560,6 +561,33 @@ pub enum Event {
     /// (the rail) subscribe with `scope: "all"`.
     #[serde(rename = "assistant-thread-touched")]
     AssistantThreadTouched { thread_id: AssistantThreadId },
+
+    /// A row was appended to `chat_messages`. Published by
+    /// `post_job_message` immediately after the INSERT lands, so every
+    /// transport adapter (web UI, Telegram, Slack, CLI, supervisor)
+    /// sees the same fan-out signal regardless of which surface
+    /// originated the message. The full `ChatMessage` rides on the
+    /// envelope so subscribers can render without a follow-up read;
+    /// the asymmetric echo-suppression rule in `DOCS/JOB-CHAT.md`
+    /// "Transport adapters" lives in the bot-core helper, not in the
+    /// event payload — every adapter sees every append and decides
+    /// per-message whether to forward.
+    #[serde(rename = "chat-message-appended")]
+    ChatMessageAppended { job_id: JobId, message: ChatMessage },
+
+    /// A `(transport, channel_id, thread_id)` tuple was bound (or
+    /// re-bound) to a Job via `bind_chat_thread`. Cross-window
+    /// invalidation signal for the web UI's "this Job is also being
+    /// watched in #ops-codeless" banner; the Telegram / Slack
+    /// adapters do not need it on the inbound path (they look the
+    /// binding up directly on each message).
+    #[serde(rename = "chat-binding-created")]
+    ChatBindingCreated {
+        transport: ChatTransport,
+        channel_id: String,
+        thread_id: String,
+        job_id: JobId,
+    },
 }
 
 /// Envelope written to the `events` table. The `cursor`, `created_at`,
