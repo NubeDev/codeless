@@ -13,11 +13,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use codeless_rpc::{AddRepoArgs, EventFilter, RpcServer, SubmitJobArgs};
+use codeless_rpc::{AddRepoArgs, EventFilter, PostJobMessageArgs, RpcServer, SubmitJobArgs};
 use codeless_runtime::{
-    drive_job, spawn_supervisor, InProcessRpc, MockRunner, MockStep, RunnerOutcome,
+    drive_job, spawn_supervisor, spawn_supervisor_with_tools, InProcessRpc, MockRunner, MockStep,
+    RunnerOutcome,
 };
-use codeless_types::{Event, GitAuth, JobId, StopReason};
+use codeless_types::{
+    ChatRole, ChatTransport, Event, GitAuth, JobId, Stage, StageId, StageStatus, StopReason,
+    UnixMillis,
+};
 use futures_util::StreamExt;
 
 fn token_auth() -> GitAuth {
@@ -141,6 +145,101 @@ async fn supervisor_spawns_on_run_start_and_exits_on_run_terminal() {
         probe_res.is_ok(),
         "a per-Run-attempt supervisor must exit on a terminal event",
     );
+}
+
+/// Stage-10 contract: with the read tools wired in, asking "what
+/// stage is it on?" in any non-supervisor transport must produce a
+/// supervisor-authored chat reply that cites the current stage. The
+/// setup uses a canned event timeline (a hand-built `stages` row +
+/// the `JobStarted` envelope) rather than running the mock runner
+/// through `drive_job` — the reactor reads stage state from the
+/// store, so the canned row is the load-bearing input. The supervisor
+/// itself is the spawn-with-tools variant; the lifecycle-only spawn
+/// would never compose a reply because it has no `SqliteStore`
+/// handle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervisor_answers_what_stage_is_it_on() {
+    let rpc = InProcessRpc::new().await.unwrap();
+    let job_id = fresh_queued_job(&rpc).await;
+
+    // Canned stage row: the supervisor's `get_job_state` will pick
+    // this as the current stage (status=Running, single row in the
+    // list). Ordinal 10 makes the assertion below unambiguous — the
+    // reply must contain "stage 10".
+    let stage = Stage {
+        id: StageId::new(),
+        job_id,
+        ordinal: 10,
+        name: "stage 10: supervisor tool surface".into(),
+        status: StageStatus::Running,
+        verify_cmd: None,
+        started_at: Some(UnixMillis(1_700_000_000_000)),
+        ended_at: None,
+        session_id: None,
+        goal: None,
+        acceptance: None,
+        last_activity_at: None,
+        archived: false,
+        persona_id: None,
+        bypassed_at: None,
+        bypassed_reason: None,
+        failure_class: None,
+        failure_detail: None,
+    };
+    rpc.store().insert_stage(&stage).await.unwrap();
+
+    let supervisor = spawn_supervisor_with_tools(rpc.bus().clone(), rpc.store().clone(), job_id);
+
+    // Subscribe to the bus *before* posting the user message so the
+    // supervisor's reply lands on the live tail — the reply is just a
+    // `ChatMessageAppended { transport: Supervisor }` envelope.
+    let mut stream = rpc
+        .subscribe(EventFilter::Job { job_id }, None)
+        .await
+        .expect("subscribe");
+
+    // Yield so the supervisor's own `subscribe_since` is attached
+    // before the user post fires.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    rpc.post_job_message(PostJobMessageArgs {
+        job_id,
+        transport: ChatTransport::Web,
+        external_id: None,
+        thread_key: None,
+        author: "alice".into(),
+        role: ChatRole::User,
+        body: "what stage is it on?".into(),
+        metadata_json: None,
+    })
+    .await
+    .expect("post user message");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let reply = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let item = tokio::time::timeout(remaining, stream.next())
+            .await
+            .expect("timed out waiting for supervisor reply")
+            .expect("stream end")
+            .expect("stream error");
+        if let Event::ChatMessageAppended { message, .. } = item.event {
+            if matches!(message.transport, ChatTransport::Supervisor) {
+                break message;
+            }
+        }
+    };
+
+    assert_eq!(reply.role, ChatRole::Assistant);
+    assert_eq!(reply.author, "supervisor");
+    assert!(
+        reply.body.contains("stage 10"),
+        "supervisor reply must cite the current stage; got: {}",
+        reply.body,
+    );
+
+    supervisor.abort();
+    let _ = supervisor.await;
 }
 
 /// Two back-to-back terminal events on the same Job exercise the

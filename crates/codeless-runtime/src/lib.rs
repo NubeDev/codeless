@@ -78,7 +78,7 @@ pub use state_machine::{
     is_terminal_job, transition_job, transition_stage, transition_task, TransitionError,
 };
 pub use store::SqliteStore;
-pub use supervisor::spawn_supervisor;
+pub use supervisor::{spawn_supervisor, spawn_supervisor_with_tools, Tools as SupervisorTools};
 pub use time::now_ms;
 pub use tracing_init::{try_init_json, try_init_pretty};
 pub use webhook::{WebhookConfig, WebhookNotifier, WebhookSetupError};

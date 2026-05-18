@@ -139,6 +139,34 @@ impl EventBus {
         Ok(boxed)
     }
 
+    /// Read the most recent `limit` persisted events for `job_id`,
+    /// returned in chronological (cursor-ascending) order. Used by the
+    /// supervisor's `read_events` tool to ground its replies in the
+    /// actual event stream without subscribing to the live tail — the
+    /// supervisor is a request/response surface, not a streaming
+    /// consumer, on the read-side tool path.
+    pub async fn fetch_recent_for_job(
+        &self,
+        job_id: JobId,
+        limit: u32,
+    ) -> sqlx::Result<Vec<EventEnvelope>> {
+        let rows = sqlx::query(
+            "SELECT cursor, job_id, stage_id, task_id, type, payload, created_at \
+             FROM events WHERE job_id = ? \
+             ORDER BY cursor DESC LIMIT ?",
+        )
+        .bind(job_id.to_string())
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(envelope_from_row(row)?);
+        }
+        out.reverse();
+        Ok(out)
+    }
+
     async fn fetch_replay(
         &self,
         filter: SubscribeFilter,
