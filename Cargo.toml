@@ -43,6 +43,12 @@ members = [
     # protocol and OQ-WASM-2 in DOCS/plugins/PLUGIN-WASM.md for why
     # the bindings live in-tree rather than under build.rs.
     "crates/codeless-tool-wit",
+    # WASM-flavour plugin host. Host-only (wasmtime + cranelift +
+    # wasmtime-wasi). Implements the runtime-adapter trait that
+    # codeless-tools introduces in the same stage so the dispatch
+    # table can route a tool id to either the builtin shim or this
+    # WASM adapter. See DOCS/plugins/PLUGIN-WASM.md "The crate".
+    "crates/codeless-plugin-host-wasm",
     # Vendored from rubix-agent. Path is `../ai-runner` because the
     # crate lives one level up in `codeless-workspace/` alongside
     # this inner repo. Treated as read-only here — updates flow from

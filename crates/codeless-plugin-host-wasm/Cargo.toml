@@ -1,0 +1,39 @@
+[package]
+name = "codeless-plugin-host-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless WASM-flavour plugin host. Wasmtime + WASI-p2 component-model loader for `.wasm` plugin artefacts built with `cargo build --target wasm32-wasip2`. Host-only: depends on wasmtime / wasmtime-wasi and never enters the iOS / Android / mobile shells. See DOCS/plugins/PLUGIN-WASM.md for the design contract."
+
+[lints]
+workspace = true
+
+[dependencies]
+# Pinned to the doc-cited minor (`PLUGIN-WASM.md § Why a component-
+# model host`: "`wasmtime` 23+"). Held at 23 deliberately: every
+# minor release of wasmtime ships breaking API moves, and the
+# component-model surface lands in a layout this crate compiles
+# against. Bumping is an OQ-WASM-* sized decision -- record it in
+# `DOCS/plugins/PLUGIN-WASM.md` before lifting the floor.
+wasmtime = { version = "23", default-features = false, features = ["runtime", "cranelift", "component-model", "async"] }
+wasmtime-wasi = { version = "23", default-features = false }
+
+# Trait + table this crate implements against.
+codeless-tools = { path = "../codeless-tools" }
+# The committed WIT source -- `wasmtime::component::bindgen!` reads
+# the file path at macro expansion time. The dep also pins the WIT
+# package version we accept; a guest built against a newer
+# `codeless:tool@X.Y` is a manifest-time load failure once stage 5
+# wires the version check, not a silent dispatch error.
+codeless-tool-wit = { path = "../codeless-tool-wit" }
+
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
