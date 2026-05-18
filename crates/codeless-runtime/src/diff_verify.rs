@@ -238,7 +238,42 @@ fn looks_path_like(s: &str, had_trailing_slash: bool) -> bool {
     }
     // Stem must contain at least one alpha char so `123.txt` doesn't
     // sneak through but `a1.txt` does.
-    stem.chars().any(|c| c.is_ascii_alphabetic())
+    if !stem.chars().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    // Reject glob and brace-expansion shorthand the agent often quotes
+    // from grep/find guards in WORKFLOW.md — e.g. ``.{web,desktop,
+    // mobile}.tsx`` or ``*.test.tsx``. Real path tokens never contain
+    // shell-glob metacharacters.
+    if stem
+        .chars()
+        .any(|c| matches!(c, '{' | '}' | ',' | '*' | '?' | '[' | ']'))
+    {
+        return false;
+    }
+    // Reject Rust / JS / TS expression prefixes that the filename rule
+    // would otherwise admit: `self.store`, `this.foo`, `Self.bar`,
+    // `crate.x`, `super.y`. These are method / field accesses agents
+    // routinely write in handover narration; without this guard they
+    // get treated as claimed filenames named `store`, `foo`, etc.
+    if matches!(stem, "self" | "this" | "Self" | "crate" | "super") {
+        return false;
+    }
+    // Reject multi-camel-case identifiers followed by a lowercase
+    // method-like extension: `MockRpcClient.emit`, `JobSpec.validate`,
+    // `HttpSseClient.subscribe`. These are class.method expressions,
+    // not paths. The discriminator is the count of uppercase letters
+    // in the stem — single-capital stems like `Cargo.toml`,
+    // `Dockerfile.linux`, `Makefile`, `README.md` are real filenames
+    // and must keep passing; stems with two or more uppercase letters
+    // alongside lowercase letters and no underscore / dash separator
+    // are almost always PascalCase identifiers.
+    let uppers = stem.chars().filter(|c| c.is_ascii_uppercase()).count();
+    let has_lower = stem.chars().any(|c| c.is_ascii_lowercase());
+    if uppers >= 2 && has_lower && !stem.contains('_') && !stem.contains('-') {
+        return false;
+    }
+    true
 }
 
 fn strip_trailing_slash(s: &str) -> String {
@@ -442,6 +477,89 @@ mod tests {
         ];
         let paths = extract_paths_from_done(&done);
         assert_eq!(paths, vec!["a/b.rs".to_string()]);
+    }
+
+    #[test]
+    fn rejects_rust_expression_prefixes_as_paths() {
+        // Realistic worker output: a Done bullet that says "drove the
+        // three Todo events through `self.store.update_todo_status`".
+        // The token `self.store` matches the 1-5 alpha extension rule
+        // (`store` is 5 chars, all alpha) and would otherwise extract
+        // as a claimed path named `store` under stem `self`. It is a
+        // Rust field-access expression, not a filename.
+        let done = vec![
+            "added the `TodoUpdated` arm to `crates/codeless-runtime/src/stage_recorder.rs`; \
+             updates flow through self.store.update_todo_status."
+                .into(),
+            "completed the trio via self.store and crate.bus".into(),
+            "swapped Self.config for the new builder".into(),
+            "this.foo and super.bar are also not paths".into(),
+        ];
+        let paths = extract_paths_from_done(&done);
+        assert_eq!(
+            paths,
+            vec!["crates/codeless-runtime/src/stage_recorder.rs".to_string()],
+            "self.X / this.X / Self.X / crate.X / super.X tokens are \
+             expressions, not paths"
+        );
+    }
+
+    #[test]
+    fn rejects_multi_camel_case_method_expressions() {
+        // The other realistic worker output: narration of a TypeScript
+        // mock-client call, `MockRpcClient.emit(...)`. The 1-5 alpha
+        // extension rule would otherwise admit `emit` as an extension
+        // and `MockRpcClient` as the stem. Multi-camel-case stems with
+        // a lowercase ext are class.method expressions.
+        let done = vec![
+            "wired the planner-touched envelope through `MockRpcClient.emit`".into(),
+            "tested via JobSpec.validate and HttpSseClient.subscribe".into(),
+        ];
+        let paths = extract_paths_from_done(&done);
+        assert!(
+            paths.is_empty(),
+            "PascalCase method-call expressions must not extract as paths, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_brace_expansion_and_glob_shorthand() {
+        // Realistic worker output: the agent quotes a grep/find guard
+        // from WORKFLOW.md verbatim in Done bullets, e.g. "verified no
+        // `.{web,desktop,mobile}.tsx` shells exist". The brace-
+        // expansion shorthand is not a path.
+        let done = vec![
+            "ran the R3 guard, no `.{web,desktop,mobile}.tsx` files present".into(),
+            "checked `*.test.tsx` and `[Ff]oo.rs` patterns separately".into(),
+        ];
+        let paths = extract_paths_from_done(&done);
+        assert!(
+            paths.is_empty(),
+            "shell-glob and brace-expansion tokens must not extract as paths, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn keeps_legitimate_single_capital_filenames() {
+        // The reject-multi-camel rule must not over-fire on real
+        // single-capital filenames in this repo.
+        let done = vec![
+            "edited `Cargo.toml`, `Dockerfile.linux`, and `README.md`".into(),
+            "updated `Makefile` and a leaf `Cargo.lock`".into(),
+        ];
+        let paths = extract_paths_from_done(&done);
+        assert_eq!(
+            paths,
+            vec![
+                "Cargo.toml".to_string(),
+                "Dockerfile.linux".to_string(),
+                "README.md".to_string(),
+                "Cargo.lock".to_string(),
+            ],
+            "single-capital stems (Cargo, Dockerfile, README) must \
+             continue to extract as paths; Makefile has no extension \
+             and is correctly skipped",
+        );
     }
 
     #[test]
