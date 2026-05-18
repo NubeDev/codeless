@@ -20,9 +20,9 @@ Goal:        Land the runtime + UI layers for the Todo feature whose
    trio rows — landed in 888e16b.
 4. [x] REVIEW gate — PASS recorded in the session 01KRW8D2 handover.
 5. [x] Parse Claude Code TodoWrite tool calls into TodoAdded /
-   TodoUpdated events — this commit.
-6. [ ] UI rendering — Stages tab shows todo rows per JOB-UI.md,
-   glyphs driven by todo events.
+   TodoUpdated events — landed in the previous commit.
+6. [x] UI rendering — Stages tab shows todo rows per JOB-UI.md,
+   glyphs driven by todo events — this commit.
 7. [ ] REVIEW before merge — end-to-end smoke with a real mock stage
    that exercises trio + UI.
 
@@ -90,9 +90,68 @@ intermittent parallel-run failures in `git_commit::tests` and
 `git_changed::tests` are pre-existing (they share `$HOME`-rooted
 git config) and not introduced by this stage.
 
+## Stage 6 notes (this commit)
+
+`ui/codeless-ui/src/modules/jobs/StagesOverview.tsx` now nests todo
+rows under each tick. The reducer gained three event arms
+(`todo-added`, `todo-updated`, `todo-completed`) plus a
+`todoIndex: Map<TodoId, {stageId, taskId}>` so the routing on
+`TodoUpdated` / `TodoCompleted` does not require the envelope to
+carry `task_id` — the recorder is the only writer of the
+`(todo_id → task_id)` mapping and the UI mirrors it at insert time.
+
+Display rules per `JOB-UI.md` § "Todo rows":
+
+- Glyphs: `○` pending, `●` in-progress, `✓` done, `!` failed,
+  `~` skipped.
+- Sort key is the todo's `ordinal`. The runtime emits the trio at
+  `u32::MAX - 2 ..= u32::MAX` and the parser starts runner items at
+  0, so the trio sorts below the runner's own list without the UI
+  needing a special case.
+- Trio rows get a kind-label column (`checks` / `docs` / `git`);
+  runner items render their verbatim title (no codeless-side
+  prettifying — `JOB-UI.md` says bad titles are a runner-prompt
+  issue, not a UI issue).
+
+Tick aggregation (the answer to the open question carried forward
+from stage 5: runner items render above the trio, not interleaved):
+`effectiveTaskStatus` aggregates child todos when there are any,
+falling back to the event-derived status otherwise. The runtime's
+terminal answer (`task-completed` → `passed` / `failed`) always
+wins so recorder lag on the trailing trio row cannot demote a
+finished tick back to `running`.
+
+Wire-snapshot regen: the foundation merge added `todo-*` event
+variants to `Event` but never regenerated
+`ui/codeless-ui/src/lib/rpc/generated/wire.ts`, so the UI had no
+typed view of the events it was supposed to render. `cargo run -p
+codeless-rpc --example wire_ts` rewrites the file from the existing
+specta snapshots — this stage commits the regenerated output.
+
+Tests: `ui/codeless-ui/src/modules/jobs/StagesOverview.test.tsx`
+covers the four reducer-level contracts (route todo-added under the
+right task; sort the trio below runner items; route todo-updated /
+todo-completed through `todoIndex` without an envelope task_id;
+drop transitions for unknown todos) and the four
+`effectiveTaskStatus` cases (`!` wins, `●` while in-progress, `✓`
+only when all resolved, terminal task wins). One end-to-end render
+test pushes events through `MockRpcClient.emit` to assert the trio
+sorts last in `checks → docs → git` order and the runner row's
+title renders verbatim.
+
+## Reproducing
+
+```sh
+( cd ui/codeless-ui && pnpm install --prefer-offline )
+( cd ui/codeless-ui && pnpm exec tsc --noEmit )
+( cd ui/codeless-ui && pnpm test )
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
 ## Open questions carried forward
 
-(unchanged from SCOPE.md §Open questions; stage 6 will need to
-decide whether the UI shows `runner` items below or interleaved with
-trio rows — current bridge sets ordinal = array index from 0, so
-runner rows sort naturally above the trio's `u32::MAX - 2` base.)
+The "live chat per stage" path (`JOB-UI.md` §Stage-N detail tab)
+still needs the warm-session `--continue` plumbing. Out of scope
+for this stage; stage 7 is the end-to-end smoke that exercises trio
++ UI together but does not own that work.
