@@ -154,20 +154,74 @@ async fn run_with_tools(tools: Tools, job_id: JobId) {
     // Rehydrate pre-armed goals from the store. The persistence layer
     // is the source of truth across process restarts (JOB-CHAT.md §C3
     // — "Persisting the goal is what makes it survive a process
-    // restart"); on boot we re-arm a timer per `armed` row so the
-    // user-authorised actions still fire after a crash. v0.1 arms
-    // deadline-stop goals only — threshold / event-notify wiring
-    // lands alongside their respective sources.
+    // restart"); on boot we scan every `armed` row for this Run and
+    // either re-arm the matching timer / event watcher or mark the
+    // row `superseded` with a chat-thread explanation when the
+    // condition can no longer trip. The scan is what makes the
+    // load-bearing "if it runs >1h, stop it" example survive a server
+    // restart: without it, a supervisor that boots after a crash
+    // forgets every authorisation the user already gave.
+    //
+    // v0.1 re-arms `deadline-stop` only — threshold / event-notify
+    // arming lands alongside their respective signal sources in a
+    // later stage. A `threshold-stop` / `event-notify` row found here
+    // stays `armed` and is simply not watched yet; it does not get
+    // superseded, because a future supervisor version will be able to
+    // honour it once the wiring lands.
+    //
+    // The "no longer makes sense" predicate is "the Run row is already
+    // terminal" — once the Run reaches `Completed` / `Failed` /
+    // `Stopped`, every `stop_job` / `post_chat_message` action against
+    // it is unreachable, and a `deadline-stop` condition cannot trip
+    // either (the supervisor is about to exit on the terminal envelope
+    // it is going to see in the select loop below). Walking the rows
+    // to `superseded` here keeps the audit trail honest — a chat reader
+    // who scrolls back sees an explicit "I am dropping this goal
+    // because the Run already ended" rather than a goal that silently
+    // hangs forever in `armed`.
     let timers = FuturesUnordered::<GoalArm>::new();
     let mut timers = timers;
+    let job_terminal = match tools.store_arc().get_job(job_id).await {
+        Ok(Some(j)) => matches!(
+            j.status,
+            JobStatus::Completed | JobStatus::Failed | JobStatus::Stopped
+        ),
+        Ok(None) => {
+            // No such Job — the supervisor cannot do anything useful.
+            // Bail before subscribing to a stream that will never carry
+            // a relevant envelope.
+            tracing::debug!(%job_id, "supervisor boot: job row missing; exiting");
+            return;
+        }
+        Err(e) => {
+            tracing::debug!(%job_id, error = %e, "supervisor boot: get_job failed; continuing");
+            false
+        }
+    };
     match tools.store_arc().list_armed_for_run(job_id).await {
         Ok(armed) => {
             tracing::debug!(%job_id, count = armed.len(), "supervisor rehydrated armed goals");
             let now = now_ms().0;
             for goal in armed {
+                if job_terminal {
+                    supersede_goal(
+                        &tools,
+                        job_id,
+                        &goal,
+                        "run already terminal at supervisor boot",
+                    )
+                    .await;
+                    continue;
+                }
                 if let Some(arm) = arm_goal_timer(&goal, now) {
                     tracing::debug!(%job_id, goal_id = %goal.id, "armed goal timer");
                     timers.push(arm);
+                } else {
+                    tracing::debug!(
+                        %job_id,
+                        goal_id = %goal.id,
+                        "goal kind not armable in v0.1; leaving armed for a future supervisor"
+                    );
                 }
             }
         }
@@ -260,6 +314,35 @@ fn arm_goal_timer(goal: &SupervisorGoal, now_ms_val: i64) -> Option<GoalArm> {
         // failure on one of them does not break the deadline path.
         GoalCondition::ThresholdStop { .. } | GoalCondition::EventNotify { .. } => None,
     }
+}
+
+/// Walk one armed goal to `superseded` and record the reason in the
+/// chat thread. JOB-CHAT.md §C3 hands the supervisor a single voice
+/// (`post_chat_message`), so the "with the reason" half of the rehydration
+/// contract lives in the chat thread rather than a new SQL column —
+/// a reader scrolling the per-Job thread sees the supersede note paired
+/// with the original "if X then Y" authorisation by the `replies_to`
+/// metadata edge, mirroring the same shape `fire_pre_armed_goal` uses
+/// for the successful-fire path.
+async fn supersede_goal(tools: &Tools, job_id: JobId, goal: &SupervisorGoal, reason: &str) {
+    match tools.store_arc().mark_superseded(goal.id).await {
+        Ok(MarkOutcome::Transitioned) => {}
+        Ok(MarkOutcome::NoChange) => {
+            // Concurrent transition (a user cancel, a fire from another
+            // process) already moved the row out of `armed`. The audit
+            // trail is fine without our note.
+            return;
+        }
+        Err(_e) => {
+            tracing::debug!(%job_id, goal_id = %goal.id, "supersede mark_superseded failed; skipping audit note");
+            return;
+        }
+    }
+    let body = format!(
+        "Superseding the goal you armed earlier (goal {}): {reason}.",
+        goal.id,
+    );
+    let _ = tools.post_chat_message(job_id, body).await;
 }
 
 /// Single goal-fire path. JOB-CHAT.md Hard rule 4 (second regime)

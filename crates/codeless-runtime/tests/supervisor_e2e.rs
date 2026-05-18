@@ -760,3 +760,245 @@ async fn deadline_stop_fires_at_t_plus_one_hour() {
     // The supervisor observes its own JobStopped envelope and exits.
     let _ = tokio::time::timeout(Duration::from_secs(5), supervisor).await;
 }
+
+/// Stage-15 contract: a supervisor that boots (or reboots after a
+/// server bounce mid-Run) scans every `armed` row for its `run_id` and
+/// re-arms timers from the persisted condition. Dropping the first
+/// supervisor mid-Run, spawning a fresh one, then advancing time past
+/// the deadline must still fire the goal — without rehydration the
+/// fresh task would not know about the user's "if X then Y"
+/// authorisation, the row would stay `armed` forever, and JOB-CHAT.md's
+/// "if it runs >1h, stop it" example would silently break across a
+/// process restart (Hard rule 4: "persisting the goal is what makes it
+/// survive a restart").
+#[tokio::test(flavor = "current_thread")]
+async fn supervisor_rehydrates_deadline_after_restart() {
+    let rpc = InProcessRpc::new().await.unwrap();
+    let job_id = fresh_queued_job(&rpc).await;
+
+    let authoriser = rpc
+        .post_job_message(PostJobMessageArgs {
+            job_id,
+            transport: ChatTransport::Web,
+            external_id: None,
+            thread_key: None,
+            author: "alice".into(),
+            role: ChatRole::User,
+            body: "if this runs more than an hour, stop it and tell me why".into(),
+            metadata_json: None,
+        })
+        .await
+        .expect("authoriser post");
+
+    let now = codeless_runtime::now_ms();
+    let goal = SupervisorGoal::new(
+        job_id,
+        GoalCondition::DeadlineStop {
+            deadline_ms: now.0 + 3_600_000,
+        },
+        GoalAction::StopJob {
+            reason: "ran past the 1h budget you set".into(),
+        },
+        authoriser.id,
+        now,
+    );
+    rpc.store().insert_goal(&goal).await.expect("insert goal");
+
+    // First supervisor: boots, sees the armed row, parks its sleep on
+    // the tokio timer-driver. We then drop it ungracefully — the
+    // production analogue is a server crash before the deadline fires.
+    let first = spawn_supervisor_with_tools(rpc.bus().clone(), rpc.store().clone(), job_id);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    first.abort();
+    let _ = first.await;
+
+    // The store is the single source of truth across the restart: the
+    // goal must still be `armed` because the first supervisor never
+    // observed a fire-time or a cancellation. If this assertion fires,
+    // a supervisor lifecycle bug is dropping authorisations on the
+    // floor and the rehydration test below is observing the wrong
+    // thing.
+    let armed_before = rpc.store().list_armed_for_run(job_id).await.unwrap();
+    assert_eq!(
+        armed_before.len(),
+        1,
+        "goal must remain armed after the first supervisor's abort",
+    );
+
+    // Subscribe before the second supervisor spawns so the fire's
+    // ChatMessageAppended + JobStopped envelopes land on the live tail
+    // we read below.
+    let mut stream = rpc
+        .subscribe(EventFilter::Job { job_id }, None)
+        .await
+        .expect("subscribe");
+
+    // Fresh supervisor: scans `armed`, re-arms the deadline timer. The
+    // arm-time delta is `deadline_ms - now_ms`, so the sleep parked
+    // here is the same Duration the first supervisor parked — the
+    // mocked clock advance below wakes it.
+    let second = spawn_supervisor_with_tools(rpc.bus().clone(), rpc.store().clone(), job_id);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(3_600_001)).await;
+    tokio::time::resume();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut saw_stopped = false;
+    let mut fire_summary: Option<codeless_types::ChatMessage> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !(saw_stopped && fire_summary.is_some()) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let item = tokio::time::timeout(remaining, stream.next())
+            .await
+            .expect("timed out waiting for rehydrated deadline fire");
+        let item = item
+            .expect("event stream ended unexpectedly")
+            .expect("event stream error");
+        match item.event {
+            Event::JobStopped {
+                reason: StopReason::User,
+                ..
+            } => saw_stopped = true,
+            Event::ChatMessageAppended { message, .. }
+                if matches!(message.transport, ChatTransport::Supervisor)
+                    && matches!(message.role, ChatRole::Assistant)
+                    && fire_summary.is_none() =>
+            {
+                fire_summary = Some(message);
+            }
+            _ => {}
+        }
+    }
+
+    let summary = fire_summary.expect("fire summary must arrive after rehydration");
+    let meta = summary
+        .metadata_json
+        .as_deref()
+        .expect("fire summary must carry metadata");
+    assert!(
+        meta.contains(&authoriser.id.to_string()),
+        "rehydrated fire must still cite the authorising chat_messages.id; got: {meta}",
+    );
+    assert!(
+        meta.contains(&goal.id.to_string()),
+        "rehydrated fire must still cite the goal id; got: {meta}",
+    );
+
+    let job = rpc.store().get_job(job_id).await.unwrap().unwrap();
+    assert_eq!(
+        job.status,
+        JobStatus::Stopped,
+        "rehydrated deadline fire must transition the Run to Stopped",
+    );
+    assert!(
+        rpc.store()
+            .list_armed_for_run(job_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "fired goal must no longer be armed",
+    );
+
+    let _ = tokio::time::timeout(Duration::from_secs(5), second).await;
+}
+
+/// Stage-15 contract, supersede half: when a supervisor boots against a
+/// Run that is already terminal — the supervisor crashed late, the
+/// server restarted after the Run finished, or the operator booted a
+/// supervisor against the wrong Run — every `armed` row whose condition
+/// is now unreachable is walked to `superseded` and a supervisor chat
+/// row records the reason. The audit trail is symmetric with the fire
+/// path: a reader of the per-Job thread sees an explicit "I dropped
+/// this goal because the Run already ended" rather than a goal that
+/// silently hangs forever in `armed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervisor_supersedes_armed_goals_when_run_is_terminal_at_boot() {
+    let rpc = InProcessRpc::new().await.unwrap();
+    let job_id = fresh_queued_job(&rpc).await;
+
+    let authoriser = rpc
+        .post_job_message(PostJobMessageArgs {
+            job_id,
+            transport: ChatTransport::Web,
+            external_id: None,
+            thread_key: None,
+            author: "alice".into(),
+            role: ChatRole::User,
+            body: "if this runs more than an hour, stop it".into(),
+            metadata_json: None,
+        })
+        .await
+        .expect("authoriser post");
+
+    let now = codeless_runtime::now_ms();
+    let goal = SupervisorGoal::new(
+        job_id,
+        GoalCondition::DeadlineStop {
+            deadline_ms: now.0 + 3_600_000,
+        },
+        GoalAction::StopJob {
+            reason: "ran past the 1h budget you set".into(),
+        },
+        authoriser.id,
+        now,
+    );
+    rpc.store().insert_goal(&goal).await.expect("insert goal");
+
+    // Flip the Job row to a terminal status before the supervisor
+    // boots. The pre-boot terminal state is the production scenario:
+    // the previous supervisor exited cleanly on the terminal envelope,
+    // the row landed on disk, and a fresh supervisor (a stray rerun, a
+    // resume against the wrong attempt) now finds the row in that
+    // state.
+    let mut job = rpc.store().get_job(job_id).await.unwrap().unwrap();
+    job.status = JobStatus::Completed;
+    job.ended_at = Some(now);
+    rpc.store().update_job(&job).await.unwrap();
+
+    let mut stream = rpc
+        .subscribe(EventFilter::Job { job_id }, None)
+        .await
+        .expect("subscribe");
+
+    let supervisor = spawn_supervisor_with_tools(rpc.bus().clone(), rpc.store().clone(), job_id);
+
+    // Wait for the supersede chat row.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut supersede_msg: Option<codeless_types::ChatMessage> = None;
+    while supersede_msg.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let item = tokio::time::timeout(remaining, stream.next())
+            .await
+            .expect("timed out waiting for supersede chat row")
+            .expect("stream end")
+            .expect("stream error");
+        if let Event::ChatMessageAppended { message, .. } = item.event {
+            if matches!(message.transport, ChatTransport::Supervisor)
+                && message.body.to_ascii_lowercase().contains("supersed")
+            {
+                supersede_msg = Some(message);
+            }
+        }
+    }
+    let msg = supersede_msg.expect("supersede chat row");
+    assert!(
+        msg.body.contains(&goal.id.to_string()),
+        "supersede note must cite the goal id; got: {}",
+        msg.body,
+    );
+
+    // The row must be `superseded` in the store and no longer armed.
+    assert!(
+        rpc.store()
+            .list_armed_for_run(job_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "armed goals on a terminal Run must be superseded at supervisor boot",
+    );
+
+    supervisor.abort();
+    let _ = supervisor.await;
+}
