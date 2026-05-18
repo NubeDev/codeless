@@ -581,6 +581,36 @@ impl Runner for TemplateRunner {
                 prev_stage_id = Some(*prior_id);
                 continue;
             }
+            // Scoped pause hook — `Before` stage. Consult the
+            // schedule before any per-stage state lands so a
+            // BeforeStage point halts the job exactly between the
+            // previous stage's git-todo close and this stage's
+            // StageStarted emit. The stage frame index is 0-based in
+            // `stage.index`; pause points speak 1-based ordinals
+            // (matching the YAML the operator wrote).
+            if let Some(store) = self.store.as_deref() {
+                let outcome = crate::scoped_pause_hook::check_and_pause(
+                    store,
+                    ctx.bus.as_ref(),
+                    ctx.job_id,
+                    &crate::scoped_pause_hook::TransitionPoint::BeforeStage {
+                        stage_ordinal: (stage.index as u32) + 1,
+                    },
+                    &ctx.cancel,
+                )
+                .await;
+                if outcome == crate::scoped_pause_hook::HookOutcome::Paused {
+                    tracing::info!(
+                        stage = stage.title,
+                        ordinal = stage.index,
+                        "template runner: scoped pause point fired before stage; halting"
+                    );
+                    return RunnerOutcome::Failed {
+                        reason: "scoped pause point".into(),
+                    };
+                }
+            }
+
             let stage_id = StageId::new();
             let task_id = TaskId::new();
             // Emit stage-started so the UI's StageTree picks up this
@@ -1551,6 +1581,39 @@ impl Runner for TemplateRunner {
             // the Passed exit path; a Failed stage short-circuits via
             // `return` above and never reaches here.
             prev_stage_id = Some(stage_id);
+
+            // Scoped pause hook — `After` stage. Fires once the
+            // closing trio has resolved and StageCompleted is on the
+            // wire, but before the loop selects the next stage. A
+            // BeforeStage point on stage N+1 and an AfterStage point
+            // on stage N are intentionally distinct triggers — the
+            // operator may want to inspect the worktree at the end
+            // of stage N rather than the start of stage N+1 (the
+            // diff that just landed vs the one that is about to
+            // land); the parser accepts both and the runtime fires
+            // both.
+            if let Some(store) = self.store.as_deref() {
+                let outcome = crate::scoped_pause_hook::check_and_pause(
+                    store,
+                    ctx.bus.as_ref(),
+                    ctx.job_id,
+                    &crate::scoped_pause_hook::TransitionPoint::AfterStage {
+                        stage_ordinal: (stage.index as u32) + 1,
+                    },
+                    &ctx.cancel,
+                )
+                .await;
+                if outcome == crate::scoped_pause_hook::HookOutcome::Paused {
+                    tracing::info!(
+                        stage = stage.title,
+                        ordinal = stage.index,
+                        "template runner: scoped pause point fired after stage; halting"
+                    );
+                    return RunnerOutcome::Failed {
+                        reason: "scoped pause point".into(),
+                    };
+                }
+            }
         }
         RunnerOutcome::Completed
     }

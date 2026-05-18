@@ -32,6 +32,7 @@ pub mod rule_bearing_files;
 pub mod runner;
 pub mod scope_patch_emit;
 pub mod scope_patch_queue;
+pub mod scoped_pause_hook;
 pub mod session_idle;
 pub mod session_log;
 pub mod stage_recorder;

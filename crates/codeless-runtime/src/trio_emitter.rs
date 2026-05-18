@@ -50,6 +50,33 @@ pub async fn emit_trio_started(
     stage_id: StageId,
     kind: TodoKind,
 ) {
+    // Scoped pause hook — `Before` trio todo. A `pause_points:` entry
+    // like `{ stage: 3, todo: docs, position: before }` halts the job
+    // exactly here, before the per-kind runtime emit-site (handover
+    // writer for `Docs`, `verify_runner` for `Checks`, the commit
+    // step for `Git`) does its work. The hook returns `Paused` after
+    // it has already flipped the job row and fired the cancel token,
+    // so the caller (the per-kind site) sees `ctx.cancel` next time
+    // it checks and bails.
+    let outcome = crate::scoped_pause_hook::check_trio(
+        store,
+        ctx.bus.as_ref(),
+        ctx.job_id,
+        stage_id,
+        kind,
+        codeless_types::pause_point::PausePointPosition::Before,
+        &ctx.cancel,
+    )
+    .await;
+    if outcome == crate::scoped_pause_hook::HookOutcome::Paused {
+        tracing::info!(
+            ?kind,
+            %stage_id,
+            "trio started: scoped pause point fired; skipping in-progress emit"
+        );
+        return;
+    }
+
     let Some(todo_id) = find_trio_id(store, task_id, kind).await else {
         tracing::trace!(?kind, %task_id, "trio started: row not present; skipping emit");
         return;
@@ -90,6 +117,29 @@ pub async fn emit_trio_completed(
         Event::TodoCompleted { todo_id, status },
     )
     .await;
+
+    // Scoped pause hook — `After` trio todo. Fires after the
+    // TodoCompleted lands so the row is on the wire (and in SQLite)
+    // before the pause divider does. The hook is best-effort: if the
+    // store call fails we log and continue, so a transient DB hiccup
+    // doesn't strand the trio between Done and the next stage.
+    let outcome = crate::scoped_pause_hook::check_trio(
+        store,
+        ctx.bus.as_ref(),
+        ctx.job_id,
+        stage_id,
+        kind,
+        codeless_types::pause_point::PausePointPosition::After,
+        &ctx.cancel,
+    )
+    .await;
+    if outcome == crate::scoped_pause_hook::HookOutcome::Paused {
+        tracing::info!(
+            ?kind,
+            %stage_id,
+            "trio completed: scoped pause point fired"
+        );
+    }
 }
 
 /// Per-stage commit seam. Wraps

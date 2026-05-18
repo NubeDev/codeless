@@ -170,7 +170,18 @@ in [`DOCS/SCOPED-PAUSE-POINTS.md`](../../../DOCS/SCOPED-PAUSE-POINTS.md).
   trigger, §4 resync semantics, §5 the four open-question
   resolutions, and §6 a fully-resolved schedule worked example.
 - [x] Four open questions resolved above with one-line *why* each.
-- [ ] Stages 3-8 deliverables — pending later stages.
+- [x] Stage 3 — wire types in `codeless-types` (`PausePoint`,
+  `PausePointPosition`, `PausePointTarget`, `TodoSelector`,
+  `PausePointId`).
+- [x] Stage 4 — template parser accepts `pause_points:` and resolves
+  names → ordinals at submit time.
+- [x] Stage 5 — `scheduled_pause_points` table + idempotent rebuild
+  in `resync_template_from_disk`.
+- [x] Stage 6 — runtime hook (`scoped_pause_hook` module + four call
+  sites in `template_runner` and `trio_emitter`,
+  `StopReason::ScopedPausePoint { point_id }` variant, pause/resume
+  cycle test).
+- [ ] Stages 7-9 deliverables — pending later stages.
 
 ## References
 

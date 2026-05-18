@@ -103,9 +103,7 @@ pub enum TodoSelector {
 #[serde(tag = "kind")]
 pub enum PausePointTarget {
     #[serde(rename = "stage")]
-    Stage {
-        ordinal: u32,
-    },
+    Stage { ordinal: u32 },
     #[serde(rename = "stage-todo")]
     StageTodo {
         stage_ordinal: u32,

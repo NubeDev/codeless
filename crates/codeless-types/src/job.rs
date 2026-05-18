@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::auto_bypass::AutoBypassPolicy;
 use crate::id::{JobId, RepoId};
 use crate::money::CostCents;
+use crate::pause_point::PausePointId;
 use crate::time::UnixMillis;
 
 /// Lifecycle states for a job row. String form matches the
@@ -74,6 +75,17 @@ pub enum StopReason {
     /// threads into the stage prompt; the override is a one-shot
     /// audit-logged opt-in, not a sticky flag.
     ReviewPreCheck,
+    /// A pre-declared scope-level pause point (operator-authored in
+    /// `template.yaml`) fired. Distinct from `User` so the chat and
+    /// dashboard can render a "planned pause" divider instead of a
+    /// runtime-pause chip, and the divider lookup can carry the
+    /// `point_id` back to the `scheduled_pause_points` row for
+    /// `reason` text. Resumes through the existing `resume_job` RPC;
+    /// cost-cap behaviour is identical to `User` per SCOPED-PAUSE-
+    /// POINTS §5 Q4.
+    ScopedPausePoint {
+        point_id: PausePointId,
+    },
 }
 
 /// One unit of work the user kicked off — see SCOPE.md Appendix A `jobs`.

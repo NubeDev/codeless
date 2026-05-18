@@ -9,9 +9,12 @@ the wire-types land in stage 3 against this grammar.
 
 A scoped pause is **scheduling on top of an existing primitive**. It
 calls the existing `pause_job` entry with a new `StopReason` variant
-(`ScopedPausePoint { point_id, label }`), emits the existing
-`JobPaused` event, and clears on the existing `resume_job` RPC. The
-state machine is unchanged; only the trigger is new.
+(`ScopedPausePoint { point_id }`), emits the existing `JobPaused`
+event, and clears on the existing `resume_job` RPC. The state machine
+is unchanged; only the trigger is new. The human label format spelled
+out in §6 is reconstructed at render time by looking up the point's
+row in `scheduled_pause_points` — keeping the `StopReason` variant
+`Copy` and the SQLite column small.
 
 ## 1. Grammar
 
