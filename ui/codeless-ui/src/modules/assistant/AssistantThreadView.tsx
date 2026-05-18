@@ -59,17 +59,6 @@ export function AssistantThreadView({
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Live planner output. The assistant RPC blocks until the turn
-  // finishes; without an event subscription the user would stare at
-  // "Sending…" for the full latency of a model call. The planner
-  // publishes `ai-token` deltas onto the bus keyed on the thread id
-  // reused as a synthetic JobId (see assistant_planner.rs), so the
-  // same SSE channel that powers job chats also feeds this view. The
-  // streaming buffer is cleared the moment the awaited result lands
-  // — at that point the persisted messages are authoritative.
-  const [streamingText, setStreamingText] = useState("");
-  const [streamingActive, setStreamingActive] = useState(false);
-  const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // Reload when the parent rail swaps in a different thread, *or*
   // when `refreshTick` bumps — the footer composer increments the
@@ -97,52 +86,12 @@ export function AssistantThreadView({
     };
   }, [rpc, thread.id, refreshTick]);
 
-  // Scroll to the bottom on new messages — matches every other chat
-  // surface and keeps the latest turn in view without the user having
-  // to drag the scrollbar.
-  useEffect(() => {
-    scrollAnchorRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, streamingText]);
-
-  // Reset the streaming buffer when the parent rail swaps threads so
-  // tokens from a prior turn don't bleed into the new transcript.
-  useEffect(() => {
-    setStreamingText("");
-    setStreamingActive(false);
-  }, [thread.id]);
-
-  const onAssistantEvent = useCallback(
-    (env: EventEnvelope) => {
-      const ev = env.event;
-      if (ev.type === "ai-token") {
-        setStreamingText((prev) => prev + ev.delta);
-        setStreamingActive(true);
-      } else if (ev.type === "ai-message-complete") {
-        // Completion handshake — the awaited RPC result will arrive
-        // imminently with the persisted final message; freezing the
-        // pulse here avoids a flicker between the last token and the
-        // bubble being replaced by the real row.
-        setStreamingActive(false);
-      }
-    },
-    [],
-  );
-  // `since: 0` replays the full thread history on subscribe; the
-  // accumulator only renders while `sending` is true so a replay of
-  // an old turn doesn't surface as a phantom bubble.
-  useEventStream(
-    { scope: "job", job_id: thread.id as unknown as JobId },
-    onAssistantEvent,
-  );
-
   const onSubmit = useCallback(
     async (e?: React.FormEvent) => {
       e?.preventDefault();
       const content = input.trim();
       if (!content || sending) return;
       setSending(true);
-      setStreamingText("");
-      setStreamingActive(false);
       setErr(null);
       try {
         const res = await rpc.call("append_assistant_message", {
@@ -166,12 +115,6 @@ export function AssistantThreadView({
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
         setSending(false);
-        // Drop the in-flight buffer — on success the persisted
-        // assistant message just rendered through `messages`; on
-        // failure the partial text would otherwise stick around
-        // alongside the error banner with no way to dismiss it.
-        setStreamingText("");
-        setStreamingActive(false);
       }
     },
     [rpc, thread.id, input, sending, onThreadTouched],
@@ -267,6 +210,43 @@ export function AssistantThreadView({
     [rpc, thread.id, onThreadTouched],
   );
 
+  // Project the assistant's native row type into the `ChatMessage`
+  // shape `ChatMessageList` consumes. The wrapper supplies a custom
+  // `renderMessage` below that reads `meta` back to dispatch on the
+  // original — action cards, attachment cards, and `tool`-role
+  // results need shapes `ChatMessage` (role + text + ts) cannot
+  // encode. Keying by the persisted `AssistantMessage.id` lets the
+  // status flip on a card (pending → confirmed) update in place
+  // instead of unmounting and remounting the row.
+  const history = useMemo<ChatMessage[]>(
+    () =>
+      messages.map((m) => ({
+        role: m.role === "user" ? "user" : "assistant",
+        text: m.content,
+        ts: new Date(m.created_at).toISOString(),
+        key: m.id,
+        meta: m,
+      })),
+    [messages],
+  );
+
+  const renderMessage = useCallback(
+    (msg: ChatMessage, key: string) => {
+      const original = msg.meta as AssistantMessage | undefined;
+      if (!original) return null;
+      return (
+        <MessageBubble
+          key={key}
+          message={original}
+          onConfirmAction={onConfirmAction}
+          onCancelAction={onCancelAction}
+          onConfirmDraftJob={onConfirmDraftJob}
+        />
+      );
+    },
+    [onConfirmAction, onCancelAction, onConfirmDraftJob],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-border/60 px-4 py-2">
@@ -276,35 +256,31 @@ export function AssistantThreadView({
         </p>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-3 p-4">
-          {!loaded ? (
-            <div className="text-xs text-muted-foreground">Loading…</div>
-          ) : messages.length === 0 ? (
-            <div className="text-xs text-muted-foreground">
-              No messages yet. Say hello to seed the thread.
-            </div>
-          ) : (
-            messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                onConfirmAction={onConfirmAction}
-                onCancelAction={onCancelAction}
-                onConfirmDraftJob={onConfirmDraftJob}
-              />
-            ))
-          )}
-          {sending && streamingText.length > 0 && (
-            <MarkdownBubble
-              role="assistant"
-              content={streamingText}
-              streaming={streamingActive}
-            />
-          )}
-          <div ref={scrollAnchorRef} />
-        </div>
-      </ScrollArea>
+      <div className="min-h-0 flex-1 overflow-hidden p-4">
+        {!loaded ? (
+          <div className="text-xs text-muted-foreground">Loading…</div>
+        ) : (
+          <ChatMessageList
+            // Planner publishes onto `(thread_id-as-job_id, task_id)`
+            // (see `assistant_planner.rs:108`); the same SSE channel
+            // powers job chats. `append_assistant_message` blocks and
+            // never round-trips the task id to the client, so the
+            // wildcard sentinel accepts the in-flight turn's tokens
+            // — safe because the RPC contract pins one turn per
+            // thread.
+            filter={{ scope: "job", job_id: thread.id as unknown as JobId }}
+            history={history}
+            activeTaskId={sending ? "*" : null}
+            renderMessage={renderMessage}
+            emptyState={
+              <li className="text-xs text-muted-foreground">
+                No messages yet. Say hello to seed the thread.
+              </li>
+            }
+            className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto pr-1"
+          />
+        )}
+      </div>
 
       {err && (
         <div className="border-t border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive">

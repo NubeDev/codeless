@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -197,11 +196,11 @@ export function ChatMessageList({
         if (row.kind === "message") {
           const key = row.message.key ?? `m-${i}`;
           if (renderMessage) {
-            return (
-              <Fragment key={key}>
-                {renderMessage(row.message, key)}
-              </Fragment>
-            );
+            // `<li>` wrapper keeps the renderer's output a valid
+            // child of the `<ul>` regardless of what the caller
+            // returns. `ChatBubble` self-wraps in `<li>` so it
+            // bypasses this path.
+            return <li key={key}>{renderMessage(row.message, key)}</li>;
           }
           return <ChatBubble key={key} message={row.message} />;
         }
