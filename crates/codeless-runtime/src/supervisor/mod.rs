@@ -53,13 +53,16 @@
 
 use std::sync::Arc;
 
-use codeless_types::{ChatTransport, Event, JobId};
+use codeless_types::{ChatTransport, Event, JobId, JobStatus};
 use futures_util::StreamExt;
 use tokio::task::JoinHandle;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
 use crate::store::SqliteStore;
 
+#[cfg(feature = "supervisor-claude")]
+pub mod claude;
+pub mod prompt;
 pub mod tools;
 pub use tools::{JobStateView, NoteFile, StageSummary, ToolError, Tools};
 
@@ -143,7 +146,18 @@ async fn run_with_tools(tools: Tools, job_id: JobId) {
             }
         };
         match env.event {
-            Event::JobCompleted { .. } | Event::JobFailed { .. } | Event::JobStopped { .. } => {
+            Event::JobCompleted { .. } => {
+                post_terminal_summary(&tools, job_id, JobStatus::Completed).await;
+                tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
+                return;
+            }
+            Event::JobFailed { .. } => {
+                post_terminal_summary(&tools, job_id, JobStatus::Failed).await;
+                tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
+                return;
+            }
+            Event::JobStopped { .. } => {
+                post_terminal_summary(&tools, job_id, JobStatus::Stopped).await;
                 tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
                 return;
             }
@@ -160,6 +174,37 @@ async fn run_with_tools(tools: Tools, job_id: JobId) {
             _ => {}
         }
     }
+}
+
+/// Compose and post the one-paragraph end-of-Run summary the user
+/// reads in the chat thread. Pulls the stage list off the store so
+/// the message cites real stage names and the `failure_detail` column
+/// the recorder stamped on a `Failed` row. The text format lives in
+/// `prompt::format_terminal_summary` so a doc reviewer can read it
+/// without compiling.
+async fn post_terminal_summary(tools: &Tools, job_id: JobId, status: JobStatus) {
+    let store = tools.store_arc();
+    let stages = match store.list_stages_for_job(job_id).await {
+        Ok(s) => s,
+        Err(_e) => {
+            // Best-effort: a stale store handle is not something the
+            // supervisor can recover from at end-of-Run; the chat
+            // thread will simply lack a summary for this Run.
+            tracing::debug!(%job_id, "supervisor could not list stages for terminal summary");
+            return;
+        }
+    };
+    let infos: Vec<prompt::TerminalStageInfo<'_>> = stages
+        .iter()
+        .map(|s| prompt::TerminalStageInfo {
+            ordinal: s.stage.ordinal,
+            name: s.stage.name.as_str(),
+            status: s.stage.status,
+            failure_detail: s.stage.failure_detail.as_deref(),
+        })
+        .collect();
+    let body = prompt::format_terminal_summary(status, &infos);
+    let _ = tools.post_chat_message(job_id, body).await;
 }
 
 /// Stage-10 reactor dispatch: a single hand-rolled matcher that pins

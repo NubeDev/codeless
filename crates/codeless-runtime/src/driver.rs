@@ -123,7 +123,15 @@ pub async fn drive_job(
     // a fresh supervisor; the previous Run's task has already exited
     // by the time we get here because its terminal event already
     // fired.
-    let _supervisor = crate::supervisor::spawn_supervisor(Arc::clone(bus), job_id);
+    // Tool-equipped supervisor: needs the store handle so its reactor
+    // can answer "what stage is it on?" and so the terminal-summary
+    // path (JOB-CHAT.md (C2) "on Run terminal status, supervisor
+    // posts a one-paragraph summary") can read each stage's
+    // `failure_detail` before posting its final chat message. The
+    // lifecycle-only `spawn_supervisor` stays available for tests
+    // that exercise the bus contract without a store.
+    let _supervisor =
+        crate::supervisor::spawn_supervisor_with_tools(Arc::clone(bus), Arc::clone(store), job_id);
 
     let cancel = CancellationToken::new();
     let cap_watcher = spawn_cap_watcher(

@@ -242,6 +242,124 @@ async fn supervisor_answers_what_stage_is_it_on() {
     let _ = supervisor.await;
 }
 
+/// Stage-11 contract: on a Run terminal envelope, the supervisor
+/// posts a one-paragraph summary into the chat thread before exiting.
+/// The summary must cite each stage's name and, where present, the
+/// row's `failure_detail` string — the only operator-visible
+/// breadcrumb a chat reader gets when the rest of the UI is closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervisor_posts_terminal_summary_on_run_failed() {
+    let rpc = InProcessRpc::new().await.unwrap();
+    let job_id = fresh_queued_job(&rpc).await;
+
+    let passed = Stage {
+        id: StageId::new(),
+        job_id,
+        ordinal: 1,
+        name: "stage 1: bootstrap".into(),
+        status: StageStatus::Passed,
+        verify_cmd: None,
+        started_at: Some(UnixMillis(1_700_000_000_000)),
+        ended_at: Some(UnixMillis(1_700_000_001_000)),
+        session_id: None,
+        goal: None,
+        acceptance: None,
+        last_activity_at: None,
+        archived: false,
+        persona_id: None,
+        bypassed_at: None,
+        bypassed_reason: None,
+        failure_class: None,
+        failure_detail: None,
+    };
+    let failed = Stage {
+        id: StageId::new(),
+        job_id,
+        ordinal: 2,
+        name: "stage 2: build".into(),
+        status: StageStatus::Failed,
+        verify_cmd: None,
+        started_at: Some(UnixMillis(1_700_000_002_000)),
+        ended_at: Some(UnixMillis(1_700_000_003_000)),
+        session_id: None,
+        goal: None,
+        acceptance: None,
+        last_activity_at: None,
+        archived: false,
+        persona_id: None,
+        bypassed_at: None,
+        bypassed_reason: None,
+        failure_class: None,
+        failure_detail: Some("cargo: linker exit 1".into()),
+    };
+    rpc.store().insert_stage(&passed).await.unwrap();
+    rpc.store().insert_stage(&failed).await.unwrap();
+
+    let mut stream = rpc
+        .subscribe(EventFilter::Job { job_id }, None)
+        .await
+        .expect("subscribe");
+
+    let supervisor = spawn_supervisor_with_tools(rpc.bus().clone(), rpc.store().clone(), job_id);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    rpc.bus()
+        .publish(
+            Some(job_id),
+            None,
+            None,
+            Event::JobFailed { job_id },
+            codeless_runtime::now_ms(),
+        )
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let reply = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let item = tokio::time::timeout(remaining, stream.next())
+            .await
+            .expect("timed out waiting for terminal summary")
+            .expect("stream end")
+            .expect("stream error");
+        if let Event::ChatMessageAppended { message, .. } = item.event {
+            if matches!(message.transport, ChatTransport::Supervisor) {
+                break message;
+            }
+        }
+    };
+
+    assert_eq!(reply.role, ChatRole::Assistant);
+    assert!(
+        reply.body.contains("stage 1: bootstrap"),
+        "summary must cite the first stage name; got: {}",
+        reply.body,
+    );
+    assert!(
+        reply.body.contains("stage 2: build"),
+        "summary must cite the failing stage name; got: {}",
+        reply.body,
+    );
+    assert!(
+        reply.body.contains("cargo: linker exit 1"),
+        "summary must cite the visible failure_detail; got: {}",
+        reply.body,
+    );
+    assert!(
+        reply.body.to_ascii_lowercase().contains("failed"),
+        "summary must record the terminal status; got: {}",
+        reply.body,
+    );
+
+    // The supervisor must exit after posting; give it a moment to
+    // observe its own terminal envelope and drain.
+    let res = tokio::time::timeout(Duration::from_secs(2), supervisor).await;
+    assert!(
+        res.is_ok(),
+        "supervisor must exit after posting the terminal summary",
+    );
+}
+
 /// Two back-to-back terminal events on the same Job exercise the
 /// "fresh Run spawns a fresh supervisor" property — each spawn is
 /// independent and each call returns its own JoinHandle that resolves

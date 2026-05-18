@@ -150,6 +150,14 @@ impl Tools {
         })
     }
 
+    /// Shared handle on the store. Used by the supervisor's terminal
+    /// summary path to read the per-stage `failure_detail` column
+    /// without re-issuing the `get_job_state` projection (which drops
+    /// the detail field).
+    pub(crate) fn store_arc(&self) -> Arc<SqliteStore> {
+        Arc::clone(&self.store)
+    }
+
     /// Read the most recent `limit` persisted events for this Job in
     /// cursor-ascending order. `limit` is clamped to
     /// [`READ_EVENTS_LIMIT_MAX`].
