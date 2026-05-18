@@ -165,8 +165,14 @@ export function EditJobDialog({ job, open, onOpenChange, onSaved }: Props) {
     return { type: policyKind as PresetPolicyKind };
   })();
 
-  // Re-seed form when job prop changes (e.g. refetch after SSE update).
+  // Re-seed form when the dialog opens or the user switches to a
+  // different job. Depending on the `job` *object* (not its id) made
+  // every parent SSE-driven refetch stomp user edits mid-typing —
+  // pick "Quick" in the policy dropdown, parent re-renders with a
+  // fresh job object identity, this effect re-runs and snaps the
+  // dropdown back to its persisted value before Save can fire.
   useEffect(() => {
+    if (!open) return;
     setRunner(job.runner);
     setModel(job.model ?? SERVER_PICK);
     setPermissionMode(job.permission_mode ?? SERVER_PICK);
@@ -177,7 +183,8 @@ export function EditJobDialog({ job, open, onOpenChange, onSaved }: Props) {
     const next = policyToFormState(job.auto_bypass_policy);
     setPolicyKind(next.kind);
     setCustomComment(next.comment);
-  }, [job]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, job.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -220,7 +227,7 @@ export function EditJobDialog({ job, open, onOpenChange, onSaved }: Props) {
       if (!policiesEqual(nextPolicy, job.auto_bypass_policy ?? null)) {
         updated = await rpc.call("set_job_policy", {
           job_id: job.id,
-          auto_bypass_policy: nextPolicy,
+          policy: nextPolicy,
         });
       }
       onSaved(updated);

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { useEventStream, type EventEnvelope, type EventFilter } from "@/lib/rpc";
 
@@ -40,10 +47,27 @@ import {
 // awaited RPC returns the persisted message). A null task id keeps
 // the bubble hidden — replayed events from earlier turns don't
 // surface as phantom in-flight prose.
+//
+// The sentinel `"*"` accepts every event regardless of `task_id` and
+// is used by surfaces whose underlying RPC doesn't expose the task
+// id the planner publishes on (e.g. `append_assistant_message`, which
+// blocks until the turn completes and never round-trips the task id
+// to the client). It is safe because the same RPC contract pins one
+// in-flight turn per thread on the server.
 export type ChatMessageListProps = {
   filter: EventFilter;
   history: ChatMessage[];
   activeTaskId: string | null;
+  /**
+   * Override the default `<ChatBubble />` row renderer. The assistant
+   * thread mounts this to dispatch on `AssistantMessage` shape — action
+   * cards, attachment cards, tool-result rows. The wrapper attaches
+   * the original row via `ChatMessage.meta` and reads it back here.
+   * Receives the projected message plus the stable key the renderer
+   * would otherwise have generated, so the wrapper can pass it through
+   * unchanged when it returns a custom element.
+   */
+  renderMessage?: (message: ChatMessage, key: string) => ReactNode;
   /**
    * Initial subscription cursor. Defaults to `0` so a freshly opened
    * surface replays the full thread (matching what `JobTimeline` and
@@ -80,6 +104,7 @@ export function ChatMessageList({
   filter,
   history,
   activeTaskId,
+  renderMessage,
   since = 0,
   autoScroll = true,
   emptyState,
@@ -122,7 +147,10 @@ export function ChatMessageList({
     (env: EventEnvelope) => {
       onEventReceived?.(env);
       const e = env.event;
-      if (activeTaskId != null && env.task_id === activeTaskId) {
+      const taskMatches =
+        activeTaskId != null
+        && (activeTaskId === "*" || env.task_id === activeTaskId);
+      if (taskMatches) {
         if (e.type === "ai-token") {
           setStreamingText((prev) => prev + e.delta);
           setStreamingActive(true);
@@ -167,7 +195,15 @@ export function ChatMessageList({
       {isEmpty && emptyState}
       {rows.map((row, i) => {
         if (row.kind === "message") {
-          return <ChatBubble key={`m-${i}`} message={row.message} />;
+          const key = row.message.key ?? `m-${i}`;
+          if (renderMessage) {
+            return (
+              <Fragment key={key}>
+                {renderMessage(row.message, key)}
+              </Fragment>
+            );
+          }
+          return <ChatBubble key={key} message={row.message} />;
         }
         if (row.kind === "tool_call") {
           return (

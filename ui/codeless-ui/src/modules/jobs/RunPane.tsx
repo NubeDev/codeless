@@ -22,15 +22,10 @@ import {
 import { navigate } from "@/lib/route";
 
 import {
-  ChatBubble,
+  ChatMessageList,
   CommonChat,
-  LifecycleDivider,
   PulseDot,
-  ToolCallCard,
-  liveItemFromEvent,
-  mergeChatFeed,
   type ChatMessage,
-  type LiveFeedItem,
 } from "../chat";
 
 import { setGlobalDocs } from "./spec/mutateTemplate";
@@ -848,19 +843,15 @@ export function JobChat({
   // cannot touch repo source. Mirrors claude-code's plan-mode signal.
   const [chatMode, setChatMode] = useState<"work" | "spec">("work");
   const [busy, setBusy] = useState(false);
-  const [streaming, setStreaming] = useState<{
-    sessionId: JobId;
-    taskId: string;
-    text: string;
-  } | null>(null);
+  // Task id of the in-flight assistant turn, or `null` when no turn
+  // is active. Drives `ChatMessageList`'s streaming-bubble gate: the
+  // placeholder appears the moment we kick off `agent_chat` (under
+  // the `"pending"` sentinel since the real id is server-side), then
+  // is swapped to `result.task_id` so token accumulation only picks
+  // up deltas from this turn. Cleared in the same `finally` as
+  // `busy` so the bubble can never linger past the send.
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // Tool calls + lifecycle moments from the job's event stream,
-  // interleaved into the chat feed below the user/assistant
-  // bubbles. We keep them in a separate state so the existing
-  // streaming-token accumulator and CHAT.md persistence stay
-  // untouched — these are *additional* signal, not a rewrite of
-  // the chat surface.
-  const [liveItems, setLiveItems] = useState<LiveFeedItem[]>([]);
   const sinceCursor = useRef<number>(0);
   // Attachments staged for the next send. Each entry is the result
   // of an `upload_chat_attachment` RPC: the bytes already live in
@@ -898,18 +889,8 @@ export function JobChat({
   // `InvalidArgument`.
   const [worktreeMissing, setWorktreeMissing] = useState<boolean | null>(null);
 
-  const scrollRef = useRef<HTMLUListElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
-  // Whenever auto-scroll is enabled and feed content changes, pin to
-  // the bottom. We watch the merged feed length and the streaming
-  // buffer so token-by-token updates also keep scroll glued.
-  useEffect(() => {
-    if (!autoScroll) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [autoScroll, history, liveItems, streaming?.text]);
   // Auto-grow the composer textarea up to a sensible cap so a long
   // multi-line message doesn't get clipped behind a small fixed box.
   useEffect(() => {
@@ -975,41 +956,15 @@ export function JobChat({
   // tool runs, not just a frozen "streaming" bubble.
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
 
-  // Subscribe to the chat session's event stream. We use the job's
-  // own id as session_id so every chat turn for this job shares the
-  // same filter; the streaming-text accumulator distinguishes turns
-  // by task_id (one task per agent_chat call). The `withState`
-  // variant additionally exposes SSE liveness — connecting / live /
-  // reconnecting / disconnected — so the chat header can show the
-  // user when the stream itself is the reason updates have stopped.
+  // SSE liveness for the agent-activity pill. Token accumulation,
+  // tool-call interleave, and lifecycle dividers live inside
+  // `ChatMessageList`; this subscription only carries the state +
+  // last-seen timestamp the indicator needs. Two subscriptions on the
+  // same filter share one EventSource via the hook's connection pool,
+  // so this does not double the network cost.
   const sseStatus = useEventStreamWithState(
     { scope: "job", job_id: job.id },
-    useCallback(
-      (env) => {
-        setLastEventAt(Date.now());
-        // Streaming-token accumulator for the in-flight assistant
-        // bubble (unchanged behaviour). Distinguished by task_id so
-        // a stray event for an earlier turn cannot pollute the
-        // current bubble.
-        const e = env.event;
-        if (streaming && env.task_id === streaming.taskId && e.type === "ai-token") {
-          setStreaming((s) =>
-            s && s.taskId === env.task_id ? { ...s, text: s.text + e.delta } : s,
-          );
-        }
-        // Tool calls and lifecycle moments fold into the feed as
-        // their own items, interleaved chronologically with the
-        // user/assistant bubbles. Cheap append; the render derives
-        // the merged list from `history` + `liveItems` + `streaming`.
-        const item = liveItemFromEvent(env);
-        if (item) {
-          setLiveItems((prev) =>
-            prev.some((p) => p.cursor === item.cursor) ? prev : [...prev, item],
-          );
-        }
-      },
-      [streaming],
-    ),
+    useCallback(() => setLastEventAt(Date.now()), []),
     sinceCursor.current,
   );
 
@@ -1028,7 +983,7 @@ export function JobChat({
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setStreaming(null);
+      setActiveTaskId(null);
       setBusy(false);
     }
   };
@@ -1049,7 +1004,11 @@ export function JobChat({
     setHistory(optimistic);
     setInput("");
     setAttachments([]);
-    setStreaming({ sessionId: job.id, taskId: "pending", text: "" });
+    // `"pending"` shows the in-flight placeholder bubble before the
+    // RPC returns with the real task id; no real envelope carries
+    // `"pending"` as a task_id so no token accumulator runs against
+    // it. The id is replaced below the moment `agent_chat` resolves.
+    setActiveTaskId("pending");
 
     try {
       // The chat runs in the job's worktree so it can read files
@@ -1080,7 +1039,7 @@ export function JobChat({
         mode: chatMode,
       });
 
-      setStreaming({ sessionId: result.session_id, taskId: result.task_id, text: "" });
+      setActiveTaskId(result.task_id);
 
       // Wait for the assistant turn to complete. We poll the
       // streaming bubble's text and resolve when an ai-message-complete
@@ -1099,7 +1058,7 @@ export function JobChat({
       };
       const updated = [...optimistic, assistantMsg];
       setHistory(updated);
-      setStreaming(null);
+      setActiveTaskId(null);
 
       // Persist transcript.
       await rpc.call("write_job_file", {
@@ -1132,7 +1091,7 @@ export function JobChat({
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
-      setStreaming(null);
+      setActiveTaskId(null);
       setHistory(history);
       // Restore the staged attachments so the user can retry without
       // re-picking files. The bytes still live in the worktree from
@@ -1218,7 +1177,7 @@ export function JobChat({
             sseStatus={sseStatus}
             lastEventAt={lastEventAt}
             jobStatus={job.status}
-            chatBusy={busy || streaming != null}
+            chatBusy={busy}
           />
           <span className="text-muted-foreground font-mono text-[10px]">
             {loaded ? `${history.length} message${history.length === 1 ? "" : "s"}` : "loading…"}
@@ -1231,20 +1190,14 @@ export function JobChat({
               type="checkbox"
               className="h-3 w-3 cursor-pointer"
               checked={autoScroll}
-              onChange={(e) => {
-                const on = e.target.checked;
-                setAutoScroll(on);
-                if (on && scrollRef.current) {
-                  scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-                }
-              }}
+              onChange={(e) => setAutoScroll(e.target.checked)}
             />
             auto-scroll
           </label>
         </div>
       </div>
 
-      {history.length === 0 && !streaming && loaded && (
+      {history.length === 0 && activeTaskId == null && loaded && (
         <p className="text-muted-foreground shrink-0 text-[11px] italic">
           ask anything — "how many rows in the csv?", "where did you put the
           files?", "now add a column for reactive power". the chat runs in
@@ -1257,44 +1210,12 @@ export function JobChat({
         <WorktreeMissingBanner worktreePath={job.worktree_path ?? ""} />
       )}
 
-      <ul
-        ref={scrollRef}
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1"
-      >
-        {mergeChatFeed(history, liveItems).map((row, i) => {
-          if (row.kind === "message") {
-            return <ChatBubble key={`m-${i}`} message={row.message} />;
-          }
-          if (row.kind === "tool_call") {
-            return (
-              <ToolCallCard
-                key={`t-${row.cursor}`}
-                tool={row.tool}
-                argsJson={row.args_json}
-                ts={row.created_at}
-              />
-            );
-          }
-          return (
-            <LifecycleDivider
-              key={`l-${row.cursor}`}
-              label={row.label}
-              tone={row.tone}
-              ts={row.created_at}
-            />
-          );
-        })}
-        {streaming && (
-          <ChatBubble
-            message={{
-              role: "assistant",
-              text: streaming.text || "…",
-              ts: "",
-            }}
-            streaming
-          />
-        )}
-      </ul>
+      <ChatMessageList
+        filter={{ scope: "job", job_id: job.id }}
+        history={history}
+        activeTaskId={activeTaskId}
+        autoScroll={autoScroll}
+      />
 
       {refetchJob && (
         <JobActionRow

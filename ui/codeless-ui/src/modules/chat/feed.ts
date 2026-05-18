@@ -11,6 +11,22 @@ export interface ChatMessage {
   role: ChatMessageRole;
   text: string;
   ts: string;
+  /**
+   * Stable key for React reconciliation when the wrapper has a more
+   * informative identifier than the position in the array — the
+   * assistant view uses the persisted `AssistantMessage.id`, which
+   * survives card-status flips (pending → confirmed) that change
+   * `meta` without changing the row's identity.
+   */
+  key?: string;
+  /**
+   * Opaque payload the wrapper attaches so its `renderMessage`
+   * callback can dispatch on the original row. The renderer never
+   * inspects this field — it exists so wrappers can carry their
+   * native row type (e.g. `AssistantMessage`) through the merge
+   * without forcing the projection to be lossy.
+   */
+  meta?: unknown;
 }
 
 // Additional rows the chat feed renders alongside user/assistant

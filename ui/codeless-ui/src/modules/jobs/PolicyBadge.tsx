@@ -216,7 +216,7 @@ function PolicyDialog({ job, open, onOpenChange, onUpdated }: DialogProps) {
     try {
       await rpc.call("set_job_policy", {
         job_id: job.id,
-        auto_bypass_policy: nextPolicy,
+        policy: nextPolicy,
       });
       onUpdated();
       onOpenChange(false);

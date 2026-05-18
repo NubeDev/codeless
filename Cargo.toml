@@ -30,6 +30,7 @@ members = [
     # upstream rather than from edits made inside this workspace.
     "../ai-runner",
 ]
+exclude = ["demos/openui-poc"]
 
 [workspace.package]
 version = "0.0.0"

@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  useEventStream,
   useRpc,
   type AssistantAction,
   type AssistantActionCard,
@@ -9,16 +8,18 @@ import {
   type AssistantMessage,
   type AssistantMessageId,
   type AssistantThread,
-  type EventEnvelope,
   type JobId,
   type Repo,
   type SubmitJobArgs,
 } from "@/lib/rpc";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
-import { MarkdownBubble } from "../chat";
+import {
+  ChatMessageList,
+  MarkdownBubble,
+  type ChatMessage,
+} from "../chat";
 import {
   JobComposer,
   composerToSubmitArgs,

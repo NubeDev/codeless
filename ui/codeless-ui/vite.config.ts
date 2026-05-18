@@ -26,7 +26,13 @@ export default defineConfig(async ({ mode }) => ({
     chunkSizeWarningLimit: 1500,
     rollupOptions: {
       input: {
+        // Browser shell entry, served by codeless-server (or Vite
+        // dev) at `/`. Desktop shell entry, loaded by Tauri via the
+        // `app.windows[0].url = "index.desktop.html"` override in
+        // tauri.conf.json. Both ship in the same dist/ so a single
+        // `pnpm build` produces both bundles.
         main: path.resolve(__dirname, "index.html"),
+        desktop: path.resolve(__dirname, "index.desktop.html"),
       },
       output: {
         manualChunks(id: string) {
