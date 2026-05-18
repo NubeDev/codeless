@@ -11,20 +11,21 @@ use codeless_rpc::{
     DeleteJobFileArgs, DeletePersonaArgs, DraftJobFromConversationArgs, EventFilter, EventStream,
     FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
     FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult,
-    JobReportArgs, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    GcWorktreesArgs, GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult, GetJobArgs,
+    GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListChatBindingsForJobArgs, ListChatBindingsForJobResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
     ListPersonasResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     ListScheduledPausePointsArgs, ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
     OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError,
     RpcResult, RpcServer, SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{
     AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review, TaskId,
@@ -594,5 +595,23 @@ impl RpcServer for InProcessRpc {
 
     async fn bind_chat_thread(&self, args: BindChatThreadArgs) -> RpcResult<ChatBinding> {
         job_chat::bind_chat_thread(self, args).await
+    }
+
+    async fn update_chat_message_delivery(
+        &self,
+        args: UpdateChatMessageDeliveryArgs,
+    ) -> RpcResult<ChatMessage> {
+        job_chat::update_chat_message_delivery(self, args).await
+    }
+
+    async fn list_chat_bindings_for_job(
+        &self,
+        args: ListChatBindingsForJobArgs,
+    ) -> RpcResult<ListChatBindingsForJobResult> {
+        job_chat::list_chat_bindings_for_job(self, args).await
+    }
+
+    async fn get_chat_binding(&self, args: GetChatBindingArgs) -> RpcResult<GetChatBindingResult> {
+        job_chat::get_chat_binding(self, args).await
     }
 }

@@ -33,12 +33,14 @@ use codeless_rpc::methods::{
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobMessagesArgs,
     ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListProposedPatchesArgs,
     ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    PostJobMessageArgs, ProposedPatchListEntry, RejectScopePatchArgs, RemoveRepoArgs,
-    ResetJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo,
-    ScopePatchActionResult, ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UserPromptSnippet,
+    GetChatBindingArgs, GetChatBindingResult, ListChatBindingsForJobArgs,
+    ListChatBindingsForJobResult, PostJobMessageArgs, ProposedPatchListEntry, RejectScopePatchArgs,
+    RemoveRepoArgs, ResetJobArgs, UpdateChatMessageDeliveryArgs,
+    RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo, ScopePatchActionResult,
+    ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::pause_point::{
@@ -151,6 +153,11 @@ fn collect() -> TypeCollection {
         .register_mut::<ListJobMessagesArgs>()
         .register_mut::<ListJobMessagesResult>()
         .register_mut::<BindChatThreadArgs>()
+        .register_mut::<UpdateChatMessageDeliveryArgs>()
+        .register_mut::<ListChatBindingsForJobArgs>()
+        .register_mut::<ListChatBindingsForJobResult>()
+        .register_mut::<GetChatBindingArgs>()
+        .register_mut::<GetChatBindingResult>()
         .register_mut::<StopActiveArgs>()
         .register_mut::<StopActiveResult>()
         .register_mut::<AssistantThreadId>()

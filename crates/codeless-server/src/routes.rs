@@ -15,9 +15,10 @@ use codeless_rpc::{
     DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs,
     FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs,
+    JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListChatBindingsForJobArgs, ListChatBindingsForJobResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
     ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListScheduledPausePointsArgs,
@@ -26,11 +27,12 @@ use codeless_rpc::{
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, ScopePatchActionResult,
     ServerInfo, SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UpsertPersonaArgs, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review};
 use serde_json::Value;
@@ -144,6 +146,15 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/post_job_message", post(post_job_message))
         .route("/rpc/list_job_messages", post(list_job_messages))
         .route("/rpc/bind_chat_thread", post(bind_chat_thread))
+        .route(
+            "/rpc/update_chat_message_delivery",
+            post(update_chat_message_delivery),
+        )
+        .route(
+            "/rpc/list_chat_bindings_for_job",
+            post(list_chat_bindings_for_job),
+        )
+        .route("/rpc/get_chat_binding", post(get_chat_binding))
         .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
@@ -864,6 +875,39 @@ async fn bind_chat_thread(
 ) -> HandlerResult<ChatBinding> {
     st.rpc
         .bind_chat_thread(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn update_chat_message_delivery(
+    State(st): State<AppState>,
+    Json(args): Json<UpdateChatMessageDeliveryArgs>,
+) -> HandlerResult<ChatMessage> {
+    st.rpc
+        .update_chat_message_delivery(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_chat_bindings_for_job(
+    State(st): State<AppState>,
+    Json(args): Json<ListChatBindingsForJobArgs>,
+) -> HandlerResult<ListChatBindingsForJobResult> {
+    st.rpc
+        .list_chat_bindings_for_job(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn get_chat_binding(
+    State(st): State<AppState>,
+    Json(args): Json<GetChatBindingArgs>,
+) -> HandlerResult<GetChatBindingResult> {
+    st.rpc
+        .get_chat_binding(args)
         .await
         .map(Json)
         .map_err(map_err)

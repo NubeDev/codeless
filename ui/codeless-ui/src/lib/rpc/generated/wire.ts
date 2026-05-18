@@ -1475,6 +1475,26 @@ export type FsWriteFileArgs = {
 	content: string,
 };
 
+/**
+ *  Forward lookup on `chat_bindings`: resolve an inbound
+ *  `(transport, channel, thread)` to the Job that owns the
+ *  conversation. Returns `None` when the channel was never
+ *  `/codeless bind`-ed — the adapter treats that as "drop the
+ *  message" (the substrate refuses to ingest text the operator has
+ *  not pointed at a Job). `thread_id` defaults to the empty-string
+ *  sentinel server-side so callers that come from a non-threaded
+ *  platform message can pass `None` and still hit the PK row.
+ */
+export type GetChatBindingArgs = {
+	transport: ChatTransport,
+	channel_id: string,
+	thread_id?: string | null,
+};
+
+export type GetChatBindingResult = {
+	binding: ChatBinding | null,
+};
+
 export type GetJobArgs = {
 	job_id: JobId,
 };
@@ -1744,6 +1764,24 @@ export type ListAssistantThreadsArgs = Record<string, never>;
 
 export type ListAssistantThreadsResult = {
 	threads: AssistantThread[],
+};
+
+/**
+ *  Reverse lookup of `chat_bindings`: every `(channel, thread)` on the
+ *  given transport that points at the supplied Job. The outbound
+ *  forwarder on each transport adapter calls this when a
+ *  `ChatMessageAppended` fires for a Job it cares about — the bindings
+ *  it returns are the set of platform-side destinations the message
+ *  must be forwarded to. The forward direction is the inverse of
+ *  `get_chat_binding` (which serves the inbound resolver path).
+ */
+export type ListChatBindingsForJobArgs = {
+	job_id: JobId,
+	transport: ChatTransport,
+};
+
+export type ListChatBindingsForJobResult = {
+	bindings: ChatBinding[],
 };
 
 /**
@@ -2783,6 +2821,30 @@ export type TodoStatus = "pending" | "in-progress" | "done" | "skipped" | "faile
  *  `INTEGER` round-trips with `sqlx` (which surfaces signed integers).
  */
 export type UnixMillis = number;
+
+/**
+ *  Record one transport's outbound delivery receipt against a
+ *  `chat_messages` row. Called by the Telegram / Slack outbound
+ *  forwarders after a successful platform send so the next event-bus
+ *  fan-out (after a restart, or to a second forwarder on the same
+ *  transport) can presence-check `metadata_json.delivery.<transport>`
+ *  and skip the duplicate post. Per `JOB-CHAT.md` "Transport adapters"
+ *  the column owners that the runtime guarantees never to overwrite —
+ *  `body` and `external_id` — stay immutable; only `metadata_json` is
+ *  mutated, and even there only the substrate-owned `delivery.<transport>`
+ *  key is touched (OQ-CHAT-5 §metadata keyspace).
+ * 
+ *  `platform_id` is the id the platform returned for the *outbound*
+ *  send (Telegram `message_id`, Slack `ts`) — NOT the originating
+ *  transport's `external_id`. Mixing the two would conflate the source
+ *  of truth with the delivery receipt; the immutability bias in
+ *  JOB-CHAT.md exists exactly to keep that line clean.
+ */
+export type UpdateChatMessageDeliveryArgs = {
+	message_id: MessageId,
+	transport: ChatTransport,
+	platform_id: string,
+};
 
 /**
  *  `assistant.uploadAttachment`. Drop a binary blob into a thread's

@@ -1,6 +1,7 @@
 use codeless_rpc::{
-    BindChatThreadArgs, ListJobMessagesArgs, ListJobMessagesResult, PostJobMessageArgs, RpcError,
-    RpcResult,
+    BindChatThreadArgs, GetChatBindingArgs, GetChatBindingResult, ListChatBindingsForJobArgs,
+    ListChatBindingsForJobResult, ListJobMessagesArgs, ListJobMessagesResult, PostJobMessageArgs,
+    RpcError, RpcResult, UpdateChatMessageDeliveryArgs,
 };
 use codeless_types::{ChatBinding, ChatMessage, Event, MessageId};
 
@@ -167,6 +168,57 @@ pub(super) async fn bind_chat_thread(
         .await
         .map_err(super::db_err)?;
     Ok(binding)
+}
+
+pub(super) async fn update_chat_message_delivery(
+    rpc: &InProcessRpc,
+    args: UpdateChatMessageDeliveryArgs,
+) -> RpcResult<ChatMessage> {
+    // The store call is read-merge-write inside a transaction; a
+    // missing row collapses to `NotFound` rather than `Internal`
+    // because the forwarder's idempotency check is presence-based on
+    // the row's delivery receipt and a deleted row is the same
+    // signal — there is nothing to receipt.
+    let updated = rpc
+        .store
+        .update_chat_message_delivery(args.message_id, args.transport, &args.platform_id)
+        .await
+        .map_err(super::db_err)?;
+    updated.ok_or_else(|| RpcError::NotFound(format!("chat message {}", args.message_id)))
+}
+
+pub(super) async fn get_chat_binding(
+    rpc: &InProcessRpc,
+    args: GetChatBindingArgs,
+) -> RpcResult<GetChatBindingResult> {
+    let thread_id = args.thread_id.unwrap_or_default();
+    let binding = rpc
+        .store
+        .get_chat_binding(args.transport, &args.channel_id, &thread_id)
+        .await
+        .map_err(super::db_err)?;
+    Ok(GetChatBindingResult { binding })
+}
+
+pub(super) async fn list_chat_bindings_for_job(
+    rpc: &InProcessRpc,
+    args: ListChatBindingsForJobArgs,
+) -> RpcResult<ListChatBindingsForJobResult> {
+    if rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .is_none()
+    {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    let bindings = rpc
+        .store
+        .list_chat_bindings_for_job(args.transport, args.job_id)
+        .await
+        .map_err(super::db_err)?;
+    Ok(ListChatBindingsForJobResult { bindings })
 }
 
 #[cfg(test)]

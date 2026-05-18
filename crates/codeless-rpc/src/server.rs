@@ -15,9 +15,10 @@ use crate::methods::{
     DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs,
     FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
+    GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs,
+    JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListChatBindingsForJobArgs, ListChatBindingsForJobResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
     ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult,
     ListReviewsArgs, ListReviewsResult, ListScheduledPausePointsArgs,
@@ -26,10 +27,11 @@ use crate::methods::{
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, ScopePatchActionResult,
     SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -598,4 +600,38 @@ pub trait RpcServer: Send + Sync + 'static {
     /// the row's PK guarantees only one Job can own a given channel
     /// thread at a time. `NotFound` for an unknown `job_id`.
     async fn bind_chat_thread(&self, args: BindChatThreadArgs) -> RpcResult<ChatBinding>;
+
+    /// Record one transport's outbound delivery receipt against a
+    /// `chat_messages` row. The originating columns (`body`,
+    /// `external_id`) are never touched — only
+    /// `metadata_json.delivery.<transport>` is set to `platform_id` so
+    /// the outbound forwarder can presence-check the receipt on restart
+    /// and skip a duplicate send (`JOB-CHAT.md` "Transport adapters"
+    /// idempotency rule). `NotFound` for a message id that no longer
+    /// exists (the row was deleted between the original append and the
+    /// delivery write — treated as already-handled by the forwarder).
+    async fn update_chat_message_delivery(
+        &self,
+        args: UpdateChatMessageDeliveryArgs,
+    ) -> RpcResult<ChatMessage>;
+
+    /// Reverse `chat_bindings` lookup: every `(channel, thread)` on
+    /// the given transport that points at this Job. The outbound
+    /// forwarders on each transport adapter call this when a
+    /// `ChatMessageAppended` fires so they know where to fan the
+    /// message out. Empty result is the normal "no binding yet" path
+    /// (the Job has never been `/codeless bind`-ed on this transport);
+    /// `NotFound` is reserved for an unknown `job_id`.
+    async fn list_chat_bindings_for_job(
+        &self,
+        args: ListChatBindingsForJobArgs,
+    ) -> RpcResult<ListChatBindingsForJobResult>;
+
+    /// Forward lookup of `chat_bindings`: the Job (if any) that owns
+    /// the conversation on `(transport, channel, thread)`. Returns
+    /// `binding = None` when the channel was never `/codeless bind`-
+    /// ed; transport adapters treat that as "drop the message" so the
+    /// substrate refuses to ingest text the operator has not pointed
+    /// at a Job.
+    async fn get_chat_binding(&self, args: GetChatBindingArgs) -> RpcResult<GetChatBindingResult>;
 }

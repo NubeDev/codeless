@@ -28,8 +28,10 @@
 //! mobile shells reach the same RPC surface through the HTTP/SSE
 //! transport — they do not need the Telegram bridge.
 
+pub mod chat;
 pub mod config;
 pub mod dispatcher;
+pub mod inbound_chat;
 pub mod long_poll;
 pub mod outbound;
 pub mod web_api;
@@ -59,6 +61,13 @@ pub struct TelegramBot {
     shutdown_tx: Option<oneshot::Sender<()>>,
     threads: ThreadMap,
     outbound: Option<OutboundPublisher>,
+    /// Per-Job chat substrate forwarder (JOB-CHAT.md). Subscribes to
+    /// `ChatMessageAppended` and forwards every non-Telegram-origin
+    /// message to the Telegram-side bindings registered for the Job.
+    /// Always spawned — unlike the failure-card publisher this surface
+    /// has no chat-id configuration; the destination is whatever
+    /// `/codeless bind` has armed for the Job.
+    chat: chat::ChatForwarder,
 }
 
 impl TelegramBot {
@@ -78,13 +87,20 @@ impl TelegramBot {
         let threads = ThreadMap::new();
         let dispatcher = Dispatcher::new(backend.clone(), transport.clone(), threads.clone());
 
+        // Per-Job chat substrate forwarder: subscribes to
+        // `ChatMessageAppended` and fans non-Telegram-origin messages
+        // out to every Telegram binding for the Job. Echo suppression
+        // and idempotency live in the forwarder itself (chat.rs).
+        let chat_events: Arc<dyn EventSource> = Arc::new(RpcServerEventSource::new(rpc.clone()));
+        let chat_forwarder = chat::ChatForwarder::spawn(chat_events, rpc.clone(), api.clone());
+
         // Outbound publisher only spawns when a chat is configured —
         // a deployment that wants commands-only behaviour leaves
         // `telegram_chat_id` unset and the publisher is simply
         // absent. A WARN log makes the inert state visible on boot.
         let outbound = match config.chat_id.clone() {
             Some(chat_id) => {
-                let events: Arc<dyn EventSource> = Arc::new(RpcServerEventSource::new(rpc));
+                let events: Arc<dyn EventSource> = Arc::new(RpcServerEventSource::new(rpc.clone()));
                 let pre_transport: Arc<dyn BotTransport> =
                     Arc::new(outbound::MarkdownV2Transport::new(api.clone()));
                 Some(OutboundPublisher::spawn(
@@ -103,14 +119,17 @@ impl TelegramBot {
             }
         };
 
+        let long_poll_api = api.clone();
+        let long_poll_rpc = rpc.clone();
         let join = tokio::spawn(async move {
-            long_poll::run(api, dispatcher, shutdown_rx).await;
+            long_poll::run(long_poll_api, long_poll_rpc, dispatcher, shutdown_rx).await;
         });
         Ok(Self {
             join,
             shutdown_tx: Some(shutdown_tx),
             threads,
             outbound,
+            chat: chat_forwarder,
         })
     }
 
@@ -134,5 +153,6 @@ impl TelegramBot {
         if let Some(outbound) = self.outbound.take() {
             outbound.shutdown().await;
         }
+        self.chat.shutdown().await;
     }
 }

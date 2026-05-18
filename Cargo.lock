@@ -1020,6 +1020,7 @@ dependencies = [
  "codeless-adapters-host",
  "codeless-bot-core",
  "codeless-rpc",
+ "codeless-runtime",
  "codeless-types",
  "futures-util",
  "reqwest 0.12.28",

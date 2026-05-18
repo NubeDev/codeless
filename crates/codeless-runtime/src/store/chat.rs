@@ -225,6 +225,104 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Record a delivery receipt for one outbound transport without
+    /// touching the row's immutable columns. JOB-CHAT.md is explicit
+    /// that `body` and `external_id` are append-only by construction —
+    /// an edit on either of those would shift the audit trail under the
+    /// supervisor's feet. The delivery receipt lives under
+    /// `metadata_json.delivery.<transport>` (the substrate-owned keyspace
+    /// from OQ-CHAT-5) so adapters can presence-check the field on
+    /// restart and skip a re-send idempotently.
+    ///
+    /// Runs the read-merge-write inside a single transaction so two
+    /// transports racing on the same row (Slack and Telegram both
+    /// forwarding the same supervisor message) cannot lose each other's
+    /// receipt. Returns the post-update row so the caller can log /
+    /// re-emit without a second round-trip; `Ok(None)` means the row
+    /// was deleted (or never existed) between the originating insert
+    /// and the delivery write — the forwarder treats that as
+    /// already-handled and moves on.
+    pub async fn update_chat_message_delivery(
+        &self,
+        message_id: MessageId,
+        transport: ChatTransport,
+        platform_id: &str,
+    ) -> sqlx::Result<Option<ChatMessage>> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT * FROM chat_messages WHERE id = ?")
+            .bind(message_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut msg = chat_message_from_row(row)?;
+        let mut metadata: serde_json::Value = match msg.metadata_json.as_deref() {
+            Some(text) => serde_json::from_str(text).map_err(|e| {
+                sqlx::Error::Decode(format!("chat_messages.metadata_json: {e}").into())
+            })?,
+            None => serde_json::Value::Object(serde_json::Map::new()),
+        };
+        if !metadata.is_object() {
+            return Err(sqlx::Error::Decode(
+                "chat_messages.metadata_json: expected JSON object".into(),
+            ));
+        }
+        let root = metadata.as_object_mut().expect("checked above");
+        let delivery_entry = root
+            .entry("delivery")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !delivery_entry.is_object() {
+            return Err(sqlx::Error::Decode(
+                "chat_messages.metadata_json.delivery: expected JSON object".into(),
+            ));
+        }
+        delivery_entry
+            .as_object_mut()
+            .expect("checked above")
+            .insert(
+                transport_label(transport).to_string(),
+                serde_json::Value::String(platform_id.to_string()),
+            );
+        let new_meta = serde_json::to_string(&metadata).map_err(|e| {
+            sqlx::Error::Decode(format!("re-serialise chat_messages.metadata_json: {e}").into())
+        })?;
+        sqlx::query("UPDATE chat_messages SET metadata_json = ? WHERE id = ?")
+            .bind(&new_meta)
+            .bind(message_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        msg.metadata_json = Some(new_meta);
+        Ok(Some(msg))
+    }
+
+    /// Reverse lookup: every `chat_bindings` row pointing at one Job
+    /// on the given transport. The outbound forwarder uses this to
+    /// resolve a `ChatMessageAppended` to the set of `(channel,
+    /// thread)` pairs it should fan the message out to — a single Job
+    /// can be bound from multiple channels on the same transport
+    /// (one operator's DM + one team channel) so the return type is
+    /// `Vec`, not `Option`. Order is `bound_at` ascending so a
+    /// deterministic trace of who armed which channel survives across
+    /// restarts.
+    pub async fn list_chat_bindings_for_job(
+        &self,
+        transport: ChatTransport,
+        job_id: JobId,
+    ) -> sqlx::Result<Vec<ChatBinding>> {
+        let rows = sqlx::query(
+            "SELECT * FROM chat_bindings \
+             WHERE transport = ? AND job_id = ? \
+             ORDER BY bound_at ASC",
+        )
+        .bind(transport_label(transport))
+        .bind(job_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(chat_binding_from_row).collect()
+    }
+
     /// Read one binding back. Only used by transport adapters that
     /// receive an inbound message and need to resolve it to a Job —
     /// the runtime keeps no in-memory cache so a fresh adapter boot
@@ -424,6 +522,62 @@ mod tests {
             store.insert_chat_message(&m_null).await.unwrap(),
             InsertChatMessage::Inserted
         );
+    }
+
+    #[tokio::test]
+    async fn update_chat_message_delivery_writes_receipt_without_touching_immutable_fields() {
+        let (store, job_id) = fresh_store().await;
+        // Seed the row a supervisor would have posted into the
+        // substrate; the delivery receipt the Telegram forwarder writes
+        // on a successful send must not perturb body or external_id.
+        let mut msg = web_message(job_id, 100, "stage 3 finished");
+        msg.transport = ChatTransport::Supervisor;
+        msg.author = "supervisor".into();
+        msg.role = ChatRole::Assistant;
+        msg.metadata_json = Some(r#"{"telegram":{"emoji_reactions":[]}}"#.into());
+        store.insert_chat_message(&msg).await.unwrap();
+
+        let updated = store
+            .update_chat_message_delivery(msg.id, ChatTransport::Telegram, "tg:88")
+            .await
+            .unwrap()
+            .expect("row present");
+
+        // body / external_id / role / author untouched.
+        assert_eq!(updated.body, "stage 3 finished");
+        assert_eq!(updated.external_id, None);
+        assert_eq!(updated.role, ChatRole::Assistant);
+        assert_eq!(updated.author, "supervisor");
+
+        // Receipt landed under metadata_json.delivery.telegram and the
+        // pre-existing transport extras were not flattened.
+        let meta: serde_json::Value =
+            serde_json::from_str(updated.metadata_json.as_deref().unwrap()).unwrap();
+        assert_eq!(meta["delivery"]["telegram"], "tg:88");
+        assert!(meta["telegram"]["emoji_reactions"].is_array());
+
+        // Second receipt (Slack forwarder racing with the Telegram one)
+        // merges rather than overwriting the existing delivery map.
+        let again = store
+            .update_chat_message_delivery(msg.id, ChatTransport::Slack, "ts:1700.0001")
+            .await
+            .unwrap()
+            .expect("row present");
+        let meta2: serde_json::Value =
+            serde_json::from_str(again.metadata_json.as_deref().unwrap()).unwrap();
+        assert_eq!(meta2["delivery"]["telegram"], "tg:88");
+        assert_eq!(meta2["delivery"]["slack"], "ts:1700.0001");
+    }
+
+    #[tokio::test]
+    async fn update_chat_message_delivery_on_missing_row_returns_none() {
+        let (store, _job_id) = fresh_store().await;
+        let phantom = MessageId::new();
+        let got = store
+            .update_chat_message_delivery(phantom, ChatTransport::Telegram, "tg:1")
+            .await
+            .unwrap();
+        assert!(got.is_none());
     }
 
     #[tokio::test]

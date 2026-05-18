@@ -1,10 +1,10 @@
 use codeless_types::pause_point::PausePoint;
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
-    AssistantMessageId, AssistantThread, AssistantThreadId, AutoBypassPolicy, ChatMessage,
-    ChatRole, ChatTransport, FsEntry, FsEntryKind, GitAuth, Job, JobId, MessageId, Persona,
-    ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatchId, Stage, StageId,
-    TaskId, UnixMillis, WorkspaceMode,
+    AssistantMessageId, AssistantThread, AssistantThreadId, AutoBypassPolicy, ChatBinding,
+    ChatMessage, ChatRole, ChatTransport, FsEntry, FsEntryKind, GitAuth, Job, JobId, MessageId,
+    Persona, ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatchId, Stage,
+    StageId, TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1662,4 +1662,66 @@ pub struct BindChatThreadArgs {
     pub thread_id: Option<String>,
     pub job_id: JobId,
     pub bound_by: String,
+}
+
+/// Record one transport's outbound delivery receipt against a
+/// `chat_messages` row. Called by the Telegram / Slack outbound
+/// forwarders after a successful platform send so the next event-bus
+/// fan-out (after a restart, or to a second forwarder on the same
+/// transport) can presence-check `metadata_json.delivery.<transport>`
+/// and skip the duplicate post. Per `JOB-CHAT.md` "Transport adapters"
+/// the column owners that the runtime guarantees never to overwrite —
+/// `body` and `external_id` — stay immutable; only `metadata_json` is
+/// mutated, and even there only the substrate-owned `delivery.<transport>`
+/// key is touched (OQ-CHAT-5 §metadata keyspace).
+///
+/// `platform_id` is the id the platform returned for the *outbound*
+/// send (Telegram `message_id`, Slack `ts`) — NOT the originating
+/// transport's `external_id`. Mixing the two would conflate the source
+/// of truth with the delivery receipt; the immutability bias in
+/// JOB-CHAT.md exists exactly to keep that line clean.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UpdateChatMessageDeliveryArgs {
+    pub message_id: MessageId,
+    pub transport: ChatTransport,
+    pub platform_id: String,
+}
+
+/// Forward lookup on `chat_bindings`: resolve an inbound
+/// `(transport, channel, thread)` to the Job that owns the
+/// conversation. Returns `None` when the channel was never
+/// `/codeless bind`-ed — the adapter treats that as "drop the
+/// message" (the substrate refuses to ingest text the operator has
+/// not pointed at a Job). `thread_id` defaults to the empty-string
+/// sentinel server-side so callers that come from a non-threaded
+/// platform message can pass `None` and still hit the PK row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct GetChatBindingArgs {
+    pub transport: ChatTransport,
+    pub channel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct GetChatBindingResult {
+    pub binding: Option<ChatBinding>,
+}
+
+/// Reverse lookup of `chat_bindings`: every `(channel, thread)` on the
+/// given transport that points at the supplied Job. The outbound
+/// forwarder on each transport adapter calls this when a
+/// `ChatMessageAppended` fires for a Job it cares about — the bindings
+/// it returns are the set of platform-side destinations the message
+/// must be forwarded to. The forward direction is the inverse of
+/// `get_chat_binding` (which serves the inbound resolver path).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListChatBindingsForJobArgs {
+    pub job_id: JobId,
+    pub transport: ChatTransport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListChatBindingsForJobResult {
+    pub bindings: Vec<ChatBinding>,
 }

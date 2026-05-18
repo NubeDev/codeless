@@ -8,19 +8,20 @@ use codeless_rpc::{
     DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs, DraftJobFromConversationArgs,
     EditScopePatchArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult,
     FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
-    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
-    GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult,
-    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult, ListJobMessagesArgs,
-    ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult,
-    ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
+    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult,
+    GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs, JobDiffArgs,
+    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListChatBindingsForJobArgs, ListChatBindingsForJobResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
+    ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
     OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, RpcResult, RpcServer,
     ScopePatchActionResult, SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
     UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
     UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
     ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
@@ -537,6 +538,24 @@ impl RpcServer for HttpRpcClient {
 
     async fn bind_chat_thread(&self, args: BindChatThreadArgs) -> RpcResult<ChatBinding> {
         self.call("bind_chat_thread", &args).await
+    }
+
+    async fn update_chat_message_delivery(
+        &self,
+        args: UpdateChatMessageDeliveryArgs,
+    ) -> RpcResult<ChatMessage> {
+        self.call("update_chat_message_delivery", &args).await
+    }
+
+    async fn list_chat_bindings_for_job(
+        &self,
+        args: ListChatBindingsForJobArgs,
+    ) -> RpcResult<ListChatBindingsForJobResult> {
+        self.call("list_chat_bindings_for_job", &args).await
+    }
+
+    async fn get_chat_binding(&self, args: GetChatBindingArgs) -> RpcResult<GetChatBindingResult> {
+        self.call("get_chat_binding", &args).await
     }
 }
 
