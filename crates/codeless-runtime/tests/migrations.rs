@@ -60,6 +60,8 @@ async fn migrator_creates_all_tables_from_appendix_a() {
             "assistant_messages".to_string(),
             "assistant_threads".to_string(),
             "attached_workspaces".to_string(),
+            "chat_bindings".to_string(),
+            "chat_messages".to_string(),
             "events".to_string(),
             "jobs".to_string(),
             "personas".to_string(),
@@ -502,4 +504,236 @@ async fn jobs_persona_id_was_promoted_to_personas_fk() {
             .any(|(t, f)| t == "personas" && f == "persona_id"),
         "jobs.persona_id missing FK to personas; got {fks:?}",
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_messages_columns_match_job_chat_doc() {
+    // JOB-CHAT.md §Data model. Column order matters because it is
+    // the on-disk contract; SQLite ALTER TABLE ADD COLUMN would
+    // append later additions, so a rebuild migration is required to
+    // reorder.
+    let pool = fresh_db().await;
+    assert_eq!(
+        columns(&pool, "chat_messages").await,
+        vec![
+            "id",
+            "job_id",
+            "run_id",
+            "transport",
+            "external_id",
+            "thread_key",
+            "author",
+            "role",
+            "body",
+            "metadata_json",
+            "created_at",
+        ],
+    );
+
+    let idx = index_names(&pool).await;
+    for required in ["chat_messages_job_idx", "chat_messages_external_idx"] {
+        assert!(
+            idx.contains(&required.to_string()),
+            "missing chat index {required}; got {idx:?}"
+        );
+    }
+
+    // The (transport, external_id) UNIQUE index is partial — it
+    // narrows to non-NULL external_id rows so web / cli / supervisor
+    // inserts (which legitimately leave external_id NULL) do not
+    // collide. Verify the partial predicate is present.
+    let partial_sql: String = sqlx::query(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' \
+         AND name = 'chat_messages_external_idx'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read partial-unique index DDL")
+    .get("sql");
+    assert!(
+        partial_sql.to_ascii_uppercase().contains("WHERE"),
+        "chat_messages_external_idx must be partial; got {partial_sql}",
+    );
+    assert!(
+        partial_sql.contains("external_id"),
+        "chat_messages_external_idx partial predicate must reference external_id; got {partial_sql}",
+    );
+
+    let fks: Vec<(String, String)> = sqlx::query("PRAGMA foreign_key_list(chat_messages)")
+        .fetch_all(&pool)
+        .await
+        .expect("fk list")
+        .into_iter()
+        .map(|r| (r.get::<String, _>("table"), r.get::<String, _>("from")))
+        .collect();
+    assert!(
+        fks.iter().any(|(t, f)| t == "jobs" && f == "job_id"),
+        "chat_messages.job_id missing FK to jobs; got {fks:?}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_messages_partial_unique_allows_null_external_id_duplicates() {
+    // The whole point of the partial unique is that web / cli /
+    // supervisor rows (external_id = NULL) do not collide with each
+    // other. Two supervisor rows inserted in succession must both
+    // land.
+    let pool = fresh_db().await;
+    seed_job(&pool, "job-A").await;
+    for id in ["msg-1", "msg-2"] {
+        sqlx::query(
+            "INSERT INTO chat_messages \
+             (id, job_id, transport, author, role, body, created_at) \
+             VALUES (?, 'job-A', 'supervisor', 'supervisor', 'assistant', 'hi', 0)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("insert supervisor row with NULL external_id");
+    }
+
+    // And the partial unique still rejects a duplicate (telegram,
+    // external_id) pair — the defence is intact for the transports
+    // whose invariant requires external_id.
+    sqlx::query(
+        "INSERT INTO chat_messages \
+         (id, job_id, transport, external_id, author, role, body, created_at) \
+         VALUES ('msg-tg-1', 'job-A', 'telegram', 'tg:1', 'alice', 'user', 'hi', 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("first telegram row");
+    let dup = sqlx::query(
+        "INSERT INTO chat_messages \
+         (id, job_id, transport, external_id, author, role, body, created_at) \
+         VALUES ('msg-tg-2', 'job-A', 'telegram', 'tg:1', 'alice', 'user', 'hi', 2)",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        dup.is_err(),
+        "partial unique must reject duplicate (telegram, external_id) pair",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_bindings_columns_and_thread_id_sentinel_default() {
+    let pool = fresh_db().await;
+    assert_eq!(
+        columns(&pool, "chat_bindings").await,
+        vec![
+            "transport",
+            "channel_id",
+            "thread_id",
+            "job_id",
+            "bound_at",
+            "bound_by",
+        ],
+    );
+
+    // thread_id is NOT NULL with an empty-string sentinel default —
+    // the unique-by-PK invariant depends on it (see migration
+    // header). Verify both the notnull flag and the default value.
+    let row = sqlx::query(
+        "SELECT \"notnull\", dflt_value FROM pragma_table_info('chat_bindings') \
+         WHERE name = 'thread_id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("thread_id pragma row");
+    let notnull: i64 = row.get("notnull");
+    let dflt: String = row.get("dflt_value");
+    assert_eq!(notnull, 1, "chat_bindings.thread_id must be NOT NULL");
+    assert_eq!(
+        dflt.trim_matches('\''),
+        "",
+        "chat_bindings.thread_id default must be the empty-string sentinel; got {dflt}",
+    );
+
+    let fks: Vec<(String, String)> = sqlx::query("PRAGMA foreign_key_list(chat_bindings)")
+        .fetch_all(&pool)
+        .await
+        .expect("fk list")
+        .into_iter()
+        .map(|r| (r.get::<String, _>("table"), r.get::<String, _>("from")))
+        .collect();
+    assert!(
+        fks.iter().any(|(t, f)| t == "jobs" && f == "job_id"),
+        "chat_bindings.job_id missing FK to jobs; got {fks:?}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migrator_is_replay_idempotent_on_populated_db() {
+    // sqlx's migrator hashes each migration and refuses to start if
+    // the hash on disk drifts from the recorded one. The check
+    // proves the new chat_* migrations record cleanly and that
+    // running the migrator a second time on a populated DB is a
+    // no-op rather than a re-create / collision.
+    let pool = fresh_db().await;
+
+    seed_job(&pool, "job-A").await;
+    sqlx::query(
+        "INSERT INTO chat_messages \
+         (id, job_id, transport, author, role, body, created_at) \
+         VALUES ('m-1', 'job-A', 'web', 'alice', 'user', 'hello', 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed chat_messages row");
+    sqlx::query(
+        "INSERT INTO chat_bindings \
+         (transport, channel_id, thread_id, job_id, bound_at, bound_by) \
+         VALUES ('telegram', 'C1', '', 'job-A', 1, 'alice')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed chat_bindings row");
+
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("replay migrations on populated DB is a no-op");
+
+    let chat_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(chat_count, 1, "replay must not drop chat_messages rows");
+    let binding_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_bindings")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(binding_count, 1, "replay must not drop chat_bindings rows");
+}
+
+async fn seed_job(pool: &SqlitePool, id: &str) {
+    // Minimal repos + jobs pair to satisfy the chat_messages /
+    // chat_bindings FK to jobs(id) (which itself FKs jobs.repo_id
+    // into repos.id; both columns are NOT NULL). All other columns
+    // are either nullable or have schema defaults; template_yaml /
+    // prompt / runner / branch are NOT NULL with no default, so the
+    // seed gives them empty placeholders.
+    let repo_id = format!("repo-for-{id}");
+    sqlx::query(
+        "INSERT OR IGNORE INTO repos \
+         (id, name, clone_url, default_branch, local_path, git_auth, \
+          concurrency_cap, default_runner, created_at, updated_at) \
+         VALUES (?, 'seed', '', 'main', '', '{}', 1, 'claude', 0, 0)",
+    )
+    .bind(&repo_id)
+    .execute(pool)
+    .await
+    .expect("seed repos row");
+    sqlx::query(
+        "INSERT INTO jobs \
+         (id, repo_id, status, template_yaml, prompt, runner, branch, \
+          cost_cap_cents, wall_clock_cap_ms, created_at) \
+         VALUES (?, ?, 'enqueued', '', '', 'claude', 'main', 0, 0, 0)",
+    )
+    .bind(id)
+    .bind(&repo_id)
+    .execute(pool)
+    .await
+    .expect("seed jobs row");
 }
