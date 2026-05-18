@@ -181,6 +181,40 @@ pub enum VerifyOutcome {
     Failed { step_index: u32, exit_code: i32 },
 }
 
+/// Production `VerifyExec` wired to `codeless_adapters_host::run_shell`.
+/// The trait can't be implemented inside the adapter crate (`VerifyExec`
+/// is defined here; the dependency direction goes runtime → adapters,
+/// not back) so the impl lives here and the actual process spawn
+/// happens in the adapter — R1's "process spawn lives in
+/// `codeless-adapters-host` only" stays intact. `run_shell` is
+/// synchronous; the trait is async, so the call goes through
+/// `spawn_blocking` to keep the reactor unblocked on a slow gate.
+pub struct HostVerifyExec;
+
+#[async_trait]
+impl VerifyExec for HostVerifyExec {
+    async fn run(&self, cwd: Option<&Path>, command: &str) -> VerifyStepResult {
+        let cwd_owned = cwd.map(|p| p.to_path_buf());
+        let cmd = command.to_string();
+        let join = tokio::task::spawn_blocking(move || {
+            codeless_adapters_host::run_shell(cwd_owned.as_deref(), &cmd)
+        })
+        .await;
+        match join {
+            Ok(out) => VerifyStepResult {
+                exit_code: out.exit_code,
+                duration_ms: out.duration_ms,
+                tail: out.tail,
+            },
+            Err(err) => VerifyStepResult {
+                exit_code: -1,
+                duration_ms: 0,
+                tail: format!("verify exec join failed: {err}"),
+            },
+        }
+    }
+}
+
 async fn publish(ctx: &RunnerContext, stage_id: StageId, task_id: TaskId, event: Event) {
     if let Err(err) = ctx
         .bus

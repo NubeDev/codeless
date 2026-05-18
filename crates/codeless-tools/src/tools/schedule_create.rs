@@ -208,14 +208,15 @@ fn parse_times(value: Option<&Value>) -> Result<Vec<TimeOfDay>, ToolError> {
         .ok_or_else(|| ToolError::invalid_args("weekly schedule requires 'times' array"))?;
     arr.iter()
         .map(|v| {
-            let h = v.get("hour").and_then(Value::as_u64).ok_or_else(|| {
-                ToolError::invalid_args("'times' entry missing integer 'hour'")
-            })?;
-            let m = v.get("minute").and_then(Value::as_u64).ok_or_else(|| {
-                ToolError::invalid_args("'times' entry missing integer 'minute'")
-            })?;
-            TimeOfDay::new(h as u8, m as u8)
-                .map_err(|e| ToolError::invalid_args(format!("{e}")))
+            let h = v
+                .get("hour")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| ToolError::invalid_args("'times' entry missing integer 'hour'"))?;
+            let m = v
+                .get("minute")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| ToolError::invalid_args("'times' entry missing integer 'minute'"))?;
+            TimeOfDay::new(h as u8, m as u8).map_err(|e| ToolError::invalid_args(format!("{e}")))
         })
         .collect()
 }

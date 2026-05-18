@@ -90,12 +90,12 @@ impl Message {
         // (and SMTP envelope-level delivery) handles the recipient
         // list separately. We surface bcc through the envelope only.
         if let Some(reply_to) = &self.reply_to {
-            writeln_crlf(
-                &mut out,
-                &format!("Reply-To: {}", reply_to.encode_header()),
-            );
+            writeln_crlf(&mut out, &format!("Reply-To: {}", reply_to.encode_header()));
         }
-        writeln_crlf(&mut out, &format!("Subject: {}", encode_subject(&self.subject)));
+        writeln_crlf(
+            &mut out,
+            &format!("Subject: {}", encode_subject(&self.subject)),
+        );
         writeln_crlf(&mut out, "MIME-Version: 1.0");
 
         match (&self.text, &self.html) {

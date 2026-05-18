@@ -15,6 +15,7 @@ pub mod git_commit;
 pub mod git_diff;
 pub mod net;
 pub mod secrets;
+pub mod shell;
 pub mod worktree;
 
 pub use ai_chat::{
@@ -33,4 +34,5 @@ pub use git_commit::{
 };
 pub use git_diff::{diff_against, DiffFile, GitDiffError};
 pub use secrets::{SecretError, SecretStore};
+pub use shell::{run_shell, ShellOutcome};
 pub use worktree::{OnDiskWorktree, WorktreeError, WorktreeHandle, WorktreeManager};

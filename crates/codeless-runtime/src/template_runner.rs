@@ -72,6 +72,8 @@ use crate::state_machine::stage_trio_gate;
 use crate::store::SqliteStore;
 use crate::template::{JobTemplate, PlannedStage};
 use crate::time::now_ms;
+use crate::trio_emitter::{commit_stage_changes, find_trio_id, skip_pending_trio_rows};
+use crate::verify_runner::{run_verify, HostVerifyExec, VerifyOutcome};
 
 /// Iterate the template's stages and run claude per stage. Each
 /// stage gets its own `task_id` because every stage is "one
@@ -1408,6 +1410,111 @@ impl Runner for TemplateRunner {
                         }
                     }
                 }
+            }
+
+            // Closing steps: drive the `Checks` and `Git` trio rails
+            // so the gate below can resolve. PR #24 shipped the gate
+            // but only the `Docs` rail was wired in production — see
+            // DOCS/sessions/2026-05-18-trio-gate-wiring-fix.md for
+            // the diagnosis. This block runs whether or not the
+            // stage authored a `verify:` list (no-verify stages
+            // `Skip` the rail); the defensive `skip_pending_trio_rows`
+            // at the tail covers any rail a future non-claude runner
+            // forgets to drive.
+            if let Some(store) = self.store.as_ref() {
+                if !stage.verify.is_empty() {
+                    publish(&ctx, stage_id, task_id, Event::VerifyStarted { stage_id }).await;
+                    let outcome = run_verify(
+                        &ctx,
+                        task_id,
+                        stage_id,
+                        stage.verify,
+                        &HostVerifyExec,
+                        Some(store.as_ref()),
+                    )
+                    .await;
+                    match outcome {
+                        VerifyOutcome::Passed => {
+                            publish(&ctx, stage_id, task_id, Event::VerifyPassed { stage_id })
+                                .await;
+                        }
+                        VerifyOutcome::Failed {
+                            step_index,
+                            exit_code,
+                        } => {
+                            publish(
+                                &ctx,
+                                stage_id,
+                                task_id,
+                                Event::VerifyFailed {
+                                    stage_id,
+                                    exit_code,
+                                },
+                            )
+                            .await;
+                            let reason =
+                                format!("verify step {step_index} failed (exit {exit_code})");
+                            publish(
+                                &ctx,
+                                stage_id,
+                                task_id,
+                                Event::StageCompleted {
+                                    stage_id,
+                                    status: StageStatus::Failed,
+                                    failure_class: Some(FailureClass::RunnerError),
+                                    failure_detail: Some(truncate_failure_detail(&reason)),
+                                },
+                            )
+                            .await;
+                            return RunnerOutcome::Failed { reason };
+                        }
+                    }
+                } else if let Some(todo_id) =
+                    find_trio_id(store.as_ref(), task_id, TodoKind::Checks).await
+                {
+                    publish(
+                        &ctx,
+                        stage_id,
+                        task_id,
+                        Event::TodoCompleted {
+                            todo_id,
+                            status: codeless_types::TodoStatus::Skipped,
+                        },
+                    )
+                    .await;
+                }
+
+                // Per-stage commit, drives the `Git` trio rail. Pass
+                // `["."]` so the function stages every change in the
+                // worktree — the runner does not track the changed
+                // set itself, and `commit_paths` already returns
+                // `Ok(false)` (mapped to `Skipped` on the `Git` rail
+                // by `commit_stage_changes`) when staging produces no
+                // diff. `ctx.worktree_path` is `None` only on the
+                // test-harness path; production callers always
+                // populate it through the driver.
+                if let Some(wt) = ctx.worktree_path.as_deref() {
+                    let subject = format!("stage {}: {}", stage.index, stage.title);
+                    let paths = vec![std::path::PathBuf::from(".")];
+                    if let Err(err) = commit_stage_changes(
+                        &ctx,
+                        store.as_ref(),
+                        task_id,
+                        stage_id,
+                        wt,
+                        &subject,
+                        &paths,
+                    )
+                    .await
+                    {
+                        tracing::warn!(?err, %stage_id, "stage commit failed; gate will rely on Failed trio row");
+                    }
+                }
+
+                // Defensive: any rail a runner didn't drive (mock,
+                // future codex/anthropic) gets Skipped here so the
+                // gate below can resolve instead of polling forever.
+                skip_pending_trio_rows(&ctx, store.as_ref(), task_id, stage_id).await;
             }
 
             // Stage-completion gate. The trio rows injected at stage
@@ -2961,6 +3068,116 @@ stages:
         // Hand back the join handle: drop the cancel/recorder cleanly.
         let _ = run_handle.await;
         let _ = cancel_for_test;
+        recorder.abort();
+    }
+
+    #[tokio::test]
+    async fn no_verify_stage_resolves_trio_via_skip_and_releases_gate() {
+        // Regression for DOCS/sessions/2026-05-18-trio-gate-wiring-fix.md:
+        // a stage with no `verify:` block, on the mock runner (no
+        // `Docs` rail), and no worktree path (no `Git` commit) used
+        // to hang at the trio gate forever because no production
+        // caller drove the `Checks` or `Git` rails to a terminal
+        // state. With the wiring fix in place, the skip-pending
+        // helper flips every still-`Pending` rail to `Skipped` right
+        // before the gate, so the stage completes within a poll
+        // cycle. Pre-fix this test hangs and trips the timeout below.
+        use crate::event_bus::SubscribeFilter;
+        use crate::rpc::InProcessRpc;
+        use crate::runner::{Runner, RunnerContext};
+        use codeless_types::{Event, JobStatus, WorkspaceMode};
+        use futures_util::StreamExt;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let rpc = InProcessRpc::new().await.unwrap();
+        let bus = rpc.bus().clone();
+        let store = rpc.store().clone();
+        let recorder = crate::stage_recorder::spawn_stage_recorder(bus.clone(), store.clone())
+            .await
+            .unwrap();
+
+        let repo = codeless_types::Repo {
+            id: codeless_types::RepoId::new(),
+            name: "demo".into(),
+            clone_url: "file:///dev/null".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp".into(),
+            git_auth: codeless_types::GitAuth::Token {
+                env_var: "X".into(),
+            },
+            concurrency_cap: None,
+            default_runner: Some("mock".into()),
+            created_at: now_ms(),
+            updated_at: now_ms(),
+        };
+        store.insert_repo(&repo).await.unwrap();
+        let job = codeless_types::Job {
+            id: codeless_types::JobId::new(),
+            repo_id: repo.id,
+            status: JobStatus::Running,
+            stop_reason: None,
+            template_yaml: None,
+            prompt: Some("p".into()),
+            runner: "mock".into(),
+            branch: "b".into(),
+            workspace_mode: WorkspaceMode::default(),
+            worktree_path: None,
+            cost_cap_cents: codeless_types::CostCents::ZERO,
+            wall_clock_cap_ms: 0,
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            auto_bypass_policy: None,
+            pending_operator_comment: None,
+            precheck_override_once: false,
+            cost_cents: codeless_types::CostCents::ZERO,
+            started_at: None,
+            ended_at: None,
+            created_at: now_ms(),
+        };
+        store.insert_job(&job).await.unwrap();
+
+        let runner = TemplateRunner::new(template_with_stages(&["only"]))
+            .with_mock_runner()
+            .with_store(store.clone());
+        let ctx = RunnerContext {
+            job_id: job.id,
+            stage_id: None,
+            bus: Arc::clone(&bus),
+            worktree_path: None,
+            cancel: CancellationToken::new(),
+        };
+        let mut sub = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+        // Bound the run so a regression hangs the test instead of the
+        // whole test binary; pre-fix this expires.
+        let run = tokio::time::timeout(std::time::Duration::from_secs(5), runner.run(ctx))
+            .await
+            .expect("template runner must finish; pre-fix the trio gate held it forever");
+        assert_eq!(run, crate::runner::RunnerOutcome::Completed);
+
+        let mut saw_passed = false;
+        while let Ok(Some(env)) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), sub.next()).await
+        {
+            if let Event::StageCompleted {
+                status: StageStatus::Passed,
+                ..
+            } = env.unwrap().event
+            {
+                saw_passed = true;
+                break;
+            }
+        }
+        assert!(
+            saw_passed,
+            "StageCompleted{{ Passed }} must publish after skip_pending_trio_rows resolves the rails"
+        );
         recorder.abort();
     }
 }

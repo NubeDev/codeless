@@ -86,8 +86,10 @@ impl Schedule {
                 let mut sorted_times = times.clone();
                 sorted_times.sort();
                 match tz {
-                    ScheduleTz::Local => next_weekly(now.with_timezone(&Local), days, &sorted_times)
-                        .map(|dt| dt.with_timezone(&Utc)),
+                    ScheduleTz::Local => {
+                        next_weekly(now.with_timezone(&Local), days, &sorted_times)
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }
                     ScheduleTz::Utc => next_weekly(now, days, &sorted_times),
                 }
             }
