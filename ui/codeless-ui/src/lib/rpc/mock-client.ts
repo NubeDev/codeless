@@ -132,6 +132,22 @@ export class MockRpcClient implements RpcClient {
   // dialog's two-step flow can be exercised end-to-end against the
   // mock without the test having to fake the conflict by hand.
   private runningJobsByWorkspace: Map<string, string[]> = new Map();
+  // Per-job scoped pause schedule. Empty by default; tests that exercise
+  // the planned-pause divider seed it via `seedScheduledPausePoints`.
+  private scheduledPausePoints: Map<string, RpcResultOf<"list_scheduled_pause_points">["points"]> =
+    new Map();
+
+  /** Test seam: pre-populate the per-job pause-point schedule so the
+   *  Stage overview can render the planned-pause divider without
+   *  having to drive a full submit_job + parser cycle through the
+   *  mock. The shape mirrors the runtime: one entry per declared
+   *  point, in YAML order. */
+  public seedScheduledPausePoints(
+    jobId: string,
+    points: RpcResultOf<"list_scheduled_pause_points">["points"],
+  ) {
+    this.scheduledPausePoints.set(jobId, [...points]);
+  }
 
   /** Test seam: pre-populate the in-memory attached-workspaces list so
    *  a `list_workspaces` call returns a non-empty roster without
@@ -192,6 +208,16 @@ export class MockRpcClient implements RpcClient {
         }
         this.emit({ type: "repo-removed", repo_id: a.repo_id });
         return null as RpcResultOf<M>;
+      }
+
+      case "list_scheduled_pause_points": {
+        const a = args as RpcArgs<"list_scheduled_pause_points">;
+        if (!this.jobs.some((j) => j.id === a.job_id)) {
+          throw new RpcError("not_found", `job ${a.job_id}`);
+        }
+        return {
+          points: this.scheduledPausePoints.get(a.job_id) ?? [],
+        } as RpcResultOf<M>;
       }
 
       case "list_jobs": {
@@ -272,10 +298,17 @@ export class MockRpcClient implements RpcClient {
         const a = args as RpcArgs<"resume_job">;
         const job = this.jobs.find((j) => j.id === a.job_id);
         if (!job) throw new RpcError("not_found", `job ${a.job_id}`);
-        if (job.status !== "stopped" && job.status !== "failed") {
+        // `paused` is the live state a scoped pause point lands the
+        // job in; the runtime accepts it the same as `stopped` /
+        // `failed`, and the divider's Resume button calls this path.
+        if (
+          job.status !== "stopped" &&
+          job.status !== "failed" &&
+          job.status !== "paused"
+        ) {
           throw new RpcError(
             "conflict",
-            `job ${a.job_id} is ${job.status}; only stopped or failed jobs are resumable`,
+            `job ${a.job_id} is ${job.status}; only stopped, failed, or paused jobs are resumable`,
           );
         }
         const costBump = a.additional_cost_cap_cents ?? null;

@@ -18,12 +18,13 @@ use crate::methods::{
     JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
-    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
-    ListStagesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs,
-    ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
-    ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, ScopePatchActionResult,
-    SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListScheduledPausePointsArgs, ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
+    OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
+    RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
+    RevertScopePatchArgs, RevertScopePatchResult, ScopePatchActionResult, SetJobPolicyArgs,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
     UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
     UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
     WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
@@ -126,6 +127,16 @@ pub trait RpcServer: Send + Sync + 'static {
     /// (pre-recorder jobs, mock jobs without a template). The UI
     /// renders an event-derived fallback view in that case.
     async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult>;
+
+    /// List the operator-declared pause points for one job, in YAML
+    /// order. Read-only surface for the Stage-overview planned-pause
+    /// chip and the chat divider label lookup. Returns an empty list
+    /// when the job carries no schedule; `NotFound` for an unknown
+    /// `job_id`.
+    async fn list_scheduled_pause_points(
+        &self,
+        args: ListScheduledPausePointsArgs,
+    ) -> RpcResult<ListScheduledPausePointsResult>;
 
     /// Structured cost / session / activity report for one job.
     /// Aggregates stage rows + `ai-message-complete` and `tool-call`

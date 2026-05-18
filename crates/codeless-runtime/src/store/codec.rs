@@ -385,14 +385,19 @@ fn parse_job_status(s: &str) -> sqlx::Result<JobStatus> {
     })
 }
 
-pub(super) fn stop_reason_label(s: StopReason) -> &'static str {
+pub(super) fn stop_reason_label(s: StopReason) -> String {
     match s {
-        StopReason::User => "user",
-        StopReason::CostCap => "cost-cap",
-        StopReason::WallClock => "wall-clock",
-        StopReason::RunnerCrash => "runner-crash",
-        StopReason::AutoBypassThrashing => "auto-bypass-thrashing",
-        StopReason::ReviewPreCheck => "review-pre-check",
+        StopReason::User => "user".into(),
+        StopReason::CostCap => "cost-cap".into(),
+        StopReason::WallClock => "wall-clock".into(),
+        StopReason::RunnerCrash => "runner-crash".into(),
+        StopReason::AutoBypassThrashing => "auto-bypass-thrashing".into(),
+        StopReason::ReviewPreCheck => "review-pre-check".into(),
+        // The scoped variant carries a `PausePointId`, so the
+        // SQLite column gets a colon-prefixed form that the parser
+        // splits on. The unit-variant shape is unchanged for the
+        // existing six values, so old rows still decode.
+        StopReason::ScopedPausePoint { point_id } => format!("scoped-pause-point:{point_id}"),
     }
 }
 
@@ -456,6 +461,12 @@ pub(super) fn review_from_row(row: SqliteRow) -> sqlx::Result<Review> {
 }
 
 fn parse_stop_reason(s: &str) -> sqlx::Result<StopReason> {
+    if let Some(rest) = s.strip_prefix("scoped-pause-point:") {
+        let point_id = rest.parse::<codeless_types::PausePointId>().map_err(|e| {
+            sqlx::Error::Decode(format!("invalid scoped-pause-point ulid {rest:?}: {e}").into())
+        })?;
+        return Ok(StopReason::ScopedPausePoint { point_id });
+    }
     Ok(match s {
         "user" => StopReason::User,
         "cost-cap" => StopReason::CostCap,

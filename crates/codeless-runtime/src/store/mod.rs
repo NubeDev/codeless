@@ -10,6 +10,7 @@ mod personas;
 mod queue;
 mod repos;
 mod reviews;
+mod scheduled_pause_points;
 mod stages;
 mod tasks;
 mod todos;

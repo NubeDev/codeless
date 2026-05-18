@@ -5,9 +5,10 @@ use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{
     DraftJobFromConversationArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobReportArgs, JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage,
-    JobReportToolCall, JobReportTurn, ListJobsArgs, ListJobsResult, ListStagesArgs,
-    ListStagesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, RerunJobArgs, ResetJobArgs,
-    ResumeJobArgs, RpcError, RpcResult, SetJobPolicyArgs, StartJobArgs, StopJobArgs, SubmitJobArgs,
+    JobReportToolCall, JobReportTurn, ListJobsArgs, ListJobsResult, ListScheduledPausePointsArgs,
+    ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
+    OverridePreCheckAndResumeArgs, PauseJobArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
+    RpcError, RpcResult, SetJobPolicyArgs, StartJobArgs, StopJobArgs, SubmitJobArgs,
     UpdateJobScopeArgs, UpdateJobScopeResult, WriteJobFileArgs,
 };
 use codeless_types::{
@@ -396,6 +397,27 @@ pub(super) async fn list_stages(
         })
         .collect();
     Ok(ListStagesResult { stages })
+}
+
+pub(super) async fn list_scheduled_pause_points(
+    rpc: &InProcessRpc,
+    args: ListScheduledPausePointsArgs,
+) -> RpcResult<ListScheduledPausePointsResult> {
+    let exists = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .is_some();
+    if !exists {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    let points = rpc
+        .store
+        .list_scheduled_pause_points(args.job_id)
+        .await
+        .map_err(super::db_err)?;
+    Ok(ListScheduledPausePointsResult { points })
 }
 
 pub(super) async fn job_report(
@@ -1137,6 +1159,7 @@ pub(super) async fn resync_template_from_disk(
     .map_err(|e| RpcError::Internal(format!("git: {e}")))?;
 
     job.template_yaml = Some(disk_yaml);
+    rebuild_scheduled_pause_points(rpc, job.id, &parsed).await?;
     rpc.bus
         .publish(
             Some(job.id),
@@ -1148,6 +1171,34 @@ pub(super) async fn resync_template_from_disk(
         .await
         .map_err(super::db_err)?;
     Ok(())
+}
+
+/// Rebuild the `scheduled_pause_points` rows for `job_id` from a freshly
+/// parsed template. Called from `resync_template_from_disk` and
+/// `update_job_template` so chat-driven and CLI-driven edits converge
+/// on the same persisted shape — the parser is the source of truth
+/// for what the schedule means, the store is the source of truth for
+/// what's persisted. Rebuild is idempotent (drop-and-replace inside
+/// one transaction); resolution failures surface as
+/// `RpcError::InvalidArgument` so the caller can refuse the edit
+/// before the row set diverges from the YAML on disk.
+pub(super) async fn rebuild_scheduled_pause_points(
+    rpc: &InProcessRpc,
+    job_id: JobId,
+    template: &JobTemplate,
+) -> RpcResult<()> {
+    let points = template.resolve_pause_points().map_err(|errs| {
+        let joined = errs
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        RpcError::InvalidArgument(format!("pause_points: {joined}"))
+    })?;
+    rpc.store
+        .replace_scheduled_pause_points(job_id, &points, now_ms())
+        .await
+        .map_err(super::db_err)
 }
 
 /// Filename `update_job_scope` writes. Held as a constant rather than

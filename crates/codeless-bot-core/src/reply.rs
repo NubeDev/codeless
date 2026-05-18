@@ -389,6 +389,7 @@ fn stop_reason_word(r: StopReason) -> &'static str {
         StopReason::RunnerCrash => "runner crashed",
         StopReason::AutoBypassThrashing => "auto-bypass thrashing",
         StopReason::ReviewPreCheck => "review pre-check failed",
+        StopReason::ScopedPausePoint { .. } => "scoped pause point",
     }
 }
 

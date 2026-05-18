@@ -1137,6 +1137,7 @@ Notes:
 - **Cursor as `INTEGER AUTOINCREMENT`** is monotonic across the install and serves directly as `Last-Event-ID` over SSE. Per-stream filtering happens at query time, not at cursor allocation.
 - **`tasks.depends_on` is JSON, not a join table.** It's read-mostly, the cardinality is tiny (typically 0–3 entries), and a join table would force a multi-row write per task creation. Revisit if/when topological execution lands and we need graph queries.
 - **No down-migrations.** This schema is the base; later migrations are forward-only `ALTER`s.
+- **Scoped pause points** add one forward-only table on top of this base (`scheduled_pause_points`, keyed on `(job_id, ordinal)`, one row per declared point) plus one new `StopReason` variant (`ScopedPausePoint { point_id, label }`). They are scheduling on top of the existing `pause_job` / `resume_job` / `JobPaused` primitives, not a new pause primitive. Grammar, examples, and parser rejection rules live in [`SCOPED-PAUSE-POINTS.md`](./SCOPED-PAUSE-POINTS.md); the in-flight job spec is [`.codeless/jobs/scoped-pause-points/SCOPE.md`](../.codeless/jobs/scoped-pause-points/SCOPE.md).
 - **Vendor-locked to SQLite syntax** (e.g. `INTEGER PRIMARY KEY AUTOINCREMENT`). Phase 7's Postgres rewrite is a translation pass, not a schema port.
 
 ## Reproduction — second job-detail tab right-pane blank (S)

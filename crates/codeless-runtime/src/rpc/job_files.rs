@@ -243,6 +243,7 @@ pub(super) async fn update_job_template(
     if !rpc.store.update_job(&job).await.map_err(super::db_err)? {
         return Err(RpcError::NotFound(format!("job {}", args.job_id)));
     }
+    super::jobs::rebuild_scheduled_pause_points(rpc, args.job_id, &parsed).await?;
 
     rpc.bus
         .publish(

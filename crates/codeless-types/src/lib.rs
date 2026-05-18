@@ -14,6 +14,7 @@ pub mod handover;
 pub mod id;
 pub mod job;
 pub mod money;
+pub mod pause_point;
 pub mod persona;
 pub mod repo;
 pub mod review;
@@ -41,6 +42,9 @@ pub use id::{
 };
 pub use job::{Job, JobStatus, StopReason, WorkspaceMode};
 pub use money::CostCents;
+pub use pause_point::{
+    PausePoint, PausePointId, PausePointPosition, PausePointTarget, TodoSelector,
+};
 pub use persona::Persona;
 pub use repo::Repo;
 pub use review::{Review, ReviewStatus};

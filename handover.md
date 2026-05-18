@@ -1,197 +1,196 @@
-# Plan engine P1 — Stage 1 survey findings
+# scoped-pause-points — stage 8 → stage 9 (REVIEW: UI landed)
 
-Stage-1 survey for the Plan engine (P1) per `DOCS/JOB-WORKFLOW.md`
-"Job chaining" (lines 431–600). Subsequent stages should not re-derive
-the facts here.
+Stage 8 (UI) landed. Stage 9 is the final REVIEW gate; the reviewer
+reads this handover when deciding whether to approve.
 
-## P1 scope, verbatim from DOCS/JOB-WORKFLOW.md §"(P1)"
+## What landed in stage 8
 
-- `codeless-tools/src/plan/` mirrors `email/` and `schedule/`:
-  pure data (`PlanSpec`, `PlanStep`, `Transition`) in one module;
-  in-memory `PlanEngine` with an injected `JobSpawner` trait in
-  another. No SQLite. Engine = event bus + spawn callback.
-- Tools: `codeless.plan.create` / `.start` / `.list` / `.cancel`.
-- Wire engine into `codeless-runtime` as an event-bus consumer.
-  In-memory; restart loses in-flight PlanRuns (documented limit).
-- Scheduled Plan = `Schedule` fires → `Action` calls
-  `PlanEngine::start_run(plan_id)`. This composition is the boundary
-  proof.
+### New RPC: `list_scheduled_pause_points`
 
-Linear chain transition vocabulary (no DAG, no `when:` predicates):
+A read-only lookup so the UI can render the operator-declared
+schedule. Resume still goes through the existing `resume_job` RPC —
+no new pause primitive landed.
 
-```yaml
-steps:
-  - id: <step-id>
-    job_template: <template>
-    on_success: <step-id> | stop | omitted (= stop)
-    on_failure: <step-id> | stop | omitted (= stop)
-```
+- `crates/codeless-rpc/src/methods.rs` — `ListScheduledPausePointsArgs
+  { job_id }` and `ListScheduledPausePointsResult { points:
+  Vec<PausePoint> }`. Re-exported through `crates/codeless-rpc/src/
+  lib.rs`.
+- `crates/codeless-rpc/src/server.rs` — trait method on `RpcServer`.
+  Returns the schedule in YAML order; `NotFound` for an unknown
+  `job_id`; empty list when the job carries no schedule (predates
+  the feature or template's `pause_points:` block is empty).
+- `crates/codeless-runtime/src/rpc/{mod.rs,jobs.rs}` — runtime
+  implementation. `jobs::list_scheduled_pause_points` runs `get_job`
+  for the existence check (so the call shape mirrors `list_stages`'s
+  not-found semantics) then forwards to
+  `store::list_scheduled_pause_points` from stage 5.
+- `crates/codeless-server/src/routes.rs` — axum route
+  `POST /rpc/list_scheduled_pause_points`, behind the same bearer
+  layer as every other RPC (R5).
+- `crates/codeless-client/src/http_client.rs` —
+  `HttpRpcClient::list_scheduled_pause_points` calls the route. The
+  iOS / Android shells reach this through `codeless-client` only, so
+  the mobile-safe graph still admits the new method.
 
-Out of scope: persistence, RPC surface, DAG, UI (those are P2/P3),
-cross-repo plans, conditional re-runs of the same step.
+### Wire types regenerated
 
-## Mirror layout — `codeless-tools/src/schedule/`
+- `crates/codeless-rpc/examples/wire_ts.rs` — registers the four new
+  `PausePoint*` / `TodoSelector` types so they emit into the UI's
+  generated `wire.ts`. The freshly-regenerated
+  `ui/codeless-ui/src/lib/rpc/generated/wire.ts` now carries:
+  - `PausePoint`, `PausePointId`, `PausePointPosition`,
+    `PausePointTarget`, `TodoSelector` (specta-derived).
+  - `StopReason` grows the `{ "scoped-pause-point": { "point-id":
+    PausePointId } }` object variant alongside the existing string
+    union members.
 
-Crate `codeless-tools` (host-only per R1). The plan module should
-mirror this exact shape:
+  **The specta/serde divergence noted in the stage-6 handover
+  applies here:** specta TS spells the inner field `point-id`
+  (hyphen); the runtime emits `point_id` on the wire because serde's
+  enum-level `rename_all = "kebab-case"` does not rename struct
+  fields inside variants. The new UI helper handles both spellings
+  so the divider lookup works regardless of which producer shaped
+  the payload.
 
-```
-schedule/
-├── mod.rs        # 27 lines — module doc + re-exports
-├── spec.rs       # pure data: Schedule enum, Weekday, TimeOfDay, ScheduleTz, next_fire_after
-├── scheduler.rs  # Scheduler {entries, action}, Action trait, ScheduleId,
-│                 # SchedulerError; in-memory HashMap<Id, Entry> + tokio task per entry
-└── dispatch.rs   # PayloadDispatcher (kind-keyed Action router) + LogAction
-```
+### UI: `StagesOverview` planned-pause chips
 
-`Action` trait shape (reuse pattern for `JobSpawner`):
+`ui/codeless-ui/src/modules/jobs/StagesOverview.tsx`:
 
-```rust
-#[async_trait]
-pub trait Action: Send + Sync + 'static {
-    async fn fire(&self, id: &ScheduleId, payload: &Value);
-}
-```
+- Loads the schedule once on mount via the new RPC; resets on
+  `jobId` change. Failures fall through to "no chips" silently so
+  pre-recorder jobs and tests that don't seed the schedule keep
+  rendering the rest of the overview.
+- New `PlannedPauseChip` component: dashed border, "planned" tag,
+  the point's operator-authored `reason` text (or a structural
+  fallback like "pause after stage 2"). `data-testid` /
+  `data-pause-point-id` / `data-pause-position` / `data-pause-fired`
+  attributes pin the chip for the new vitest. Chips group per stage
+  via 1-based ordinal lookup; `before` chips render above the stage
+  row, `after` chips below. Stage-todo targets collapse onto their
+  parent stage's chip slot (per-todo placement is a refinement
+  follow-up).
+- When the job is currently paused on a scoped point
+  (`scopedPausePointId(job.stop_reason) === point.id`), the chip
+  switches to amber and shows a `Resume` button that calls
+  `resume_job` with all caps at `null` / no operator comment — the
+  same surface the run-strip button uses, no new RPC. The local
+  busy / error state stays on the chip so a failed call doesn't
+  bleed into the stages list.
 
-`ActionFn = Arc<dyn Fn(ScheduleId, Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static>`
-also implements `Action` for ergonomic closure callers.
+### UI: chat divider for `JobPaused { reason: ScopedPausePoint }`
 
-Email mirror (`codeless-tools/src/email/`): same idiom — `message.rs`
-is pure data (`Message`, `Mailbox`), `mailer.rs` is the transport
-trait (`Mailer`, `SendOutcome`), `gmail.rs` is one impl. Re-exports
-flat from `mod.rs`.
+`ui/codeless-ui/src/modules/chat/feed.ts`:
 
-## Tool registration
+- `scopedPausePointId(reason)` reads the `point_id` out of the
+  `StopReason` object variant, accepting both the serde-wire form
+  (`point_id`) and the specta-TS form (`point-id`).
+- `stopReasonLabel(reason)` formats a `StopReason` (string union or
+  object) into a safe string for JSX interpolation; every existing
+  site that wrote `{job.stop_reason}` directly into JSX
+  (`JobChatPage`, `JobDetail`, `JobTimeline`, `RunPane`'s status
+  strip) routes through this helper now — without it the new object
+  variant trips TS's `ReactNode` check.
+- `liveItemFromEvent` `case "job-paused"`: when the reason resolves
+  to a scoped point id, emits a `lifecycle` item labelled `paused at
+  scoped point <id>` (warn tone). String reasons keep their existing
+  formatting.
 
-`crates/codeless-tools/src/tools/schedule_create.rs` is the template
-for `codeless.plan.*` tools. Pattern:
+### UI: mock client + resume-from-paused
 
-- `pub struct FooTool { schema: Value, scheduler: Arc<Scheduler> }`
-  holding an `Arc` of the injected engine.
-- `impl Tool` with `name()` returning the dotted id
-  (`"codeless.schedule.create"`), `schema()`, and `call(ctx, args)`.
-- A single tool with an `action: "create"|"list"|"cancel"` enum
-  parameter is the existing convention — favour that over four
-  separate tool types unless the schemas diverge a lot.
-- Registered via `pub use` in `crates/codeless-tools/src/tools/mod.rs`;
-  host wiring (codeless-mcp / runtime) builds the `Arc<Scheduler>`
-  and constructs the tool. The library does not own the registration
-  decision.
+`ui/codeless-ui/src/lib/rpc/mock-client.ts`:
 
-## Runtime event bus — terminal job events
+- `seedScheduledPausePoints(jobId, points)` test seam; per-job map
+  keyed on job id.
+- `case "list_scheduled_pause_points"` arm — `not_found` for an
+  unknown job, otherwise the seeded list (or empty).
+- `case "resume_job"` accepts `status === "paused"` in addition to
+  `stopped` / `failed`, matching the runtime's resume contract that
+  the SCOPE Q4 calls out. Without this the chip's Resume click
+  would 409 against the mock.
 
-`crates/codeless-runtime/src/event_bus.rs`:
+### Tests (vitest + RTL)
 
-- `EventBus { pool: SqlitePool, sender: broadcast::Sender<EventEnvelope> }`.
-- `EventBus::new(pool, capacity)` and `Arc<EventBus>` is the shared
-  handle. RPC layer exposes it via `RpcServer::bus()`.
-- `publish(...)` persists then broadcasts. Two-stage = catch-up safe.
-- `subscribe_since(filter, since: Option<EventCursor>) -> EventStream`
-  returns a boxed `Stream<Item = Result<EventEnvelope, RpcError>>`.
-  Filter is `SubscribeFilter::All | Job(JobId)`.
+The project doesn't ship Playwright today — the "Playwright test"
+the template names is the vitest+RTL surface every other UI test in
+the tree uses (vitest browser-playwright transport is in the
+lockfile but not configured). Coverage lands as two test files:
 
-**Terminal job event variants live in `codeless-types::Event`
-(`crates/codeless-types/src/event.rs`):**
+- `ui/codeless-ui/src/modules/jobs/StagesOverview.test.tsx`
+  (extended):
+  1. `renders a planned-pause chip per scheduled point in YAML
+     order` — seeds two points (before stage 1, after stage 2),
+     renders, emits `stage-started` for both stages, asserts both
+     chips appear with the right `data-pause-point-id` /
+     `data-pause-position`, the operator-authored reason wins as
+     the label for chip 1, and the structural fallback ("pause
+     after stage 2") wins for chip 2.
+  2. `surfaces a Resume button when paused on a scoped point and
+     clears the pause on click` — seeds the job into `paused` with
+     `stop_reason = { "scoped-pause-point": { point_id } }`, asserts
+     the matching chip's `data-pause-fired` flips to `true` and a
+     `Resume` button appears, clicks it, asserts the mock's job row
+     flipped back to `queued` and `stop_reason = null`.
 
-- `Event::JobCompleted { job_id }` — wire label `"job-completed"`.
-  Doc text in JOB-WORKFLOW says "JobFinished", but the actual variant
-  is `JobCompleted`. Use the real name.
-- `Event::JobFailed { job_id }` — `"job-failed"`.
-- `Event::JobStopped { job_id, reason: StopReason }` — `"job-stopped"`.
-- `Event::JobPaused { job_id, reason }` — NOT terminal for our
-  purposes; a paused job is expected to be resumed (`job-resumed`).
-  Treat pause/resume as non-terminal; only the three above advance
-  a PlanRun.
+- `ui/codeless-ui/src/modules/chat/feed.scopedPause.test.ts` (new):
+  - `scopedPausePointId` reads both wire shapes and returns `null`
+    for the string variants.
+  - `liveItemFromEvent` projects the scoped reason into a distinct
+    `paused at scoped point …` divider while keeping the legacy
+    `user` / `cost-cap` labels unchanged.
+  - `stopReasonLabel` formats the object variant (so the wire
+    object never lands as raw JSX) and pass-throughs the string
+    variants.
 
-`EventEnvelope { cursor, job_id: Option<JobId>, stage_id, task_id,
-created_at, event }` — `job_id` is the field the engine joins on.
+Plus the existing 118 vitest cases stayed green after the
+`stop_reason`-JSX-shape refactor.
 
-## EventSource pattern — `codeless-bot-core::outbound`
+## Verify
 
-`crates/codeless-bot-core/src/outbound.rs`. This is the reference
-the spec names ("Plan engine is a second consumer, no new bus") and
-it is the closest precedent for what we need.
+- `cargo test --workspace` — green (one flake on
+  `codeless-adapters-host`'s
+  `git_revert_undoes_an_earlier_commit_and_returns_new_sha` when
+  the lib tests run in parallel; passes deterministically with
+  `--test-threads=1`, unrelated to this stage).
+- `cargo clippy --workspace --all-targets -- -D warnings` — green.
+- `cargo fmt --check` — green.
+- `pnpm test` (from `ui/codeless-ui/`) — **23 files, 118 tests
+  passed**. Eight tests are new (two for the chip rendering + resume
+  click in `StagesOverview.test.tsx`, six across
+  `feed.scopedPause.test.ts`).
+- `pnpm run typecheck` — green.
 
-Minimal upstream seam — copy this shape verbatim for the plan engine:
+## What stage 9 (final REVIEW) needs to assess
 
-```rust
-#[async_trait]
-pub trait EventSource: Send + Sync + 'static {
-    async fn subscribe_all(&self) -> RpcResult<EventStream>;
-}
+- New wire surface: `list_scheduled_pause_points` is the only new
+  RPC; everything else routes through `resume_job` and `JobPaused`.
+- The `stop_reason` JSX-shape refactor touches four pre-existing
+  files (`JobChatPage.tsx`, `JobDetail.tsx`, `JobTimeline.tsx`,
+  `RunPane.tsx`) — each call site now goes through
+  `stopReasonLabel`, no behaviour change for the string variants.
+- R2 check: a fresh `rg '@tauri-apps/api' ui/codeless-ui/src/ -g
+  '!src/shells/**'` returns the same baseline as before the stage
+  (no growth). The chip + divider read through `RpcClient` only.
+- R1 check: no new `tokio::process` / `std::process::Command` in any
+  crate; the UI work is server-side schedule lookup + DOM rendering
+  only.
+- specta/serde `point_id` vs `point-id` is still the known
+  divergence; the UI absorbs both via `scopedPausePointId`. A
+  follow-up that aligns the runtime's serde output to specta (or
+  vice versa) would let us drop the fallback branch.
 
-pub struct RpcServerEventSource { inner: Arc<dyn RpcServer> }
-// impl EventSource by forwarding subscribe(EventFilter::All, None).
-```
+## Out-of-scope follow-ups (file as separate jobs per SCOPE §"Open
+follow-ups")
 
-Loop skeleton: `OutboundPublisher::spawn(...) -> Self` returns a
-struct holding `JoinHandle<()>` + a `oneshot::Sender<()>` shutdown
-signal; `run_loop` selects between `shutdown` and `stream.next()`,
-matches `event` against the variants it cares about, and dispatches.
-A subscription open failure logs a `tracing::warn!` and returns
-(the rest of the host keeps serving). Each envelope error is logged
-and skipped; `None` from the stream is a clean exit.
-
-Outbound also shows two patterns the plan engine should adopt:
-
-- Replay policy: subscribe at `since: None` (live only). The Plan
-  engine spec says in-memory + lossy on restart, so live-only is
-  correct.
-- Per-id state map (Outbound's `Debouncer<JobId, Instant>`): the
-  plan engine needs an analogous `HashMap<JobId, PlanRunId>` so
-  each terminal envelope can resolve back to the PlanRun it
-  belongs to.
-
-## How a fired Schedule becomes `PlanEngine::start_run`
-
-`PayloadDispatcher` in `schedule/dispatch.rs` is the join point. The
-host registers a plan-keyed `Action` whose payload carries
-`{"kind": "start_plan", "plan_id": "..."}`. Implementation:
-
-```rust
-struct StartPlanAction { engine: Arc<PlanEngine> }
-
-#[async_trait]
-impl Action for StartPlanAction {
-    async fn fire(&self, _id: &ScheduleId, payload: &Value) {
-        let plan_id = payload["plan_id"].as_str()...;
-        let _ = self.engine.start_run(plan_id).await;
-    }
-}
-```
-
-Wiring lives in the host (codeless-runtime or codeless-mcp), not in
-the library, exactly as `LogAction` shows for the schedule crate.
-
-## R1 dependency edges
-
-`codeless-tools` is already host-only by virtue of its existing
-schedule/email/browser deps. Adding `plan/` does not change the
-matrix. But: the `JobSpawner` trait must NOT pull in
-`codeless-runtime` types in `codeless-tools`. Use a minimal
-`JobTemplate` / `SpawnedJobId` shape defined inside the plan module
-(or re-use `codeless-types::JobId`, which is mobile-safe). The host
-adapter implementing `JobSpawner` lives outside `codeless-tools`.
-
-`codeless-tools` already depends on `async-trait`, `tokio`,
-`serde_json`, `chrono`, `tokio-util`, `thiserror`, `tracing` —
-everything the plan module needs.
-
-## Open follow-ups for Stage 2+
-
-- Stage 2 will define `PlanSpec`/`PlanStep`/`Transition` data in
-  `plan/spec.rs`. Decide whether `Transition` is an enum
-  (`Step(StepId) | Stop`) or `Option<StepId>` with `None` = stop —
-  the spec wording "omitted = stop" leans toward `Option`.
-- Stage 3+ will need a `JobSpawner` trait whose method takes the
-  step's `job_template` string plus any per-step inputs and returns
-  a `JobId` plus a future that resolves on terminal event. Two ways
-  to wait: (a) `JobSpawner` returns just `JobId` and the engine
-  itself owns the bus subscription that matches `job_id`; or (b)
-  `JobSpawner` returns a oneshot. Outbound's pattern argues for (a):
-  one subscription, dispatch by `job_id`.
-- `EventSource::subscribe_all` already exists in `codeless-bot-core`
-  but the plan engine will live in `codeless-tools`, which cannot
-  depend on `codeless-bot-core`. Re-declare the same trait shape
-  inside the plan module (it is three lines) rather than reaching
-  across crates.
+- Edit-points-from-UI: operators still edit `template.yaml` (direct
+  or chat-driven on-disk path). The chip is read-only.
+- Recurring / count-based breakpoints, conditional / predicate
+  breakpoints.
+- Per-todo chip placement: today a `StageTodo` target renders as a
+  chip on the parent stage row. Inline-with-the-todo placement is a
+  layout refinement, not a wire change.
+- `pause_points_updated` event for divider chips to refresh without
+  re-reading the whole job state. The mount-time fetch is sufficient
+  for v1 because resync edits land while the job is paused and the
+  divider lookup uses the live `stop_reason`.
+- True Playwright browser test once a Playwright harness lands in
+  `ui/codeless-ui/`; vitest+RTL exercises the same surface today.

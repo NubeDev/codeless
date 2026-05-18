@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
   useEventStream,
+  useJob,
   useRpc,
   type EventEnvelope,
   type JobId,
   type StageRollup,
 } from "@/lib/rpc";
-import type { TodoKind, TodoStatus } from "@/lib/rpc/wire";
+import type {
+  PausePoint,
+  PausePointPosition,
+  PausePointTarget,
+  TodoKind,
+  TodoStatus,
+} from "@/lib/rpc/wire";
+import { scopedPausePointId } from "@/modules/chat/feed";
 
 import { RestartMenu } from "./RestartMenu";
 
@@ -640,19 +649,84 @@ interface Props {
   onOpenStageTab?: (stageId: string, stageName: string) => void;
 }
 
+// One scheduled point grouped against the stage row it attaches to.
+// `position` flips the chip placement to before/after the stage row;
+// `firedHere` is true when the job is currently paused on this point
+// (the row's `stop_reason` matches the point's id) — in which case the
+// chip shows the Resume button, so the operator's "advance past this
+// point" action lives next to the divider that named it.
+interface ScheduledChip {
+  point: PausePoint;
+  position: PausePointPosition;
+  firedHere: boolean;
+}
+
+// Slot one pause-point row into the stage it attaches to. `Stage` and
+// `StageTodo` both carry a stage ordinal in the wire shape — for the
+// chip placement we collapse stage-todo points onto the parent stage
+// so the user sees one chip per declared row in the operator's YAML
+// order. A future refinement can position the chip at the matching
+// todo row; the chip text already names the selector so the user is
+// not blind to it.
+function stageOrdinalOfTarget(t: PausePointTarget): number {
+  return t.kind === "stage" ? t.ordinal : t.stage_ordinal;
+}
+
+// Human label for the chip. Mirrors what stage 6's `point.reason`
+// column carries when set; falls back to a structural description so
+// a point with no operator reason still renders something useful.
+function pausePointLabel(p: PausePoint): string {
+  if (p.reason && p.reason.trim().length > 0) return p.reason;
+  const pos = p.position === "before" ? "before" : "after";
+  if (p.target.kind === "stage") {
+    return `pause ${pos} stage ${p.target.ordinal}`;
+  }
+  const sel = p.target.selector;
+  if ("kind" in sel) return `pause ${pos} stage ${p.target.stage_ordinal} ${sel.kind}`;
+  if ("ordinal" in sel)
+    return `pause ${pos} stage ${p.target.stage_ordinal} todo ${sel.ordinal}`;
+  return `pause ${pos} stage ${p.target.stage_ordinal} ~${sel.pattern}`;
+}
+
 export function StagesOverview({ jobId, onOpenStageTab }: Props) {
   const rpc = useRpc();
+  const { data: job, refetch: refetchJob } = useJob(jobId);
   const [state, setState] = useState<StagesState>({
     order: [],
     stages: new Map(),
     todoIndex: new Map(),
   });
+  const [pausePoints, setPausePoints] = useState<PausePoint[]>([]);
 
   // Reset state when the job changes so stale children from a prior job
   // don't bleed through while the new event stream replays.
   useEffect(() => {
     setState({ order: [], stages: new Map(), todoIndex: new Map() });
+    setPausePoints([]);
   }, [jobId]);
+
+  // Seed the scoped pause schedule. The schedule is operator-authored
+  // in `template.yaml` and persisted server-side; this is a read-only
+  // mirror so the divider chips have something to render before the
+  // first event arrives. Empty list when the job predates the feature
+  // or carries no `pause_points:` block — that branch silently falls
+  // back to "no chips", which is the correct empty state.
+  useEffect(() => {
+    let cancelled = false;
+    rpc
+      .call("list_scheduled_pause_points", { job_id: jobId })
+      .then((res) => {
+        if (!cancelled) setPausePoints(res.points);
+      })
+      .catch(() => {
+        // Older runtimes (and the unit-test fixtures that don't seed
+        // a schedule) will 404 or return an empty list; treat both as
+        // "no schedule" — the rest of the overview keeps rendering.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, jobId]);
 
   // Seed from persisted rollups so completed stages are visible on cold
   // open before the event stream delivers its replay.
@@ -696,12 +770,43 @@ export function StagesOverview({ jobId, onOpenStageTab }: Props) {
     [state],
   );
 
+  const firedPointId = scopedPausePointId(job?.stop_reason);
+
+  const onResume = useCallback(async () => {
+    await rpc.call("resume_job", {
+      job_id: jobId,
+      additional_cost_cap_cents: null,
+      additional_wall_clock_cap_ms: null,
+      next_stage_comment: null,
+    });
+    refetchJob();
+  }, [rpc, jobId, refetchJob]);
+
   if (rows.length === 0) {
     return (
       <div className="text-muted-foreground px-4 py-8 text-sm">
         No stages yet.
       </div>
     );
+  }
+
+  // Group the schedule by 1-based stage ordinal so each `StageRow` can
+  // pick out the chips that attach to it. The wire shape is stable;
+  // the index is rebuilt from scratch on every render rather than
+  // memoised because `pausePoints` is operator-authored and small
+  // (under a dozen entries in any plausible plan).
+  const chipsByStage = new Map<number, { before: ScheduledChip[]; after: ScheduledChip[] }>();
+  for (const point of pausePoints) {
+    const ordinal = stageOrdinalOfTarget(point.target);
+    const slot = chipsByStage.get(ordinal) ?? { before: [], after: [] };
+    const chip: ScheduledChip = {
+      point,
+      position: point.position,
+      firedHere: firedPointId === point.id,
+    };
+    if (point.position === "before") slot.before.push(chip);
+    else slot.after.push(chip);
+    chipsByStage.set(ordinal, slot);
   }
 
   return (
@@ -711,17 +816,110 @@ export function StagesOverview({ jobId, onOpenStageTab }: Props) {
           Stages
         </div>
         <ul className="space-y-3">
-          {rows.map((stage) => (
-            <StageRow
-              key={stage.id}
-              stage={stage}
-              jobId={jobId}
-              onOpenStageTab={onOpenStageTab}
-            />
-          ))}
+          {rows.map((stage) => {
+            const stageOrdinal1 =
+              stage.ordinal !== null ? stage.ordinal + 1 : null;
+            const chips =
+              stageOrdinal1 !== null ? chipsByStage.get(stageOrdinal1) : undefined;
+            return (
+              <li key={`stage-block-${stage.id}`} className="space-y-1">
+                {chips?.before.map((c) => (
+                  <PlannedPauseChip
+                    key={`chip-before-${c.point.id}`}
+                    chip={c}
+                    onResume={onResume}
+                  />
+                ))}
+                <StageRow
+                  stage={stage}
+                  jobId={jobId}
+                  onOpenStageTab={onOpenStageTab}
+                />
+                {chips?.after.map((c) => (
+                  <PlannedPauseChip
+                    key={`chip-after-${c.point.id}`}
+                    chip={c}
+                    onResume={onResume}
+                  />
+                ))}
+              </li>
+            );
+          })}
         </ul>
       </div>
     </ScrollArea>
+  );
+}
+
+// ------------------------------------------------------------------ planned-pause chip
+
+// One operator-declared pause point rendered inline with the stages.
+// Distinct from a runtime-pause divider on purpose: the dashed border
+// and "planned" label tell the user the runner was *scheduled* to halt
+// here, not that they (or a cap) interrupted it. When the chip's point
+// is the one the job is currently paused on, a `Resume` button appears
+// in-place — same `resume_job` surface as the run strip, just located
+// next to the divider that named the pause.
+function PlannedPauseChip({
+  chip,
+  onResume,
+}: {
+  chip: ScheduledChip;
+  onResume: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const fire = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await onResume();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const label = pausePointLabel(chip.point);
+  const tone = chip.firedHere
+    ? "border-amber-500/60 text-amber-700 dark:text-amber-300"
+    : "border-border/60 text-muted-foreground";
+  return (
+    <div
+      data-testid="planned-pause-chip"
+      data-pause-point-id={chip.point.id}
+      data-pause-position={chip.position}
+      data-pause-fired={chip.firedHere ? "true" : "false"}
+      className={cn(
+        "flex items-center gap-2 rounded border border-dashed px-2 py-1 text-[11px]",
+        tone,
+      )}
+    >
+      <span aria-hidden="true">⏸</span>
+      <span className="font-mono uppercase tracking-wide text-[9px]">
+        planned
+      </span>
+      <span className="min-w-0 flex-1 truncate" title={label}>
+        {label}
+      </span>
+      {chip.firedHere && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 px-2 text-[11px]"
+          onClick={fire}
+          disabled={busy}
+          data-testid="planned-pause-resume"
+        >
+          {busy ? "Resuming…" : "Resume"}
+        </Button>
+      )}
+      {err && (
+        <span className="text-destructive shrink-0 text-[10px]" title={err}>
+          {err}
+        </span>
+      )}
+    </div>
   );
 }
 

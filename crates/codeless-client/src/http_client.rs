@@ -187,6 +187,13 @@ impl RpcServer for HttpRpcClient {
         self.call("list_stages", &args).await
     }
 
+    async fn list_scheduled_pause_points(
+        &self,
+        args: codeless_rpc::ListScheduledPausePointsArgs,
+    ) -> RpcResult<codeless_rpc::ListScheduledPausePointsResult> {
+        self.call("list_scheduled_pause_points", &args).await
+    }
+
     async fn job_report(&self, args: JobReportArgs) -> RpcResult<JobReportResult> {
         self.call("job_report", &args).await
     }

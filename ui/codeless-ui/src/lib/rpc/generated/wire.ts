@@ -433,6 +433,41 @@ export type AssistantThread = {
 //Identity of one conversational thread on the /assistant surface.
 export type AssistantThreadId = string;
 
+export type AttachWorkspaceArgs = {
+	repo_id: RepoId,
+	/**
+	 *  Override the repo's `local_path`. The canonicalised override
+	 *  must be a descendant of the canonicalised `local_path`, and
+	 *  dotfile directories like `.git` are rejected. When set, the
+	 *  override becomes the `fs.*` jail for this workspace.
+	 */
+	fs_root_override: string | null,
+};
+
+export type AttachWorkspaceResult = {
+	workspace: AttachedWorkspace,
+};
+
+/**
+ *  An attached workspace as exposed on the wire. The canonical path
+ *  is the `fs.*` jail; symlinks have already been resolved server-side
+ *  so the UI never has to disambiguate `/var` vs `/private/var`.
+ */
+export type AttachedWorkspace = {
+	repo_id: RepoId,
+	repo_name: string,
+	// Canonical absolute path. Symlinks resolved, no trailing slash.
+	fs_root: string,
+	attached_at: UnixMillis,
+	/**
+	 *  Free-form runner kind preselected for jobs in this workspace.
+	 *  `None` falls back to the repo's `default_runner`, then to the
+	 *  global default. Free-form because runner kinds live in the
+	 *  adapter layer, not this wire crate.
+	 */
+	default_runner: string | null,
+};
+
 /**
  *  One attachment reference as returned by a plugin tool (PS7,
  *  `DOCS/PLUGIN-SUBSTRATE.md` item 7). `attachment_id` is the
@@ -687,6 +722,21 @@ export type CreateAssistantThreadArgs = {
  */
 export type DeleteAssistantThreadArgs = {
 	thread_id: AssistantThreadId,
+};
+
+/**
+ *  What detach does when jobs are still running against the workspace.
+ *  `Refuse` is the safe default: detach nothing, return the running
+ *  `JobId`s so the UI can prompt. `Stop` cancels them first.
+ *  `LeaveRunning` detaches only the editor surface — runners keep
+ *  their private worktree-scoped `fs.*` handle, but the editor side
+ *  loses access until re-attach.
+ */
+export type DetachPolicy = "refuse" | "stop" | "leave-running";
+
+export type DetachWorkspaceArgs = {
+	repo_id: RepoId,
+	on_running_jobs: DetachPolicy,
 };
 
 /**
@@ -1594,6 +1644,62 @@ export type ListReviewsResult = {
 	reviews: Review[],
 };
 
+export type ListWorkspacesResult = {
+	workspaces: AttachedWorkspace[],
+};
+
+/**
+ *  One scheduled pause point as it travels on the wire. The parser
+ *  (stage 4) builds one of these per `pause_points:` entry; the
+ *  persistence layer (stage 5) writes it into `scheduled_pause_points`
+ *  keyed on `(job_id, ordinal)`; the runtime hook (stage 6) reads it
+ *  back when checking whether to trip `pause_job`.
+ * 
+ *  `reason` is the operator's free-text justification, surfaced
+ *  verbatim in the chat divider label and in the `StopReason::
+ *  ScopedPausePoint` payload. The 512-byte cap is enforced by the
+ *  parser, not by this struct — keeping the cap a parse-time rule
+ *  lets future iterations relax it without a wire migration.
+ */
+export type PausePoint = {
+	id: PausePointId,
+	target: PausePointTarget,
+	position: PausePointPosition,
+	reason?: string | null,
+};
+
+/**
+ *  Identity of one scheduled pause point. Defined inline rather than
+ *  added to the shared `ulid_newtype!` macro in `id.rs` to keep the
+ *  pause-point types one self-contained unit — same rationale
+ *  `ScopePatchId` calls out in `scope_patch.rs`.
+ */
+export type PausePointId = string;
+
+/**
+ *  Which side of the targeted boundary the pause fires on. `position:`
+ *  is a required YAML key — `pause stage 3` is ambiguous between "halt
+ *  before the runner spawns" and "halt after the trio closes", and
+ *  forcing the keyword removes the foot-gun (see SCOPED-PAUSE-POINTS
+ *  §1.3 and §5 Q1).
+ */
+export type PausePointPosition = "before" | "after";
+
+/**
+ *  What the pause point fires against. `Stage` targets the stage
+ *  boundary itself (provisioning side on `Before`, post-trio side on
+ *  `After`); `StageTodo` narrows the trigger to one todo inside the
+ *  stage. The selector lives on `StageTodo` rather than as a third
+ *  `Stage`-variant field so the absence of a selector is a type-level
+ *  fact, not a `None` to forget to handle.
+ * 
+ *  `stage_ordinal` is always the resolved 1-based index into the
+ *  template's `stages:` list. Name-form targets (`stage: parser`) are
+ *  resolved to an ordinal by the parser before a row reaches this
+ *  type, so the wire shape and the SQLite shape match.
+ */
+export type PausePointTarget = { kind: "stage"; ordinal: number } | { kind: "stage-todo"; stage_ordinal: number; selector: TodoSelector };
+
 /**
  *  Result of the Layer-1 diff-verify pre-check the runtime runs
  *  against the prior stage's handover before invoking the REVIEW
@@ -2285,7 +2391,18 @@ export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash" |
  *  threads into the stage prompt; the override is a one-shot
  *  audit-logged opt-in, not a sticky flag.
  */
-"review-pre-check";
+"review-pre-check" | 
+/**
+ *  A pre-declared scope-level pause point (operator-authored in
+ *  `template.yaml`) fired. Distinct from `User` so the chat and
+ *  dashboard can render a "planned pause" divider instead of a
+ *  runtime-pause chip, and the divider lookup can carry the
+ *  `point_id` back to the `scheduled_pause_points` row for
+ *  `reason` text. Resumes through the existing `resume_job` RPC;
+ *  cost-cap behaviour is identical to `User` per SCOPED-PAUSE-
+ *  POINTS §5 Q4.
+ */
+{ "scoped-pause-point": { "point-id": PausePointId } };
 
 export type StopReviewArgs = {
 	review_id: ReviewId,
@@ -2401,6 +2518,22 @@ export type TodoId = string;
 export type TodoKind = "runner" | "planner" | "checks" | "docs" | "git";
 
 /**
+ *  How a todo inside a stage is named. `Ordinal` is a 1-based index
+ *  into the stage's todo list at trigger time; `Trio` names one of the
+ *  runtime-injected closing-trio kinds (always resolvable at submit
+ *  time); `TitleSubstring` is a case-insensitive `contains` match
+ *  evaluated at trigger time so runner-authored todos that don't exist
+ *  at parse time can still be addressed.
+ * 
+ *  Trio kinds are reserved words at the YAML layer: `todo: checks`
+ *  always resolves to `Trio(Checks)`, even if a runner-authored todo
+ *  happens to share the title. To target a non-trio todo whose title
+ *  contains a trio word, use `~checks` (the substring form) — see
+ *  SCOPED-PAUSE-POINTS §1.2.3.
+ */
+export type TodoSelector = { selector: "ordinal"; ordinal: number } | { selector: "trio"; kind: TodoKind } | { selector: "title-substring"; pattern: string };
+
+/**
  *  Todo lifecycle. `Skipped` is a terminal "did not run, will not run"
  *  state distinct from `Failed` — used for the `git` trio item when a
  *  stage produced no diff, and for any planner-injected item the runner
@@ -2503,53 +2636,21 @@ export type UserPromptSnippet = {
 	body: string,
 };
 
-// Where the agent's edits land. See SCOPE.md "Workspace mode".
-export type WorkspaceMode = 
-// Edits land in the user's existing local clone on a fresh branch.
-"in-repo" | 
-// Edits land in a separate `git worktree add` checkout.
-"worktree";
-
-// Workspace-attach surface (DOCS/WORKSPACE-ATTACH.md M3). These
-// definitions are kept in sync with the codeless-types specta snapshot
-// at `crates/codeless-types/tests/wire.ts.snap`; the next run of
-// `cargo run -p codeless-rpc --example wire_ts` regenerates this whole
-// file from `wire_ts.rs` (which already registers them) and rewrites
-// this block in alphabetical position.
-
-export type AttachedWorkspace = {
-	repo_id: RepoId,
-	repo_name: string,
-	fs_root: string,
-	attached_at: UnixMillis,
-	default_runner: string | null,
-};
-
-export type AttachWorkspaceArgs = {
-	repo_id: RepoId,
-	fs_root_override: string | null,
-};
-
-export type AttachWorkspaceResult = {
-	workspace: AttachedWorkspace,
-};
-
-export type ListWorkspacesResult = {
-	workspaces: AttachedWorkspace[],
-};
-
-export type DetachPolicy = "refuse" | "stop" | "leave-running";
-
-export type DetachWorkspaceArgs = {
-	repo_id: RepoId,
-	on_running_jobs: DetachPolicy,
-};
-
 export type ValidateWorkspacePathArgs = {
 	path: string,
 };
 
+/**
+ *  Dry-run path validation for the workspace picker. Every field is
+ *  independent so the UI can render the row even when the path
+ *  resolves but fails one of the structural checks.
+ */
 export type ValidateWorkspacePathResult = {
+	/**
+	 *  `None` when the path could not be resolved at all (does not
+	 *  exist, traversal blocked, etc). Populated even when problems
+	 *  are present so the UI can show what the server saw.
+	 */
 	canonical: string | null,
 	is_dir: boolean,
 	is_git_repo: boolean,
@@ -2560,17 +2661,29 @@ export type ValidateWorkspacePathResult = {
 	problems: WorkspaceProblem[],
 };
 
-export type WorkspaceProblem =
-	| "not-a-directory"
-	| "not-readable"
-	| "not-writable"
-	| "not-a-git-repo"
-	| { "inside-another-workspace": { "other-root": string } }
-	| "system-path"
-	| "symlink-outside-home";
+/**
+ *  Structured failure modes for attach/detach. Wire-distinct from a
+ *  generic `Conflict` so the UI can branch on the variant — e.g.
+ *  `RunningJobs` triggers the "stop jobs?" modal without parsing a
+ *  human-readable string.
+ */
+export type WorkspaceError = { "already-attached": { "repo-id": RepoId; "fs-root": string } } | { "running-jobs": { jobs: JobId[] } } | { "path-rejected": { problems: WorkspaceProblem[] } } | "not-attached";
 
-export type WorkspaceError =
-	| { "already-attached": { "repo-id": RepoId; "fs-root": string } }
-	| { "running-jobs": { jobs: JobId[] } }
-	| { "path-rejected": { problems: WorkspaceProblem[] } }
-	| "not-attached";
+// Where the agent's edits land. See SCOPE.md "Workspace mode".
+export type WorkspaceMode = 
+// Edits land in the user's existing local clone on a fresh branch.
+"in-repo" | 
+// Edits land in a separate `git worktree add` checkout.
+"worktree";
+
+/**
+ *  Structured reason a candidate workspace path is unusable. The UI
+ *  renders each variant inline rather than string-matching on a
+ *  generic error message.
+ */
+export type WorkspaceProblem = "not-a-directory" | "not-readable" | "not-writable" | "not-a-git-repo" | { "inside-another-workspace": { "other-root": string } } | 
+/**
+ *  `/`, `/etc`, `/usr`, `~/.ssh`, `$HOME` without a subdir, etc.
+ *  Hard refusal regardless of user override.
+ */
+"system-path" | "symlink-outside-home";

@@ -14,11 +14,12 @@ use codeless_types::{
     AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId,
     AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, CostCents,
     DetachPolicy, DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind,
-    GitAuth, Job, JobId, JobStatus, ListWorkspacesResult, PreCheckOutcome, ProposedScopePatch,
-    Repo, RepoId, Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId,
-    ScopePatchKind, ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId,
-    TaskStatus, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError,
-    WorkspaceProblem,
+    GitAuth, Job, JobId, JobStatus, ListWorkspacesResult, PausePoint, PausePointId,
+    PausePointPosition, PausePointTarget, PreCheckOutcome, ProposedScopePatch, Repo, RepoId,
+    Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind,
+    ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
+    TodoSelector, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -78,7 +79,12 @@ fn collect() -> TypeCollection {
         .register_mut::<ScopePatch>()
         .register_mut::<ProposedScopePatch>()
         .register_mut::<PreCheckOutcome>()
-        .register_mut::<ReviewVerdict>();
+        .register_mut::<ReviewVerdict>()
+        .register_mut::<PausePointId>()
+        .register_mut::<PausePointPosition>()
+        .register_mut::<TodoSelector>()
+        .register_mut::<PausePointTarget>()
+        .register_mut::<PausePoint>();
     types
 }
 

@@ -40,6 +40,9 @@ use codeless_rpc::methods::{
     UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
+use codeless_types::pause_point::{
+    PausePoint, PausePointId, PausePointPosition, PausePointTarget, TodoSelector,
+};
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
@@ -182,7 +185,12 @@ fn collect() -> TypeCollection {
         .register_mut::<ScopePatchResolution>()
         .register_mut::<ScopePatchActionResult>()
         .register_mut::<RevertScopePatchArgs>()
-        .register_mut::<RevertScopePatchResult>();
+        .register_mut::<RevertScopePatchResult>()
+        .register_mut::<PausePointId>()
+        .register_mut::<PausePointPosition>()
+        .register_mut::<TodoSelector>()
+        .register_mut::<PausePointTarget>()
+        .register_mut::<PausePoint>();
     types
 }
 

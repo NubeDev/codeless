@@ -15,7 +15,8 @@ use codeless_rpc::{
     JobReportArgs, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult,
+    ListReviewsArgs, ListReviewsResult, ListScheduledPausePointsArgs,
+    ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
     OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs, ReadJobFileResult,
     RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer,
     SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
@@ -284,6 +285,13 @@ impl RpcServer for InProcessRpc {
 
     async fn list_stages(&self, args: ListStagesArgs) -> RpcResult<ListStagesResult> {
         jobs::list_stages(self, args).await
+    }
+
+    async fn list_scheduled_pause_points(
+        &self,
+        args: ListScheduledPausePointsArgs,
+    ) -> RpcResult<ListScheduledPausePointsResult> {
+        jobs::list_scheduled_pause_points(self, args).await
     }
 
     async fn job_report(&self, args: JobReportArgs) -> RpcResult<codeless_rpc::JobReportResult> {

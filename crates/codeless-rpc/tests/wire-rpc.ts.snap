@@ -1063,6 +1063,14 @@ export type ListStagesResult = {
 	stages: StageRollup[],
 };
 
+/**
+ *  Identity of one scheduled pause point. Defined inline rather than
+ *  added to the shared `ulid_newtype!` macro in `id.rs` to keep the
+ *  pause-point types one self-contained unit — same rationale
+ *  `ScopePatchId` calls out in `scope_patch.rs`.
+ */
+export type PausePointId = string;
+
 export type ReadJobFileArgs = {
 	job_id: JobId,
 	filename: string,
@@ -1517,7 +1525,18 @@ export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash" |
  *  threads into the stage prompt; the override is a one-shot
  *  audit-logged opt-in, not a sticky flag.
  */
-"review-pre-check";
+"review-pre-check" | 
+/**
+ *  A pre-declared scope-level pause point (operator-authored in
+ *  `template.yaml`) fired. Distinct from `User` so the chat and
+ *  dashboard can render a "planned pause" divider instead of a
+ *  runtime-pause chip, and the divider lookup can carry the
+ *  `point_id` back to the `scheduled_pause_points` row for
+ *  `reason` text. Resumes through the existing `resume_job` RPC;
+ *  cost-cap behaviour is identical to `User` per SCOPED-PAUSE-
+ *  POINTS §5 Q4.
+ */
+{ "scoped-pause-point": { "point-id": PausePointId } };
 
 export type StopReviewArgs = {
 	review_id: ReviewId,

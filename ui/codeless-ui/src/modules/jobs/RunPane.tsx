@@ -27,6 +27,7 @@ import {
   PulseDot,
   type ChatMessage,
 } from "../chat";
+import { stopReasonLabel } from "../chat/feed";
 
 import { setGlobalDocs } from "./spec/mutateTemplate";
 
@@ -2011,10 +2012,12 @@ function actionRowLabel(job: Job): string {
     case "awaiting-review":
       return "awaiting review";
     case "stopped":
-      return job.stop_reason ? `stopped: ${job.stop_reason}` : "stopped";
+      return job.stop_reason
+        ? `stopped: ${stopReasonLabel(job.stop_reason)}`
+        : "stopped";
     case "paused":
       return job.stop_reason && job.stop_reason !== "user"
-        ? `paused: ${job.stop_reason}`
+        ? `paused: ${stopReasonLabel(job.stop_reason)}`
         : "paused";
     case "failed":
       return "failed";
