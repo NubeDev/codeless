@@ -218,6 +218,67 @@ async fn run_server(
     };
 
     let mut runtime = rpc_open::open(db.as_deref()).await?;
+
+    // Adapter registry boot wiring (see DOCS/WORKSPACE-ATTACH.md "TODO
+    // — adapter registry"). Each `--enable-*` flag upserts a single
+    // row keyed on `(kind, "default")` for chat adapters or `runner_id`
+    // for runners, exactly the way `--fs-root` upserts
+    // `attached_workspaces`. After the upserts run we read the table
+    // back: the rows are now the source of truth, so a boot with no
+    // flags still picks up the set the UI last persisted, and a flag
+    // re-passed on top wins over whatever was stored.
+    if args.enable_slack {
+        if let Err(e) = codeless_runtime::adapter_registry::upsert_chat_adapter(
+            runtime.pool(),
+            "slack",
+            codeless_runtime::adapter_registry::DEFAULT_INSTANCE_ID,
+            true,
+        )
+        .await
+        {
+            eprintln!("codeless-server: chat_adapters upsert for slack failed: {e}");
+        }
+    }
+    if args.enable_telegram {
+        if let Err(e) = codeless_runtime::adapter_registry::upsert_chat_adapter(
+            runtime.pool(),
+            "telegram",
+            codeless_runtime::adapter_registry::DEFAULT_INSTANCE_ID,
+            true,
+        )
+        .await
+        {
+            eprintln!("codeless-server: chat_adapters upsert for telegram failed: {e}");
+        }
+    }
+    for (id, enabled) in [
+        ("claude", args.enable_claude),
+        ("anthropic", args.enable_anthropic),
+        ("codex", args.enable_codex),
+        ("copilot", args.enable_copilot),
+    ] {
+        if !enabled {
+            continue;
+        }
+        if let Err(e) =
+            codeless_runtime::adapter_registry::upsert_runner(runtime.pool(), id, true).await
+        {
+            eprintln!("codeless-server: runner_config upsert for {id} failed: {e}");
+        }
+    }
+    let effective = codeless_runtime::adapter_registry::load_effective(runtime.pool())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("codeless-server: adapter registry read failed, falling back to CLI flags: {e}");
+            codeless_runtime::adapter_registry::EffectiveAdapterRegistry {
+                slack_enabled: args.enable_slack,
+                telegram_enabled: args.enable_telegram,
+                claude_enabled: args.enable_claude,
+                anthropic_enabled: args.enable_anthropic,
+                codex_enabled: args.enable_codex,
+                copilot_enabled: args.enable_copilot,
+            }
+        });
     // Resolve the effective worktree root up front so the HostFs
     // adapter can grant read access to per-job `runs/*/handover.md`
     // and notes through the same `fs_*` surface. Without this, the
@@ -325,10 +386,10 @@ async fn run_server(
     }
     let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
-    if args.enable_claude {
+    if effective.claude_enabled {
         scrub_caller_session_env();
     }
-    let claude_status = if args.enable_claude {
+    let claude_status = if effective.claude_enabled {
         let status = codeless_adapters_host::probe_claude().await;
         match &status {
             None => eprintln!(
@@ -354,6 +415,7 @@ async fn run_server(
     };
     let server_info = Arc::new(build_server_info(
         &args,
+        &effective,
         worktree_root_effective.clone(),
         claude_status,
         available_cli_runners,
@@ -459,16 +521,16 @@ async fn run_server(
         // assume mock jobs would run, when in fact a `runner: mock`
         // submit returns None from the factory.
         let mut enabled: Vec<&str> = Vec::new();
-        if args.enable_claude {
+        if effective.claude_enabled {
             enabled.push("claude");
         }
-        if args.enable_anthropic {
+        if effective.anthropic_enabled {
             enabled.push("anthropic");
         }
-        if args.enable_codex {
+        if effective.codex_enabled {
             enabled.push("codex");
         }
-        if args.enable_copilot {
+        if effective.copilot_enabled {
             enabled.push("copilot");
         }
         if enabled.is_empty() {
@@ -486,10 +548,10 @@ async fn run_server(
         let anthropic_api_key = store.get("anthropic_api_key").map(str::to_owned);
         let claude_system_prompt = store.get("claude_system_prompt").map(str::to_owned);
         let factory = Arc::new(DefaultRunnerFactory {
-            enable_claude: args.enable_claude,
-            enable_anthropic: args.enable_anthropic,
-            enable_codex: args.enable_codex,
-            enable_copilot: args.enable_copilot,
+            enable_claude: effective.claude_enabled,
+            enable_anthropic: effective.anthropic_enabled,
+            enable_codex: effective.codex_enabled,
+            enable_copilot: effective.copilot_enabled,
             anthropic_api_key,
             claude_system_prompt,
             store: rpc.store().clone(),
@@ -509,7 +571,7 @@ async fn run_server(
     // secrets and restarting. The handle stays alive in this scope so
     // the spawned task is not dropped before `serve_with_shutdown`
     // returns; process exit is the teardown path.
-    let _slack = if args.enable_slack {
+    let _slack = if effective.slack_enabled {
         match codeless_slack::SlackConfig::from_secrets(&store) {
             Ok(cfg) => {
                 eprintln!(
@@ -537,7 +599,7 @@ async fn run_server(
     // rest of the server still boots, and the handle stays in scope
     // so the spawned long-poll task is not dropped before
     // `serve_with_shutdown` returns.
-    let _telegram = if args.enable_telegram {
+    let _telegram = if effective.telegram_enabled {
         match codeless_telegram::TelegramConfig::from_secrets(&store) {
             Ok(cfg) => {
                 eprintln!(
@@ -605,13 +667,16 @@ fn effective_worktree_root(args: &ServeArgs) -> Option<PathBuf> {
 /// the default.
 fn build_server_info(
     args: &ServeArgs,
+    effective: &codeless_runtime::adapter_registry::EffectiveAdapterRegistry,
     worktree_root: Option<PathBuf>,
     claude: Option<ClaudeStatus>,
     available_cli_runners: Vec<String>,
 ) -> ServerInfo {
     let mut runners = Vec::new();
-    let real_runner_enabled =
-        args.enable_claude || args.enable_anthropic || args.enable_codex || args.enable_copilot;
+    let real_runner_enabled = effective.claude_enabled
+        || effective.anthropic_enabled
+        || effective.codex_enabled
+        || effective.copilot_enabled;
     // `mock` is only published when no real runner is enabled. When
     // the operator passes `--enable-claude` or `--enable-anthropic`
     // they have signalled that real coding work is what they want; a
@@ -625,27 +690,27 @@ fn build_server_info(
             default: true,
         });
     }
-    if args.enable_claude {
+    if effective.claude_enabled {
         runners.push(RunnerInfo {
             id: "claude".to_owned(),
             default: true,
         });
     }
-    if args.enable_anthropic {
+    if effective.anthropic_enabled {
         runners.push(RunnerInfo {
             id: "anthropic".to_owned(),
-            // `claude` wins the default when both flags are passed; the
+            // `claude` wins the default when both are enabled; the
             // anthropic REST runner is the secondary path.
-            default: !args.enable_claude,
+            default: !effective.claude_enabled,
         });
     }
-    if args.enable_codex {
+    if effective.codex_enabled {
         runners.push(RunnerInfo {
             id: "codex".to_owned(),
             default: false,
         });
     }
-    if args.enable_copilot {
+    if effective.copilot_enabled {
         runners.push(RunnerInfo {
             id: "copilot".to_owned(),
             default: false,

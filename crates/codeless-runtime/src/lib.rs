@@ -5,6 +5,7 @@
 //! mobile shell; mobile reaches the runtime over the network via
 //! `codeless-client`.
 
+pub mod adapter_registry;
 pub mod anthropic_runner;
 pub mod attached_workspaces;
 pub mod auto_bypass_failure_card;

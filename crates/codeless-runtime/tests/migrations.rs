@@ -60,6 +60,7 @@ async fn migrator_creates_all_tables_from_appendix_a() {
             "assistant_messages".to_string(),
             "assistant_threads".to_string(),
             "attached_workspaces".to_string(),
+            "chat_adapters".to_string(),
             "chat_bindings".to_string(),
             "chat_messages".to_string(),
             "events".to_string(),
@@ -68,6 +69,7 @@ async fn migrator_creates_all_tables_from_appendix_a() {
             "pty_sessions".to_string(),
             "repos".to_string(),
             "reviews".to_string(),
+            "runner_config".to_string(),
             "scheduled_pause_points".to_string(),
             "stages".to_string(),
             "supervisor_goals".to_string(),
@@ -242,6 +244,101 @@ async fn expected_indexes_are_present() {
             "missing index {required}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adapter_registry_tables_match_workspace_attach_todo() {
+    // DOCS/WORKSPACE-ATTACH.md "TODO — adapter registry" stage 1:
+    // `chat_adapters((kind, instance_id) PK, enabled, configured_at)`
+    // plus `runner_config(runner_id PK, enabled)`. Column order is the
+    // on-disk contract — SQLite's `ALTER TABLE ADD COLUMN` would only
+    // append, so a future reorder needs a rebuild migration.
+    let pool = fresh_db().await;
+    assert_eq!(
+        columns(&pool, "chat_adapters").await,
+        vec![
+            "kind".to_string(),
+            "instance_id".to_string(),
+            "enabled".to_string(),
+            "configured_at".to_string(),
+        ],
+    );
+    assert_eq!(
+        columns(&pool, "runner_config").await,
+        vec!["runner_id".to_string(), "enabled".to_string()],
+    );
+
+    // Composite PK on `(kind, instance_id)` is what lets the registry
+    // grow Slack-personal + Slack-work later without a schema change;
+    // the migration's contract is that both columns sit in the PK.
+    let pk: Vec<String> = sqlx::query(
+        "SELECT name FROM pragma_table_info('chat_adapters') WHERE pk > 0 ORDER BY pk",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("chat_adapters pk")
+    .into_iter()
+    .map(|r| r.get::<String, _>("name"))
+    .collect();
+    assert_eq!(
+        pk,
+        vec!["kind".to_string(), "instance_id".to_string()],
+        "chat_adapters PK must be (kind, instance_id)",
+    );
+
+    // Upserting the same (kind, instance_id) twice must update in
+    // place, not insert — the boot path re-passes the flag every run
+    // and would otherwise pile up duplicate rows.
+    use codeless_runtime::adapter_registry::{
+        upsert_chat_adapter, upsert_runner, DEFAULT_INSTANCE_ID,
+    };
+    upsert_chat_adapter(&pool, "slack", DEFAULT_INSTANCE_ID, true)
+        .await
+        .expect("first slack upsert");
+    upsert_chat_adapter(&pool, "slack", DEFAULT_INSTANCE_ID, false)
+        .await
+        .expect("second slack upsert toggles");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_adapters WHERE kind = 'slack'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "chat_adapters upsert must be in-place");
+    let enabled: i64 =
+        sqlx::query_scalar("SELECT enabled FROM chat_adapters WHERE kind = 'slack'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(enabled, 0, "second upsert flipped enabled to false");
+
+    upsert_runner(&pool, "claude", true)
+        .await
+        .expect("claude upsert");
+    upsert_runner(&pool, "claude", false)
+        .await
+        .expect("claude upsert toggles");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runner_config WHERE runner_id = 'claude'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1, "runner_config upsert must be in-place");
+
+    // The effective-snapshot read is what `codeless serve` calls at
+    // boot to compute its enabled set. A round-trip through the table
+    // must surface the latest write.
+    upsert_chat_adapter(&pool, "telegram", DEFAULT_INSTANCE_ID, true)
+        .await
+        .unwrap();
+    upsert_runner(&pool, "anthropic", true).await.unwrap();
+    let eff = codeless_runtime::adapter_registry::load_effective(&pool)
+        .await
+        .expect("load_effective");
+    assert!(!eff.slack_enabled, "slack disabled by last upsert");
+    assert!(eff.telegram_enabled);
+    assert!(!eff.claude_enabled);
+    assert!(eff.anthropic_enabled);
+    assert!(!eff.codex_enabled);
+    assert!(!eff.copilot_enabled);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
