@@ -19,14 +19,16 @@ use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
 use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerFeatureFlags, ServerInfo};
 use codeless_runtime::{
-    parse_permission_mode, spawn_job_driver_loop, spawn_notifier, spawn_stage_recorder,
-    template::JobTemplate, template_runner::TemplateRunner, AnthropicRunnerAdapter,
-    ClaudeRunnerAdapter, CodexRunnerAdapter, CopilotRunnerAdapter, InProcessRpc, MockRunner,
-    MockStep, Runner, RunnerFactory, RunnerOutcome, WebhookConfig, WebhookNotifier,
+    parse_permission_mode, spawn_job_driver_loop, spawn_notifier, spawn_plan_engine_subscriber,
+    spawn_stage_recorder, template::JobTemplate, template_runner::TemplateRunner,
+    AnthropicRunnerAdapter, ClaudeRunnerAdapter, CodexRunnerAdapter, CopilotRunnerAdapter,
+    InProcessRpc, MockRunner, MockStep, Runner, RunnerFactory, RunnerOutcome, WebhookConfig,
+    WebhookNotifier,
 };
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, AuthMode, TokenLoadError, TOKEN_SECRET_KEY,
 };
+use codeless_tools::plan::{LogJobSpawner, PlanEngine};
 use codeless_types::{CostCents, Event, Job, TaskId, TaskStatus};
 
 use crate::rpc_open;
@@ -400,6 +402,16 @@ async fn run_server(
     // so the UI's Stages tab can render rolled-up per-stage cost and
     // duration without reconstructing it from events. Best-effort —
     // a failure here logs and the loop continues.
+    // PlanEngine (P1 of JOB-WORKFLOW chaining): construct once at
+    // boot, subscribe to the runtime event bus so terminal Job events
+    // can drive registered PlanRuns. In-memory only — restart drops
+    // both registered plans and in-flight runs alongside everything
+    // else in the engine's HashMaps. P1 ships a `LogJobSpawner` so
+    // the boundary compiles; real job submission is a P2 follow-up.
+    let plan_engine = Arc::new(PlanEngine::new(Arc::new(LogJobSpawner)));
+    let _plan_subscriber = spawn_plan_engine_subscriber(rpc.bus().clone(), plan_engine.clone());
+    eprintln!("codeless-server: plan engine wired (in-memory, LogJobSpawner)");
+
     let _stage_recorder = spawn_stage_recorder(rpc.bus().clone(), rpc.store().clone())
         .await
         .map_err(|e| anyhow!("spawn_stage_recorder: {e}"))?;

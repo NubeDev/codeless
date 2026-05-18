@@ -73,7 +73,10 @@ mod tests {
     #[async_trait]
     impl Action for Recorder {
         async fn fire(&self, id: &ScheduleId, payload: &Value) {
-            self.seen.lock().unwrap().push((id.0.clone(), payload.clone()));
+            self.seen
+                .lock()
+                .unwrap()
+                .push((id.0.clone(), payload.clone()));
         }
     }
 
@@ -92,9 +95,21 @@ mod tests {
         d.register("enqueue_job", job.clone());
         d.register("send_mail", mail.clone());
 
-        d.fire(&ScheduleId::new("a"), &serde_json::json!({"kind":"enqueue_job","job":"x"})).await;
-        d.fire(&ScheduleId::new("b"), &serde_json::json!({"kind":"send_mail","to":"x"})).await;
-        d.fire(&ScheduleId::new("c"), &serde_json::json!({"kind":"unknown"})).await;
+        d.fire(
+            &ScheduleId::new("a"),
+            &serde_json::json!({"kind":"enqueue_job","job":"x"}),
+        )
+        .await;
+        d.fire(
+            &ScheduleId::new("b"),
+            &serde_json::json!({"kind":"send_mail","to":"x"}),
+        )
+        .await;
+        d.fire(
+            &ScheduleId::new("c"),
+            &serde_json::json!({"kind":"unknown"}),
+        )
+        .await;
         d.fire(&ScheduleId::new("d"), &serde_json::json!({})).await;
 
         assert_eq!(job.seen.lock().unwrap().len(), 1);

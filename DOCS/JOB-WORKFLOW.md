@@ -545,22 +545,57 @@ in real use.
 Same phased discipline as (A) → (B) above. Each phase ends with
 something a user can drive end-to-end.
 
-**(P1) — Reusable Plan library + tool, no UI.** ~3 days.
+**(P1) — Reusable Plan library + tool, no UI.** ~3 days. **Landed.**
 
-- `codeless-tools/src/plan/` mirrors `email/` and `schedule/`: pure
-  data (`PlanSpec`, `PlanStep`, `Transition`) in one module,
-  in-memory `PlanEngine` with an injected `JobSpawner` trait in
-  another. No SQLite yet; the engine is a function of "the event
+Per-bullet, the modules that actually shipped:
+
+- [x] Pure data — [`codeless-tools/src/plan/spec.rs`](../crates/codeless-tools/src/plan/spec.rs).
+  `PlanSpec`, `PlanStep`, `StepId`, `Transition`, `PlanSpecError`;
+  serde + validation (unique step ids, every transition target
+  exists or is `stop`). Mirrors the `email/` and `schedule/` layout.
+- [x] In-memory engine — [`codeless-tools/src/plan/engine.rs`](../crates/codeless-tools/src/plan/engine.rs).
+  `PlanEngine` + injected `JobSpawner` trait; one PlanRun = one
+  state machine that on each terminal `Event::JobCompleted` /
+  `JobFailed` / `JobStopped` looks up the current step's transition
+  and either spawns the next Job or marks the run done. No SQLite,
+  no tokio runtime handle — the engine is a function of "the event
   bus" + "a spawn callback."
-- `codeless.plan.create` / `.start` / `.list` / `.cancel` tools.
-  The LLM (or a script, or a Plan that triggers another Plan) can
-  define and run chains.
-- Wire the engine into `codeless-runtime` as an event-bus consumer.
-  In-memory means a restart loses in-flight PlanRuns; document this
-  as a known limit for (P1).
-- A scheduled Plan = `Schedule` fires → its `Action` calls
-  `PlanEngine::start_run(plan_id)`. That composition is the proof
-  the boundary is right.
+- [x] Schedule → Plan composition — [`codeless-tools/src/plan/dispatch.rs`](../crates/codeless-tools/src/plan/dispatch.rs).
+  `StartPlanRunAction` is a `codeless-tools::schedule::Action` that
+  calls `PlanEngine::start_run(plan_id)` when a `Schedule` fires
+  with the `start-plan-run` payload kind (`START_PLAN_RUN_KIND`).
+  That one file is the boundary proof — recurring chains are a
+  one-liner per the table above.
+- [x] LLM-callable tool surface — [`codeless-tools/src/tools/plan_tool.rs`](../crates/codeless-tools/src/tools/plan_tool.rs).
+  Four `Tool` impls registered in
+  [`codeless-tools/src/tools/mod.rs`](../crates/codeless-tools/src/tools/mod.rs):
+  - `codeless.plan.create` — register a `PlanSpec`, returns `plan_id`.
+  - `codeless.plan.start` — start a `PlanRun` from a registered plan.
+  - `codeless.plan.list` — snapshot of plans and in-flight / terminal runs.
+  - `codeless.plan.cancel` — mark an in-flight run cancelled.
+- [x] Boot wiring — [`codeless-mcp/src/main.rs`](../crates/codeless-mcp/src/main.rs).
+  Single `Arc<PlanEngine>` constructed once at MCP startup;
+  registered with the tool registry and with the scheduler's
+  `PayloadDispatcher` under `START_PLAN_RUN_KIND`. The engine is
+  not wired into `codeless-runtime`'s event bus yet — P1 ships it
+  inside the MCP process only; the runtime-side `EventSource`
+  subscription comes in P2 alongside persistence.
+
+Known limits, surfaced here so P2 doesn't forget them:
+
+- **In-memory only.** `PlanEngine` holds plans and runs in
+  `HashMap`s behind a `Mutex`. There is no SQLite, no migrations,
+  no `template_snapshot`. Restarting the MCP / runtime process
+  drops every registered plan and every in-flight `PlanRun`. P2 is
+  where that becomes durable.
+- **MCP-process scope.** The engine constructed in
+  `codeless-mcp/src/main.rs` is independent from any engine
+  `codeless-server` might construct; there is no shared state
+  across processes. P1's job is to prove the boundary, not to
+  share it.
+- **Linear chains only.** Transitions are `on_success` / `on_failure`
+  → step id or `stop`. `fan_out:` / `fan_in:` / `when:` predicates
+  are deferred to P3.
 
 **(P2) — Persistence + RPC surface.** ~3 days.
 

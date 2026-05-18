@@ -19,6 +19,7 @@ mod ctx;
 pub mod email;
 mod error;
 pub mod html_text;
+pub mod plan;
 pub mod plugin;
 pub mod policy;
 mod registry;

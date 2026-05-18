@@ -19,6 +19,7 @@ pub mod github_issue;
 pub mod github_pr;
 pub mod gmail_send;
 pub mod http_request;
+pub mod plan_tool;
 pub mod schedule_create;
 
 pub use browse_fetch::BrowseFetchTool;
@@ -38,6 +39,7 @@ pub use github_issue::GithubIssueTool;
 pub use github_pr::GithubPrTool;
 pub use gmail_send::GmailSendTool;
 pub use http_request::HttpRequestTool;
+pub use plan_tool::{PlanCancelTool, PlanCreateTool, PlanListTool, PlanStartTool};
 pub use schedule_create::ScheduleCreateTool;
 
 use crate::ctx::ToolCtx;

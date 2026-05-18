@@ -24,6 +24,7 @@ pub mod job_driver_loop;
 pub mod migrations;
 pub mod mock_runner;
 pub mod notifier;
+pub mod plan_subscribe;
 pub mod queue_config;
 pub mod review_gate;
 pub mod rpc;
@@ -61,6 +62,7 @@ pub use mock_runner::{MockRunner, MockStep};
 pub use notifier::{
     spawn_notifier, NotificationKind, NotificationPayload, Notifier, NotifierError,
 };
+pub use plan_subscribe::spawn_plan_engine_subscriber;
 pub use queue_config::QueueConfig;
 pub use rpc::InProcessRpc;
 pub use rpc::{ChatCancelEntry, ChatCancels};
