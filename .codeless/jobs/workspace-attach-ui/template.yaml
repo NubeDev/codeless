@@ -1,0 +1,20 @@
+name: workspace-attach-ui
+goal: |
+  Land milestones 3 and 4 of DOCS/WORKSPACE-ATTACH.md on master via the
+  codeless/workspace-attach-ui branch. After this job, a user opens
+  Settings -> Workspaces in the browser shell, sees the live
+  attached-workspaces list, attaches a directory through a validated
+  picker, and detaches one with the running-jobs policy radio. The
+  /workspaces top-level route and the sidebar group are flagged as a
+  follow-up; this job lands the smaller Settings tab first per the
+  doc's M4 phasing note.
+
+stages:
+  - "M3a: add attachWorkspace / detachWorkspace / listWorkspaces / validateWorkspacePath to the RpcClient interface and the HttpSseClient implementation, with a typed-wire snapshot test covering all four method names and arg shapes"
+  - "M3b: implement the same four methods on TauriIpcClient (rpc_<method> calls per the existing IPC contract)"
+  - "M3c: add the PathPicker shell capability interface under ui/codeless-ui/src/lib/shell/, the browser-shell injector (showDirectoryPicker with typed-input fallback), and the Tauri-desktop-shell injector (plugin-dialog open({directory:true}))"
+  - REVIEW M3 — RpcClient + PathPicker plumbing complete; no user-visible surface yet
+  - "M4a: per-tab active-workspace zustand store; subscribe to workspace_attached / workspace_detached events and reconcile the store; render the empty-state screen when list_workspaces returns []"
+  - "M4b: Settings -> Workspaces tab — list table with active dot + open/attach/detach buttons; attach modal driving validate_workspace_path debounced live (~5/s server cap); confirm + add_repo + attach_workspace round-trip"
+  - "M4c: detach modal — one-line confirm when no running jobs; two-radio (Stop / LeaveRunning) when there are; refuse path returns RunningJobs shown inline; one Playwright happy-path test per modal (attach + detach)"
+  - REVIEW M4 — Settings tab landed end-to-end; flag /workspaces route + sidebar group as follow-up job

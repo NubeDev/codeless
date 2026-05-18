@@ -11,6 +11,7 @@ import {
   browserNetworkProbe,
   type NetworkProbeAdapter,
 } from "./network-probe";
+import { browserPathPicker, type PathPicker } from "./path-picker";
 import { noopPaths, type PathsAdapter } from "./paths";
 import {
   browserSettingsWindow,
@@ -29,6 +30,7 @@ interface ShellValue {
   updater: UpdaterAdapter;
   appInfo: AppInfo;
   paths: PathsAdapter;
+  pathPicker: PathPicker;
   autostart: AutostartAdapter;
   settingsWindow: SettingsWindowAdapter;
   networkProbe: NetworkProbeAdapter;
@@ -43,6 +45,7 @@ type ProviderProps = {
   updater?: UpdaterAdapter;
   appInfo?: AppInfo;
   paths?: PathsAdapter;
+  pathPicker?: PathPicker;
   autostart?: AutostartAdapter;
   settingsWindow?: SettingsWindowAdapter;
   networkProbe?: NetworkProbeAdapter;
@@ -56,6 +59,7 @@ export function ShellProvider({
   updater,
   appInfo,
   paths,
+  pathPicker,
   autostart,
   settingsWindow,
   networkProbe,
@@ -68,6 +72,7 @@ export function ShellProvider({
     updater: updater ?? noopUpdater,
     appInfo: appInfo ?? fallbackAppInfo,
     paths: paths ?? noopPaths,
+    pathPicker: pathPicker ?? browserPathPicker,
     autostart: autostart ?? noopAutostart,
     settingsWindow: settingsWindow ?? browserSettingsWindow,
     networkProbe: networkProbe ?? browserNetworkProbe,
@@ -105,6 +110,10 @@ export function useAppInfo(): AppInfo {
 
 export function usePaths(): PathsAdapter {
   return useShell().paths;
+}
+
+export function usePathPicker(): PathPicker {
+  return useShell().pathPicker;
 }
 
 export function useAutostart(): AutostartAdapter {

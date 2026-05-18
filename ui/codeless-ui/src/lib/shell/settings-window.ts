@@ -12,6 +12,7 @@ export type SettingsTab =
   | "shortcuts"
   | "models"
   | "agents"
+  | "workspaces"
   | "about";
 
 export interface SettingsWindowAdapter {

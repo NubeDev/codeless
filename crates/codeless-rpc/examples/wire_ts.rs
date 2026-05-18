@@ -43,11 +43,14 @@ use codeless_rpc::subscribe::EventFilter;
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
-    AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId, AttachmentRef,
-    CostCents, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Handover, Job,
-    JobId, JobStatus, PreCheckOutcome, ProposedScopePatch, Repo, RepoId, Review, ReviewId,
-    ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage,
-    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, UnixMillis,
+    AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId,
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, CostCents,
+    DetachPolicy, DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind,
+    GitAuth, Handover, Job, JobId, JobStatus, ListWorkspacesResult, PreCheckOutcome,
+    ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch,
+    ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task,
+    TaskId, TaskStatus, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -85,6 +88,16 @@ fn collect() -> TypeCollection {
         .register_mut::<EventEnvelope>()
         .register_mut::<FsEntry>()
         .register_mut::<FsEntryKind>()
+        .register_mut::<AttachedWorkspace>()
+        .register_mut::<AttachWorkspaceArgs>()
+        .register_mut::<AttachWorkspaceResult>()
+        .register_mut::<ListWorkspacesResult>()
+        .register_mut::<DetachWorkspaceArgs>()
+        .register_mut::<DetachPolicy>()
+        .register_mut::<ValidateWorkspacePathArgs>()
+        .register_mut::<ValidateWorkspacePathResult>()
+        .register_mut::<WorkspaceProblem>()
+        .register_mut::<WorkspaceError>()
         .register_mut::<AddRepoArgs>()
         .register_mut::<RemoveRepoArgs>()
         .register_mut::<ListReposResult>()

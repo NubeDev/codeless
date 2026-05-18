@@ -15,6 +15,7 @@ import {
   Settings01Icon,
   UserMultiple02Icon,
   KeyboardIcon,
+  Folder01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { JSX, useEffect, useState } from "react";
@@ -23,6 +24,7 @@ import { AgentsSection } from "./sections/AgentsSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
+import { WorkspacesSection } from "./sections/WorkspacesSection";
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Settings01Icon, component: () => JSX.Element }[] =
   [
@@ -30,6 +32,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof Settings01Icon, compo
     { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon, component: ShortcutsSection },
     { id: "models", label: "Models", icon: AiScanIcon, component: ModelsSection },
     { id: "agents", label: "Agents", icon: UserMultiple02Icon, component: AgentsSection },
+    { id: "workspaces", label: "Workspaces", icon: Folder01Icon, component: WorkspacesSection },
     { id: "about", label: "About", icon: InformationCircleIcon, component: AboutSection },
   ];
 
@@ -38,6 +41,7 @@ const VALID_TABS: SettingsTab[] = [
   "shortcuts",
   "models",
   "agents",
+  "workspaces",
   "about",
 ];
 

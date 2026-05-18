@@ -19,6 +19,8 @@ export {
 } from "./kv-store";
 export type { NetworkProbeAdapter } from "./network-probe";
 export { browserNetworkProbe } from "./network-probe";
+export type { PathPicker } from "./path-picker";
+export { browserPathPicker } from "./path-picker";
 export type { PathsAdapter } from "./paths";
 export { noopPaths } from "./paths";
 export type { SettingsTab, SettingsWindowAdapter } from "./settings-window";
@@ -38,6 +40,7 @@ export {
   useAutostart,
   useExternalOpener,
   useNetworkProbe,
+  usePathPicker,
   usePaths,
   useSettingsWindow,
   useShell,

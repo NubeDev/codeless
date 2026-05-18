@@ -2509,3 +2509,68 @@ export type WorkspaceMode =
 "in-repo" | 
 // Edits land in a separate `git worktree add` checkout.
 "worktree";
+
+// Workspace-attach surface (DOCS/WORKSPACE-ATTACH.md M3). These
+// definitions are kept in sync with the codeless-types specta snapshot
+// at `crates/codeless-types/tests/wire.ts.snap`; the next run of
+// `cargo run -p codeless-rpc --example wire_ts` regenerates this whole
+// file from `wire_ts.rs` (which already registers them) and rewrites
+// this block in alphabetical position.
+
+export type AttachedWorkspace = {
+	repo_id: RepoId,
+	repo_name: string,
+	fs_root: string,
+	attached_at: UnixMillis,
+	default_runner: string | null,
+};
+
+export type AttachWorkspaceArgs = {
+	repo_id: RepoId,
+	fs_root_override: string | null,
+};
+
+export type AttachWorkspaceResult = {
+	workspace: AttachedWorkspace,
+};
+
+export type ListWorkspacesResult = {
+	workspaces: AttachedWorkspace[],
+};
+
+export type DetachPolicy = "refuse" | "stop" | "leave-running";
+
+export type DetachWorkspaceArgs = {
+	repo_id: RepoId,
+	on_running_jobs: DetachPolicy,
+};
+
+export type ValidateWorkspacePathArgs = {
+	path: string,
+};
+
+export type ValidateWorkspacePathResult = {
+	canonical: string | null,
+	is_dir: boolean,
+	is_git_repo: boolean,
+	default_branch: string | null,
+	already_attached: boolean,
+	readable: boolean,
+	writable: boolean,
+	problems: WorkspaceProblem[],
+};
+
+export type WorkspaceProblem =
+	| "not-a-directory"
+	| "not-readable"
+	| "not-writable"
+	| "not-a-git-repo"
+	| { "inside-another-workspace": { "other-root": string } }
+	| "system-path"
+	| "symlink-outside-home";
+
+export type WorkspaceError =
+	| { "already-attached": { "repo-id": RepoId; "fs-root": string } }
+	| { "running-jobs": { jobs: JobId[] } }
+	| { "path-rejected": { problems: WorkspaceProblem[] } }
+	| "not-attached";

@@ -64,6 +64,27 @@ import type {
   CancelAssistantActionArgs,
   CancelAssistantActionResult,
 } from "./wire";
+import type {
+  AttachWorkspaceArgs,
+  AttachWorkspaceResult,
+  DetachWorkspaceArgs,
+  ListWorkspacesResult,
+  ValidateWorkspacePathArgs,
+  ValidateWorkspacePathResult,
+} from "./wire";
+
+export type {
+  AttachWorkspaceArgs,
+  AttachWorkspaceResult,
+  AttachedWorkspace,
+  DetachPolicy,
+  DetachWorkspaceArgs,
+  ListWorkspacesResult,
+  ValidateWorkspacePathArgs,
+  ValidateWorkspacePathResult,
+  WorkspaceError,
+  WorkspaceProblem,
+} from "./wire";
 
 export interface AddRepoArgs {
   name: string;
@@ -711,6 +732,22 @@ export interface RpcMethodMap {
   cancel_assistant_action: {
     args: CancelAssistantActionArgs;
     result: CancelAssistantActionResult;
+  };
+
+  // Workspace-attach surface (DOCS/WORKSPACE-ATTACH.md M3). The
+  // server-side RPCs already exist (M2); this is the UI-side
+  // pickup so callers can `client.call("attach_workspace", ...)`
+  // through the typed boundary. `PathPicker` injection and the
+  // Settings -> Workspaces UI land in later stages.
+  attach_workspace: { args: AttachWorkspaceArgs; result: AttachWorkspaceResult };
+  detach_workspace: { args: DetachWorkspaceArgs; result: null };
+  list_workspaces: {
+    args: Record<string, never>;
+    result: ListWorkspacesResult;
+  };
+  validate_workspace_path: {
+    args: ValidateWorkspacePathArgs;
+    result: ValidateWorkspacePathResult;
   };
 
   list_personas: { args: ListPersonasArgs; result: ListPersonasResult };
