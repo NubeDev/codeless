@@ -1,196 +1,153 @@
-# scoped-pause-points — stage 8 → stage 9 (REVIEW: UI landed)
+# plugin-substrate-runtimes — stage 1 → stage 2
 
-Stage 8 (UI) landed. Stage 9 is the final REVIEW gate; the reviewer
-reads this handover when deciding whether to approve.
+Stage 1 (open-question resolution) landed. Stage 2 starts the
+WASM-A milestone: scaffold `codeless-plugin-sdk` with the
+`compile_error!` mutual-exclusion guard, the `ToolBehavior` trait,
+the `#[derive(Tool)]` macro, and the `register!` macro stub, with a
+shim so the existing `notes` plugin keeps compiling unchanged.
 
-## What landed in stage 8
+## What landed in stage 1
 
-### New RPC: `list_scheduled_pause_points`
+Doc-only. No crates touched.
 
-A read-only lookup so the UI can render the operator-declared
-schedule. Resume still goes through the existing `resume_job` RPC —
-no new pause primitive landed.
+### Resolutions recorded
 
-- `crates/codeless-rpc/src/methods.rs` — `ListScheduledPausePointsArgs
-  { job_id }` and `ListScheduledPausePointsResult { points:
-  Vec<PausePoint> }`. Re-exported through `crates/codeless-rpc/src/
-  lib.rs`.
-- `crates/codeless-rpc/src/server.rs` — trait method on `RpcServer`.
-  Returns the schedule in YAML order; `NotFound` for an unknown
-  `job_id`; empty list when the job carries no schedule (predates
-  the feature or template's `pause_points:` block is empty).
-- `crates/codeless-runtime/src/rpc/{mod.rs,jobs.rs}` — runtime
-  implementation. `jobs::list_scheduled_pause_points` runs `get_job`
-  for the existence check (so the call shape mirrors `list_stages`'s
-  not-found semantics) then forwards to
-  `store::list_scheduled_pause_points` from stage 5.
-- `crates/codeless-server/src/routes.rs` — axum route
-  `POST /rpc/list_scheduled_pause_points`, behind the same bearer
-  layer as every other RPC (R5).
-- `crates/codeless-client/src/http_client.rs` —
-  `HttpRpcClient::list_scheduled_pause_points` calls the route. The
-  iOS / Android shells reach this through `codeless-client` only, so
-  the mobile-safe graph still admits the new method.
+All seven open-question slots called out in
+`.codeless/jobs/plugin-substrate-runtimes/SCOPE.md § Open questions`
+are now resolved inline in that file with a chosen answer + one-line
+*why*. The biases in the brief all held — none implied a redesign
+of the underlying plugin doc, so per `WORKFLOW.md § When to halt`
+the resolutions are the biases as stated, with the rationale
+expanded to the level the next session needs without the chat
+history.
 
-### Wire types regenerated
+The same resolutions are propagated to the plugin docs:
 
-- `crates/codeless-rpc/examples/wire_ts.rs` — registers the four new
-  `PausePoint*` / `TodoSelector` types so they emit into the UI's
-  generated `wire.ts`. The freshly-regenerated
-  `ui/codeless-ui/src/lib/rpc/generated/wire.ts` now carries:
-  - `PausePoint`, `PausePointId`, `PausePointPosition`,
-    `PausePointTarget`, `TodoSelector` (specta-derived).
-  - `StopReason` grows the `{ "scoped-pause-point": { "point-id":
-    PausePointId } }` object variant alongside the existing string
-    union members.
+- `DOCS/plugins/PLUGIN-WASM.md § Open questions` — OQ-WASM-1,
+  OQ-WASM-2, OQ-WASM-4, OQ-WASM-5 each carry a *Resolved 2026-05-18
+  (plugin-substrate-runtimes stage 1)* line with the decision body.
+  OQ-WASM-3 (kv interface) is explicitly tagged as remaining open
+  beyond v0.1 — not blocking this job.
+- `DOCS/plugins/PLUGIN-MCP.md § Open questions` — OQ-MCP-1 carries
+  the *defer to v0.2* resolution and the structured-`Failed` reason
+  string the manifest parser will emit for `"mcp_forward"` in stage
+  14. OQ-MCP-2/3/4 stay documented as future work.
+- `DOCS/plugins/PLUGIN-UI-FEDERATION.md § Open questions` — OQ-UI-1
+  carries the *SDK semver pin is the slot vocabulary contract*
+  resolution, including the degrade-not-crash behaviour the host
+  will implement in stage 10. OQ-UI-2/3/4 stay documented as future
+  work.
+- `DOCS/plugins/PLUGIN-UI-FEDERATION.md § Slot vocabulary` — the
+  v0.1 slot vocabulary is now annotated as **locked** to the five
+  rows (`assistant-panel`, `tool-result:<tool_id>`,
+  `persona-picker:<persona_id>`, `settings-page:<plugin_id>`,
+  `composer-attachment-action:<plugin_id>`). The table itself is
+  unchanged — stage 1 confirmed the existing set is the right set,
+  not that the set needed reshaping.
 
-  **The specta/serde divergence noted in the stage-6 handover
-  applies here:** specta TS spells the inner field `point-id`
-  (hyphen); the runtime emits `point_id` on the wire because serde's
-  enum-level `rename_all = "kebab-case"` does not rename struct
-  fields inside variants. The new UI helper handles both spellings
-  so the divider lookup works regardless of which producer shaped
-  the payload.
+`PLUGIN-PROCESS.md` and `PLUGIN-SUBSTRATE.md § Open questions` were
+not touched: the former carries only the OQ-WASM-3 reference (still
+open), and the substrate-level OQs (`OQ-PS-*`) are out of scope for
+this job per the SCOPE brief.
 
-### UI: `StagesOverview` planned-pause chips
+### Decisions stage 2+ will rely on
 
-`ui/codeless-ui/src/modules/jobs/StagesOverview.tsx`:
-
-- Loads the schedule once on mount via the new RPC; resets on
-  `jobId` change. Failures fall through to "no chips" silently so
-  pre-recorder jobs and tests that don't seed the schedule keep
-  rendering the rest of the overview.
-- New `PlannedPauseChip` component: dashed border, "planned" tag,
-  the point's operator-authored `reason` text (or a structural
-  fallback like "pause after stage 2"). `data-testid` /
-  `data-pause-point-id` / `data-pause-position` / `data-pause-fired`
-  attributes pin the chip for the new vitest. Chips group per stage
-  via 1-based ordinal lookup; `before` chips render above the stage
-  row, `after` chips below. Stage-todo targets collapse onto their
-  parent stage's chip slot (per-todo placement is a refinement
-  follow-up).
-- When the job is currently paused on a scoped point
-  (`scopedPausePointId(job.stop_reason) === point.id`), the chip
-  switches to amber and shows a `Resume` button that calls
-  `resume_job` with all caps at `null` / no operator comment — the
-  same surface the run-strip button uses, no new RPC. The local
-  busy / error state stays on the chip so a failed call doesn't
-  bleed into the stages list.
-
-### UI: chat divider for `JobPaused { reason: ScopedPausePoint }`
-
-`ui/codeless-ui/src/modules/chat/feed.ts`:
-
-- `scopedPausePointId(reason)` reads the `point_id` out of the
-  `StopReason` object variant, accepting both the serde-wire form
-  (`point_id`) and the specta-TS form (`point-id`).
-- `stopReasonLabel(reason)` formats a `StopReason` (string union or
-  object) into a safe string for JSX interpolation; every existing
-  site that wrote `{job.stop_reason}` directly into JSX
-  (`JobChatPage`, `JobDetail`, `JobTimeline`, `RunPane`'s status
-  strip) routes through this helper now — without it the new object
-  variant trips TS's `ReactNode` check.
-- `liveItemFromEvent` `case "job-paused"`: when the reason resolves
-  to a scoped point id, emits a `lifecycle` item labelled `paused at
-  scoped point <id>` (warn tone). String reasons keep their existing
-  formatting.
-
-### UI: mock client + resume-from-paused
-
-`ui/codeless-ui/src/lib/rpc/mock-client.ts`:
-
-- `seedScheduledPausePoints(jobId, points)` test seam; per-job map
-  keyed on job id.
-- `case "list_scheduled_pause_points"` arm — `not_found` for an
-  unknown job, otherwise the seeded list (or empty).
-- `case "resume_job"` accepts `status === "paused"` in addition to
-  `stopped` / `failed`, matching the runtime's resume contract that
-  the SCOPE Q4 calls out. Without this the chip's Resume click
-  would 409 against the mock.
-
-### Tests (vitest + RTL)
-
-The project doesn't ship Playwright today — the "Playwright test"
-the template names is the vitest+RTL surface every other UI test in
-the tree uses (vitest browser-playwright transport is in the
-lockfile but not configured). Coverage lands as two test files:
-
-- `ui/codeless-ui/src/modules/jobs/StagesOverview.test.tsx`
-  (extended):
-  1. `renders a planned-pause chip per scheduled point in YAML
-     order` — seeds two points (before stage 1, after stage 2),
-     renders, emits `stage-started` for both stages, asserts both
-     chips appear with the right `data-pause-point-id` /
-     `data-pause-position`, the operator-authored reason wins as
-     the label for chip 1, and the structural fallback ("pause
-     after stage 2") wins for chip 2.
-  2. `surfaces a Resume button when paused on a scoped point and
-     clears the pause on click` — seeds the job into `paused` with
-     `stop_reason = { "scoped-pause-point": { point_id } }`, asserts
-     the matching chip's `data-pause-fired` flips to `true` and a
-     `Resume` button appears, clicks it, asserts the mock's job row
-     flipped back to `queued` and `stop_reason = null`.
-
-- `ui/codeless-ui/src/modules/chat/feed.scopedPause.test.ts` (new):
-  - `scopedPausePointId` reads both wire shapes and returns `null`
-    for the string variants.
-  - `liveItemFromEvent` projects the scoped reason into a distinct
-    `paused at scoped point …` divider while keeping the legacy
-    `user` / `cost-cap` labels unchanged.
-  - `stopReasonLabel` formats the object variant (so the wire
-    object never lands as raw JSX) and pass-throughs the string
-    variants.
-
-Plus the existing 118 vitest cases stayed green after the
-`stop_reason`-JSX-shape refactor.
+1. **Runtime-adapter table goes in `codeless-tools`** as
+   `HashMap<ToolId, Box<dyn RuntimeAdapter>>`. The adapter trait
+   itself is mobile-safe; concrete implementations
+   (`WasmAdapter` and, later, `ProcessAdapter`) live in their
+   host-only crates behind Cargo features. Stage 4 verifies the
+   no-leak claim with the iOS/Android cargo-check matrix.
+2. **`wit-bindgen` output is committed in-tree** under
+   `crates/codeless-tool-wit/`, regenerated by a `cargo xtask` task
+   (stage 3 defines the exact path and xtask invocation). The
+   bindings file gets a `// codeless-ported-from:` header if any
+   rubix `wasm.rs` glue is lifted alongside.
+3. **Hot reload across a migration change refuses** with a
+   structured `migration-changed-restart-required` code. Stages 5–7
+   do not need to implement migration replay — the refuse path is
+   the contract.
+4. **Fuel / memory / wall-clock caps**: `HostPolicy` carries
+   defaults; `config.toml` `[plugins.<id>]` may override only
+   downward; the plugin manifest cannot set the fields at all. The
+   parser introduced in stage 13 rejects them; the boot-time config
+   loader rejects an override that exceeds the global default.
+5. **MCP v0.1 dispatch kinds: exactly two** — `tool_call` and
+   `rest_proxy`. `"mcp_forward"` parses, plugin loads `Failed` with
+   reason `"mcp_forward not yet supported"`. Stage 14 ships this
+   behaviour and the matching `plugin_mcp_e2e` tests cover only the
+   two real kinds.
+6. **Slot-vocabulary contract = `@codeless/plugin-ui-sdk` semver
+   major.minor.** Stage 9 reads each plugin's declared SDK version
+   from its `package.json`; stage 10 refuses to mount a plugin
+   newer than the host. Stage 12 wires a `mismatched_react_fails_
+   loudly` style test using the same degradation path.
+7. **v0.1 slot vocabulary is the five-row table.** Stage 9's
+   `mf.ts` ships exactly those slot ids; stage 12's notes plugin
+   contributes `assistant-panel`. The other four are exercised by
+   the host's fallback-renderer tests.
 
 ## Verify
 
-- `cargo test --workspace` — green (one flake on
-  `codeless-adapters-host`'s
-  `git_revert_undoes_an_earlier_commit_and_returns_new_sha` when
-  the lib tests run in parallel; passes deterministically with
-  `--test-threads=1`, unrelated to this stage).
-- `cargo clippy --workspace --all-targets -- -D warnings` — green.
-- `cargo fmt --check` — green.
-- `pnpm test` (from `ui/codeless-ui/`) — **23 files, 118 tests
-  passed**. Eight tests are new (two for the chip rendering + resume
-  click in `StagesOverview.test.tsx`, six across
-  `feed.scopedPause.test.ts`).
-- `pnpm run typecheck` — green.
+No code changed; nothing to compile or run. The doc edits were
+sanity-checked against:
 
-## What stage 9 (final REVIEW) needs to assess
+- `.codeless/jobs/plugin-substrate-runtimes/SCOPE.md § Open
+  questions` — every numbered bias item is now marked *Resolved*.
+- `DOCS/plugins/PLUGIN-WASM.md`,
+  `DOCS/plugins/PLUGIN-MCP.md`,
+  `DOCS/plugins/PLUGIN-UI-FEDERATION.md` — every OQ named in this
+  job's stage-1 todo carries an inline *Resolved 2026-05-18 …* line.
+- `DOCS/plugins/PLUGIN-UI-FEDERATION.md § Slot vocabulary` — the
+  v0.1 set is annotated as locked at this date.
 
-- New wire surface: `list_scheduled_pause_points` is the only new
-  RPC; everything else routes through `resume_job` and `JobPaused`.
-- The `stop_reason` JSX-shape refactor touches four pre-existing
-  files (`JobChatPage.tsx`, `JobDetail.tsx`, `JobTimeline.tsx`,
-  `RunPane.tsx`) — each call site now goes through
-  `stopReasonLabel`, no behaviour change for the string variants.
-- R2 check: a fresh `rg '@tauri-apps/api' ui/codeless-ui/src/ -g
-  '!src/shells/**'` returns the same baseline as before the stage
-  (no growth). The chip + divider read through `RpcClient` only.
-- R1 check: no new `tokio::process` / `std::process::Command` in any
-  crate; the UI work is server-side schedule lookup + DOM rendering
-  only.
-- specta/serde `point_id` vs `point-id` is still the known
-  divergence; the UI absorbs both via `scopedPausePointId`. A
-  follow-up that aligns the runtime's serde output to specta (or
-  vice versa) would let us drop the fallback branch.
+## What stage 2 needs to do
 
-## Out-of-scope follow-ups (file as separate jobs per SCOPE §"Open
-follow-ups")
+Per `template.yaml`:
 
-- Edit-points-from-UI: operators still edit `template.yaml` (direct
-  or chat-driven on-disk path). The chip is read-only.
-- Recurring / count-based breakpoints, conditional / predicate
-  breakpoints.
-- Per-todo chip placement: today a `StageTodo` target renders as a
-  chip on the parent stage row. Inline-with-the-todo placement is a
-  layout refinement, not a wire change.
-- `pause_points_updated` event for divider chips to refresh without
-  re-reading the whole job state. The mount-time fetch is sufficient
-  for v1 because resync edits land while the job is paused and the
-  divider lookup uses the live `stop_reason`.
-- True Playwright browser test once a Playwright harness lands in
-  `ui/codeless-ui/`; vitest+RTL exercises the same surface today.
+> scaffold codeless-plugin-sdk (mobile-safe) with the rubix-lifted
+> `compile_error!` mutual-exclusion guard for native/wasm/process
+> features, the `ToolBehavior` trait, the `#[derive(Tool)]` macro
+> (schemars-driven), and the `register!` macro stub; the existing
+> notes plugin keeps compiling unchanged via a thin shim
+
+Notes for stage 2:
+
+- The SDK crate is mobile-safe. Add it to the mobile-safe column in
+  `DOCS/SCOPE.md` "Crate layout" when the crate lands (a doc edit
+  in the stage-2 commit, not a separate doc-only stage).
+- `compile_error!` guard: lift from
+  `rubix-workspace/extension-sdk/extensions-sdk/src/lib.rs`
+  (mutual-exclusion of `builtin` / `wasm` / `process` features) —
+  every ported file carries
+  `// codeless-ported-from: rubix-workspace/<path>@<sha>`.
+- `#[derive(Tool)]` is schemars-driven (the codeless tool manifest
+  + JSON schemas the runtime already consumes); follow the shape of
+  the rubix `#[derive(NodeKind)]` macro, **not** the graph-SPI
+  fields (R4 — three similar lines beats a premature abstraction).
+- The existing `crates/codeless-plugin-notes` keeps compiling
+  through a shim — do not rewrite it onto the SDK yet. Stage 5
+  swings the plugin onto the SDK as part of WASM-B; stage 2's
+  acceptance is "workspace still builds, SDK crate is present and
+  has its own unit tests".
+- Mobile-safety check: `cargo check -p codeless-client --target
+  aarch64-apple-ios` and `--target aarch64-linux-android` stay
+  green. The SDK lands in the mobile-safe set; the iOS/Android
+  matrix is the canary if a host-only type leaks in via a feature
+  default.
+
+## Out-of-scope reminders carried forward
+
+These were called out in the SCOPE brief and continue to apply for
+every stage of this job:
+
+- The estimating plugin is gated on substrate items 2 + 4 and stays
+  out of scope here.
+- `NotesAppend::call`'s runtime-table writer is deferred — stage 5
+  ports the existing structured-`Failed` body onto the SDK, no row
+  write.
+- Process runtime ships **only** the manifest seam (stage 13). No
+  `tool.proto`, no supervisor, no gRPC.
+- `mcp_forward` is parse-and-fail in v0.1 (stage 14).
+- Mobile shell wiring of plugin UI is out of scope; browser +
+  desktop only.

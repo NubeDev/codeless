@@ -308,14 +308,17 @@ MCP contributions are done when:
 
 ## Open questions
 
-- **OQ-MCP-1.** Do we ship `mcp_forward` in v0.1, or defer to v0.2?
-  Rubix has it for federating external MCP servers; codeless would
-  use it the same way (e.g. forwarding GitHub's MCP server's tools
-  under a `github.*` plugin). **Lean: defer to v0.2.** It's a real
-  piece of design (upstream session lifecycle, schema caching,
-  reconnect, degraded state) and adds nothing for plugin #0
-  (`notes`). Land `tool_call` + `rest_proxy` first; add
-  `mcp_forward` when the first federation use case appears.
+- **OQ-MCP-1. Resolved 2026-05-18 (plugin-substrate-runtimes stage
+  1): defer `mcp_forward` to v0.2.** v0.1 ships exactly two dispatch
+  kinds — `tool_call` (codeless tool registry) and `rest_proxy`
+  (registered REST route). The manifest parser accepts the literal
+  string `"mcp_forward"` and the plugin loads in `Failed` with the
+  structured reason `"mcp_forward not yet supported"`, the same
+  shape as the process-runtime seam. Federating an upstream MCP
+  server is a real piece of design (session lifecycle, schema
+  cache, reconnect, degraded state) and plugin #0 (`notes`) does
+  not exercise it; the parity rule and off-switch bake against the
+  two real dispatch kinds before the third opens.
 - **OQ-MCP-2.** Should tool descriptions support markdown rendering
   client-side, or stay plain text? **Lean: markdown.** MCP clients
   that don't render it degrade gracefully; clients that do render
