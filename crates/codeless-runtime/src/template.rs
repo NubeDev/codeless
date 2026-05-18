@@ -261,6 +261,7 @@ impl JobTemplate {
                 is_review: s.review,
                 docs: s.docs.as_deref().unwrap_or(&[]),
                 persona: s.persona.as_deref(),
+                verify: s.verify.as_slice(),
             })
             .collect()
     }
@@ -280,6 +281,12 @@ pub struct PlannedStage<'a> {
     /// Resolution to the actual `Persona` row happens at job-submit;
     /// the runner reads the row again at stage-run time.
     pub persona: Option<&'a str>,
+    /// Verify-gate steps in declaration order. Borrowed from the
+    /// stage's `verify` list; empty when the YAML omitted both
+    /// `verify:` and `verify_cmd:`. The template runner uses
+    /// `is_empty()` as the wire signal for "no verify gate, skip
+    /// the `Checks` trio rail".
+    pub verify: &'a [VerifyStep],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

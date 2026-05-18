@@ -13,8 +13,7 @@ use serde_json::json;
 use super::mailer::{Mailer, MailerError, SendOutcome};
 use super::message::Message;
 
-const ENDPOINT_TEMPLATE: &str =
-    "https://gmail.googleapis.com/gmail/v1/users/{user}/messages/send";
+const ENDPOINT_TEMPLATE: &str = "https://gmail.googleapis.com/gmail/v1/users/{user}/messages/send";
 
 pub struct GmailMailer {
     access_token: String,
@@ -67,9 +66,7 @@ impl Mailer for GmailMailer {
             .map_err(|e| MailerError::Transport(e.to_string()))?;
 
         let status = resp.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::FORBIDDEN
-        {
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             let body = resp.text().await.unwrap_or_default();
             return Err(MailerError::Auth(body));
         }

@@ -131,9 +131,7 @@ fn parse_mailbox_array(value: Option<&Value>, field: &str) -> Result<Vec<Mailbox
     let arr = v
         .as_array()
         .ok_or_else(|| ToolError::invalid_args(format!("'{field}' must be an array")))?;
-    arr.iter()
-        .map(|item| parse_mailbox(item, field))
-        .collect()
+    arr.iter().map(|item| parse_mailbox(item, field)).collect()
 }
 
 fn parse_optional_mailbox(

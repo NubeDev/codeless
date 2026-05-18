@@ -134,6 +134,57 @@ pub async fn commit_stage_changes(
     result
 }
 
+/// Belt-and-braces guard for the stage-completion trio gate. The
+/// gate (`stage_trio_gate`) refuses to let a stage emit
+/// `StageCompleted{ Passed }` until every closing-trio row is `Done`
+/// or `Skipped`. Today only `claude_runner` drives the `Docs` rail,
+/// and only `verify_runner` / `commit_stage_changes` drive `Checks`
+/// and `Git` — a runner that doesn't go through that path (the mock
+/// runner, a future `codex` / `anthropic` runner) leaves at least
+/// one rail `Pending` forever and the stage hangs. Calling this
+/// immediately before the gate flips every still-`Pending` trio row
+/// to `Skipped` so the gate can resolve.
+///
+/// Rows already in a terminal state are left alone — `Done` stays
+/// `Done`, a `Failed` row keeps its failure (and rightly keeps the
+/// gate red so the runner's `RunnerOutcome::Failed` path takes
+/// over). `InProgress` is left alone too: the caller that emitted
+/// `InProgress` is the one obliged to publish the matching
+/// terminal event, and stomping on it here would hide a runner
+/// bug behind a phantom `Skipped`.
+pub async fn skip_pending_trio_rows(
+    ctx: &RunnerContext,
+    store: &SqliteStore,
+    task_id: TaskId,
+    stage_id: StageId,
+) {
+    let todos = match store.list_todos_for_task(task_id).await {
+        Ok(t) => t,
+        Err(err) => {
+            tracing::warn!(?err, %task_id, "skip_pending_trio_rows: list_todos failed");
+            return;
+        }
+    };
+    for kind in TodoKind::TRIO {
+        let Some(row) = todos.iter().find(|t| t.kind == kind) else {
+            continue;
+        };
+        if !matches!(row.status, TodoStatus::Pending) {
+            continue;
+        }
+        publish(
+            ctx,
+            stage_id,
+            task_id,
+            Event::TodoCompleted {
+                todo_id: row.id,
+                status: TodoStatus::Skipped,
+            },
+        )
+        .await;
+    }
+}
+
 async fn publish(ctx: &RunnerContext, stage_id: StageId, task_id: TaskId, event: Event) {
     if let Err(err) = ctx
         .bus
@@ -513,5 +564,64 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[tokio::test]
+    async fn skip_pending_trio_rows_only_skips_pending() {
+        let (store, task_id, stage_id) = seed_store_with_task().await;
+        // Mixed initial state: Checks Pending (should flip),
+        // Docs InProgress (must NOT be touched — that runner still
+        // owes a terminal event), Git Done (already terminal).
+        let mut checks = trio_row(task_id, 10, TodoKind::Checks);
+        let mut docs = trio_row(task_id, 11, TodoKind::Docs);
+        let mut git = trio_row(task_id, 12, TodoKind::Git);
+        docs.status = TodoStatus::InProgress;
+        git.status = TodoStatus::Done;
+        for t in [&checks, &docs, &git] {
+            store.insert_todo(t).await.unwrap();
+        }
+        // The recorder mirrors row status from the wire events; mirror
+        // it here so the helper sees the same world.
+        store
+            .update_todo_status(docs.id, TodoStatus::InProgress, UnixMillis(1))
+            .await
+            .unwrap();
+        store
+            .update_todo_status(git.id, TodoStatus::Done, UnixMillis(2))
+            .await
+            .unwrap();
+        // Refresh local handles so the assert below matches what the
+        // store now has.
+        checks.status = TodoStatus::Pending;
+        let _ = (docs, git);
+
+        let bus = fresh_bus().await;
+        let mut sub = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+        let ctx = ctx_with(Arc::clone(&bus));
+
+        skip_pending_trio_rows(&ctx, &store, task_id, stage_id).await;
+
+        let mut got: Vec<Event> = Vec::new();
+        while let Some(Ok(EventEnvelope { event, .. })) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), sub.next())
+                .await
+                .ok()
+                .flatten()
+        {
+            got.push(event);
+        }
+        // Exactly one `TodoCompleted { Skipped }` for the Checks row;
+        // the InProgress and Done rows produce no event.
+        assert_eq!(got.len(), 1, "expected one event, got {got:?}");
+        match &got[0] {
+            Event::TodoCompleted { todo_id, status } => {
+                assert_eq!(*todo_id, checks.id);
+                assert_eq!(*status, TodoStatus::Skipped);
+            }
+            other => panic!("expected TodoCompleted, got {other:?}"),
+        }
     }
 }
