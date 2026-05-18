@@ -1,9 +1,15 @@
 //! ai-ui surface — `/api/ai-ui/{chat,push,events,skills,components}`.
 //!
 //! Mounted by `routes::router` only when [`AppState::ai_ui`] is
-//! populated. The router has its own `with_state(AiUiState)` so the
-//! handlers never have to unwrap the option themselves — if the server
-//! was built without an `AiUiState`, these routes are simply absent.
+//! populated; when `None`, the sub-router is simply not merged in and
+//! the routes are absent (the client sees `404 Not Found`).
+//!
+//! Handlers take `State<AppState>` so the sub-router shares the
+//! top-level state type and merges into the rpc-routes graph without
+//! axum's `Router<S>` generic mismatch tripping the compiler. Each
+//! handler pulls the `ai_ui` field out of the shared state — since
+//! the router is only merged when `Some`, the `.expect(...)` below is
+//! correct, not a panic-on-bad-input.
 //!
 //! Routes are exposed **outside** the bearer middleware so the OpenUI
 //! frontend (which has no concept of codeless's bearer token) can call
@@ -31,36 +37,42 @@ use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
 
+use crate::AppState;
+
 /// Build the ai-ui sub-router. Caller merges it into the top-level
-/// `Router` in `routes::router`.
-pub(crate) fn router(state: AiUiState) -> Router {
+/// `Router<AppState>` in `routes::router` when `AppState.ai_ui` is set.
+pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/ai-ui/chat", post(chat_handler))
         .route("/api/ai-ui/push", post(push_handler))
         .route("/api/ai-ui/events", get(events_handler))
         .route("/api/ai-ui/skills", get(skills_handler))
         .route("/api/ai-ui/components", get(components_handler))
-        .with_state(state)
+}
+
+fn ai_ui(state: &AppState) -> &AiUiState {
+    state
+        .ai_ui
+        .as_ref()
+        .expect("ai-ui router only merged when AppState.ai_ui is Some")
 }
 
 // ---------------------------------------------------------------------------
 // /api/ai-ui/chat
 // ---------------------------------------------------------------------------
 
-async fn chat_handler(
-    State(state): State<AiUiState>,
-    Json(payload): Json<ChatRequest>,
-) -> Response {
+async fn chat_handler(State(state): State<AppState>, Json(payload): Json<ChatRequest>) -> Response {
+    let ai = ai_ui(&state);
     let prompt = if payload.skills.is_empty() {
-        state.prompt().build()
+        ai.prompt().build()
     } else {
         ai_ui_prompt::PromptBuilder::new()
-            .components(state.manifest().clone())
-            .skills_subset(state.skills(), &payload.skills)
+            .components(ai.manifest().clone())
+            .skills_subset(ai.skills(), &payload.skills)
             .build()
     };
 
-    let upstream = state.provider().stream_chat(
+    let upstream = ai.provider().stream_chat(
         ProviderContext {
             system_prompt: prompt,
         },
@@ -100,18 +112,15 @@ async fn chat_handler(
 // /api/ai-ui/push  +  /api/ai-ui/events
 // ---------------------------------------------------------------------------
 
-async fn push_handler(
-    State(state): State<AiUiState>,
-    Json(payload): Json<PushRequest>,
-) -> Response {
-    let n = state.broadcast(payload.event);
+async fn push_handler(State(state): State<AppState>, Json(payload): Json<PushRequest>) -> Response {
+    let n = ai_ui(&state).broadcast(payload.event);
     Json(json!({ "delivered_to": n })).into_response()
 }
 
 async fn events_handler(
-    State(state): State<AiUiState>,
+    State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let rx = state.subscribe();
+    let rx = ai_ui(&state).subscribe();
     let stream = BroadcastStream::new(rx)
         .filter_map(|res| async move { res.ok() })
         .map(|event: PushEvent| {
@@ -134,8 +143,8 @@ async fn events_handler(
 // /api/ai-ui/skills  +  /api/ai-ui/components
 // ---------------------------------------------------------------------------
 
-async fn skills_handler(State(state): State<AiUiState>) -> Json<serde_json::Value> {
-    let summaries: Vec<_> = state
+async fn skills_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let summaries: Vec<_> = ai_ui(&state)
         .skills()
         .skills()
         .iter()
@@ -144,6 +153,6 @@ async fn skills_handler(State(state): State<AiUiState>) -> Json<serde_json::Valu
     Json(json!({ "skills": summaries }))
 }
 
-async fn components_handler(State(state): State<AiUiState>) -> Json<ComponentManifest> {
-    Json(state.manifest().clone())
+async fn components_handler(State(state): State<AppState>) -> Json<ComponentManifest> {
+    Json(ai_ui(&state).manifest().clone())
 }

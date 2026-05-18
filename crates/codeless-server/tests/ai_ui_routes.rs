@@ -145,7 +145,7 @@ async fn push_route_returns_zero_when_no_subscribers() {
     let resp = app
         .oneshot(post_json(
             "/api/ai-ui/push",
-            json!({ "event": { "kind": "raw", "data": {} } }),
+            json!({ "event": { "type": "ping" } }),
         ))
         .await
         .unwrap();

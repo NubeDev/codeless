@@ -39,7 +39,7 @@ BACKEND_PORT  = $(word 2,$(subst :, ,$(BACKEND_BIND)))
 CARGO_CMD := cargo run -p codeless-cli --
 PNPM_CMD  := pnpm -C ui/codeless-ui
 
-.PHONY: start stop kill restart backend ui backend-fg ui-fg demo-seed logs status clean help
+.PHONY: start stop kill restart backend ui backend-fg ui-fg demo-seed logs status clean help ci
 
 help:
 	@echo "codeless dev:"
@@ -48,6 +48,12 @@ help:
 	@echo "  make restart     stop + start"
 	@echo "  make status      who is running"
 	@echo "  make logs        tail backend + UI logs"
+	@echo "  make ci          fmt --check + clippy -D warnings + test --workspace"
+
+ci:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	cargo test --workspace
 	@echo "  make backend     backend only (background)"
 	@echo "  make ui          UI only (background)"
 	@echo "  make backend-fg  backend in foreground"
