@@ -9,7 +9,9 @@ import {
   type AssistantMessage,
   type AssistantMessageId,
   type AssistantThread,
+  type AutoBypassPolicy,
   type EventEnvelope,
+  type Job,
   type JobId,
   type Repo,
   type SubmitJobArgs,
@@ -17,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
+import { POLICY_PRESETS } from "@/lib/policy/presets";
 import {
   ChatMessageList,
   type ChatMessage,
@@ -198,6 +201,43 @@ export function AssistantThreadView({
   // id so reload sees the same confirmed state. Until then a thread
   // re-list would surface the card as pending — acceptable for the
   // W2-only UI cut.
+  // Combined pause-then-confirm path for `set_policy` cards proposed
+  // against a Running / AwaitingReview job. The underlying
+  // `set_job_policy` RPC refuses Running / Queued / AwaitingReview
+  // (`AUTO-BYPASS-DECISIONS.md` Q5); the UI honours that rule by
+  // pausing first so the user does not have to leave the chat,
+  // switch to the job page, click pause, and come back. The pause is
+  // its own RPC call (a typed Conflict from `pause_job` aborts the
+  // sequence before the policy mutation, so the card stays pending
+  // rather than landing in a half-applied state). The confirm step
+  // routes through the same `confirm_assistant_action` dispatcher
+  // every other card uses — the dispatcher's `set_policy` arm calls
+  // `set_job_policy` (see `assistant.rs`), which now succeeds against
+  // the just-paused row.
+  const onConfirmPolicyAfterPause = useCallback(
+    async (messageId: string, jobId: JobId) => {
+      setErr(null);
+      try {
+        await rpc.call("pause_job", { job_id: jobId });
+        const res = await rpc.call("confirm_assistant_action", {
+          thread_id: thread.id,
+          message_id: messageId as AssistantMessage["id"],
+        });
+        setMessages((prev) => {
+          const next = prev.map((m) =>
+            m.id === res.card.id ? res.card : m,
+          );
+          next.push(res.tool_message);
+          return next;
+        });
+        onThreadTouched?.();
+      } catch (e: unknown) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [rpc, thread.id, onThreadTouched],
+  );
+
   const onConfirmDraftJob = useCallback(
     async (messageId: string, args: SubmitJobArgs) => {
       setErr(null);
@@ -277,10 +317,16 @@ export function AssistantThreadView({
           onConfirmAction={onConfirmAction}
           onCancelAction={onCancelAction}
           onConfirmDraftJob={onConfirmDraftJob}
+          onConfirmPolicyAfterPause={onConfirmPolicyAfterPause}
         />
       );
     },
-    [onConfirmAction, onCancelAction, onConfirmDraftJob],
+    [
+      onConfirmAction,
+      onCancelAction,
+      onConfirmDraftJob,
+      onConfirmPolicyAfterPause,
+    ],
   );
 
   return (
@@ -357,6 +403,10 @@ type MessageBubbleProps = {
   onConfirmAction: (messageId: string) => void;
   onCancelAction: (messageId: string) => void;
   onConfirmDraftJob: (messageId: string, args: SubmitJobArgs) => Promise<void>;
+  onConfirmPolicyAfterPause: (
+    messageId: string,
+    jobId: JobId,
+  ) => Promise<void>;
 };
 
 function MessageBubble({
@@ -364,6 +414,7 @@ function MessageBubble({
   onConfirmAction,
   onCancelAction,
   onConfirmDraftJob,
+  onConfirmPolicyAfterPause,
 }: MessageBubbleProps) {
   // Action cards are stored as `Assistant`-role messages whose
   // `meta_json` decodes to an `AssistantActionCard`. The role
@@ -379,6 +430,9 @@ function MessageBubble({
         onConfirm={() => onConfirmAction(message.id)}
         onCancel={() => onCancelAction(message.id)}
         onConfirmDraftJob={(args) => onConfirmDraftJob(message.id, args)}
+        onConfirmPolicyAfterPause={(jobId) =>
+          onConfirmPolicyAfterPause(message.id, jobId)
+        }
       />
     );
   }
@@ -441,6 +495,7 @@ type ActionCardViewProps = {
   onConfirm: () => void;
   onCancel: () => void;
   onConfirmDraftJob: (args: SubmitJobArgs) => Promise<void>;
+  onConfirmPolicyAfterPause: (jobId: JobId) => Promise<void>;
 };
 
 // Confirmation-gated action card. The user-facing "confirm" button is
@@ -451,16 +506,23 @@ type ActionCardViewProps = {
 // instead of the read-only preview while pending — the planner's
 // proposed JobSpec is review-then-edit, not review-then-accept-only,
 // so the composer surfaces every field the dialog shell does.
+// `set_policy` cards branch to a status-aware preview so a proposal
+// against a Running / AwaitingReview job offers a "Pause & confirm"
+// affordance instead of dispatching into a guaranteed server-side
+// Conflict (`AUTO-BYPASS-DECISIONS.md` Q5).
 function ActionCardView({
   message,
   card,
   onConfirm,
   onCancel,
   onConfirmDraftJob,
+  onConfirmPolicyAfterPause,
 }: ActionCardViewProps) {
   const isPending = card.status === "pending";
   const draftJobEditable =
     isPending && card.action.tool === "draft_job";
+  const setPolicyHandled =
+    isPending && card.action.tool === "set_policy";
   return (
     <div className="flex justify-start">
       <div
@@ -491,7 +553,15 @@ function ActionCardView({
         {card.action.tool === "edit_scope" && (
           <EditScopePreview action={card.action} />
         )}
-        {isPending && !draftJobEditable && (
+        {setPolicyHandled && card.action.tool === "set_policy" && (
+          <SetPolicyPanel
+            action={card.action}
+            onConfirm={onConfirm}
+            onCancel={onCancel}
+            onConfirmPolicyAfterPause={onConfirmPolicyAfterPause}
+          />
+        )}
+        {isPending && !draftJobEditable && !setPolicyHandled && (
           <div className="mt-1 flex justify-end gap-2">
             <Button
               size="sm"
@@ -746,6 +816,178 @@ function DraftJobPreview({
 // see what they are about to run without parsing the human summary.
 function actionLabel(action: AssistantAction): string {
   return `tool:${action.tool}`;
+}
+
+// `set_policy` action card panel. Reads the current job to display
+// `current policy -> proposed policy` so the user reviews exactly
+// what the mutation flips, and selects the appropriate confirm path
+// for the row's status. The runtime's `set_job_policy` RPC refuses
+// Running / Queued / AwaitingReview (`AUTO-BYPASS-DECISIONS.md` Q5);
+// the panel honours that rule by surfacing a "Pause & confirm"
+// affordance for Running / AwaitingReview (the statuses `pause_job`
+// accepts) and disabling the confirm button for Queued, Completed,
+// and Failed (statuses the user must transition out of explicitly).
+// Owning its own button row lets the panel co-locate the affordance
+// with the warning copy that explains it.
+type SetPolicyPanelProps = {
+  action: Extract<AssistantAction, { tool: "set_policy" }>;
+  onConfirm: () => void;
+  onCancel: () => void;
+  onConfirmPolicyAfterPause: (jobId: JobId) => Promise<void>;
+};
+
+function SetPolicyPanel({
+  action,
+  onConfirm,
+  onCancel,
+  onConfirmPolicyAfterPause,
+}: SetPolicyPanelProps) {
+  const rpc = useRpc();
+  const [job, setJob] = useState<Job | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [busyErr, setBusyErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setJob(null);
+    setLoadErr(null);
+    void rpc
+      .call("get_job", { job_id: action.job_id })
+      .then((j) => {
+        if (cancelled) return;
+        setJob(j);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setLoadErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, action.job_id]);
+
+  if (loadErr) {
+    return (
+      <div className="mt-1 rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+        Could not load job {action.job_id}: {loadErr}
+      </div>
+    );
+  }
+  if (!job) {
+    return (
+      <div className="mt-1 text-xs text-muted-foreground">
+        Loading job status…
+      </div>
+    );
+  }
+
+  const proposed = action.policy ?? null;
+  const status = job.status;
+  // `pause_job` only accepts Running and AwaitingReview (mirrors the
+  // runtime's pause guard). Queued can neither be paused nor have its
+  // policy changed — the operator must stop the row first. Completed
+  // and Failed are terminal and not addressable by `set_job_policy`
+  // either; show a typed reason so the user knows why the button is
+  // not live rather than confronting a Conflict on confirm.
+  const needsPause = status === "running" || status === "awaiting-review";
+  const directlyApplicable =
+    status === "draft" || status === "stopped" || status === "paused";
+  const blockedReason = needsPause || directlyApplicable
+    ? null
+    : `Auto-bypass policy cannot be changed on a ${status} job — ${
+        status === "queued"
+          ? "stop the job first."
+          : "the row is terminal."
+      }`;
+
+  const onPauseAndConfirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    setBusyErr(null);
+    try {
+      await onConfirmPolicyAfterPause(action.job_id);
+    } catch (e: unknown) {
+      setBusyErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-1 flex flex-col gap-2 rounded border border-border/40 bg-background/40 p-2 text-xs">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+        <dt className="font-mono text-muted-foreground">job</dt>
+        <dd className="truncate font-mono">{action.job_id}</dd>
+        <dt className="font-mono text-muted-foreground">status</dt>
+        <dd className="truncate font-mono">{status}</dd>
+        <dt className="font-mono text-muted-foreground">current</dt>
+        <dd className="truncate">{policyLabel(job.auto_bypass_policy)}</dd>
+        <dt className="font-mono text-muted-foreground">proposed</dt>
+        <dd className="truncate">{policyLabel(proposed)}</dd>
+      </dl>
+      {needsPause && (
+        <div className="rounded border border-yellow-500/40 bg-yellow-500/10 px-2 py-1.5 text-yellow-700 dark:text-yellow-300">
+          Job is {status}. The runtime refuses a policy change while
+          a stage is racing the failure handler — pause first
+          (AUTO-BYPASS-DECISIONS.md Q5), then apply.
+        </div>
+      )}
+      {blockedReason && (
+        <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-destructive">
+          {blockedReason}
+        </div>
+      )}
+      {busyErr && (
+        <div className="text-destructive">{busyErr}</div>
+      )}
+      <div className="mt-1 flex justify-end gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onCancel}
+          disabled={busy}
+          aria-label="Cancel action"
+        >
+          Cancel
+        </Button>
+        {needsPause ? (
+          <Button
+            size="sm"
+            onClick={() => void onPauseAndConfirm()}
+            disabled={busy}
+            aria-label="Pause job then confirm policy change"
+          >
+            {busy ? "Pausing…" : "Pause & confirm"}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={onConfirm}
+            disabled={!directlyApplicable}
+            aria-label="Confirm action"
+          >
+            Confirm
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Human-readable label for an `AutoBypassPolicy`. `null` is the
+// implicit halt-on-failure default; preset variants resolve to their
+// `POLICY_PRESETS` label so the chat surface and the picker speak the
+// same vocabulary; `custom` carries the operator's free text so the
+// preview reflects exactly what the planner proposed.
+function policyLabel(policy: AutoBypassPolicy | null): string {
+  if (!policy) return "None — halt on stage failure";
+  if (policy.type === "custom") {
+    const trimmed = policy.comment.trim();
+    return trimmed.length > 0 ? `Custom: ${trimmed}` : "Custom";
+  }
+  const preset = POLICY_PRESETS.find((p) => p.id === policy.type);
+  return preset ? preset.label : policy.type;
 }
 
 // Structured preview for the `edit_scope` action card. Fetches the

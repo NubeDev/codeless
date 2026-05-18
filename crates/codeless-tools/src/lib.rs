@@ -16,6 +16,7 @@
 pub mod attachment;
 pub mod browser;
 mod ctx;
+pub mod email;
 mod error;
 pub mod html_text;
 pub mod plugin;

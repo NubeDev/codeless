@@ -965,6 +965,7 @@ name = "codeless-tools"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "codeless-types",
  "ego-tree",
  "flate2",
