@@ -1,0 +1,30 @@
+# Test-only fixture for `plugin_wasm_e2e::wasm_plugin_respects_fuel_cap`.
+# The plugin exports the default `plugin` world (no extra imports),
+# and its `tool.call` body is a `black_box` arithmetic loop that
+# never returns. The integration test loads it under a
+# tightly-capped `HostPolicy` (fuel = 100_000, deadline = 200 ms)
+# and asserts the call surfaces `limit-exceeded` for the `fuel`
+# reason -- the wasmtime `OutOfFuel` trap fires well inside the
+# wall-clock deadline. Without a `black_box` against an
+# accumulating volatile, LLVM would collapse the loop to
+# `unreachable` and the trap would never fire.
+#
+# Detached workspace -- see the head comment of the sibling
+# `attachment_probe/Cargo.toml` for the rationale.
+
+[package]
+name = "codeless-plugin-host-wasm-fixture-fuel-loop"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[dependencies]
+wit-bindgen = { version = "0.20", default-features = false, features = ["macros", "realloc"] }

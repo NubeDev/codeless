@@ -30,10 +30,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use codeless_plugin_host_wasm::{
-    AttachmentStore, Capabilities, HostPolicy, InMemoryAttachmentStore, LoadOptions, WasmPlugin,
-    WasmRuntime,
+    AdapterRequest, AttachmentStore, Capabilities, HostPolicy, InMemoryAttachmentStore,
+    LoadOptions, WasmPlugin, WasmRuntime,
 };
 use codeless_tools::runtime_adapter::ToolCallOutcome;
 
@@ -204,6 +205,66 @@ async fn wasm_plugin_attachment_round_trip() {
         }
         ToolCallOutcome::Err(e) => panic!("round-trip failed: {e:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wasm_plugin_respects_fuel_cap() {
+    // The `fuel_loop` fixture spins in a `black_box`-guarded
+    // arithmetic loop. Under a 100_000-fuel cap the wasmtime
+    // `OutOfFuel` trap fires after a handful of milliseconds; the
+    // 200 ms wall-clock deadline below is the backstop that
+    // `PLUGIN-WASM.md § Limits` requires regardless of fuel state.
+    //
+    // The assertion is twofold: (1) the call surfaces a
+    // `ToolCallOutcome::Err` with code `"limit-exceeded"` and the
+    // message names `"fuel"` -- i.e. fuel exhaustion is the
+    // reported reason, not the deadline -- and (2) the entire test
+    // future finishes inside the 200 ms deadline, observed by an
+    // outer `tokio::time::timeout`. Together those pin both halves
+    // of OQ-WASM-5: the cap actually fires, and it fires quickly
+    // enough to keep the agent loop responsive.
+    let component = build_fixture("fuel_loop");
+    let runtime = Arc::new(WasmRuntime::new().expect("engine builds"));
+    let policy = HostPolicy {
+        fuel: 100_000,
+        memory_max_bytes: 64 * 1024 * 1024,
+        deadline: Duration::from_millis(200),
+    };
+    let plugin = WasmPlugin::load(runtime, &component, policy, LoadOptions::default())
+        .await
+        .expect("load fuel-loop fixture under low-fuel policy");
+
+    // Outer guard is intentionally slack -- the 200 ms assertion
+    // below is the load-bearing budget, this one only exists so a
+    // bug that disables both fuel *and* deadline cannot deadlock
+    // the test runner.
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        plugin.call(AdapterRequest {
+            tool_id: "fuel.loop.spin",
+            args_json: "{}",
+            thread_id: "thread-fuel-1",
+        }),
+    )
+    .await
+    .expect("call must return; both fuel and deadline are off");
+    let elapsed = started.elapsed();
+
+    match outcome {
+        ToolCallOutcome::Err(e) => {
+            assert_eq!(e.code, "limit-exceeded", "wrong error code: {e:?}");
+            assert!(
+                e.message.contains("fuel"),
+                "expected fuel-reason message, got: {e:?}",
+            );
+        }
+        ToolCallOutcome::Ok(s) => panic!("infinite loop must not return Ok: {s}"),
+    }
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "fuel trap took {elapsed:?}, exceeds the 200 ms budget",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
