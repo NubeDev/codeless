@@ -8,30 +8,33 @@ use axum::{
 use codeless_rpc::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
     AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs, AttachWorkspaceArgs,
-    AttachWorkspaceResult, CancelAssistantActionArgs, CancelAssistantActionResult,
-    CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
+    AttachWorkspaceResult, BindChatThreadArgs, CancelAssistantActionArgs,
+    CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
     DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs,
     DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs,
     FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
-    GcWorktreesResult, GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
-    JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
-    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListScheduledPausePointsArgs, ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
-    ListWorkspacesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs,
+    GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs,
+    JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListChatBindingsForJobArgs, ListChatBindingsForJobResult, ListJobFilesArgs, ListJobFilesResult,
+    ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
+    ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult,
+    ListReviewsArgs, ListReviewsResult, ListScheduledPausePointsArgs,
+    ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
+    OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, ScopePatchActionResult,
     ServerInfo, SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UpsertPersonaArgs, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
-use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
+use codeless_types::{AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -139,7 +142,19 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/edit_scope_patch", post(edit_scope_patch))
         .route("/rpc/revert_scope_patch", post(revert_scope_patch))
         .route("/rpc/list_proposed_patches", post(list_proposed_patches))
-        .route("/rpc/set_job_policy", post(set_job_policy));
+        .route("/rpc/set_job_policy", post(set_job_policy))
+        .route("/rpc/post_job_message", post(post_job_message))
+        .route("/rpc/list_job_messages", post(list_job_messages))
+        .route("/rpc/bind_chat_thread", post(bind_chat_thread))
+        .route(
+            "/rpc/update_chat_message_delivery",
+            post(update_chat_message_delivery),
+        )
+        .route(
+            "/rpc/list_chat_bindings_for_job",
+            post(list_chat_bindings_for_job),
+        )
+        .route("/rpc/get_chat_binding", post(get_chat_binding));
     // `GET /plugins` rides alongside the `/rpc/*` routes inside the
     // bearer-gated sub-router: discovery of which plugins are loaded
     // is operator-facing and must not leak before a token is supplied.
@@ -850,5 +865,71 @@ async fn set_job_policy(
         .set_job_policy(args)
         .await
         .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn post_job_message(
+    State(st): State<AppState>,
+    Json(args): Json<PostJobMessageArgs>,
+) -> HandlerResult<ChatMessage> {
+    st.rpc
+        .post_job_message(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_job_messages(
+    State(st): State<AppState>,
+    Json(args): Json<ListJobMessagesArgs>,
+) -> HandlerResult<ListJobMessagesResult> {
+    st.rpc
+        .list_job_messages(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn bind_chat_thread(
+    State(st): State<AppState>,
+    Json(args): Json<BindChatThreadArgs>,
+) -> HandlerResult<ChatBinding> {
+    st.rpc
+        .bind_chat_thread(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn update_chat_message_delivery(
+    State(st): State<AppState>,
+    Json(args): Json<UpdateChatMessageDeliveryArgs>,
+) -> HandlerResult<ChatMessage> {
+    st.rpc
+        .update_chat_message_delivery(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_chat_bindings_for_job(
+    State(st): State<AppState>,
+    Json(args): Json<ListChatBindingsForJobArgs>,
+) -> HandlerResult<ListChatBindingsForJobResult> {
+    st.rpc
+        .list_chat_bindings_for_job(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn get_chat_binding(
+    State(st): State<AppState>,
+    Json(args): Json<GetChatBindingArgs>,
+) -> HandlerResult<GetChatBindingResult> {
+    st.rpc
+        .get_chat_binding(args)
+        .await
+        .map(Json)
         .map_err(map_err)
 }

@@ -104,7 +104,7 @@ CREATE TABLE chat_messages (
                                           -- supervisor's reading view is
                                           -- per-Job (job_id), never per-Run —
                                           -- run_id exists for UI filtering and
-                                          -- analytics only. See open Q #5.
+                                          -- analytics only. See OQ-CHAT-4.
     transport       TEXT NOT NULL,        -- 'web' | 'telegram' | 'slack' | 'cli' | 'supervisor'
     external_id     TEXT,                 -- transport-specific message id.
                                           -- INVARIANT: NOT NULL whenever
@@ -183,6 +183,27 @@ pub struct ChatMessage {
 pub enum ChatTransport { Web, Telegram, Slack, Cli, Supervisor }
 pub enum ChatRole { User, Assistant, Tool, System }
 ```
+
+**v0.1 transport set (settled).** Exactly five variants: `Web`,
+`Cli`, `Telegram`, `Slack`, `Supervisor`. `Web` and `Cli` and
+`Supervisor` ship with C1 (the substrate); `Telegram` ships at the
+end of C1 as the first external transport; `Slack` lands with C3 as
+a copy-shape of the Telegram adapter. No other transports (SMS,
+Discord, email, webhook) are in scope before Phase 7; adding a sixth
+means a new variant **and** a doc PR amending this list — adapters
+must not invent unrecognised values.
+
+**Wire-name convention for `ChatTransport` (settled).** Rust
+PascalCase variants serialize as lowercase ASCII strings on every
+wire (JSON, SQLite, Telegram/Slack metadata, log fields): `Web →
+"web"`, `Cli → "cli"`, `Telegram → "telegram"`, `Slack → "slack"`,
+`Supervisor → "supervisor"`. This is the contract the SQL
+`transport` column in `chat_messages` and `chat_bindings` already
+encodes. Specta-derived TypeScript bindings inherit the same casing.
+Adapters compare transport values **only** as these lowercase
+strings; never as Rust identifiers, display names, or
+human-language synonyms ("CLI", "tg", "WebUI" are all wrong on the
+wire).
 
 ## RPC surface
 
@@ -402,16 +423,16 @@ something a user can drive end-to-end.
 
 Smallest slice that gets cross-surface history working:
 
-- [ ] Migration: `chat_messages`, `chat_bindings`.
-- [ ] Wire types: `ChatMessage`, `ChatTransport`, `ChatRole`,
+- [x] Migration: `chat_messages`, `chat_bindings`.
+- [x] Wire types: `ChatMessage`, `ChatTransport`, `ChatRole`,
       `ChatBinding`.
-- [ ] RPCs: `post_job_message`, `list_job_messages`,
+- [x] RPCs: `post_job_message`, `list_job_messages`,
       `bind_chat_thread`.
-- [ ] Event: `ChatMessageAppended`, `ChatBindingCreated`.
-- [ ] Web UI: the existing `CHAT` tab's message input + render path
+- [x] Event: `ChatMessageAppended`, `ChatBindingCreated`.
+- [x] Web UI: the existing `CHAT` tab's message input + render path
       go through `post_job_message` / `ChatMessageAppended`. No more
       transport-local store.
-- [ ] Telegram adapter: inbound writes via `post_job_message`,
+- [x] Telegram adapter: inbound writes via `post_job_message`,
       outbound subscribes to `ChatMessageAppended`, `/codeless bind`
       writes to `chat_bindings`.
 
@@ -419,27 +440,69 @@ What (C1) gives the user: a message typed in Telegram appears in the
 web UI on the next tick, and vice versa. **No supervisor yet** —
 nothing answers; the chat is human-only across surfaces.
 
+**Status — shipped on `codeless/job-chat`.** Migrations `0024_chat
+_messages.sql` and `0025_chat_bindings.sql` apply on
+`SqliteStore::with_db`; the three RPCs land on `RpcServer` /
+`InProcessRpc` with the wire-name lowercase contract enforced at the
+SQL boundary; the `ChatMessageAppended` / `ChatBindingCreated`
+variants fan out through `EventBus`; `ui/codeless-ui/`'s `CHAT` tab
+renders the `RpcClient` stream and posts via
+`rpc.post_job_message` with no transport-local store; the
+`codeless-telegram` adapter ingests inbound updates as
+`post_job_message(transport=telegram, external_id=<update_id>)` and
+forwards non-origin rows through the shared
+`codeless-bot-core::chat_forward::classify` helper, with cold-load
+on `/codeless bind` posting a single condensed "joining mid-thread"
+summary derived from `list_job_messages`. The asymmetric
+echo-suppression rule (origin-transport skips, non-origin forwards
+and writes `metadata_json.delivery.<transport>`) is enforced by
+`bot_chat_e2e::origin_transport_skips_self_post` and
+`bot_chat_e2e::cross_transport_forwards_with_receipt`, not just
+prose.
+
 ### (C2) — Supervisor agent, read-only tools
 
-- [ ] `Supervisor` task spawned by `runtime::start_run`.
-- [ ] Subscribes to `ChatMessageAppended` for its Run's `job_id`.
-- [ ] Read-only tools: `get_job_state`, `read_events`,
+- [x] `Supervisor` task spawned by `runtime::start_run`.
+- [x] Subscribes to `ChatMessageAppended` for its Run's `job_id`.
+- [x] Read-only tools: `get_job_state`, `read_events`,
       `read_handover`, `read_template`, `read_stage_log`,
       `read_notes`.
-- [ ] `post_chat_message` is the only write tool (the supervisor's
+- [x] `post_chat_message` is the only write tool (the supervisor's
       voice).
-- [ ] On Run terminal status, supervisor posts a one-paragraph
+- [x] On Run terminal status, supervisor posts a one-paragraph
       summary and exits.
 
 What (C2) gives the user: ask "what stage is it on?" / "why did
 stage 3 take so long?" in any surface, get a real answer that
 references the actual event stream and stage log.
 
+**Status — shipped on `codeless/job-chat`.** The supervisor lives as
+a module inside `codeless-runtime::supervisor` (R1 by construction —
+a grep test inside `supervisor/mod.rs` keeps `tokio::process` and
+`std::process` out of the module tree). `drive_job` spawns one
+supervisor when the Run enters `Running` and aborts it on terminal
+status; a fresh Run spawns a fresh supervisor. The read-only tool
+surface in `supervisor/tools/` routes through the existing
+`SqliteStore` / event-cursor reads; the supervisor's only outbound
+voice is `post_chat_message` with `transport=supervisor`, enforced
+by the same module-scoped grep test (no `eprintln`, no `tracing`
+that surfaces to the user, no direct event publish). The Claude
+session wires through `ClaudeRunnerAdapter` under the
+`supervisor-claude` cargo feature; `supervisor/prompt.rs` keeps the
+system prompt and per-tool descriptions reviewer-readable text
+sized under the 2c-per-turn budget; the deterministic
+`format_terminal_summary` helper covers the on-exit paragraph.
+`supervisor_e2e::supervisor_spawns_on_run_start_and_exits_on_run
+_terminal`,
+`supervisor_e2e::supervisor_answers_what_stage_is_it_on`, and
+`supervisor_e2e::supervisor_posts_terminal_summary_on_run_failed`
+pin the lifetime, the read-only Q/A path, and the terminal summary.
+
 ### (C3) — Action tools, deadline / threshold loops
 
-- [ ] `stop_job` and `add_job_note` action tools.
-- [ ] `pause_after_stage` tool (no-op until JOB-WORKFLOW (A.5)).
-- [ ] `supervisor_goals` table + migration. Columns: `id`,
+- [x] `stop_job` and `add_job_note` action tools.
+- [x] `pause_after_stage` tool (no-op until JOB-WORKFLOW (A.5)).
+- [x] `supervisor_goals` table + migration. Columns: `id`,
       `run_id`, `kind` (`deadline-stop` / `threshold-stop` /
       `event-notify` / …), `condition_json`, `action_json`,
       `authorised_by` (the `chat_messages.id` of the user message
@@ -447,15 +510,52 @@ references the actual event stream and stage log.
       `superseded`), `created_at`, `fired_at`. Load-bearing for the
       "if it runs >1h, stop it" feature surviving a restart —
       C3's example doesn't work without it.
-- [ ] Goal rehydration on supervisor boot — scan `armed` rows for
+- [x] Goal rehydration on supervisor boot — scan `armed` rows for
       the Run, re-arm timers / event watchers, drop stale ones.
-- [ ] Deadline / threshold intent recognition — the supervisor
+- [x] Deadline / threshold intent recognition — the supervisor
       treats "if X then Y" chat requests as inserts into
       `supervisor_goals`, not as in-memory state.
-- [ ] Slack adapter parity with Telegram — same `chat_bindings` shape.
+- [x] Slack adapter parity with Telegram — same `chat_bindings` shape.
 
 What (C3) gives the user: "if it runs more than an hour, stop and
 tell me why" works end-to-end.
+
+**Status — shipped on `codeless/job-chat`.** Migration
+`0026_supervisor_goals.sql` carries the columns from §C3;
+`codeless-runtime::store::supervisor_goals` exposes `insert_goal` /
+`list_armed_for_run` / `mark_fired` / `mark_cancelled` /
+`mark_superseded`, with `condition_json` and `action_json` validated
+against a typed enum at write time (`pause_after_stage` parses but
+records a structured `Failed` until JOB-WORKFLOW (A.5) lands).
+`supervisor/tools/actions.rs` carries `stop_job` (routes through
+`runtime::cancel_job`, same path as the UI's `[stop]` button) and
+`add_job_note` (writes `runs/<run_id>/notes/<ts>-supervisor.md`);
+the resulting `JobCancelled` / `JobNoteAdded` rows carry the
+provenance edge on the `chat_messages` row with
+`transport=supervisor` since the `events` table predates the
+per-action actor concept. The ad-hoc preview window is a 5-second
+`tokio::time::sleep` with cancellation on a fresh
+`ChatMessageAppended` from a user role matching `/^wait\b/i`;
+pre-armed actions fire immediately per Hard rule 4 with the
+post-action summary as the audit trail. The supervisor's
+`select!` loop combines the event bus, a deadline timer, and a
+`tokio::time::sleep_until` per armed goal; on boot (including a
+fresh process after a server bounce) `run_with_tools` scans `armed`
+rows for its `run_id`, re-arms the deadline timers, and walks rows
+whose condition is no longer reachable to `superseded` with a
+`transport=supervisor` chat note quoting the reason. The
+`codeless-slack` crate mirrors `codeless-telegram` one-for-one —
+same `chat_bindings.transport='slack'` rows, same
+`codeless-bot-core::chat_forward::classify` echo-suppression
+decision, same `metadata_json.delivery.slack` receipt shape.
+`supervisor_e2e::deadline_stop_fires_at_t_plus_one_hour`,
+`supervisor_e2e::supervisor_rehydrates_deadline_after_restart`,
+`supervisor_e2e::supervisor_supersedes_armed_goals_when_run_is
+_terminal_at_boot`,
+`supervisor_e2e::ad_hoc_stop_aborts_on_user_wait`,
+`supervisor_e2e::ad_hoc_stop_fires_after_window`, and
+`slack_chat_e2e::{origin_transport_skips_self_post,
+cross_transport_forwards_with_receipt}` are the load-bearing tests.
 
 ## Hard rules specific to this surface
 
@@ -504,50 +604,94 @@ intent is broken.
    button. The `events` row carries `actor=supervisor` so the
    audit trail tells you which surface triggered the cancel.
 
-## Open questions
+## Open questions — settled for v0.1
 
-Things I do not have a confident answer for yet — listed so the
-first PR does not quietly settle them:
+The five questions raised in earlier drafts are settled below in the
+style of SCOPE.md §Open questions §Settled. The numbering
+(OQ-CHAT-1 .. OQ-CHAT-5) is load-bearing — other docs and
+session notes cite these by number; do not renumber.
 
-1. **Echo suppression on edits.** A user edits a Slack message —
-   does the adapter `UPDATE chat_messages SET body = ?` or insert a
-   new row with a "replaces" pointer? Insert-new is simpler and
-   keeps the table immutable; edits are rare enough that the noise
-   is acceptable. Revisit if it becomes painful.
-2. **Per-message visibility.** Should the supervisor's "I am about
-   to stop the job in 5s" preview message be a normal
-   `chat_messages` row, or a transient pre-action UX that doesn't
-   persist? Lean persist — the audit trail wins; the UI can style
-   it differently if needed.
-3. **Multi-user trust.** R5 says single-tenant MVP; the bearer
-   token authorises any surface. But Slack and Telegram have
-   multiple humans in a channel. Do we trust every channel member
-   to issue `stop_job`? For MVP: yes (single-tenant), gated by the
-   `chat_bindings` row having been created by the operator. Phase
-   7 OIDC fixes this properly.
-4. **Cross-Run continuity and what `run_id` is for.** The
-   "context is key" answer is that the supervisor's reading view
-   of "the chat" is **per-Job** (`job_id`), never per-Run — when
-   Run 2 spawns a new supervisor, its first action is
-   `list_job_messages(job_id)` for the recent tail and a one-line
-   "picking up from previous run, last status was X" post. So
-   what is `chat_messages.run_id` for? Two things, neither of them
-   the supervisor's grounding:
-   - UI filtering ("show me only messages from this Run").
-   - Analytics / cost attribution per Run.
+1. **OQ-CHAT-1 — Echo suppression on edits: insert-new with a
+   `replaces` pointer.** A user editing a Telegram or Slack message
+   does **not** trigger an `UPDATE chat_messages SET body = ?`. The
+   adapter inserts a fresh row (its own `id`, its own
+   `external_id` from the platform's edit-event id) and writes
+   `metadata_json.replaces = <prior_message_id>` to link it to the
+   row it supersedes. The table is append-only by construction. The
+   web UI renders the most recent row in a `replaces` chain and may
+   collapse the prior rows behind an "edited" affordance; the
+   supervisor reads the whole chain — edits are part of the audit
+   trail, not a destructive overwrite. Same shape for adapter-side
+   deletes: insert a tombstone row with `metadata_json.deletes =
+   <prior_message_id>` and an empty `body`. Revisit only if edit
+   churn becomes a measurable fraction of chat volume.
 
-   The canonical view of "the chat" is the Job-level stream. If
-   the UI ever defaults to per-Run filtering and hides earlier
-   Run messages, the supervisor's grounding will diverge from
-   what the user sees — surface a "showing Run N only" affordance
-   loudly when it does.
-5. **Typed `metadata_json`.** Today the wire type carries a
-   `serde_json::Value` blob for transport-specific extras
-   (attachments, formatting, the `delivery.<transport>` receipts
-   from the outbound path). Fine for MVP; invites schema drift.
-   Consider a typed enum per transport once we have two
-   transports in production and the actual shape has settled.
-   Not a blocker for C1.
+2. **OQ-CHAT-2 — Per-message visibility: persist previews.** The
+   supervisor's "I am about to stop the job in 5s" preview is a
+   normal `chat_messages` row with `role = system`, `transport =
+   supervisor`, and `metadata_json.preview = { window_ms: 5000,
+   action: "stop_job", resolves_at: <epoch_ms> }`. The follow-up
+   row (the action's "I just stopped this because …" summary)
+   carries `metadata_json.resolves = <preview_message_id>` so the
+   UI can pair them. Cancelled previews (the user said "wait") are
+   still rows; the cancellation message points back via `replies_to`.
+   The audit trail beats the transient-UX win, and the UI can style
+   `role = system` rows distinctly (dim, smaller, collapsible).
+   Pre-armed actions (Hard rule 4, second regime) have **no**
+   preview row — only the post-action summary — by design.
+
+3. **OQ-CHAT-3 — Multi-user trust: single-tenant for v0.1, every
+   channel member trusted.** Any human in a bound Telegram chat or
+   Slack thread may issue any chat-driven action (`stop_job`,
+   `add_job_note`, etc.). The trust boundary is the `chat_bindings`
+   row: only the operator (the human who runs `/codeless bind` on
+   the transport) can create one, and the operator is implicitly
+   vouching for everyone they let into that channel. The
+   `chat_bindings.bound_by` column records who armed the binding so
+   the audit trail names a human even when the destructive action
+   comes from a different channel member. Per-user OIDC + per-action
+   ACLs are deferred to Phase 7; this doc will not pre-architect
+   them. The supervisor does not see, and does not reason about,
+   Telegram/Slack user identity beyond the `author` string on the
+   inbound row.
+
+4. **OQ-CHAT-4 — Cross-Run continuity: `chat_messages.run_id` is
+   for UI filtering and analytics only, never for supervisor
+   grounding.** The canonical view of "the chat" is the Job-level
+   stream (`job_id`). A fresh supervisor's first action is
+   `list_job_messages(job_id, before = None, limit = N)` —
+   never `WHERE run_id = ?`. `run_id` exists on the row for two
+   reasons: (a) the UI may offer a "this Run only" filter; (b)
+   cost / message-count analytics can attribute per-Run. The web UI
+   **must not** default to per-Run filtering; if it ever exposes
+   one, the filter chrome ("showing Run 2 only — earlier Run
+   messages hidden") must be visible enough that the operator
+   notices their view has diverged from the supervisor's. Pre-(B)
+   rows leave `run_id` NULL; that is not a bug.
+
+5. **OQ-CHAT-5 — Typed `metadata_json`: stay
+   `serde_json::Value` for v0.1, revisit after two transports
+   ship.** The wire type keeps a `serde_json::Value` blob.
+   Adapters and the supervisor write and read keys by name. The
+   keys the substrate itself owns are namespaced and documented
+   here; transport-specific extras live under
+   `metadata_json.<transport>.*` so the substrate's keys and an
+   adapter's keys cannot collide:
+
+   | Key | Owner | Set by | Meaning |
+   |---|---|---|---|
+   | `delivery.<transport>` | substrate | outbound adapter after a successful send | platform-side message id of the delivered copy; presence == "already delivered, do not re-send" |
+   | `replaces` | substrate | adapter ingesting a platform edit | `chat_messages.id` of the row this one supersedes |
+   | `deletes` | substrate | adapter ingesting a platform delete | `chat_messages.id` of the row tombstoned |
+   | `replies_to` | substrate | any writer | `chat_messages.id` of the row this one is a reply to |
+   | `resolves` | substrate | supervisor | `chat_messages.id` of the preview row this action-result resolves |
+   | `preview` | substrate | supervisor | `{ window_ms, action, resolves_at }` for ad-hoc destructive previews |
+   | `<transport>.*` | adapter | inbound adapter | transport-native extras (attachments, formatting, reactions) |
+
+   A typed enum-per-transport replaces this table once two
+   transports are in production **and** the actual shape has
+   stopped churning for one release cycle. Not a blocker for C1
+   and not a blocker for C3.
 
 ## What lands in code first (C1's punch list)
 

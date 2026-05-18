@@ -12,14 +12,14 @@ use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
     AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId,
-    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, CostCents,
-    DetachPolicy, DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind,
-    GitAuth, Job, JobId, JobStatus, ListWorkspacesResult, PausePoint, PausePointId,
-    PausePointPosition, PausePointTarget, PreCheckOutcome, ProposedScopePatch, Repo, RepoId,
-    Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind,
-    ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
-    TodoSelector, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
-    WorkspaceError, WorkspaceProblem,
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, ChatBinding,
+    ChatMessage, ChatRole, ChatTransport, CostCents, DetachPolicy, DetachWorkspaceArgs, Event,
+    EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId, JobStatus,
+    ListWorkspacesResult, MessageId, PausePoint, PausePointId, PausePointPosition,
+    PausePointTarget, PreCheckOutcome, ProposedScopePatch, Repo, RepoId, Review, ReviewId,
+    ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage,
+    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, TodoSelector, UnixMillis,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -84,7 +84,12 @@ fn collect() -> TypeCollection {
         .register_mut::<PausePointPosition>()
         .register_mut::<TodoSelector>()
         .register_mut::<PausePointTarget>()
-        .register_mut::<PausePoint>();
+        .register_mut::<PausePoint>()
+        .register_mut::<MessageId>()
+        .register_mut::<ChatTransport>()
+        .register_mut::<ChatRole>()
+        .register_mut::<ChatMessage>()
+        .register_mut::<ChatBinding>();
     types
 }
 

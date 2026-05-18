@@ -10,6 +10,19 @@ description = "Codeless: state machine, scheduler, queue, event bus, sqlx. Host-
 [lints]
 workspace = true
 
+[features]
+# Off by default so the standard `cargo test --workspace` build still
+# compiles without an `ANTHROPIC_API_KEY` on PATH and without pulling
+# the Claude session adapter into the supervisor's reactor loop. When
+# enabled, the per-Run supervisor drafts its chat replies through a
+# `ClaudeRunnerAdapter` invocation whose system prompt + tool
+# descriptions live in `src/supervisor/prompt.rs` (reviewable as plain
+# text). Host-only by construction: the feature pulls `ai-runner`'s
+# CLI path, which is already a host-only dependency on the
+# `codeless-runtime` crate, and the mobile-safe crates do not depend
+# on `codeless-runtime` at all (R1 of CLAUDE.md).
+supervisor-claude = []
+
 [dependencies]
 codeless-types = { path = "../codeless-types" }
 codeless-rpc = { path = "../codeless-rpc" }
@@ -39,7 +52,7 @@ ulid = { version = "1", features = ["serde"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread", "test-util"] }
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"

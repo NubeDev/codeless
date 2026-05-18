@@ -78,3 +78,7 @@ ulid_newtype!(
     AssistantAttachmentId,
     "Identity of one file uploaded into an assistant thread (`<codeless-data>/threads/<thread_id>/attachments/`)."
 );
+ulid_newtype!(
+    MessageId,
+    "Identity of one row in `chat_messages` — the per-Job chat substrate from `DOCS/JOB-CHAT.md`. Shared by every transport (web, CLI, Telegram, Slack, supervisor); the ULID is minted by the runtime on `post_job_message`, never by the transport adapter."
+);

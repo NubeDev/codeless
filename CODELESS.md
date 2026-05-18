@@ -334,3 +334,68 @@ it.
   `CLAUDE_BINARY` and against a `wiremock`-hosted Anthropic Messages
   SSE response pin both runners end-to-end through the bridge; a
   separate test pins cap=0 → unlimited.
+
+## What works today (per-Job chat substrate, branch `codeless/job-chat`)
+
+- **Unified chat table (C1 of JOB-CHAT.md).** Migrations
+  `0024_chat_messages.sql` and `0025_chat_bindings.sql` carry the
+  one-thread-per-Job store; `RpcServer` grows `post_job_message`,
+  `list_job_messages`, and `bind_chat_thread`; `EventBus` fans out
+  `ChatMessageAppended` / `ChatBindingCreated`; the
+  `ui/codeless-ui/` `CHAT` tab renders the stream via `RpcClient`
+  (no transport-local store, no `@tauri-apps/*` import); the
+  `codeless-telegram` adapter ingests inbound updates as
+  `post_job_message(transport=telegram)` and forwards non-origin
+  rows through the shared
+  `codeless-bot-core::chat_forward::classify` helper. The
+  asymmetric echo-suppression rule (origin-transport skips,
+  non-origin forwards and writes
+  `metadata_json.delivery.<transport>`) is enforced by
+  `bot_chat_e2e::origin_transport_skips_self_post` and
+  `bot_chat_e2e::cross_transport_forwards_with_receipt`.
+- **Supervisor agent, read-only tools (C2).** The supervisor is a
+  module inside `codeless-runtime::supervisor` (R1 by construction
+  — a module-scoped grep test keeps `tokio::process` and
+  `std::process` out of the supervisor tree, and the same test
+  enforces that the only outbound voice is `post_chat_message`
+  with `transport=supervisor`). `drive_job` spawns one supervisor
+  when the Run enters `Running` and aborts it on terminal status;
+  a resumed Run spawns a fresh supervisor. The read-only tool set
+  (`get_job_state`, `read_events`, `read_handover`, `read_template`,
+  `read_stage_log`, `read_notes`) routes through existing
+  `SqliteStore` / event-cursor reads. The Claude session wires
+  through `ClaudeRunnerAdapter` behind the `supervisor-claude`
+  cargo feature; `supervisor/prompt.rs` keeps the system prompt and
+  per-tool descriptions as reviewer-readable text under the
+  2c-per-turn budget. On Run terminal status the supervisor posts
+  a deterministic one-paragraph summary from
+  `format_terminal_summary` and exits.
+- **Action tools and pre-armed goals (C3).** Migration
+  `0026_supervisor_goals.sql` carries `id` / `run_id` / `kind`
+  (`deadline-stop` / `threshold-stop` / `event-notify`) /
+  `condition_json` / `action_json` / `authorised_by` / `status`
+  (`armed` / `fired` / `cancelled` / `superseded`) / `created_at` /
+  `fired_at`; `condition_json` and `action_json` are validated
+  against a typed enum at write time. `supervisor/tools/actions.rs`
+  carries `stop_job` (routes through `runtime::cancel_job` — same
+  path as the UI's `[stop]` button) and `add_job_note` (writes
+  `runs/<run_id>/notes/<ts>-supervisor.md` and commits). Ad-hoc
+  destructive actions get a 5-second preview window with
+  cancellation on a fresh `ChatMessageAppended` from a user role
+  matching `/^wait\b/i`; pre-armed actions fire immediately per
+  JOB-CHAT.md Hard rule 4, with the post-action summary as the
+  audit trail. The supervisor's `select!` loop combines the event
+  bus, a deadline timer, and a `tokio::time::sleep_until` per armed
+  goal; on supervisor boot (including a fresh process after a
+  server bounce) `run_with_tools` scans `armed` rows for its
+  `run_id`, re-arms the deadline timers, and walks rows whose
+  condition is no longer reachable to `superseded` with a chat note
+  quoting the reason. The new `codeless-slack` crate mirrors
+  `codeless-telegram` one-for-one — same
+  `chat_bindings.transport='slack'` rows, same
+  `codeless-bot-core::chat_forward::classify` decision, same
+  `metadata_json.delivery.slack` receipt shape. Load-bearing tests:
+  `supervisor_e2e::deadline_stop_fires_at_t_plus_one_hour`,
+  `supervisor_e2e::supervisor_rehydrates_deadline_after_restart`,
+  `supervisor_e2e::ad_hoc_stop_aborts_on_user_wait`, and
+  `slack_chat_e2e::cross_transport_forwards_with_receipt`.

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use codeless_rpc::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs, BindChatThreadArgs,
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, ClaudeStatus,
     CommentReviewArgs, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
     CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobFileArgs,
@@ -20,13 +20,13 @@ use codeless_rpc::methods::{
     FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
     JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListJobFilesArgs, ListJobFilesResult, ListJobsArgs, ListJobsResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ReadJobFileArgs,
-    ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RevertScopePatchArgs,
-    RevertScopePatchResult, RunnerInfo, ScopePatchActionResult, ScopePatchResolution,
-    ServerFeatureFlags, ServerInfo, SetJobPolicyArgs, StageRollup, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs,
+    ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
+    ListStagesResult, PostJobMessageArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs,
+    RemoveRepoArgs, RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo,
+    ScopePatchActionResult, ScopePatchResolution, ServerFeatureFlags, ServerInfo, SetJobPolicyArgs,
+    StageRollup, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
     UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteHandoverArgs,
     WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
@@ -110,7 +110,11 @@ fn collect() -> TypeCollection {
         .register_mut::<ScopePatchActionResult>()
         .register_mut::<RevertScopePatchArgs>()
         .register_mut::<RevertScopePatchResult>()
-        .register_mut::<SetJobPolicyArgs>();
+        .register_mut::<SetJobPolicyArgs>()
+        .register_mut::<PostJobMessageArgs>()
+        .register_mut::<ListJobMessagesArgs>()
+        .register_mut::<ListJobMessagesResult>()
+        .register_mut::<BindChatThreadArgs>();
     types
 }
 

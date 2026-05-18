@@ -524,6 +524,30 @@ export type AutoBypassPolicy = { type: "quick" } | { type: "long-term" } | { typ
 { type: "relentless" };
 
 /**
+ *  Bind `(transport, channel_id, thread_id)` to a Job so the
+ *  adapter's inbound path can resolve an arriving message to the
+ *  right chat thread (`JOB-CHAT.md` "Data model"). Called by
+ *  `/codeless bind <job_id>` on Telegram / Slack. The web UI never
+ *  needs this — it already has `job_id` from the URL.
+ * 
+ *  `thread_id` is normalised to the empty string `""` on the server
+ *  side when omitted to match the primary-key invariant on
+ *  `chat_bindings`. The call is idempotent on the PK: a second bind
+ *  of the same `(transport, channel, thread)` to the same Job
+ *  returns the existing row stamped with the new `bound_at` /
+ *  `bound_by`; binding the same key to a *different* Job overwrites
+ *  (the user re-pointed the channel) and emits `ChatBindingCreated`
+ *  once goal events land. The runtime stamps `bound_at` itself.
+ */
+export type BindChatThreadArgs = {
+	transport: ChatTransport,
+	channel_id: string,
+	thread_id?: string | null,
+	job_id: JobId,
+	bound_by: string,
+};
+
+/**
  *  `assistant.cancelAction`. Flip a pending action card's status to
  *  `cancelled` and do **nothing else** — no RPC is dispatched, no
  *  `Tool` message appended. The card row stays in the transcript so
@@ -568,6 +592,32 @@ export type ChatAttachmentRef = {
 	 *  reading strategy when the runner supports it.
 	 */
 	mime_type?: string | null,
+};
+
+/**
+ *  One row in `chat_bindings`: the lookup that turns an inbound
+ *  message on a transport's `(channel, thread)` into the Job that
+ *  owns the conversation. Written by `/codeless bind` on the
+ *  transport surface; read by the inbound adapter before it calls
+ *  `post_job_message`. The web UI never needs a binding — it already
+ *  knows the Job id from its URL.
+ * 
+ *  `thread_id` uses the empty string `""` as the sentinel for "no
+ *  thread on this transport" rather than `Option<String>`: the
+ *  primary key on the SQL side is `(transport, channel_id,
+ *  thread_id)`, and SQLite treats every NULL as distinct in a UNIQUE
+ *  constraint, which would silently allow two different jobs to bind
+ *  to the same `(transport, channel)` if `thread_id` were nullable.
+ *  The empty string is unambiguous on both Telegram and Slack — no
+ *  real thread id is empty.
+ */
+export type ChatBinding = {
+	transport: ChatTransport,
+	channel_id: string,
+	thread_id: string,
+	job_id: JobId,
+	bound_at: UnixMillis,
+	bound_by: string,
 };
 
 /**
@@ -616,12 +666,83 @@ export type ChatContext = {
 };
 
 /**
+ *  One persisted row in `chat_messages`. The single conversation
+ *  every transport reads and writes — see `DOCS/JOB-CHAT.md` "Data
+ *  model".
+ * 
+ *  `run_id` is currently typed as `Option<String>` because the
+ *  JOB-WORKFLOW (B) Job/Run split (and the `RunId` newtype it
+ *  introduces) has not landed yet; the SQL column is already nullable
+ *  and rows minted before (B) leave it NULL. Once (B) lands, this
+ *  field swaps to `Option<RunId>` without a wire-format change — the
+ *  transparent newtype serialises as the same JSON string.
+ * 
+ *  `external_id` is NOT NULL on the SQL side for Telegram and Slack
+ *  rows (the partial UNIQUE index enforces ingest idempotency for
+ *  those transports); the wire type carries `Option<String>` because
+ *  web, CLI, and supervisor rows leave it NULL and the column is
+ *  generic. The invariant is owned by the runtime insert path, not
+ *  the wire type.
+ */
+export type ChatMessage = {
+	id: MessageId,
+	job_id: JobId,
+	run_id: string | null,
+	transport: ChatTransport,
+	external_id: string | null,
+	thread_key: string | null,
+	author: string,
+	role: ChatRole,
+	body: string,
+	/**
+	 *  Transport-specific extras (attachments, formatting, delivery
+	 *  receipts written by outbound forwarders). Carried as the raw
+	 *  JSON text exactly as stored in the SQL `metadata_json` column
+	 *  — keeping the field a `String` avoids pulling `serde_json`
+	 *  into `codeless-types`, which has to compile for mobile (R1).
+	 *  Callers that need a structured view parse it themselves on
+	 *  arrival; the substrate stays opaque.
+	 */
+	metadata_json: string | null,
+	created_at: UnixMillis,
+};
+
+/**
  *  Mode the chat composer is in for a given turn. Default `Work`
  *  keeps the existing footer/job chat behaviour; `Spec` flips the
  *  preamble to "you are authoring the job spec" and clamps tool
  *  access so the agent cannot accidentally edit repo source.
  */
 export type ChatMode = "work" | "spec";
+
+/**
+ *  Speaker class of a chat row. Mirrors the role column on
+ *  `chat_messages` and overlaps deliberately with
+ *  `AssistantMessageRole` so the same CommonChat renderer can paint
+ *  both surfaces. Kept as its own enum (rather than reusing the
+ *  assistant one) because the two surfaces evolve independently —
+ *  JOB-CHAT.md is explicit that the per-Job chat is not the
+ *  `/assistant` surface, even though they look similar in the UI.
+ */
+export type ChatRole = "user" | "assistant" | "tool" | "system";
+
+/**
+ *  Origin surface of a chat row. The wire form is lowercase ASCII on
+ *  every transport (JSON, SQLite `transport` column, Telegram/Slack
+ *  metadata, log fields) — see `DOCS/JOB-CHAT.md` "Wire-name
+ *  convention for `ChatTransport`". Adapters compare values only as
+ *  these lowercase strings; never as Rust identifiers, display names,
+ *  or human-language synonyms.
+ * 
+ *  The v0.1 surface is closed at five variants. `Web`, `Cli`, and
+ *  `Supervisor` ship with the C1 substrate; `Telegram` and `Slack`
+ *  arrive with the first transport adapter. The supervisor agent is
+ *  modelled as a transport rather than a role so a single
+ *  `(transport, external_id)` self-match could in principle suppress
+ *  echo back to a participant — though the actual rule in JOB-CHAT.md
+ *  is asymmetric and lives in the bot-core helper, not here.
+ */
+export type ChatTransport = "web" | "cli" | "telegram" | "slack" | "supervisor";
 
 /**
  *  Best-effort probe result for Claude Code on the host. The host
@@ -1159,7 +1280,29 @@ commit_sha: string } |
  *  same turn. Subscribers that need touches across every thread
  *  (the rail) subscribe with `scope: "all"`.
  */
-{ type: "assistant-thread-touched"; thread_id: AssistantThreadId };
+{ type: "assistant-thread-touched"; thread_id: AssistantThreadId } | 
+/**
+ *  A row was appended to `chat_messages`. Published by
+ *  `post_job_message` immediately after the INSERT lands, so every
+ *  transport adapter (web UI, Telegram, Slack, CLI, supervisor)
+ *  sees the same fan-out signal regardless of which surface
+ *  originated the message. The full `ChatMessage` rides on the
+ *  envelope so subscribers can render without a follow-up read;
+ *  the asymmetric echo-suppression rule in `DOCS/JOB-CHAT.md`
+ *  "Transport adapters" lives in the bot-core helper, not in the
+ *  event payload — every adapter sees every append and decides
+ *  per-message whether to forward.
+ */
+{ type: "chat-message-appended"; job_id: JobId; message: ChatMessage } | 
+/**
+ *  A `(transport, channel_id, thread_id)` tuple was bound (or
+ *  re-bound) to a Job via `bind_chat_thread`. Cross-window
+ *  invalidation signal for the web UI's "this Job is also being
+ *  watched in #ops-codeless" banner; the Telegram / Slack
+ *  adapters do not need it on the inbound path (they look the
+ *  binding up directly on each message).
+ */
+{ type: "chat-binding-created"; transport: ChatTransport; channel_id: string; thread_id: string; job_id: JobId };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -1330,6 +1473,26 @@ export type FsStatResult = {
 export type FsWriteFileArgs = {
 	path: string,
 	content: string,
+};
+
+/**
+ *  Forward lookup on `chat_bindings`: resolve an inbound
+ *  `(transport, channel, thread)` to the Job that owns the
+ *  conversation. Returns `None` when the channel was never
+ *  `/codeless bind`-ed — the adapter treats that as "drop the
+ *  message" (the substrate refuses to ingest text the operator has
+ *  not pointed at a Job). `thread_id` defaults to the empty-string
+ *  sentinel server-side so callers that come from a non-threaded
+ *  platform message can pass `None` and still hit the PK row.
+ */
+export type GetChatBindingArgs = {
+	transport: ChatTransport,
+	channel_id: string,
+	thread_id?: string | null,
+};
+
+export type GetChatBindingResult = {
+	binding: ChatBinding | null,
 };
 
 export type GetJobArgs = {
@@ -1603,6 +1766,52 @@ export type ListAssistantThreadsResult = {
 	threads: AssistantThread[],
 };
 
+/**
+ *  Reverse lookup of `chat_bindings`: every `(channel, thread)` on the
+ *  given transport that points at the supplied Job. The outbound
+ *  forwarder on each transport adapter calls this when a
+ *  `ChatMessageAppended` fires for a Job it cares about — the bindings
+ *  it returns are the set of platform-side destinations the message
+ *  must be forwarded to. The forward direction is the inverse of
+ *  `get_chat_binding` (which serves the inbound resolver path).
+ */
+export type ListChatBindingsForJobArgs = {
+	job_id: JobId,
+	transport: ChatTransport,
+};
+
+export type ListChatBindingsForJobResult = {
+	bindings: ChatBinding[],
+};
+
+/**
+ *  Paginate one Job's chat history newest-first by `created_at` with
+ *  the message id as tiebreaker. The web `CHAT` tab calls this on
+ *  mount; Telegram and Slack adapters call it on `/codeless bind` to
+ *  compose a single condensed "joining mid-thread" summary (full
+ *  replay would spam the channel — see `JOB-CHAT.md` "Cold-load").
+ * 
+ *  `before` is the seek cursor: pass `None` to fetch the most recent
+ *  `limit` rows, then pass the oldest returned `MessageId` to walk
+ *  further back. The runtime caps `limit` so a runaway caller cannot
+ *  pull the whole table in one shot.
+ */
+export type ListJobMessagesArgs = {
+	job_id: JobId,
+	before?: MessageId | null,
+	limit: number,
+};
+
+/**
+ *  Returned messages are ordered oldest-first within the returned
+ *  page so a UI can render top-to-bottom without sorting. To walk
+ *  further back, the caller passes the *oldest* id of this page as
+ *  the next `before`.
+ */
+export type ListJobMessagesResult = {
+	messages: ChatMessage[],
+};
+
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
 	repo_id: RepoId | null,
@@ -1674,6 +1883,9 @@ export type ListWorkspacesResult = {
 	workspaces: AttachedWorkspace[],
 };
 
+//Identity of one row in `chat_messages` — the per-Job chat substrate from `DOCS/JOB-CHAT.md`. Shared by every transport (web, CLI, Telegram, Slack, supervisor); the ULID is minted by the runtime on `post_job_message`, never by the transport adapter.
+export type MessageId = string;
+
 /**
  *  One scheduled pause point as it travels on the wire. The parser
  *  (stage 4) builds one of these per `pause_points:` entry; the
@@ -1725,6 +1937,42 @@ export type PausePointPosition = "before" | "after";
  *  type, so the wire shape and the SQLite shape match.
  */
 export type PausePointTarget = { kind: "stage"; ordinal: number } | { kind: "stage-todo"; stage_ordinal: number; selector: TodoSelector };
+
+/**
+ *  Append one message to the per-Job chat thread (`DOCS/JOB-CHAT.md`).
+ *  Used by the web chat input, the Telegram and Slack adapters, the
+ *  CLI, and the supervisor agent — every voice ends up as one row in
+ *  `chat_messages`. The ULID `MessageId` and the `created_at` stamp
+ *  are minted server-side so a clock-skewed transport cannot reorder
+ *  the thread.
+ * 
+ *  `external_id` is the transport-native message id (Telegram
+ *  `chat:id`, Slack `ts`). Required on Telegram and Slack by SQL
+ *  invariant — the partial unique index narrows
+ *  `(transport, external_id)` to non-NULL rows, so a redelivered
+ *  inbound message would land on a `Conflict` error rather than
+ *  double-ingest. Web, CLI, and supervisor rows leave it NULL.
+ * 
+ *  `role` defaults to `User` because that is the overwhelmingly
+ *  common case (every human transport); the supervisor sets it
+ *  explicitly to `Assistant`.
+ */
+export type PostJobMessageArgs = {
+	job_id: JobId,
+	transport: ChatTransport,
+	external_id?: string | null,
+	thread_key?: string | null,
+	author: string,
+	role: ChatRole,
+	body: string,
+	/**
+	 *  Raw transport-extras JSON text (attachments, formatting,
+	 *  outbound delivery receipts). Passed through verbatim to the
+	 *  `metadata_json` column so the substrate stays opaque per
+	 *  `codeless_types::chat::ChatMessage::metadata_json`.
+	 */
+	metadata_json?: string | null,
+};
 
 /**
  *  Result of the Layer-1 diff-verify pre-check the runtime runs
@@ -2573,6 +2821,30 @@ export type TodoStatus = "pending" | "in-progress" | "done" | "skipped" | "faile
  *  `INTEGER` round-trips with `sqlx` (which surfaces signed integers).
  */
 export type UnixMillis = number;
+
+/**
+ *  Record one transport's outbound delivery receipt against a
+ *  `chat_messages` row. Called by the Telegram / Slack outbound
+ *  forwarders after a successful platform send so the next event-bus
+ *  fan-out (after a restart, or to a second forwarder on the same
+ *  transport) can presence-check `metadata_json.delivery.<transport>`
+ *  and skip the duplicate post. Per `JOB-CHAT.md` "Transport adapters"
+ *  the column owners that the runtime guarantees never to overwrite —
+ *  `body` and `external_id` — stay immutable; only `metadata_json` is
+ *  mutated, and even there only the substrate-owned `delivery.<transport>`
+ *  key is touched (OQ-CHAT-5 §metadata keyspace).
+ * 
+ *  `platform_id` is the id the platform returned for the *outbound*
+ *  send (Telegram `message_id`, Slack `ts`) — NOT the originating
+ *  transport's `external_id`. Mixing the two would conflate the source
+ *  of truth with the delivery receipt; the immutability bias in
+ *  JOB-CHAT.md exists exactly to keep that line clean.
+ */
+export type UpdateChatMessageDeliveryArgs = {
+	message_id: MessageId,
+	transport: ChatTransport,
+	platform_id: string,
+};
 
 /**
  *  `assistant.uploadAttachment`. Drop a binary blob into a thread's

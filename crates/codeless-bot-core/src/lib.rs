@@ -36,6 +36,7 @@
 //! mobile-safe column of the crate table.
 
 pub mod alias_map;
+pub mod chat_forward;
 pub mod command;
 pub mod dispatcher;
 pub mod notify;

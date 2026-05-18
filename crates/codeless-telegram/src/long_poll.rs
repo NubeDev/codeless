@@ -20,13 +20,16 @@
 //!   4. Honour the shutdown signal at every await point so a clean
 //!      server shutdown drains within one in-flight request.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use codeless_bot_core::Dispatcher;
+use codeless_rpc::RpcServer;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 
 use crate::dispatcher::project_update;
+use crate::inbound_chat;
 use crate::web_api::{TelegramApi, WebApiError, LONG_POLL_TIMEOUT_SECS};
 
 /// Initial backoff after a failure. Doubles per consecutive failure
@@ -45,7 +48,12 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// bots without one, though BotFather requires it on creation) is
 /// treated as the empty string — the mention-strip path then just
 /// passes every body through.
-pub async fn run(api: TelegramApi, dispatcher: Dispatcher, mut shutdown: oneshot::Receiver<()>) {
+pub async fn run(
+    api: TelegramApi,
+    rpc: Arc<dyn RpcServer>,
+    dispatcher: Dispatcher,
+    mut shutdown: oneshot::Receiver<()>,
+) {
     let bot_username = match api.get_me().await {
         Ok(user) => user.username.unwrap_or_default(),
         Err(err) => {
@@ -84,8 +92,21 @@ pub async fn run(api: TelegramApi, dispatcher: Dispatcher, mut shutdown: oneshot
                             // still post a duplicate reply.
                             offset = Some(offset.map_or(update.update_id + 1, |o| o.max(update.update_id + 1)));
                             let Some(msg) = update.message.as_ref() else { continue };
-                            let Some(inbound) = project_update(msg, &bot_username) else { continue };
-                            dispatcher.dispatch_message(inbound).await;
+                            // Run the per-Job chat substrate handler in
+                            // parallel with the command dispatcher: the
+                            // chat substrate ingests the raw text into
+                            // `chat_messages` (if the channel is bound)
+                            // and handles `/codeless bind`; the
+                            // dispatcher continues to handle `/status`,
+                            // `/stop`, etc. unchanged. Both surfaces
+                            // compose because the chat forwarder echo-
+                            // suppresses Telegram-origin rows — the
+                            // mirrored row never bounces back into the
+                            // same chat.
+                            inbound_chat::handle_inbound(&rpc, &api, msg).await;
+                            if let Some(inbound) = project_update(msg, &bot_username) {
+                                dispatcher.dispatch_message(inbound).await;
+                            }
                         }
                     }
                     Err(err) => {

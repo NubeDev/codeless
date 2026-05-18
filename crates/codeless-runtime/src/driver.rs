@@ -111,6 +111,28 @@ pub async fn drive_job(
     .await
     .map_err(db_err)?;
 
+    // Per-Run supervisor (JOB-CHAT.md (C2)). Spawned here — after the
+    // row reached `Running` and the `JobStarted` envelope is in the
+    // persisted events table — so the supervisor's own
+    // `subscribe_since` replay sees the start event for the Run it
+    // owns. The handle is intentionally not joined: the supervisor
+    // self-terminates when it observes a Run terminal event
+    // (`JobCompleted` / `JobFailed` / `JobStopped`) on the bus,
+    // which the rest of `drive_job` is going to publish below. A
+    // fresh Run (rerun / resume → new `drive_job` invocation) spawns
+    // a fresh supervisor; the previous Run's task has already exited
+    // by the time we get here because its terminal event already
+    // fired.
+    // Tool-equipped supervisor: needs the store handle so its reactor
+    // can answer "what stage is it on?" and so the terminal-summary
+    // path (JOB-CHAT.md (C2) "on Run terminal status, supervisor
+    // posts a one-paragraph summary") can read each stage's
+    // `failure_detail` before posting its final chat message. The
+    // lifecycle-only `spawn_supervisor` stays available for tests
+    // that exercise the bus contract without a store.
+    let _supervisor =
+        crate::supervisor::spawn_supervisor_with_tools(Arc::clone(bus), Arc::clone(store), job_id);
+
     let cancel = CancellationToken::new();
     let cap_watcher = spawn_cap_watcher(
         Arc::clone(store),
