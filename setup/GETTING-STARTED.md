@@ -132,6 +132,28 @@ pnpm -C ui/codeless-ui dev
 Open `http://127.0.0.1:1420`, the registered repo appears in the
 sidebar, click **new job**.
 
+### In the new-job dialog — always pick Worktree, never master
+
+The submit dialog defaults to **Workspace mode: In-repo** with an
+empty **Branch** field. Both defaults are wrong for real work:
+
+- **In-repo** writes commits straight onto whatever branch your
+  source tree is currently on — typically `master`. The agent will
+  fight your normal development and you cannot recover cleanly.
+- An empty **Branch** in worktree mode falls back to the repo's
+  `default_branch` (`master` from `add-repo`).
+
+Before clicking **save as draft**:
+
+1. Set **Workspace mode** to **Worktree**.
+2. Set **Branch** to `codeless/<job-name>` (matches the convention
+   `init-session.sh` and the closing-trio `git push` step expect).
+
+The runner then allocates a fresh worktree under
+`~/.codeless/worktrees/job-<ULID>/` on that branch and your source
+tree is never touched. This mirrors Hard rule 1 of
+[`ADDING-JOB.md`](./ADDING-JOB.md#hard-rules--do-not-violate).
+
 ## Common gotchas
 
 - **"still says hackline"** — old DB has it. `./setup/init-session.sh

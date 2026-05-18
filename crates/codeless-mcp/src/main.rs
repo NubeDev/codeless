@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use codeless_mcp::personas::open_sqlite_persona_source;
 use codeless_mcp::{serve_stdio, ServerContext};
-use codeless_tools::tools::{BrowseFetchTool, HttpRequestTool};
+use codeless_tools::schedule::{LogAction, PayloadDispatcher, Scheduler};
+use codeless_tools::tools::{BrowseFetchTool, HttpRequestTool, ScheduleCreateTool};
 use codeless_tools::ToolRegistry;
 use tracing_subscriber::EnvFilter;
 
@@ -46,6 +47,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(BrowseFetchTool::new()));
     registry.register(Arc::new(HttpRequestTool::new()));
+
+    // Schedule tool with a payload-dispatching action. No richer
+    // handlers are wired here — the MCP binary has no access to the
+    // runtime, so fires fall through to `LogAction`. Hosts that link
+    // this crate (e.g. `codeless-runtime`) build their own dispatcher
+    // with `enqueue_job` / `assistant_message` / etc. handlers and
+    // pass it to a `Scheduler` they own.
+    let dispatcher = PayloadDispatcher::new(Arc::new(LogAction));
+    let scheduler = Arc::new(Scheduler::new(Arc::new(dispatcher)));
+    registry.register(Arc::new(ScheduleCreateTool::new(scheduler)));
 
     let mut ctx = ServerContext::new(Arc::new(registry), worktree_root.clone());
 

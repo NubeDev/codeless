@@ -18,8 +18,10 @@
 //! string, because the LLM tool surface is easier to validate when
 //! the schema enumerates the fields.
 
+pub mod dispatch;
 pub mod scheduler;
 pub mod spec;
 
+pub use dispatch::{LogAction, PayloadDispatcher};
 pub use scheduler::{Action, ActionFn, ScheduleId, Scheduler};
 pub use spec::{Schedule, ScheduleTz, TimeOfDay, Weekday};

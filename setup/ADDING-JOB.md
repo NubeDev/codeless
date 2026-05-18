@@ -195,6 +195,14 @@ The server creates the directory and seeds **placeholder** SCOPE.md
 and WORKFLOW.md from a preset. You overwrite both with your real
 content via `write_job_file` after submit returns.
 
+> **If you are using the UI dialog instead of curl**, the dialog
+> defaults are wrong for real work. Before clicking **save as
+> draft**: flip **Workspace mode** from **In-repo** to **Worktree**,
+> and set **Branch** to `codeless/<job-name>`. The empty default
+> falls back to the repo's `default_branch` (`master` from
+> `add-repo`), which combined with In-repo will commit straight onto
+> your source tree's master. See Hard rule 1 below.
+
 ```sh
 # 0. find the repo id
 REPO_ID=$(curl -s -X POST http://127.0.0.1:7777/rpc/list_repos \
