@@ -19,8 +19,12 @@ use std::sync::Arc;
 
 use codeless_mcp::personas::open_sqlite_persona_source;
 use codeless_mcp::{serve_stdio, ServerContext};
+use codeless_tools::plan::{LogJobSpawner, PlanEngine, StartPlanRunAction, START_PLAN_RUN_KIND};
 use codeless_tools::schedule::{LogAction, PayloadDispatcher, Scheduler};
-use codeless_tools::tools::{BrowseFetchTool, HttpRequestTool, ScheduleCreateTool};
+use codeless_tools::tools::{
+    BrowseFetchTool, HttpRequestTool, PlanCancelTool, PlanCreateTool, PlanListTool, PlanStartTool,
+    ScheduleCreateTool,
+};
 use codeless_tools::ToolRegistry;
 use tracing_subscriber::EnvFilter;
 
@@ -54,7 +58,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // this crate (e.g. `codeless-runtime`) build their own dispatcher
     // with `enqueue_job` / `assistant_message` / etc. handlers and
     // pass it to a `Scheduler` they own.
-    let dispatcher = PayloadDispatcher::new(Arc::new(LogAction));
+    // PlanEngine lives next to the scheduler so a `start_plan_run`
+    // schedule fire can call into it without an extra IPC hop. The
+    // engine here is in-process and independent from the one the
+    // codeless-server process constructs (no shared state across
+    // processes in P1); the boundary is what this stage proves.
+    let plan_engine = Arc::new(PlanEngine::new(Arc::new(LogJobSpawner)));
+    registry.register(Arc::new(PlanCreateTool::new(plan_engine.clone())));
+    registry.register(Arc::new(PlanStartTool::new(plan_engine.clone())));
+    registry.register(Arc::new(PlanListTool::new(plan_engine.clone())));
+    registry.register(Arc::new(PlanCancelTool::new(plan_engine.clone())));
+
+    let mut dispatcher = PayloadDispatcher::new(Arc::new(LogAction));
+    dispatcher.register(
+        START_PLAN_RUN_KIND,
+        Arc::new(StartPlanRunAction::new(plan_engine.clone())),
+    );
     let scheduler = Arc::new(Scheduler::new(Arc::new(dispatcher)));
     registry.register(Arc::new(ScheduleCreateTool::new(scheduler)));
 

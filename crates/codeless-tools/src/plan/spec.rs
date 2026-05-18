@@ -99,11 +99,7 @@ impl PlanSpec {
     }
 }
 
-fn check_target(
-    t: &Transition,
-    known: &HashSet<&str>,
-    from: &StepId,
-) -> Result<(), PlanSpecError> {
+fn check_target(t: &Transition, known: &HashSet<&str>, from: &StepId) -> Result<(), PlanSpecError> {
     if let Transition::Step(target) = t {
         if !known.contains(target.as_str()) {
             return Err(PlanSpecError::UnknownTarget {
@@ -210,7 +206,10 @@ mod tests {
         assert_eq!(stop, Transition::Stop);
         let step_t: Transition = serde_json::from_str("\"next\"").unwrap();
         assert_eq!(step_t, Transition::Step(StepId::new("next")));
-        assert_eq!(serde_json::to_string(&Transition::Stop).unwrap(), "\"stop\"");
+        assert_eq!(
+            serde_json::to_string(&Transition::Stop).unwrap(),
+            "\"stop\""
+        );
         assert_eq!(
             serde_json::to_string(&Transition::Step(StepId::new("next"))).unwrap(),
             "\"next\""

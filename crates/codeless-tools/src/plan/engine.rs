@@ -109,7 +109,10 @@ impl Outcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanRunStatus {
     /// Waiting on `current_job` to terminate.
-    Running { current_step: StepId, current_job: JobId },
+    Running {
+        current_step: StepId,
+        current_job: JobId,
+    },
     /// Reached a `Transition::Stop` after a successful or failed step.
     Done { last_step: StepId },
     /// The spawner refused to start the next step.
@@ -322,6 +325,59 @@ impl PlanEngine {
     pub async fn run_state(&self, run_id: &PlanRunId) -> Option<PlanRunState> {
         self.inner.lock().await.runs.get(run_id).cloned()
     }
+
+    /// Snapshot of all registered plans. Used by the `plan.list` tool;
+    /// not load-bearing for the state machine.
+    pub async fn list_plans(&self) -> Vec<(PlanId, PlanSpec)> {
+        self.inner
+            .lock()
+            .await
+            .plans
+            .iter()
+            .map(|(id, spec)| (id.clone(), spec.clone()))
+            .collect()
+    }
+
+    /// Snapshot of all known PlanRuns (in-flight and terminal). Same
+    /// note as `list_plans`.
+    pub async fn list_runs(&self) -> Vec<(PlanRunId, PlanRunState)> {
+        self.inner
+            .lock()
+            .await
+            .runs
+            .iter()
+            .map(|(id, state)| (id.clone(), state.clone()))
+            .collect()
+    }
+
+    /// Cancel an in-flight run. Marks it `Failed` with a user-supplied
+    /// reason, drops the join index entry, and returns whether a
+    /// transition happened. In P1 the spawned Job itself is not torn
+    /// down — that needs a host-side runner-cancel call the engine
+    /// does not own. Documented limitation; the bookkeeping side is
+    /// enough for the tool surface.
+    pub async fn cancel_run(&self, run_id: &PlanRunId, reason: &str) -> bool {
+        let mut g = self.inner.lock().await;
+        let Inner {
+            runs, job_index, ..
+        } = &mut *g;
+        let Some(run) = runs.get_mut(run_id) else {
+            return false;
+        };
+        let PlanRunStatus::Running {
+            current_step,
+            current_job,
+        } = run.status.clone()
+        else {
+            return false;
+        };
+        job_index.remove(&current_job);
+        run.status = PlanRunStatus::Failed {
+            at_step: current_step,
+            error: format!("cancelled: {reason}"),
+        };
+        true
+    }
 }
 
 #[cfg(test)]
@@ -361,10 +417,11 @@ mod tests {
             step_id: &StepId,
             job_template: &str,
         ) -> Result<JobId, SpawnError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((plan_run_id.clone(), step_id.clone(), job_template.to_string()));
+            self.calls.lock().unwrap().push((
+                plan_run_id.clone(),
+                step_id.clone(),
+                job_template.to_string(),
+            ));
             match self.next_ids.lock().unwrap().remove(0) {
                 Ok(id) => Ok(id),
                 Err(e) => Err(e.into()),
@@ -415,7 +472,10 @@ mod tests {
         let engine = PlanEngine::new(spawner.clone());
 
         let pid = PlanId::new("linear");
-        engine.register_plan(pid.clone(), linear_spec()).await.unwrap();
+        engine
+            .register_plan(pid.clone(), linear_spec())
+            .await
+            .unwrap();
         let run = engine.start_run(&pid).await.unwrap();
 
         engine
@@ -446,7 +506,10 @@ mod tests {
         let engine = PlanEngine::new(spawner.clone());
 
         let pid = PlanId::new("linear");
-        engine.register_plan(pid.clone(), linear_spec()).await.unwrap();
+        engine
+            .register_plan(pid.clone(), linear_spec())
+            .await
+            .unwrap();
         let run = engine.start_run(&pid).await.unwrap();
 
         engine
@@ -470,7 +533,10 @@ mod tests {
         let engine = PlanEngine::new(spawner.clone());
 
         let pid = PlanId::new("linear");
-        engine.register_plan(pid.clone(), linear_spec()).await.unwrap();
+        engine
+            .register_plan(pid.clone(), linear_spec())
+            .await
+            .unwrap();
         let _ = engine.start_run(&pid).await.unwrap();
 
         engine
@@ -494,11 +560,17 @@ mod tests {
         let spawner = Arc::new(MockSpawner::new(vec![Ok(job_a)]));
         let engine = PlanEngine::new(spawner.clone());
         let pid = PlanId::new("linear");
-        engine.register_plan(pid.clone(), linear_spec()).await.unwrap();
+        engine
+            .register_plan(pid.clone(), linear_spec())
+            .await
+            .unwrap();
         let run = engine.start_run(&pid).await.unwrap();
 
         engine
-            .handle_event(&envelope(stranger, Event::JobCompleted { job_id: stranger }))
+            .handle_event(&envelope(
+                stranger,
+                Event::JobCompleted { job_id: stranger },
+            ))
             .await;
 
         // Run still parked on step a.
@@ -515,7 +587,10 @@ mod tests {
         let spawner = Arc::new(MockSpawner::new(vec![Ok(job_a)]));
         let engine = PlanEngine::new(spawner.clone());
         let pid = PlanId::new("linear");
-        engine.register_plan(pid.clone(), linear_spec()).await.unwrap();
+        engine
+            .register_plan(pid.clone(), linear_spec())
+            .await
+            .unwrap();
         let run = engine.start_run(&pid).await.unwrap();
 
         engine
@@ -536,7 +611,10 @@ mod tests {
         ]));
         let engine = PlanEngine::new(spawner.clone());
         let pid = PlanId::new("linear");
-        engine.register_plan(pid.clone(), linear_spec()).await.unwrap();
+        engine
+            .register_plan(pid.clone(), linear_spec())
+            .await
+            .unwrap();
         let run = engine.start_run(&pid).await.unwrap();
 
         engine
@@ -557,10 +635,7 @@ mod tests {
     async fn start_run_on_unknown_plan_errors() {
         let spawner = Arc::new(MockSpawner::new(vec![]));
         let engine = PlanEngine::new(spawner);
-        let err = engine
-            .start_run(&PlanId::new("nope"))
-            .await
-            .unwrap_err();
+        let err = engine.start_run(&PlanId::new("nope")).await.unwrap_err();
         assert!(matches!(err, PlanEngineError::UnknownPlan(_)));
     }
 
@@ -571,7 +646,10 @@ mod tests {
         let spawner = Arc::new(MockSpawner::new(vec![Ok(job_a), Ok(job_b)]));
         let engine = PlanEngine::new(spawner.clone());
         let pid = PlanId::new("linear");
-        engine.register_plan(pid.clone(), linear_spec()).await.unwrap();
+        engine
+            .register_plan(pid.clone(), linear_spec())
+            .await
+            .unwrap();
         let run = engine.start_run(&pid).await.unwrap();
 
         engine
