@@ -696,3 +696,310 @@ quietly settled by the first PR:
    has its own `template_snapshot`. Edits apply to the **next** Run.
    Make this visible in the UI: "your edits will apply on the next
    run."
+
+## TODO — user-initiated pause at a stage or todo boundary
+
+> Status: **not designed yet**. This section captures the shape of
+> the problem so the next agent picking it up doesn't start from a
+> blank page. Do not start work here until the (A) punch list has
+> landed — pausing is only valuable once the iterate loop exists,
+> because pause-without-edit is just "wait."
+
+### The problem
+
+Today the user has two coarse controls: let the run finish, or
+cancel it. There is no in-between. Specifically the user cannot:
+
+- "Stop after the current stage commits — I want to look at the
+  diff before stage N+1 starts."
+- "Stop after the current todo finishes — I want to read
+  `handover.md` before the agent moves to the next todo in the
+  same stage."
+- "I'm watching the closing trio tick over; pause after `checks`
+  so I can run the test suite myself before `docs` rewrites the
+  handover."
+
+REVIEW gates cover the **planned** boundaries — the ones the
+template author knew were risky. The pause control covers the
+**ad-hoc** boundaries — the ones the user only realises matter
+once they see the run in flight.
+
+### What "good" looks like
+
+Two pause modes, both **soft** (the runner finishes the in-flight
+unit of work before halting; no killing mid-edit):
+
+| Mode | Boundary the runner halts at | UI affordance |
+|---|---|---|
+| `pause-after-stage` | After the current stage's `git` closing-trio commit + push | `[pause after stage]` button on the run page |
+| `pause-after-todo` | After the current todo's commit (or, for non-committing todos, after the runtime records the todo as `[x]`) | `[pause after todo]` button on the active stage card |
+
+Both surface as a sticky banner on the run page once armed:
+"Will pause after `<stage|todo>` finishes." The user can
+disarm before the boundary fires (the button becomes
+`[cancel pause]`). Once the boundary fires, the run enters a new
+terminal-ish status — `paused` — that is **resumable** without
+restarting the worktree.
+
+The two-mode split matters because stages are slow (minutes) and
+todos are fast (seconds-to-a-minute). `pause-after-todo` is the
+fine-grained control that makes "watching the closing trio" a
+real loop; `pause-after-stage` is the coarse one that lets the
+user gate every stage transition by hand, effectively turning every
+stage into an ad-hoc REVIEW.
+
+### Resume semantics
+
+Resume is **not** a re-run. A resumed run:
+
+- Keeps the same worktree, branch, run id, event stream, cost
+  meter, wall-clock meter. The pause window does **not** count
+  against the wall-clock cap.
+- Reads `handover.md` and any `notes/*.md` the user added during
+  the pause — this is where the iterate loop ((A)) composes with
+  pause. "Pause, edit handover, drop a feedback note, resume" is
+  the canonical use.
+- Re-enters the runner at the next unit of work after the boundary
+  it halted at (next stage for `pause-after-stage`; next todo in
+  the same stage for `pause-after-todo`).
+- Cannot resume **across** a process restart in P1 — pausing
+  requires the runtime to hold the runner's in-memory state. P2
+  parity with the persistent run table (JOB-WORKFLOW (B)) is what
+  makes restart-survivable pause possible.
+
+A resumed run that hits a pause boundary again pauses again.
+Multiple consecutive pauses are explicitly supported — the user
+might pause, look, resume, look more, pause again.
+
+### Composition with REVIEW gates
+
+REVIEW gates and pauses are different mechanisms but visually
+indistinguishable to the user. The unified status should be:
+
+- `paused` — runner is halted at a boundary, awaiting either
+  user resume (pause) or user approval (REVIEW). The reason
+  (`pause-after-stage`, `pause-after-todo`, `review-gate`) is the
+  detail; the surface action (a `[resume]` / `[approve]` button) is
+  the same.
+- `paused (with edits)` — there are uncommitted edits in the
+  worktree from the user (template / handover / notes). Resume
+  commits them as a `pause-edit:` commit before re-entering the
+  runner, so the next stage starts with a clean tree and the
+  edits are visible in `git log`.
+
+### Open questions for this TODO
+
+1. **Mid-stage pause** — is there a third mode that halts the
+   runner *inside* a stage, before the next todo starts, by
+   sending a signal mid-`Tool::call`? Probably no for V1: tool
+   calls are atomic units in the runner's mental model, and
+   pausing inside one risks half-applied edits the agent can't
+   reason about on resume. Halt at todo boundaries only.
+2. **Pause vs. cancel** — what happens if the user clicks `cancel`
+   on a paused run? Same as cancelling a running run: the runner
+   exits, the worktree stays, the run's terminal status becomes
+   `cancelled`. The pause was just a deferral, not a state
+   change.
+3. **Pause and the cost/wall-clock caps** — the wall-clock cap
+   pauses with the runner (does not count). The cost cap is
+   already-spent money; it carries through unchanged. If the user
+   pauses to add notes and then runs into the cap on resume, the
+   runner stops with `cost-cap` like any other run.
+4. **Concurrent pauses across jobs** — pause is per-run; multiple
+   runs can be paused at once. The runtime already supports
+   multiple in-flight runs (concurrency cap), so this falls out
+   for free.
+5. **Telegram / Slack pause control** — should the bot adapters
+   expose a `/pause <job>` command? Probably yes once the in-
+   product UI is right, but design that *after* the UI affordances
+   ship — bot commands tend to ossify the surface they wrap.
+6. **What "boundary" means for the closing trio specifically** —
+   `pause-after-todo` while the runner is between `checks` and
+   `docs` is the high-value case. Confirm the runtime emits a
+   todo-completed event *before* dequeueing the next todo, so the
+   pause check has somewhere to fire.
+
+### Sequencing — where this lands in the (A) → (B) plan
+
+Sequence as **(A.5)**, between (A) and (B):
+
+- (A) ships the edit + iterate loop. Pause is useless without it
+  (the user has nothing to do during the pause).
+- (A.5) ships pause-after-stage. One new RPC (`pause_run`), one
+  new run status, one new UI button, one `pause-edit:` commit
+  path. Pause-after-stage only — pause-after-todo waits for B's
+  per-todo event surface.
+- (B) ships the Job/Run split + the per-todo event surface
+  pause-after-todo needs.
+- (A.5b), after (B): pause-after-todo + the bot-command surface.
+
+This sequencing means **do not** wire pause into the runner before
+(A) — the temptation to ship `pause` as a sibling of `cancel` is
+real, but a pause control with no edit affordances is a worse UX
+than no pause control at all (the user pauses, has nothing to do,
+resumes, and is annoyed).
+
+### What does *not* belong in this TODO
+
+- Auto-pause heuristics ("pause when cost > N", "pause when a
+  test fails"). Those are policy on top of the mechanism; design
+  the mechanism first, layer policy in a separate doc.
+- A queue of pre-armed pauses ("pause after stage 3 *and* stage
+  5"). One armed pause at a time; if the user wants multiple,
+  they re-arm after each resume. Keeps the UI honest.
+- Pause across Plans. A PlanRun pauses by pausing its current
+  step's Run — no first-class "pause Plan" yet. Revisit once
+  Plans have UI (P3).
+
+## TODO — precheck rules reference
+
+> Status: **rules exist in code, not in this doc**. Today the
+> precheck that runs at REVIEW gates auto-fails handovers for
+> reasons the template author cannot see anywhere in JOB-WORKFLOW,
+> JOB-MODEL, or JOB-DIR. The next agent debugging an auto-fail
+> ends up reading the runtime source to find out why. Document
+> the rules here so the contract is visible to the people writing
+> against it.
+
+### Why this matters
+
+The handover contract today is described as a **format** — the
+four sections (`Done` / `Next` / `What you need to know` /
+`Open questions`). The precheck enforces a **semantics** layer on
+top of that format, and the gap between the two is where surprise
+auto-fails come from. The fix is not to weaken the precheck — it
+is to make the rules first-class.
+
+### Rules to write up (best understood from observed behaviour)
+
+At minimum, this section needs:
+
+1. **`Done` ↔ diff cross-check.** Every path-shaped token under
+   `Done` must appear in the stage's git diff. The rule exists to
+   stop the agent from claiming work it didn't do. A survey stage
+   that reads `crates/codeless-tools/src/schedule/` and lists it
+   under `Done` auto-fails — those paths are not in the diff
+   because nothing was written there.
+2. **Section presence.** All four sections must be present, in
+   order, with the exact headings. An empty section is fine; a
+   missing one is a fail.
+3. **`Done` for read-only stages.** Stages that produced zero
+   source diff (survey, design, REVIEW-prep) put **the docs they
+   wrote** under `Done`, and **the things they read** under
+   `What you need to know`. The closing-trio `git` todo for these
+   stages is `committed handover.md only` — not `skipped — no
+   diff`, because the handover itself is the diff.
+4. Other rules the precheck enforces today that aren't in this
+   list yet — the next agent writing this section should grep the
+   runtime for the precheck implementation and lift the full set,
+   then come back and update this list.
+
+### What lands in code
+
+Nothing new — this is a docs-only TODO. The runtime already
+enforces these rules. The deliverable is a `### Precheck rules`
+subsection inside the existing "How feedback flows through the
+prompt assembler" section (or a sibling section if it grows past
+~30 lines), with each rule numbered so a precheck failure can
+reference `precheck rule #1` and the user / agent can look it up.
+
+### Out of scope for this TODO
+
+- Changing what the precheck enforces. The semantics are right;
+  only the documentation is wrong.
+- Per-rule failure messages in the UI. Worth doing but separate —
+  a precheck failure should link to the rule's anchor in this
+  doc; the wording lives in the runtime.
+
+## TODO — handover schema for read-only stages
+
+> Status: **convention exists by accident, not by design**. Survey,
+> investigation, and design stages produce no source diff but
+> still have to satisfy the `Done` / `Next` / `Know` /
+> `Open questions` contract. The current shape of `Done` ("things
+> I produced") doesn't fit them naturally, which is how the
+> auto-fail above happens.
+
+### The shape to fix
+
+For stages whose deliverable **is** the handover:
+
+- `Done` lists the handover sections written and the commit that
+  landed them. **No source paths.** If the stage wrote a long
+  worktree-root `handover.md` alongside the runtime-managed run
+  handover, list both.
+- `What you need to know` carries the actual content — what was
+  read, what was decided, what the next stage must not re-derive.
+  This is the part the next stage's prompt prefix is built from,
+  so it has to be where the substance lives.
+- `Next` names the next stage's first concrete unit of work
+  (file path + what to do), not "stage 2 should start." The
+  next-stage prompt is generic enough that "start on
+  `crates/x/src/y.rs` adding `Foo`" is more useful than the
+  stage title repeated.
+- The `git` closing-trio item is `committed handover.md only`
+  with the commit short SHA. The current "skipped — no diff"
+  wording is wrong for these stages because there *is* a diff —
+  the handover.
+
+### Sequencing
+
+Land this **at the same time** as the precheck-rules TODO above —
+the two reinforce each other. The precheck rules describe what
+fails; the handover-schema convention describes the shape that
+won't trip them.
+
+## TODO — commit message conventions
+
+> Status: **vocabulary exists but is undocumented**. Today the
+> codebase has at least these commit prefixes:
+> `stage N: ...`, `update template: ...`, `update handover: ...`,
+> `scaffold job: ...`, `update job-file: ...`. With the (A) /
+> (A.5) / (B) work above this grows by `pause-edit:` and likely
+> `plan-run: ...`. The bots and the UI will both want to render
+> these consistently.
+
+### What to write
+
+A short table at the top of JOB-MODEL.md or here:
+
+| Prefix | Source | Meaning |
+|---|---|---|
+| `stage N: <title>` | Job runner closing-trio `git` | Stage N landed. |
+| `update template: <name>` | `update_job_template` RPC | User edited the template between runs. |
+| `update handover: <name>` | `update_job_handover` RPC | User edited the handover between runs. |
+| `scaffold job: <name>` | `submit_job` | Initial seed of a job dir. |
+| `update job-file: <name>/<file>` | `write_job_file` RPC | Overlay of SCOPE / WORKFLOW / etc. |
+| `pause-edit: <name>` | Resume from `paused (with edits)` | User edits absorbed at resume time. |
+
+### Why this is worth doing now
+
+The bot adapters render commit messages to the user (Slack /
+Telegram). Without a documented prefix vocabulary they will
+either ignore the structure (bad) or invent their own rendering
+per prefix (worse — drift). Documenting first means the bot
+adapters can render by lookup instead of pattern-matching.
+
+### Out of scope
+
+- Enforcing the prefix in a pre-commit hook. The runtime writes
+  these directly; user-driven commits via `mani` follow the
+  convention by habit. A hook is overkill until we see drift.
+
+## TODO — pause × Plan composition
+
+> Status: **one-sentence note**, listed here so it doesn't get
+> forgotten when pause and Plans both land. Stays small.
+
+A PlanRun pauses by pausing its current step's Run. The Plan
+engine sees the step's Run enter `paused`; it does **not** spawn
+the next step until the Run reaches a terminal status
+(`completed` / `failed` / `cancelled`). Resuming the step's Run
+resumes the PlanRun implicitly. There is no first-class
+"pause Plan" verb — that would mean pausing between steps, which
+is what `on_success`-pointing-to-`stop` already gives you if the
+template author wants it explicit.
+
+Revisit when Plans get UI (P3) — at that point a `[pause plan]`
+button on the PlanRun page might be worth the extra surface, but
+not before.
