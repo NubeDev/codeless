@@ -126,12 +126,27 @@ export class MockRpcClient implements RpcClient {
   // the UI's empty-state path is the default in tests; tests that
   // need a populated table call `seedAttachedWorkspaces()`.
   private attachedWorkspaces: AttachedWorkspace[] = [];
+  // Per-workspace list of running job ids the next `detach_workspace`
+  // call should surface as a `WorkspaceError::RunningJobs` payload.
+  // Cleared when the caller commits to `stop` or `leave-running` so the
+  // dialog's two-step flow can be exercised end-to-end against the
+  // mock without the test having to fake the conflict by hand.
+  private runningJobsByWorkspace: Map<string, string[]> = new Map();
 
   /** Test seam: pre-populate the in-memory attached-workspaces list so
    *  a `list_workspaces` call returns a non-empty roster without
    *  having to round-trip through `attach_workspace`. */
   public seedAttachedWorkspaces(workspaces: AttachedWorkspace[]) {
     this.attachedWorkspaces = [...workspaces];
+  }
+
+  /** Test seam: pin a set of "running" job ids onto a workspace so the
+   *  next `detach_workspace { on_running_jobs: "refuse" }` call throws
+   *  the structured `WorkspaceError::RunningJobs` shape the dialog
+   *  parses. Subsequent calls with `"stop"` / `"leave-running"` clear
+   *  the seed and detach as normal. */
+  public seedRunningJobsForWorkspace(repoId: string, jobs: string[]) {
+    this.runningJobsByWorkspace.set(repoId, [...jobs]);
   }
   /// Last `agent_chat` request the mock observed. Public so UI tests
   /// that exercise the composer can assert on threaded fields
@@ -1085,6 +1100,21 @@ export class MockRpcClient implements RpcClient {
 
       case "detach_workspace": {
         const a = args as RpcArgs<"detach_workspace">;
+        const running = this.runningJobsByWorkspace.get(a.repo_id);
+        if (running && running.length > 0) {
+          if (a.on_running_jobs === "refuse") {
+            // Mirror the wire shape of `WorkspaceError::RunningJobs`
+            // closely enough that the dialog's parser recognises the
+            // variant tag and extracts the job list.
+            throw new RpcError(
+              "conflict",
+              JSON.stringify({ "running-jobs": { jobs: running } }),
+            );
+          }
+          // `stop` / `leave-running` both consume the seed: the server
+          // would have either cancelled or detached around them.
+          this.runningJobsByWorkspace.delete(a.repo_id);
+        }
         const before = this.attachedWorkspaces.length;
         this.attachedWorkspaces = this.attachedWorkspaces.filter(
           (w) => w.repo_id !== a.repo_id,
