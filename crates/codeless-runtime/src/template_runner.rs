@@ -1048,7 +1048,7 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
-                                failure_class: Some(FailureClass::RunnerError),
+                                failure_class: Some(classify_runner_failure_reason(&reason)),
                                 failure_detail: Some(truncate_failure_detail(&reason)),
                             },
                         )
@@ -1491,7 +1491,7 @@ impl Runner for TemplateRunner {
                                 Event::StageCompleted {
                                     stage_id,
                                     status: StageStatus::Failed,
-                                    failure_class: Some(FailureClass::RunnerError),
+                                    failure_class: Some(classify_runner_failure_reason(&reason)),
                                     failure_detail: Some(truncate_failure_detail(&reason)),
                                 },
                             )
@@ -1576,7 +1576,7 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
-                                failure_class: Some(FailureClass::RunnerError),
+                                failure_class: Some(classify_runner_failure_reason(&reason)),
                                 failure_detail: Some(truncate_failure_detail(&reason)),
                             },
                         )
@@ -2050,6 +2050,54 @@ async fn emit_auto_bypass(
     .await;
 }
 
+/// Map a stage's terminal failure-`reason` string onto a
+/// `FailureClass`. SQLite infrastructure errors (`SQLITE_FULL`,
+/// `SQLITE_IOERR`, `SQLITE_CORRUPT`, `SQLITE_CANTOPEN`,
+/// `SQLITE_READONLY` — see `DOCS/AUTO-BYPASS-DECISIONS.md` Q1) must
+/// route to `InfrastructureError` so the policy halts instead of
+/// auto-bypassing a host-side failure that retrying the same SQL on
+/// the same disk cannot survive. The signal we have at the
+/// `RunnerError` emit sites is the formatted `reason: String`; sqlx's
+/// `SqliteError` Display surfaces the extended result code as
+/// `(code: NNN) message`, and the primary code is the low byte of
+/// the extended code. Everything else stays `RunnerError`.
+pub(crate) fn classify_runner_failure_reason(reason: &str) -> FailureClass {
+    if let Some(code) = extract_sqlite_extended_code(reason) {
+        return classify_sqlite_extended_code(code);
+    }
+    FailureClass::RunnerError
+}
+
+/// Pull the integer that follows the literal `(code: ` prefix that
+/// sqlx-sqlite's `SqliteError` Display emits. Returns `None` for any
+/// reason string that does not carry the marker, which is the
+/// overwhelmingly common case — the helper is intentionally narrow so
+/// a future runner panic that happens to contain the substring in
+/// prose does not accidentally re-classify as infra.
+fn extract_sqlite_extended_code(reason: &str) -> Option<i32> {
+    const MARKER: &str = "(code: ";
+    let start = reason.find(MARKER)?;
+    let tail = &reason[start + MARKER.len()..];
+    let end = tail.find(')')?;
+    tail[..end].trim().parse::<i32>().ok()
+}
+
+/// Decide on the **primary** SQLite result code (low byte of the
+/// extended code). The infra set is locked in
+/// `DOCS/AUTO-BYPASS-DECISIONS.md` Q1; expanding it is a SCOPE-level
+/// change, not a one-line tweak here.
+fn classify_sqlite_extended_code(extended: i32) -> FailureClass {
+    match extended & 0xff {
+        // SQLITE_READONLY (8), SQLITE_IOERR (10), SQLITE_CORRUPT (11),
+        // SQLITE_FULL (13), SQLITE_CANTOPEN (14). Extended siblings
+        // (e.g. SQLITE_IOERR_FSTAT = 1546, primary 10) collapse onto
+        // the primary code by the mask above and are intentionally
+        // covered.
+        8 | 10 | 11 | 13 | 14 => FailureClass::InfrastructureError,
+        _ => FailureClass::RunnerError,
+    }
+}
+
 /// Short summary string for `failure_detail`. Trims to ~200 chars on
 /// a char boundary so the SQLite column stays cheap to render and the
 /// SSE envelope is small; the full transcript is on disk and the UI
@@ -2334,6 +2382,140 @@ mod tests {
             .join("\n");
         let yaml = format!("name: t\ngoal: test goal\nstages:\n{stage_yaml}\n");
         JobTemplate::parse_yaml(&yaml).expect("template fixture parses")
+    }
+
+    /// Pin every locked-in infra primary code from
+    /// `DOCS/AUTO-BYPASS-DECISIONS.md` Q1 to `InfrastructureError`,
+    /// every exclusion-list code to `RunnerError`, and a couple of
+    /// real-world extended-code observations to confirm the
+    /// primary-code mask is applied (and not bypassed by a future
+    /// "match the exact integer" refactor).
+    #[test]
+    fn classify_runner_failure_reason_maps_sqlite_codes() {
+        // Primary-code infra set: SQLITE_READONLY, SQLITE_IOERR,
+        // SQLITE_CORRUPT, SQLITE_FULL, SQLITE_CANTOPEN.
+        for code in [8, 10, 11, 13, 14] {
+            let reason = format!("(code: {code}) host disk failure");
+            assert_eq!(
+                classify_runner_failure_reason(&reason),
+                FailureClass::InfrastructureError,
+                "primary code {code} must classify as InfrastructureError",
+            );
+        }
+
+        // Extended siblings collapse onto the same primary code:
+        //   1546 = SQLITE_IOERR_FSTAT     -> primary 10
+        //   2826 = SQLITE_IOERR_READ      -> primary 10
+        //   1034 = SQLITE_READONLY_RECOVERY -> primary 8
+        //    779 = SQLITE_CORRUPT_VTAB    -> primary 11
+        //   3850 = SQLITE_CANTOPEN_DIRTYWAL -> primary 14
+        for code in [1546, 2826, 1034, 779, 3850] {
+            let reason = format!("(code: {code}) extended-code surface");
+            assert_eq!(
+                classify_runner_failure_reason(&reason),
+                FailureClass::InfrastructureError,
+                "extended code {code} must classify by its primary byte",
+            );
+        }
+
+        // Explicit exclusion list — runner-side bugs that auto-bypass
+        // is correct to retry against, plus SQLITE_NOTADB which the
+        // SCOPE decision keeps in RunnerError on purpose.
+        for code in [1, 5, 6, 19, 20, 21, 25, 26] {
+            let reason = format!("(code: {code}) runner-side fault");
+            assert_eq!(
+                classify_runner_failure_reason(&reason),
+                FailureClass::RunnerError,
+                "primary code {code} must stay RunnerError",
+            );
+        }
+
+        // Non-sqlx reasons keep the default classification so the
+        // helper can be applied unconditionally at every emit site.
+        assert_eq!(
+            classify_runner_failure_reason("verify step 2 failed (exit 1)"),
+            FailureClass::RunnerError,
+        );
+        assert_eq!(
+            classify_runner_failure_reason("auto-bypass thrashing: trio docs failed"),
+            FailureClass::RunnerError,
+        );
+
+        // A token shaped like the marker but not parseable as an
+        // integer must not flip the classification. Guards against a
+        // future log line that happens to contain the literal
+        // "(code: " prose.
+        assert_eq!(
+            classify_runner_failure_reason("(code: not-a-number) sneaky"),
+            FailureClass::RunnerError,
+        );
+    }
+
+    /// Confirm the classifier also works against a real sqlx
+    /// `Error::Database` formatted through Display — this is the
+    /// surface the runner adapters actually emit when a store call
+    /// fails inside `adapter.run` and the reason is `format!("{e}")`.
+    /// Uses a tiny inline `DatabaseError` impl so the test does not
+    /// have to provoke a live SQLITE_FULL on the filesystem.
+    #[test]
+    fn classify_runner_failure_reason_matches_sqlx_display() {
+        use sqlx::error::{DatabaseError, ErrorKind};
+        use std::borrow::Cow;
+        use std::error::Error as StdError;
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct FakeSqliteError {
+            code: i32,
+        }
+
+        impl fmt::Display for FakeSqliteError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                // Mirror sqlx-sqlite's Display verbatim: this is the
+                // string the runner adapters end up wrapping in their
+                // RunnerOutcome::Failed reason.
+                write!(f, "(code: {}) database or disk is full", self.code)
+            }
+        }
+
+        impl StdError for FakeSqliteError {}
+
+        impl DatabaseError for FakeSqliteError {
+            fn message(&self) -> &str {
+                "database or disk is full"
+            }
+            fn code(&self) -> Option<Cow<'_, str>> {
+                Some(format!("{}", self.code).into())
+            }
+            fn as_error(&self) -> &(dyn StdError + Send + Sync + 'static) {
+                self
+            }
+            fn as_error_mut(&mut self) -> &mut (dyn StdError + Send + Sync + 'static) {
+                self
+            }
+            fn into_error(self: Box<Self>) -> Box<dyn StdError + Send + Sync + 'static> {
+                self
+            }
+            fn kind(&self) -> ErrorKind {
+                ErrorKind::Other
+            }
+        }
+
+        let err = sqlx::Error::Database(Box::new(FakeSqliteError { code: 13 }));
+        let reason = format!("{err}");
+        assert_eq!(
+            classify_runner_failure_reason(&reason),
+            FailureClass::InfrastructureError,
+            "sqlx Display of SQLITE_FULL must round-trip through the reason mapper",
+        );
+
+        let err = sqlx::Error::Database(Box::new(FakeSqliteError { code: 19 }));
+        let reason = format!("{err}");
+        assert_eq!(
+            classify_runner_failure_reason(&reason),
+            FailureClass::RunnerError,
+            "SQLITE_CONSTRAINT must stay RunnerError",
+        );
     }
 
     #[test]
