@@ -1,0 +1,35 @@
+name: plugin-substrate-runtimes
+goal: |
+  Land plugin-substrate items 9 (WASM runtime flavour), 10 (Module-federated
+  plugin UI with R6), and the manifest-only seam for item 11 (process
+  runtime, design only) on master via codeless/plugin-substrate-runtimes,
+  plus the plugin-MCP contribution surface from PLUGIN-MCP.md. Reuse from
+  rubix is per-file and port-not-depend, exactly as TOOLS-PORTING.md
+  ported moxxy. The notes plugin (substrate item #0) is the test bed:
+  one Tool source compiling to both builtin and WASM flavours, with a
+  Module-Federation AssistantPanel remote, registered for MCP under
+  notes.notes_append. Process flavour ships zero runtime code — only
+  the manifest seam so a future plugin can declare it without breaking.
+  The estimating plugin remains gated on substrate items 2 + 4 and is
+  out of scope for this job.
+
+stages:
+  - "stage 1: resolve open questions (OQ-WASM-1, -2, -4, -5; OQ-MCP-1; OQ-UI-1; final v0.1 slot vocab) under SCOPE.md §Open questions and propagate the resolutions into the four plugin docs; no implementation"
+  - "stage 2: scaffold codeless-plugin-sdk (mobile-safe) with the rubix-lifted compile_error! mutual-exclusion guard for native/wasm/process features, the ToolBehavior trait, the #[derive(Tool)] macro (schemars-driven), and the register! macro stub; the existing notes plugin keeps compiling unchanged via a thin shim"
+  - "stage 3: scaffold codeless-tool-wit with tool.wit (codeless tool ABI per PLUGIN-WASM.md), commit the wit-bindgen-generated bindings in-tree (OQ-WASM-2 resolution), and a doc-only Rust smoke test that loads the WIT and round-trips a manifest"
+  - "stage 4: scaffold codeless-plugin-host-wasm (host-only) — Wasmtime engine, WASI-p2 component-model linker, per-call instantiation, HostPolicy fuel/memory/wall-clock caps; expose a WasmAdapter implementing the runtime-adapter trait introduced in this stage in codeless-tools"
+  - REVIEW M-WASM-A — codeless-plugin-sdk + codeless-tool-wit + codeless-plugin-host-wasm crates compile, the runtime-adapter table is registered in codeless-tools, no host-only types leaked into mobile-safe builds (verify via the iOS/Android cargo check matrix); no plugin loads anything yet
+  - "stage 5: port codeless-plugin-notes onto codeless-plugin-sdk — same source, two flavours (builtin via cargo build, WASM via cargo build --target wasm32-wasip2); plugin_substrate_e2e::notes_plugin_loads_and_seeds_persona_addressable_by_thread parameterised over both flavours, both green"
+  - "stage 6: implement WASM capability sandbox — default-deny capability set; [runtimes.capabilities] manifest parsing; attachments R/W via the host-implemented codeless:attachments/store WIT interface; plugin_wasm_e2e::wasm_plugin_cannot_open_host_file + plugin_wasm_e2e::wasm_plugin_attachment_round_trip green"
+  - "stage 7: implement fuel + memory + wall-clock caps; plugin_wasm_e2e::wasm_plugin_respects_fuel_cap green within the 200ms deadline; manifest accepts but the plugin cannot self-raise limits"
+  - REVIEW M-WASM-B — WASM runtime flavour end-to-end; notes plugin runs as WASM under the substrate e2e; all three plugin_wasm_e2e tests green; PLUGIN-WASM.md "Status" section updated with the as-shipped capability set and any open questions still genuinely open
+  - "stage 8: fork rubix extension-ui-sdk into ui/codeless-ui/packages/plugin-ui-sdk/, rename @rubix/agent-client→@codeless/rpc and @rubix/ui-core→@codeless/ui-core, drop rubix git history; every ported file carries // codeless-ported-from: <rubix-path>@<sha>; package builds and the rubix-derived editable-collection.test.tsx passes under codeless's vitest config"
+  - "stage 9: implement @codeless/plugin-ui-sdk: mf.ts (slot vocabulary as resolved in stage 1), registration.ts, PluginSlot React component, rsbuild-shared.ts (singleton version pin source of truth), eslint-config.ts enforcing R6"
+  - "stage 10: host shell wiring in ui/codeless-ui/ — rpc.plugins.list() at boot, MF host registration of each enabled plugin remote, <PluginSlot id=…/> mounted at the resolved slot sites; the host renders a fallback when a slot has no contributors"
+  - "stage 11: server REST surface — GET /plugins reflecting the registry, GET /plugins/<id>/ui/* via ServeDir rooted at the plugin's ui/ subdir; bearer-token auth on the listing, ServeDir matching the rest of the UI bundle's posture"
+  - "stage 12: notes plugin ui/ subtree — minimal AssistantPanel remote (list recent notes via rpc.tools.call(notes.list_recent, …)) built with the plugin's rsbuild config that imports @codeless/plugin-ui-sdk/rsbuild-shared; plugin_ui_e2e::host_loads_plugin_remote_and_mounts_assistant_panel + plugin_ui_e2e::mismatched_react_fails_loudly + plugin_ui_e2e::r6_eslint_rejects_forbidden_imports green"
+  - REVIEW M-UI — MF UI surface end-to-end; R6 added to codeless/CLAUDE.md and enforced by the ESLint rule; PLUGIN-UI-FEDERATION.md "Slot vocabulary" updated to as-shipped; workspace CLAUDE.md "Pointers" updated
+  - "stage 13: codeless-server manifest parser — [[runtimes]] kind ∈ {builtin, wasm, process} with kind-specific blocks; [runtimes.capabilities]; [runtimes.policy]; two-phase scan lifted from rubix extensions-host so a partial failure cannot half-populate registries; plugin_substrate_e2e::process_runtime_declared_today_loads_failed_with_structured_reason green"
+  - "stage 14: MCP-contributions surface — [contributes.mcp] parsing with strict validation; tool_call + rest_proxy dispatch kinds; parity check at load (tool_call.tool_id is a registered tool, rest_proxy.path is a registered REST route); audit event extended with plugin_id + dispatch; plugin_tools_enabled off-switch; plugin_mcp_e2e::tool_call_dispatch_round_trip + parity_rule_rejects_missing_twin + plugin_tools_off_switch_hides_listings green"
+  - REVIEW M-MCP — MCP contribution surface end-to-end with the parity + static-description invariants enforced; PLUGIN-MCP.md "Open questions" updated with OQ-MCP-1 resolution
+  - "stage 15: documentation + handover — PLUGIN-SUBSTRATE.md Status rows for items 9, 10, 11; resolved-OQ updates across the four plugin docs; CODELESS.md 'What works today' lines for the three landed surfaces; final cargo test --workspace + cargo clippy --workspace --all-targets -- -D warnings + cargo fmt --check + pnpm -C ui/codeless-ui lint + pnpm -C ui/codeless-ui test green; one paragraph in the job handover summarising what's deferred (process implementation, mcp_forward, WASM kv, hot reload, mobile MF)"
