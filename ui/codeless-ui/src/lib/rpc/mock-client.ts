@@ -14,6 +14,7 @@ import type {
   Since,
 } from "./methods";
 import type {
+  AttachedWorkspace,
   Event,
   EventEnvelope,
   FsEntry,
@@ -121,6 +122,17 @@ export class MockRpcClient implements RpcClient {
   // surface renders against the mock with the same row identities as
   // a real host.
   private personas: Map<string, Persona> = seedPersonas();
+  // Mirrors `attached_workspaces` on the server. Empty by default so
+  // the UI's empty-state path is the default in tests; tests that
+  // need a populated table call `seedAttachedWorkspaces()`.
+  private attachedWorkspaces: AttachedWorkspace[] = [];
+
+  /** Test seam: pre-populate the in-memory attached-workspaces list so
+   *  a `list_workspaces` call returns a non-empty roster without
+   *  having to round-trip through `attach_workspace`. */
+  public seedAttachedWorkspaces(workspaces: AttachedWorkspace[]) {
+    this.attachedWorkspaces = [...workspaces];
+  }
   /// Last `agent_chat` request the mock observed. Public so UI tests
   /// that exercise the composer can assert on threaded fields
   /// (`context.job_refs`, `mode`, etc.) without the mock having to
@@ -1044,6 +1056,60 @@ export class MockRpcClient implements RpcClient {
         // honest (no proposals across any repo) so a test that forgets
         // to override sees an empty worklist rather than mock data.
         return { entries: [] } as RpcResultOf<M>;
+      }
+
+      case "list_workspaces":
+        return { workspaces: [...this.attachedWorkspaces] } as RpcResultOf<M>;
+
+      case "attach_workspace": {
+        const a = args as RpcArgs<"attach_workspace">;
+        const repo = this.repos.find((r) => r.id === a.repo_id);
+        if (!repo) throw new RpcError("not_found", `repo ${a.repo_id}`);
+        const fs_root = a.fs_root_override ?? repo.local_path;
+        const existing = this.attachedWorkspaces.find(
+          (w) => w.repo_id === a.repo_id,
+        );
+        if (existing) {
+          throw new RpcError("conflict", `repo ${a.repo_id} already attached`);
+        }
+        const workspace = {
+          repo_id: repo.id,
+          repo_name: repo.name,
+          fs_root,
+          attached_at: Date.now(),
+          default_runner: repo.default_runner ?? null,
+        };
+        this.attachedWorkspaces.push(workspace);
+        return { workspace } as RpcResultOf<M>;
+      }
+
+      case "detach_workspace": {
+        const a = args as RpcArgs<"detach_workspace">;
+        const before = this.attachedWorkspaces.length;
+        this.attachedWorkspaces = this.attachedWorkspaces.filter(
+          (w) => w.repo_id !== a.repo_id,
+        );
+        if (this.attachedWorkspaces.length === before) {
+          throw new RpcError("not_found", `workspace ${a.repo_id}`);
+        }
+        return null as RpcResultOf<M>;
+      }
+
+      case "validate_workspace_path": {
+        const a = args as RpcArgs<"validate_workspace_path">;
+        const already_attached = this.attachedWorkspaces.some(
+          (w) => w.fs_root === a.path,
+        );
+        return {
+          canonical: a.path,
+          is_dir: true,
+          is_git_repo: true,
+          default_branch: "main",
+          already_attached,
+          readable: true,
+          writable: true,
+          problems: [],
+        } as RpcResultOf<M>;
       }
 
       case "delete_persona": {
