@@ -9,6 +9,8 @@ goal: |
   event, resume_job) — this job adds the scheduling layer, not a new
   pause primitive.
 
+docs:
+  - CHAT.md
 stages:
   - "design: extend template.yaml schema with a pause_points: list (each: stage ordinal or stage name; optional todo ordinal or todo kind from TRIO; position before|after; optional reason string). Record the grammar, examples, and the parser's rejection rules in DOCS/SCOPED-PAUSE-POINTS.md and SCOPE.md before any code (S)"
   - REVIEW the schema + rejection rules before implementation begins
