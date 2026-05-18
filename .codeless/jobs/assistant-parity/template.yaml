@@ -9,6 +9,8 @@ goal: |
   REVIEW gates are in .codeless/jobs/assistant-parity/WORKFLOW.md.
   Read both before starting stage 1.
 
+docs:
+  - CHAT.md
 stages:
   - W2a embed JobComposer in the assistant draft_job action card
   - W2b round-trip test for planner-seeded draft through user edits to submit_job
