@@ -28,11 +28,13 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use codeless_types::{Event, StageId, TaskId};
+use codeless_types::{Event, StageId, TaskId, TodoKind, TodoStatus};
 
 use crate::runner::RunnerContext;
+use crate::store::SqliteStore;
 use crate::template::VerifyStep;
 use crate::time::now_ms;
+use crate::trio_emitter::{emit_trio_completed, emit_trio_started};
 
 /// One step's terminal outcome from the shell. `duration_ms` is the
 /// wall-clock cost of the spawn so the UI's per-gate row can surface
@@ -73,7 +75,17 @@ pub async fn run_verify(
     stage_id: StageId,
     steps: &[VerifyStep],
     exec: &dyn VerifyExec,
+    store: Option<&SqliteStore>,
 ) -> VerifyOutcome {
+    // Flip the runtime-injected `Checks` trio row. The store argument
+    // is optional so legacy test harnesses (and any future caller that
+    // wants to drive verify without a SQLite store wired in) can pass
+    // `None` and get the old behaviour; production callers thread the
+    // job's store through so the stage-completion gate has a row to
+    // resolve.
+    if let Some(store) = store {
+        emit_trio_started(ctx, store, task_id, stage_id, TodoKind::Checks).await;
+    }
     let mut failure: Option<(u32, i32)> = None;
     for (idx, step) in steps.iter().enumerate() {
         let step_index = idx as u32;
@@ -143,13 +155,21 @@ pub async fn run_verify(
         }
     }
 
-    match failure {
+    let outcome = match failure {
         Some((step_index, exit_code)) => VerifyOutcome::Failed {
             step_index,
             exit_code,
         },
         None => VerifyOutcome::Passed,
+    };
+    if let Some(store) = store {
+        let trio_status = match outcome {
+            VerifyOutcome::Passed => TodoStatus::Done,
+            VerifyOutcome::Failed { .. } => TodoStatus::Failed,
+        };
+        emit_trio_completed(ctx, store, task_id, stage_id, TodoKind::Checks, trio_status).await;
     }
+    outcome
 }
 
 /// Stage-level summary returned to the caller. The caller uses
@@ -262,7 +282,7 @@ mod tests {
             cursor: tokio::sync::Mutex::new(0),
         };
 
-        let outcome = run_verify(&ctx, task_id, stage_id, &steps, &exec).await;
+        let outcome = run_verify(&ctx, task_id, stage_id, &steps, &exec, None).await;
         assert_eq!(
             outcome,
             VerifyOutcome::Failed {
@@ -382,7 +402,7 @@ mod tests {
         };
 
         assert_eq!(
-            run_verify(&ctx, task_id, stage_id, &steps, &exec).await,
+            run_verify(&ctx, task_id, stage_id, &steps, &exec, None).await,
             VerifyOutcome::Passed
         );
 
@@ -405,5 +425,330 @@ mod tests {
                 .count(),
             2,
         );
+    }
+
+    #[tokio::test]
+    async fn passing_run_flips_checks_trio_to_done() {
+        // With a `Some(store)` argument, `run_verify` must publish
+        // `TodoUpdated(InProgress)` for the `Checks` trio row before
+        // the first step and `TodoCompleted(Done)` after the run
+        // succeeds. The recorder is the consumer in production; here
+        // we drive the bus directly and assert the wire envelopes.
+        use codeless_types::{
+            GitAuth, Job, JobId, JobStatus, Repo, RepoId, Stage, StageStatus, Task, TaskStatus,
+            Todo, TodoId, TodoKind, TodoStatus, UnixMillis, WorkspaceMode,
+        };
+        let bus = fresh_bus().await;
+        let mut sub = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+        let ctx = RunnerContext {
+            job_id: JobId::new(),
+            stage_id: None,
+            bus: Arc::clone(&bus),
+            worktree_path: None,
+            cancel: CancellationToken::new(),
+        };
+        let stage_id = StageId::new();
+        let task_id = TaskId::new();
+
+        // Seed the trio row through a dedicated store (sharing the
+        // bus's pool would conflate event rows with store rows).
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let store = crate::store::SqliteStore::new(pool);
+        let repo = Repo {
+            id: RepoId::new(),
+            name: "r".into(),
+            clone_url: "u".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp".into(),
+            git_auth: GitAuth::Ssh {
+                key_path: "/tmp/k".into(),
+            },
+            concurrency_cap: None,
+            default_runner: None,
+            created_at: UnixMillis(0),
+            updated_at: UnixMillis(0),
+        };
+        store.insert_repo(&repo).await.unwrap();
+        let job = Job {
+            id: ctx.job_id,
+            repo_id: repo.id,
+            status: JobStatus::Running,
+            stop_reason: None,
+            template_yaml: None,
+            prompt: None,
+            runner: "mock".into(),
+            branch: "b".into(),
+            workspace_mode: WorkspaceMode::Worktree,
+            worktree_path: None,
+            cost_cap_cents: codeless_types::CostCents(0),
+            wall_clock_cap_ms: 0,
+            cost_cents: codeless_types::CostCents(0),
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            auto_bypass_policy: None,
+            pending_operator_comment: None,
+            precheck_override_once: false,
+            started_at: None,
+            ended_at: None,
+            created_at: UnixMillis(0),
+        };
+        store.insert_job(&job).await.unwrap();
+        let stage = Stage {
+            id: stage_id,
+            job_id: job.id,
+            ordinal: 0,
+            name: "s".into(),
+            status: StageStatus::Running,
+            verify_cmd: None,
+            started_at: None,
+            ended_at: None,
+            session_id: None,
+            goal: None,
+            acceptance: None,
+            last_activity_at: None,
+            archived: false,
+            persona_id: None,
+            failure_class: None,
+            failure_detail: None,
+            bypassed_at: None,
+            bypassed_reason: None,
+        };
+        store.insert_stage(&stage).await.unwrap();
+        store
+            .insert_task_minimal(&Task {
+                id: task_id,
+                stage_id,
+                ordinal: 0,
+                status: TaskStatus::Running,
+                depends_on: vec![],
+                lease_holder: None,
+                lease_expires_at: None,
+                cost_cents: codeless_types::CostCents(0),
+                input_tokens: 0,
+                output_tokens: 0,
+                started_at: None,
+                ended_at: None,
+            })
+            .await
+            .unwrap();
+        let checks_id = TodoId::new();
+        store
+            .insert_todo(&Todo {
+                id: checks_id,
+                task_id,
+                ordinal: u32::MAX - 2,
+                title: "checks".into(),
+                status: TodoStatus::Pending,
+                kind: TodoKind::Checks,
+                created_at: UnixMillis(0),
+                started_at: None,
+                ended_at: None,
+            })
+            .await
+            .unwrap();
+
+        let steps = vec![step("check")];
+        let exec = CannedExec {
+            results: vec![VerifyStepResult {
+                exit_code: 0,
+                duration_ms: 5,
+                tail: String::new(),
+            }],
+            cursor: tokio::sync::Mutex::new(0),
+        };
+        let outcome = run_verify(&ctx, task_id, stage_id, &steps, &exec, Some(&store)).await;
+        assert_eq!(outcome, VerifyOutcome::Passed);
+
+        let mut got: Vec<Event> = Vec::new();
+        while let Some(Ok(EventEnvelope { event, .. })) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), sub.next())
+                .await
+                .ok()
+                .flatten()
+        {
+            got.push(event);
+        }
+        let started = got
+            .iter()
+            .position(|e| {
+                matches!(e, Event::TodoUpdated { todo_id, status }
+                if *todo_id == checks_id && *status == TodoStatus::InProgress)
+            })
+            .expect("InProgress event missing");
+        let completed = got
+            .iter()
+            .position(|e| {
+                matches!(e, Event::TodoCompleted { todo_id, status }
+                if *todo_id == checks_id && *status == TodoStatus::Done)
+            })
+            .expect("Done event missing");
+        assert!(
+            started < completed,
+            "InProgress must precede Done; got {got:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_run_flips_checks_trio_to_failed() {
+        // Mirror of the passing test: a step exit_code != 0 must end
+        // the trio row in `Failed`, not `Done` — the stage-completion
+        // gate would otherwise treat a red verify run as resolved.
+        use codeless_types::{
+            GitAuth, Job, JobId, JobStatus, Repo, RepoId, Stage, StageStatus, Task, TaskStatus,
+            Todo, TodoId, TodoKind, TodoStatus, UnixMillis, WorkspaceMode,
+        };
+        let bus = fresh_bus().await;
+        let mut sub = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+        let ctx = RunnerContext {
+            job_id: JobId::new(),
+            stage_id: None,
+            bus: Arc::clone(&bus),
+            worktree_path: None,
+            cancel: CancellationToken::new(),
+        };
+        let stage_id = StageId::new();
+        let task_id = TaskId::new();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let store = crate::store::SqliteStore::new(pool);
+        let repo = Repo {
+            id: RepoId::new(),
+            name: "r".into(),
+            clone_url: "u".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp".into(),
+            git_auth: GitAuth::Ssh {
+                key_path: "/tmp/k".into(),
+            },
+            concurrency_cap: None,
+            default_runner: None,
+            created_at: UnixMillis(0),
+            updated_at: UnixMillis(0),
+        };
+        store.insert_repo(&repo).await.unwrap();
+        let job = Job {
+            id: ctx.job_id,
+            repo_id: repo.id,
+            status: JobStatus::Running,
+            stop_reason: None,
+            template_yaml: None,
+            prompt: None,
+            runner: "mock".into(),
+            branch: "b".into(),
+            workspace_mode: WorkspaceMode::Worktree,
+            worktree_path: None,
+            cost_cap_cents: codeless_types::CostCents(0),
+            wall_clock_cap_ms: 0,
+            cost_cents: codeless_types::CostCents(0),
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            auto_bypass_policy: None,
+            pending_operator_comment: None,
+            precheck_override_once: false,
+            started_at: None,
+            ended_at: None,
+            created_at: UnixMillis(0),
+        };
+        store.insert_job(&job).await.unwrap();
+        let stage = Stage {
+            id: stage_id,
+            job_id: job.id,
+            ordinal: 0,
+            name: "s".into(),
+            status: StageStatus::Running,
+            verify_cmd: None,
+            started_at: None,
+            ended_at: None,
+            session_id: None,
+            goal: None,
+            acceptance: None,
+            last_activity_at: None,
+            archived: false,
+            persona_id: None,
+            failure_class: None,
+            failure_detail: None,
+            bypassed_at: None,
+            bypassed_reason: None,
+        };
+        store.insert_stage(&stage).await.unwrap();
+        store
+            .insert_task_minimal(&Task {
+                id: task_id,
+                stage_id,
+                ordinal: 0,
+                status: TaskStatus::Running,
+                depends_on: vec![],
+                lease_holder: None,
+                lease_expires_at: None,
+                cost_cents: codeless_types::CostCents(0),
+                input_tokens: 0,
+                output_tokens: 0,
+                started_at: None,
+                ended_at: None,
+            })
+            .await
+            .unwrap();
+        let checks_id = TodoId::new();
+        store
+            .insert_todo(&Todo {
+                id: checks_id,
+                task_id,
+                ordinal: u32::MAX - 2,
+                title: "checks".into(),
+                status: TodoStatus::Pending,
+                kind: TodoKind::Checks,
+                created_at: UnixMillis(0),
+                started_at: None,
+                ended_at: None,
+            })
+            .await
+            .unwrap();
+
+        let steps = vec![step("check")];
+        let exec = CannedExec {
+            results: vec![VerifyStepResult {
+                exit_code: 1,
+                duration_ms: 5,
+                tail: "boom".into(),
+            }],
+            cursor: tokio::sync::Mutex::new(0),
+        };
+        let outcome = run_verify(&ctx, task_id, stage_id, &steps, &exec, Some(&store)).await;
+        assert!(matches!(outcome, VerifyOutcome::Failed { .. }));
+
+        let mut got: Vec<Event> = Vec::new();
+        while let Some(Ok(EventEnvelope { event, .. })) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), sub.next())
+                .await
+                .ok()
+                .flatten()
+        {
+            got.push(event);
+        }
+        assert!(got
+            .iter()
+            .any(|e| matches!(e, Event::TodoCompleted { todo_id, status }
+            if *todo_id == checks_id && *status == TodoStatus::Failed)));
     }
 }

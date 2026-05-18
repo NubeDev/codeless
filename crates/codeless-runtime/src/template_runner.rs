@@ -996,6 +996,14 @@ impl Runner for TemplateRunner {
                     if let Some(ref mcp) = self.mcp_binary_path {
                         adapter = adapter.with_mcp_binary(mcp.clone());
                     }
+                    // Thread the store through so the adapter can flip
+                    // the runtime-injected `Docs` trio row around the
+                    // handover write. Without this the stage-completion
+                    // gate would block on a `Pending` `Docs` row even
+                    // when the handover landed cleanly.
+                    if let Some(store) = self.store.as_ref() {
+                        adapter = adapter.with_store(Arc::clone(store));
+                    }
                     adapter.run(sub_ctx).await
                 };
                 match outcome {
