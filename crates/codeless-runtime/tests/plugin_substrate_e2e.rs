@@ -275,9 +275,14 @@ async fn wasm_notes_plugin() -> Arc<WasmPlugin> {
     }
     let path = ensure_notes_wasm_built();
     let runtime = Arc::new(WasmRuntime::new().expect("wasm runtime"));
-    let plugin = WasmPlugin::load(runtime, &path, HostPolicy::defaults())
-        .await
-        .expect("load notes.wasm component");
+    let plugin = WasmPlugin::load(
+        runtime,
+        &path,
+        HostPolicy::defaults(),
+        codeless_plugin_host_wasm::LoadOptions::default(),
+    )
+    .await
+    .expect("load notes.wasm component");
     let arc = Arc::new(plugin);
     // Race-tolerant init: if a concurrent test populated the cell
     // first, fall through to the populated value and let the local

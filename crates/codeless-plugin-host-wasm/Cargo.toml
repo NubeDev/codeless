@@ -43,3 +43,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+# Componentise the `tests/fixtures/*` core wasm modules into
+# WASI-p2 components for the `plugin_wasm_e2e` integration tests.
+# Pinned to wasmtime 30's wasmparser minor for the same reason
+# `codeless-runtime/Cargo.toml` pins it on its own e2e suite.
+wit-component = "=0.212.0"

@@ -56,3 +56,9 @@ dist/
 Thumbs.db
 job-01KRSKS8XYAW47SR6F1GXAWH9F
 target-wasm/
+
+# Detached-workspace fixture crates under
+# crates/codeless-plugin-host-wasm/tests/fixtures/ each emit their
+# own Cargo.lock on first build. They are intentionally outside the
+# codeless workspace and the lockfile is not a reviewed artefact.
+crates/codeless-plugin-host-wasm/tests/fixtures/*/Cargo.lock

@@ -17,7 +17,8 @@ pub mod model_family;
 pub mod registry;
 
 pub use manifest::{
-    DataDir, ManifestError, MigrationsDir, PluginManifest, PluginMetadata, PluginPersona,
+    DataDir, ManifestError, MigrationsDir, PluginCapabilities, PluginManifest, PluginMetadata,
+    PluginPersona, PluginRuntime, PluginRuntimeKind,
 };
 pub use migrations::{
     check_sql as check_migration_sql, load_migrations_dir, MigrationCheckError, PluginMigration,

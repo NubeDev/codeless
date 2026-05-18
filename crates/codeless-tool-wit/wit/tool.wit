@@ -90,3 +90,26 @@ interface tool {
 world plugin {
     export tool;
 }
+
+// Companion world: a plugin that needs scoped attachment access
+// imports `codeless:attachments/store`. The capability gate that
+// admits this world's import set is `[runtimes.capabilities]
+// attachments = ["read", "write"]` (or a subset); a plugin built
+// against `plugin-with-attachments` and loaded without the
+// capability fails at component instantiation, per
+// `PLUGIN-WASM.md § Capability sandbox`'s "fail at the linker, not
+// the call boundary" rule.
+world plugin-with-attachments {
+    export tool;
+    import codeless:attachments/store@0.1.0;
+}
+
+// Companion world: a plugin that wants to reach host filesystem
+// paths imports `codeless:fs/probe`. Gated by
+// `[runtimes.capabilities] fs = [...]`; the default-deny posture
+// keeps the probe unlinked, which is the load-time signal exercised
+// by `plugin_wasm_e2e::wasm_plugin_cannot_open_host_file`.
+world plugin-with-fs {
+    export tool;
+    import codeless:fs/probe@0.1.0;
+}

@@ -25,3 +25,27 @@ dir = "migrations"
 
 [data]
 dir = "domains"
+
+# Substrate-runtimes stage 6 (PLUGIN-WASM.md § Manifest extension):
+# notes ships both flavours. Codeless config (`plugins.notes.runtime
+# = "wasm"`) picks the active one at server start; default is
+# `builtin` if available, else `wasm`. The capability set is empty
+# because the tool body returns the documented "wire-up pending"
+# error today; PS-ACCEPT lands the attachments/notes-table writer.
+# An empty capability set means the per-plugin linker (default-deny)
+# does not link `codeless:attachments/store` or `codeless:fs/probe`,
+# so the wasm build of this plugin can only export `tool` and reach
+# nothing else from the host.
+[[runtimes]]
+kind  = "builtin"
+crate = "codeless-plugin-notes"
+
+[[runtimes]]
+kind     = "wasm"
+artefact = "wasm/notes.wasm"
+
+[runtimes.capabilities]
+attachments = []
+fs          = []
+http        = []
+wall_clock  = false

@@ -30,9 +30,109 @@ pub struct PluginManifest {
     pub personas: Vec<PluginPersona>,
     pub migrations: MigrationsDir,
     pub data: DataDir,
+    /// Per `PLUGIN-WASM.md § Manifest extension (item 6 addendum)`: a
+    /// plugin declares one or more `[[runtimes]]` blocks. v0.1
+    /// accepts at most one entry; if both a `builtin` and a `wasm`
+    /// block are present the manifest parser fails (the operator
+    /// must pick one via codeless config, not by shipping both).
+    /// Empty when the manifest omits the block, which is the
+    /// legacy shape -- a plugin without a `[[runtimes]]` entry is
+    /// treated as builtin for backward compatibility with the
+    /// pre-substrate-runtimes notes plugin.
+    pub runtimes: Vec<PluginRuntime>,
     /// Absolute path of the directory the manifest was loaded from.
     /// `None` when parsed from an in-memory string (test path).
     pub root: Option<PathBuf>,
+}
+
+/// One `[[runtimes]]` entry. The `capabilities` block is the
+/// load-bearing piece for the WASM-flavour capability sandbox; the
+/// builtin flavour ignores it (capabilities only apply to host-
+/// linker-mediated access). Validated at parse time so a
+/// malformed entry fails at `load_plugin` rather than at the first
+/// agent turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginRuntime {
+    pub kind: PluginRuntimeKind,
+    /// For `kind = "builtin"`: the crate that ships the
+    /// registration entry. For `kind = "wasm"`: ignored. Optional
+    /// so an operator-installed `.wasm` artefact does not need a
+    /// crate name. Aliased to TOML `crate` to match the doc
+    /// example (`[[runtimes]] kind = "builtin" crate = "..."`),
+    /// while keeping the Rust field name out of the reserved-word
+    /// space.
+    #[serde(default, rename = "crate")]
+    pub crate_name: Option<String>,
+    /// For `kind = "wasm"`: the relative path under the plugin
+    /// directory of the `.wasm` component artefact. For
+    /// `kind = "builtin"`: ignored.
+    #[serde(default)]
+    pub artefact: Option<PathBuf>,
+    /// `[runtimes.capabilities]` sub-block. Defaults to the empty
+    /// default-deny set; a manifest that omits the block gets
+    /// `Capabilities::default()` which keeps every host-implemented
+    /// interface unlinked from the per-plugin linker.
+    #[serde(default)]
+    pub capabilities: PluginCapabilities,
+}
+
+/// Runtime flavour discriminant. The doc allows three kinds in
+/// v0.1: `builtin`, `wasm`, and the reserved-but-not-implemented
+/// `process`. Strict-validate per `PLUGIN-WASM.md § Manifest
+/// extension`: unknown values are a parse error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginRuntimeKind {
+    Builtin,
+    Wasm,
+    /// Reserved for PLUGIN-PROCESS.md item 11; the manifest parser
+    /// accepts the value so a future plugin can declare it without
+    /// breaking, but the registry rejects it at load time since no
+    /// host adapter ships in this stage. Manifest-only seam per the
+    /// job spec.
+    Process,
+}
+
+/// `[runtimes.capabilities]` block. Mirrors the doc's grant
+/// vocabulary one-for-one. Every field defaults to the empty /
+/// false default-deny value; the host crate's
+/// `codeless_plugin_host_wasm::Capabilities` is the typed mirror.
+///
+/// Limits like `fuel`, `memory_max_bytes`, `deadline_ms` are
+/// **deliberately absent** here per OQ-WASM-5: the plugin manifest
+/// cannot enlarge its own sandbox. The codeless `config.toml`
+/// `[plugins.<id>]` block carries those overrides, and a plugin
+/// `[runtimes.capabilities]` block that tries to set any of them
+/// trips `deny_unknown_fields` -> manifest parse error.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginCapabilities {
+    /// Host filesystem path prefixes the plugin's
+    /// `codeless:fs/probe.read-file` host implementation may open.
+    /// Empty -> the interface is not linked at all (default-deny);
+    /// a non-empty list links the interface and the host
+    /// implementation gates each requested path against it.
+    #[serde(default)]
+    pub fs: Vec<String>,
+    /// Outbound-HTTP grants. Reserved for the future `codeless:
+    /// http/client` interface; today any non-empty value parses
+    /// successfully but no host implementation backs it.
+    #[serde(default)]
+    pub http: Vec<String>,
+    /// Whether the plugin may import `wasi:clocks/wall-clock`.
+    /// Stored as an explicit bool because the doc treats it as a
+    /// single switch, not a list.
+    #[serde(default)]
+    pub wall_clock: bool,
+    /// Attachment scopes. Accepted values: `"read"` and `"write"`.
+    /// The host's
+    /// `codeless_plugin_host_wasm::Capabilities::attachments_*`
+    /// fields are derived from this list; an empty list keeps the
+    /// `codeless:attachments/store` interface out of the linker
+    /// entirely.
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +244,36 @@ pub enum ManifestError {
     DuplicatePersona(String),
     #[error("no personas declared in plugin.toml")]
     NoPersonas,
+    /// Per `PLUGIN-WASM.md § Manifest extension`: a plugin may
+    /// declare at most one active runtime per server process. If a
+    /// manifest ships both a `builtin` and a `wasm` block, codeless
+    /// config picks one at server start -- but the manifest itself
+    /// must not encode the ambiguity. Two entries of the same kind
+    /// is also a flat error.
+    /// Per `PLUGIN-WASM.md § Manifest extension`: a plugin may
+    /// ship more than one `[[runtimes]]` entry (e.g. both a
+    /// `builtin` crate and a `wasm` artefact), but each `kind` may
+    /// appear at most once -- the codeless config picks the active
+    /// runtime by kind, not by ordinal position.
+    #[error("plugin runtime kind `{0:?}` appears more than once in `[[runtimes]]`")]
+    DuplicateRuntimeKind(PluginRuntimeKind),
+    /// `[runtimes.capabilities] attachments` accepts only `"read"`
+    /// and `"write"`. Anything else is a manifest parse error.
+    #[error(
+        "runtime capabilities.attachments[{index}] = `{value}` is not one of \"read\" / \"write\""
+    )]
+    BadAttachmentsScope { index: usize, value: String },
+    /// The `process` runtime kind is a manifest-only seam in v0.1
+    /// (no host adapter ships). A plugin that declares it loads
+    /// successfully at parse time -- so the operator gets a clear
+    /// "this plugin would need a process runtime" signal from
+    /// `codeless plugin info` -- but the registry refuses to wire
+    /// it up. Surfaced here so a future `load_plugin` can return
+    /// it without manifest-parse changes.
+    #[error(
+        "plugin runtime `process` is reserved (PLUGIN-PROCESS.md); v0.1 ships no host adapter"
+    )]
+    ProcessRuntimeReserved,
 }
 
 /// On-disk TOML shape. The public manifest layers parsed-and-validated
@@ -159,6 +289,8 @@ struct OnDisk {
     migrations: Option<MigrationsDir>,
     #[serde(default)]
     data: Option<DataDir>,
+    #[serde(default, rename = "runtimes")]
+    runtimes: Vec<PluginRuntime>,
 }
 
 impl PluginManifest {
@@ -204,11 +336,27 @@ impl PluginManifest {
             }
         }
 
+        let mut seen_kinds = std::collections::HashSet::new();
+        for runtime in &parsed.runtimes {
+            if !seen_kinds.insert(runtime.kind) {
+                return Err(ManifestError::DuplicateRuntimeKind(runtime.kind));
+            }
+            for (idx, scope) in runtime.capabilities.attachments.iter().enumerate() {
+                if scope != "read" && scope != "write" {
+                    return Err(ManifestError::BadAttachmentsScope {
+                        index: idx,
+                        value: scope.clone(),
+                    });
+                }
+            }
+        }
+
         Ok(Self {
             plugin: parsed.plugin,
             personas: parsed.personas,
             migrations: parsed.migrations.unwrap_or_default(),
             data: parsed.data.unwrap_or_default(),
+            runtimes: parsed.runtimes,
             root,
         })
     }
@@ -352,6 +500,91 @@ default_attachments_policy  = "inline-thread-scoped"
         );
         let err = PluginManifest::from_str(&bad, None).unwrap_err();
         assert!(matches!(err, ManifestError::DuplicatePersona(_)));
+    }
+
+    #[test]
+    fn parses_runtimes_block_with_capabilities() {
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"wasm/notes.wasm\"\n\
+             [runtimes.capabilities]\n\
+             attachments = [\"read\", \"write\"]\n\
+             fs = [\"/etc/codeless/\"]\n\
+             http = []\n\
+             wall_clock = false\n",
+        );
+        let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
+        assert_eq!(m.runtimes.len(), 1);
+        let r = &m.runtimes[0];
+        assert_eq!(r.kind, PluginRuntimeKind::Wasm);
+        assert_eq!(
+            r.artefact.as_deref(),
+            Some(std::path::Path::new("wasm/notes.wasm"))
+        );
+        assert_eq!(r.capabilities.attachments, vec!["read", "write"]);
+        assert_eq!(r.capabilities.fs, vec!["/etc/codeless/".to_string()]);
+        assert!(!r.capabilities.wall_clock);
+    }
+
+    #[test]
+    fn defaults_runtimes_block_to_empty_default_deny() {
+        // A manifest without `[[runtimes]]` parses cleanly -- the
+        // pre-substrate-runtimes notes plugin shipped that shape and
+        // we keep it loadable. Default-deny is "no runtimes
+        // declared", which the registry treats as builtin in stage
+        // 13's hookup.
+        let m = PluginManifest::from_str(SAMPLE, None).expect("valid manifest");
+        assert!(m.runtimes.is_empty());
+    }
+
+    #[test]
+    fn rejects_unknown_capability_field() {
+        // OQ-WASM-5: the plugin manifest cannot enlarge its sandbox.
+        // `fuel` belongs on the codeless config, not the manifest,
+        // so a `[runtimes.capabilities] fuel = ...` entry trips
+        // `deny_unknown_fields` here.
+        let bad = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"x.wasm\"\n\
+             [runtimes.capabilities]\nfuel = 1\n",
+        );
+        let err = PluginManifest::from_str(&bad, None).unwrap_err();
+        assert!(matches!(err, ManifestError::Parse(_)));
+    }
+
+    #[test]
+    fn rejects_bad_attachments_scope() {
+        let bad = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"x.wasm\"\n\
+             [runtimes.capabilities]\nattachments = [\"admin\"]\n",
+        );
+        let err = PluginManifest::from_str(&bad, None).unwrap_err();
+        assert!(matches!(err, ManifestError::BadAttachmentsScope { .. }));
+    }
+
+    #[test]
+    fn rejects_duplicate_runtime_kind() {
+        let bad = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"a.wasm\"\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"b.wasm\"\n",
+        );
+        let err = PluginManifest::from_str(&bad, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::DuplicateRuntimeKind(PluginRuntimeKind::Wasm),
+        ));
+    }
+
+    #[test]
+    fn process_kind_parses_for_future_seam() {
+        // PLUGIN-PROCESS.md item 11 is design-only in this job; the
+        // manifest still parses so a future plugin can declare it.
+        // The registry refuses to wire it up until item 11 ships.
+        let extended = format!("{SAMPLE}\n[[runtimes]]\nkind = \"process\"\n",);
+        let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
+        assert_eq!(m.runtimes[0].kind, PluginRuntimeKind::Process);
     }
 
     #[test]

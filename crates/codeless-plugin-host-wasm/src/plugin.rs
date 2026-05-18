@@ -8,20 +8,29 @@
 //! gets a fresh [`wasmtime::Store`], fresh fuel, fresh memory
 //! limiter, and is dropped on return per the per-call-instantiation
 //! rule in `PLUGIN-WASM.md § Instance lifecycle`.
+//!
+//! The capability sandbox (`PLUGIN-WASM.md § Capability sandbox`)
+//! is carried on this struct: the per-plugin [`Linker`] is built
+//! once from the manifest's [`Capabilities`] and reused across
+//! calls. An empty capability set produces a linker with **no**
+//! host-implemented imports beyond the default-deny WASI ctx, so a
+//! component whose imports the capability set does not authorise
+//! fails to instantiate.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use tokio::time::timeout;
-use wasmtime::component::Component;
+use wasmtime::component::{Component, Linker};
 use wasmtime::{Store, StoreLimitsBuilder};
 
 use codeless_tools::runtime_adapter::{AdapterError, AdapterToolManifest, ToolCallOutcome};
 
 use crate::bindings::Plugin;
+use crate::capabilities::Capabilities;
 use crate::error::{HostError, Result};
 use crate::policy::HostPolicy;
-use crate::runtime::{PluginStoreState, WasmRuntime};
+use crate::runtime::{AttachmentStoreHandle, PluginStoreState, WasmRuntime};
 
 /// One WASM plugin artefact + the runtime it dispatches against.
 ///
@@ -30,30 +39,73 @@ use crate::runtime::{PluginStoreState, WasmRuntime};
 /// export. Subsequent dispatches do not re-instantiate to read the
 /// manifest -- that would couple the registry's hot-path lookup to
 /// guest code.
+///
+/// `capabilities`, `attachments`, and `linker` together carry the
+/// load-time capability sandbox: the linker was built against this
+/// plugin's manifest grants and reused per call, while the
+/// `attachments` handle is the host-side implementation the linker
+/// dispatches `codeless:attachments/store` calls into.
 pub struct WasmPlugin {
     runtime: Arc<WasmRuntime>,
     component: Component,
     policy: HostPolicy,
+    capabilities: Capabilities,
+    attachments: Option<AttachmentStoreHandle>,
+    linker: Linker<PluginStoreState>,
     manifests: Vec<AdapterToolManifest>,
+}
+
+/// Optional dependencies a host-loaded plugin needs alongside its
+/// artefact path: capability set parsed from the manifest's
+/// `[runtimes.capabilities]` block, and (when `attachments` is
+/// non-empty) the host-side [`AttachmentStore`]. Optional `Default`
+/// produces an empty default-deny load -- which is what backed-off
+/// `WasmPlugin::load(runtime, path, policy, Default::default())`
+/// gets without anyone listing capabilities. Carrying these on a
+/// dedicated struct keeps [`WasmPlugin::load`] from drifting toward
+/// a long positional signature.
+///
+/// [`AttachmentStore`]: crate::attachments::AttachmentStore
+#[derive(Default)]
+pub struct LoadOptions {
+    pub capabilities: Capabilities,
+    pub attachments: Option<AttachmentStoreHandle>,
 }
 
 impl WasmPlugin {
     /// Load a plugin from a `.wasm` file on disk, eagerly compiling
     /// the component and reading its manifest list. A failure here
     /// is a plugin-load failure (substrate `LoadedPlugin::Failed`),
-    /// not a per-call failure.
+    /// not a per-call failure. A `default()` [`LoadOptions`] gives
+    /// the default-deny capability set -- which is the load-time
+    /// gate `plugin_wasm_e2e::wasm_plugin_cannot_open_host_file`
+    /// exercises against a component that imports
+    /// `codeless:fs/probe`.
     pub async fn load(
         runtime: Arc<WasmRuntime>,
         path: impl AsRef<Path>,
         policy: HostPolicy,
+        opts: LoadOptions,
     ) -> Result<Self> {
         let component = Component::from_file(runtime.engine(), path)
             .map_err(|e| HostError::InvalidComponent(format!("{e:#}")))?;
-        let manifests = describe(&runtime, &component, &policy).await?;
+        let linker = runtime.build_linker(&opts.capabilities)?;
+        let manifests = describe(
+            &runtime,
+            &component,
+            &linker,
+            &policy,
+            &opts.capabilities,
+            opts.attachments.clone(),
+        )
+        .await?;
         Ok(Self {
             runtime,
             component,
             policy,
+            capabilities: opts.capabilities,
+            attachments: opts.attachments,
+            linker,
             manifests,
         })
     }
@@ -66,12 +118,25 @@ impl WasmPlugin {
         runtime: Arc<WasmRuntime>,
         component: Component,
         policy: HostPolicy,
+        opts: LoadOptions,
     ) -> Result<Self> {
-        let manifests = describe(&runtime, &component, &policy).await?;
+        let linker = runtime.build_linker(&opts.capabilities)?;
+        let manifests = describe(
+            &runtime,
+            &component,
+            &linker,
+            &policy,
+            &opts.capabilities,
+            opts.attachments.clone(),
+        )
+        .await?;
         Ok(Self {
             runtime,
             component,
             policy,
+            capabilities: opts.capabilities,
+            attachments: opts.attachments,
+            linker,
             manifests,
         })
     }
@@ -82,6 +147,10 @@ impl WasmPlugin {
 
     pub fn policy(&self) -> HostPolicy {
         self.policy
+    }
+
+    pub fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
     }
 
     /// Dispatch one tool call. Per `PLUGIN-WASM.md § Instance
@@ -108,8 +177,14 @@ impl WasmPlugin {
     }
 
     async fn call_inner(&self, req: AdapterRequest<'_>) -> Result<ToolCallOutcome> {
-        let mut store = build_store(&self.runtime, self.policy)?;
-        let plugin = Plugin::instantiate_async(&mut store, &self.component, self.runtime.linker())
+        let mut store = build_store(
+            &self.runtime,
+            self.policy,
+            req.thread_id.to_string(),
+            &self.capabilities,
+            self.attachments.clone(),
+        )?;
+        let plugin = Plugin::instantiate_async(&mut store, &self.component, &self.linker)
             .await
             .map_err(|e| HostError::InvalidComponent(format!("instantiate: {e:#}")))?;
 
@@ -146,15 +221,18 @@ pub struct AdapterRequest<'a> {
     pub thread_id: &'a str,
 }
 
-fn build_store(runtime: &WasmRuntime, policy: HostPolicy) -> Result<Store<PluginStoreState>> {
-    // `usize::try_from` because `StoreLimitsBuilder::memory_size`
-    // takes `usize`; the policy holds `u64` to fail-fast at config
-    // parse on a 32-bit host. See `policy.rs` for the rationale.
+fn build_store(
+    runtime: &WasmRuntime,
+    policy: HostPolicy,
+    thread_id: String,
+    capabilities: &Capabilities,
+    attachments: Option<AttachmentStoreHandle>,
+) -> Result<Store<PluginStoreState>> {
     let mem = usize::try_from(policy.memory_max_bytes).map_err(|_| {
         HostError::Engine("memory_max_bytes exceeds usize::MAX on this host".into())
     })?;
     let limits = StoreLimitsBuilder::new().memory_size(mem).build();
-    let state = PluginStoreState::new(limits);
+    let state = PluginStoreState::new(limits, thread_id, capabilities, attachments);
     let mut store = Store::new(runtime.engine(), state);
     store.limiter(|s| &mut s.limits);
     store
@@ -166,10 +244,18 @@ fn build_store(runtime: &WasmRuntime, policy: HostPolicy) -> Result<Store<Plugin
 async fn describe(
     runtime: &WasmRuntime,
     component: &Component,
+    linker: &Linker<PluginStoreState>,
     policy: &HostPolicy,
+    capabilities: &Capabilities,
+    attachments: Option<AttachmentStoreHandle>,
 ) -> Result<Vec<AdapterToolManifest>> {
-    let mut store = build_store(runtime, *policy)?;
-    let plugin = Plugin::instantiate_async(&mut store, component, runtime.linker())
+    // `describe` runs with an empty thread-scope: a guest that
+    // tried to mint an attachment here would have nowhere
+    // meaningful to scope it. The host impls treat the empty
+    // thread-id like any other; describing typically does not call
+    // host imports, so this is just a defensive default.
+    let mut store = build_store(runtime, *policy, String::new(), capabilities, attachments)?;
+    let plugin = Plugin::instantiate_async(&mut store, component, linker)
         .await
         .map_err(|e| HostError::InvalidComponent(format!("instantiate-for-describe: {e:#}")))?;
     let list = plugin
@@ -226,12 +312,6 @@ fn classify_trap(err: &wasmtime::Error) -> Option<&'static str> {
     let trap = err.downcast_ref::<wasmtime::Trap>()?;
     match trap {
         wasmtime::Trap::OutOfFuel => Some("fuel"),
-        // Wasmtime reports `memory_max_bytes` exceeded as a
-        // `Trap::MemoryOutOfBounds` once the store limiter aborts
-        // a growth; that overlaps with genuine out-of-bounds
-        // accesses, so we conservatively map it to `memory`. The
-        // distinction does not matter to the dispatcher -- both
-        // are `limit-exceeded` to the agent loop.
         wasmtime::Trap::MemoryOutOfBounds => Some("memory"),
         _ => None,
     }
@@ -245,17 +325,20 @@ mod tests {
     async fn invalid_component_bytes_fail_load() {
         let runtime = Arc::new(WasmRuntime::new().expect("engine builds"));
         let tmp = tempfile_bytes(b"not a wasm component");
-        match WasmPlugin::load(runtime, &tmp, HostPolicy::defaults()).await {
+        match WasmPlugin::load(
+            runtime,
+            &tmp,
+            HostPolicy::defaults(),
+            LoadOptions::default(),
+        )
+        .await
+        {
             Err(HostError::InvalidComponent(_)) => {}
             Err(other) => panic!("unexpected error: {other}"),
             Ok(_) => panic!("garbage bytes parsed as a component"),
         }
     }
 
-    /// `Trap::OutOfFuel` translates straight to the `fuel` reason
-    /// the adapter surfaces to the dispatcher. Pinned as a unit
-    /// test so a wasmtime upgrade that renames `OutOfFuel` lights
-    /// up here before stage 7's end-to-end fuel test runs.
     #[test]
     fn classify_trap_maps_known_variants() {
         let fuel = wasmtime::Error::from(wasmtime::Trap::OutOfFuel);

@@ -1014,6 +1014,7 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
+ "wit-component 0.212.0",
 ]
 
 [[package]]

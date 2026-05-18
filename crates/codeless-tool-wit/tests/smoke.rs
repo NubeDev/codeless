@@ -22,12 +22,23 @@ use codeless_tool_wit::{PACKAGE_ID, TOOL_WIT};
 
 #[test]
 fn wit_parses_and_declares_expected_package() {
+    // Resolve from the whole `wit/` directory rather than a single
+    // file. Stage 6 of plugin-substrate-runtimes added cross-package
+    // imports (`codeless:attachments/store`, `codeless:fs/probe`)
+    // referenced from new worlds in `tool.wit`; their packages live
+    // under `wit/deps/` per the wit-parser convention. Pushing just
+    // `TOOL_WIT` as a string would fail to resolve those imports.
+    let wit_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wit");
     let mut resolve = wit_parser::Resolve::default();
-    let pkg_id = resolve
-        .push_str("tool.wit", TOOL_WIT)
-        .expect("tool.wit parses as a valid WIT package");
+    let (pkg_id, _) = resolve
+        .push_dir(&wit_dir)
+        .expect("wit/ directory parses as a WIT package tree");
 
     let pkg = &resolve.packages[pkg_id];
+    // Silence the now-unused-direct-import warning for `TOOL_WIT`:
+    // the WIT-source constant still exists for downstream
+    // consumers; the smoke test just doesn't need it any more.
+    let _: &str = TOOL_WIT;
     let name = pkg.name.to_string();
     assert_eq!(
         name, PACKAGE_ID,
