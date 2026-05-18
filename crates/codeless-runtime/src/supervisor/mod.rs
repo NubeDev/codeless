@@ -51,14 +51,20 @@
 //! `get_job_state`; richer LLM-driven dispatch is the next stage's
 //! problem.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use codeless_types::{ChatTransport, Event, JobId, JobStatus};
+use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use tokio::task::JoinHandle;
 
 use crate::event_bus::{EventBus, SubscribeFilter};
-use crate::store::SqliteStore;
+use crate::store::supervisor_goals::{GoalCondition, SupervisorGoal};
+use crate::store::{MarkOutcome, SqliteStore};
+use crate::time::now_ms;
 
 #[cfg(feature = "supervisor-claude")]
 pub mod claude;
@@ -124,6 +130,13 @@ async fn run_lifecycle_only(bus: Arc<EventBus>, job_id: JobId) {
     }
 }
 
+/// Per-goal arm carried by the supervisor's timer set. The future
+/// resolves to the goal it represents — `SupervisorGoal` is `Clone`
+/// in spirit (every field is owned by value), so the arm can move the
+/// goal into the future and hand it back at fire time without a
+/// secondary lookup.
+type GoalArm = Pin<Box<dyn Future<Output = SupervisorGoal> + Send>>;
+
 async fn run_with_tools(tools: Tools, job_id: JobId) {
     let bus = tools.bus_arc();
     let mut stream = match bus
@@ -137,42 +150,140 @@ async fn run_with_tools(tools: Tools, job_id: JobId) {
         }
     };
     tracing::debug!(%job_id, "supervisor (with tools) started");
-    while let Some(item) = stream.next().await {
-        let env = match item {
-            Ok(env) => env,
-            Err(_e) => {
-                tracing::debug!(%job_id, "supervisor stream error; exiting");
-                return;
-            }
-        };
-        match env.event {
-            Event::JobCompleted { .. } => {
-                post_terminal_summary(&tools, job_id, JobStatus::Completed).await;
-                tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
-                return;
-            }
-            Event::JobFailed { .. } => {
-                post_terminal_summary(&tools, job_id, JobStatus::Failed).await;
-                tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
-                return;
-            }
-            Event::JobStopped { .. } => {
-                post_terminal_summary(&tools, job_id, JobStatus::Stopped).await;
-                tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
-                return;
-            }
-            Event::ChatMessageAppended { ref message, .. } => {
-                // Echo-suppression on the supervisor's own messages:
-                // the reactor would otherwise loop forever, replying
-                // to its own reply. Every non-supervisor transport is
-                // a candidate for a reply.
-                if matches!(message.transport, ChatTransport::Supervisor) {
-                    continue;
+
+    // Rehydrate pre-armed goals from the store. The persistence layer
+    // is the source of truth across process restarts (JOB-CHAT.md §C3
+    // — "Persisting the goal is what makes it survive a process
+    // restart"); on boot we re-arm a timer per `armed` row so the
+    // user-authorised actions still fire after a crash. v0.1 arms
+    // deadline-stop goals only — threshold / event-notify wiring
+    // lands alongside their respective sources.
+    let timers = FuturesUnordered::<GoalArm>::new();
+    let mut timers = timers;
+    match tools.store_arc().list_armed_for_run(job_id).await {
+        Ok(armed) => {
+            tracing::debug!(%job_id, count = armed.len(), "supervisor rehydrated armed goals");
+            let now = now_ms().0;
+            for goal in armed {
+                if let Some(arm) = arm_goal_timer(&goal, now) {
+                    tracing::debug!(%job_id, goal_id = %goal.id, "armed goal timer");
+                    timers.push(arm);
                 }
-                react_to_chat(&tools, job_id, &message.body).await;
             }
-            _ => {}
         }
+        Err(e) => {
+            tracing::debug!(%job_id, error = %e, "supervisor goal rehydrate failed; continuing without timers");
+        }
+    }
+
+    loop {
+        tokio::select! {
+            // Per-goal timer fired. The select! arm uses the
+            // `is_empty()` guard so the loop does not hot-spin when no
+            // goals are armed — an empty `FuturesUnordered` resolves
+            // to `None` immediately, which would otherwise busy-loop
+            // the select.
+            Some(goal) = timers.next(), if !timers.is_empty() => {
+                fire_goal(&tools, job_id, goal).await;
+            }
+            item = stream.next() => {
+                let Some(item) = item else { return; };
+                let env = match item {
+                    Ok(env) => env,
+                    Err(_e) => {
+                        tracing::debug!(%job_id, "supervisor stream error; exiting");
+                        return;
+                    }
+                };
+                match env.event {
+                    Event::JobCompleted { .. } => {
+                        post_terminal_summary(&tools, job_id, JobStatus::Completed).await;
+                        tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
+                        return;
+                    }
+                    Event::JobFailed { .. } => {
+                        post_terminal_summary(&tools, job_id, JobStatus::Failed).await;
+                        tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
+                        return;
+                    }
+                    Event::JobStopped { .. } => {
+                        post_terminal_summary(&tools, job_id, JobStatus::Stopped).await;
+                        tracing::debug!(%job_id, "supervisor observed run terminal; exiting");
+                        return;
+                    }
+                    Event::ChatMessageAppended { ref message, .. } => {
+                        // Echo-suppression on the supervisor's own
+                        // messages: the reactor would otherwise loop
+                        // forever, replying to its own reply. Every
+                        // non-supervisor transport is a candidate for
+                        // a reply.
+                        if matches!(message.transport, ChatTransport::Supervisor) {
+                            continue;
+                        }
+                        react_to_chat(&tools, job_id, &message.body).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Build the per-goal timer arm. Deadlines are persisted as absolute
+/// wall-clock milliseconds (so a restart re-anchors against the same
+/// real instant, not against boot time), but `tokio::time::sleep`
+/// runs on the tokio time-driver — which is what the e2e suite
+/// pauses + advances. Computing the sleep duration as `deadline -
+/// now_ms` at arm time keeps both clocks consistent: the production
+/// path waits on real wall time, the test path drives mock tokio
+/// time and observes the same arm fire.
+///
+/// A past deadline yields a zero-duration sleep so the reactor
+/// catches a missed deadline (e.g. process restart after the
+/// deadline) on the next select-tick rather than waiting forever for
+/// a deadline that is already behind us.
+fn arm_goal_timer(goal: &SupervisorGoal, now_ms_val: i64) -> Option<GoalArm> {
+    match goal.condition {
+        GoalCondition::DeadlineStop { deadline_ms } => {
+            let delta_ms = deadline_ms.saturating_sub(now_ms_val).max(0) as u64;
+            let dur = Duration::from_millis(delta_ms);
+            let goal = goal.clone();
+            Some(Box::pin(async move {
+                tokio::time::sleep(dur).await;
+                goal
+            }))
+        }
+        // Threshold / event-notify goals are out of scope for the
+        // deadline-stop loop — they need a different signal source
+        // (metric sampling for threshold, an `event_kind` predicate
+        // for event-notify). They land in their own stage so a fresh
+        // failure on one of them does not break the deadline path.
+        GoalCondition::ThresholdStop { .. } | GoalCondition::EventNotify { .. } => None,
+    }
+}
+
+/// Single goal-fire path. JOB-CHAT.md Hard rule 4 (second regime)
+/// pins "no preview, no nag" for pre-armed actions — the user already
+/// authorised the if-X-then-Y, so the action invokes immediately and
+/// the audit trail is the post-action summary that references the
+/// authorising `chat_messages.id`. The `mark_fired` guard is what
+/// makes the race against a concurrent user cancellation safe:
+/// whichever transition lands first wins, the loser sees `NoChange`
+/// and skips the action.
+async fn fire_goal(tools: &Tools, job_id: JobId, goal: SupervisorGoal) {
+    match tools.mark_goal_fired(goal.id).await {
+        Ok(MarkOutcome::Transitioned) => {}
+        Ok(MarkOutcome::NoChange) => {
+            tracing::debug!(%job_id, goal_id = %goal.id, "goal already terminal at fire-time; skipping");
+            return;
+        }
+        Err(_e) => {
+            tracing::debug!(%job_id, goal_id = %goal.id, "goal mark_fired failed; skipping fire");
+            return;
+        }
+    }
+    if let Err(_e) = tools.fire_pre_armed_goal(&goal).await {
+        tracing::debug!(%job_id, goal_id = %goal.id, "goal action invocation failed");
     }
 }
 

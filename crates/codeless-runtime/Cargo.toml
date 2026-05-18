@@ -52,7 +52,7 @@ ulid = { version = "1", features = ["serde"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread", "test-util"] }
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"

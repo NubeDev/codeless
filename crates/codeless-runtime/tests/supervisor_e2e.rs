@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codeless_rpc::{AddRepoArgs, EventFilter, PostJobMessageArgs, RpcServer, SubmitJobArgs};
+use codeless_runtime::store::supervisor_goals::{GoalAction, GoalCondition, SupervisorGoal};
 use codeless_runtime::supervisor::tools::AdHocOutcome;
 use codeless_runtime::{
     drive_job, spawn_supervisor, spawn_supervisor_with_tools, InProcessRpc, MockRunner, MockStep,
@@ -595,4 +596,167 @@ async fn ad_hoc_stop_fires_after_window() {
         meta.contains(&preview.id.to_string()),
         "summary row must reference the preview id; got: {meta}",
     );
+}
+
+/// Stage-17 contract: a pre-armed `deadline-stop` goal fires exactly
+/// when its deadline elapses. The supervisor's select! loop arms a
+/// `tokio::time::sleep` per `armed` row at boot; the test drives the
+/// fire-time via `tokio::time::advance` rather than a real one-hour
+/// sleep. Two load-bearing assertions: the action invokes immediately
+/// with no preview row (Hard rule 4 of JOB-CHAT.md — pre-armed
+/// actions are pre-authorised), and the post-action summary's
+/// metadata cites the authorising `chat_messages.id` so the audit
+/// trail is a foreign-key edge instead of a free-text annotation.
+#[tokio::test(flavor = "current_thread")]
+async fn deadline_stop_fires_at_t_plus_one_hour() {
+    // Setup runs against the real tokio clock — sqlx pool acquisition
+    // and the in-memory SQLite migrations consume tokio timer entries
+    // that would deadlock under `start_paused`. We pause only after
+    // the fixtures land, then spawn the supervisor so its
+    // `tokio::time::sleep` for the deadline arm registers against the
+    // mocked clock.
+    let rpc = InProcessRpc::new().await.unwrap();
+    let job_id = fresh_queued_job(&rpc).await;
+
+    // The user's "if X then Y" turn — the chat row whose id becomes
+    // the goal's `authorised_by` FK. The reactor's post-fire summary
+    // must reference this id so a reader of the chat thread can pair
+    // the action with the authorisation without a side channel.
+    let authoriser = rpc
+        .post_job_message(PostJobMessageArgs {
+            job_id,
+            transport: ChatTransport::Web,
+            external_id: None,
+            thread_key: None,
+            author: "alice".into(),
+            role: ChatRole::User,
+            body: "if this runs more than an hour, stop it and tell me why".into(),
+            metadata_json: None,
+        })
+        .await
+        .expect("authoriser post");
+
+    // Deadline is wall-clock; the supervisor arms a `sleep` of
+    // `deadline_ms - now_ms` at boot, which the tokio time-driver
+    // observes as a normal pending sleep under `start_paused`.
+    let now = codeless_runtime::now_ms();
+    let goal = SupervisorGoal::new(
+        job_id,
+        GoalCondition::DeadlineStop {
+            deadline_ms: now.0 + 3_600_000,
+        },
+        GoalAction::StopJob {
+            reason: "ran past the 1h budget you set".into(),
+        },
+        authoriser.id,
+        now,
+    );
+    rpc.store().insert_goal(&goal).await.expect("insert goal");
+
+    // Subscribe before the supervisor spawns so the chat-append and
+    // JobStopped envelopes the fire produces land on the live tail.
+    let mut stream = rpc
+        .subscribe(EventFilter::Job { job_id }, None)
+        .await
+        .expect("subscribe");
+
+    // Spawn the supervisor against the live clock first so its
+    // `subscribe_since` and `list_armed_for_run` complete through
+    // sqlx without competing against a paused timer-driver. A real
+    // (small) sleep — rather than a bare `yield_now` loop — gives
+    // sqlx's blocking SQL thread time to actually finish; under load
+    // the yield-only pattern leaves the goal arm un-registered when
+    // the test gets here.
+    let supervisor = spawn_supervisor_with_tools(rpc.bus().clone(), rpc.store().clone(), job_id);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Freeze the clock at the moment the goal arm is parked on its
+    // 3_600_000ms sleep, then jump past the deadline so the sleep
+    // wakes immediately. Resuming straight after the jump returns the
+    // post-fire flow (mark_fired / stop_job_inner / post summary)
+    // onto the live clock so the sqlx-touching hops and the
+    // broadcast wake-ups that drive the test's subscriber complete
+    // without a paused mocked-clock starving them.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(3_600_001)).await;
+    tokio::time::resume();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut saw_stopped = false;
+    let mut fire_summary: Option<codeless_types::ChatMessage> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !(saw_stopped && fire_summary.is_some()) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let item = tokio::time::timeout(remaining, stream.next())
+            .await
+            .expect("timed out waiting for deadline fire");
+        let item = item
+            .expect("event stream ended unexpectedly")
+            .expect("event stream error");
+        match item.event {
+            Event::JobStopped {
+                reason: StopReason::User,
+                ..
+            } => saw_stopped = true,
+            Event::ChatMessageAppended { message, .. }
+                if matches!(message.transport, ChatTransport::Supervisor)
+                    && matches!(message.role, ChatRole::Assistant)
+                    && fire_summary.is_none() =>
+            {
+                fire_summary = Some(message);
+            }
+            _ => {}
+        }
+    }
+
+    let summary = fire_summary.expect("fire summary must arrive");
+    let meta = summary
+        .metadata_json
+        .as_deref()
+        .expect("fire summary must carry metadata");
+    assert!(
+        meta.contains(&authoriser.id.to_string()),
+        "summary must reference the authorising chat_messages.id; got: {meta}",
+    );
+    assert!(
+        meta.contains(&goal.id.to_string()),
+        "summary must reference the goal id; got: {meta}",
+    );
+
+    // No preview row — Hard rule 4 second regime is "no preview, no
+    // nag" for pre-armed actions. A `System`-role supervisor row would
+    // indicate the ad-hoc preview path leaked into the pre-armed loop.
+    let rows = rpc
+        .store()
+        .list_chat_messages(job_id, None, 50)
+        .await
+        .unwrap();
+    let preview_rows = rows
+        .iter()
+        .filter(|m| {
+            matches!(m.transport, ChatTransport::Supervisor) && matches!(m.role, ChatRole::System)
+        })
+        .count();
+    assert_eq!(
+        preview_rows, 0,
+        "pre-armed actions must not produce a preview row (Hard rule 4)",
+    );
+
+    // The Run row reaches Stopped, the goal row transitions out of
+    // `armed`. Both are observable through the store's normal read
+    // surfaces — the audit trail does not depend on the in-memory
+    // reactor state.
+    let job = rpc.store().get_job(job_id).await.unwrap().unwrap();
+    assert_eq!(job.status, JobStatus::Stopped);
+    assert!(
+        rpc.store()
+            .list_armed_for_run(job_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "fired goal must no longer be armed",
+    );
+
+    // The supervisor observes its own JobStopped envelope and exits.
+    let _ = tokio::time::timeout(Duration::from_secs(5), supervisor).await;
 }

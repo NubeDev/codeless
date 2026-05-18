@@ -47,7 +47,8 @@ use codeless_types::{
 use futures_util::StreamExt;
 
 use crate::event_bus::SubscribeFilter;
-use crate::store::InsertChatMessage;
+use crate::store::supervisor_goals::{GoalAction, SupervisorGoal};
+use crate::store::{InsertChatMessage, MarkOutcome};
 use crate::time::now_ms;
 
 use super::{ToolError, Tools};
@@ -199,6 +200,92 @@ impl Tools {
     ) -> Result<ChatMessage, ToolError> {
         let metadata = serde_json::json!({ "note": true }).to_string();
         post_supervisor_row(self, job_id, ChatRole::System, body, Some(metadata), None).await
+    }
+
+    /// Fire a pre-armed `supervisor_goals` row. JOB-CHAT.md Hard rule 4
+    /// pins the "no preview" regime for pre-armed actions: the user
+    /// already authorised the if-X-then-Y, so the action invokes
+    /// immediately on condition trip and the audit trail is the
+    /// post-action chat row that links back to the authorising
+    /// `chat_messages.id` via `metadata.replies_to`. The goal id is
+    /// recorded under `metadata.goal_id` so the UI can pair the
+    /// fire-summary against the original goal row without re-parsing
+    /// the body.
+    ///
+    /// The row's terminal-status walk is owned by the caller — by the
+    /// time we land here the supervisor reactor has already won the
+    /// `mark_fired` race against any concurrent cancel, so this method
+    /// just performs the side-effect + summary. A second invocation on
+    /// the same goal would double-stop and double-post; the reactor's
+    /// `mark_fired` guard is what prevents that.
+    pub async fn fire_pre_armed_goal(&self, goal: &SupervisorGoal) -> Result<(), ToolError> {
+        let job_id = goal.run_id;
+        let metadata = serde_json::json!({
+            "replies_to": goal.authorised_by.to_string(),
+            "goal_id": goal.id.to_string(),
+        })
+        .to_string();
+        match &goal.action {
+            GoalAction::StopJob { reason } => {
+                self.stop_job_inner(job_id).await?;
+                let body = format!(
+                    "Stopped the job: {reason}. \
+                     Acting on the goal you armed earlier (no preview — this was pre-authorised)."
+                );
+                post_supervisor_row(
+                    self,
+                    job_id,
+                    ChatRole::Assistant,
+                    body,
+                    Some(metadata),
+                    None,
+                )
+                .await?;
+            }
+            GoalAction::PostChatMessage { body } => {
+                post_supervisor_row(
+                    self,
+                    job_id,
+                    ChatRole::Assistant,
+                    body.clone(),
+                    Some(metadata),
+                    None,
+                )
+                .await?;
+            }
+            GoalAction::PauseAfterStage { stage_name } => {
+                // The store's `execution_state()` reports `NoOpFailed`
+                // for this variant — JOB-WORKFLOW (A.5) is the
+                // affordance that makes the pause real. Mirror that
+                // signal in chat so the user sees the goal fired but
+                // could not be honoured, rather than a silent skip.
+                let body = format!(
+                    "Pre-armed pause_after_stage `{stage_name}` is a no-op until \
+                     JOB-WORKFLOW (A.5) lands; logging the fire here for the audit trail."
+                );
+                post_supervisor_row(self, job_id, ChatRole::System, body, Some(metadata), None)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Idempotent terminal flip used by the pre-armed reactor. Wraps
+    /// `SqliteStore::mark_fired` so the supervisor's select! arm can
+    /// race a concurrent user cancellation cleanly: the loser sees
+    /// `NoChange` and skips the action invocation, the winner proceeds
+    /// to fire. Exposed at this seam so the reactor (in `supervisor::
+    /// mod`) does not need to import the store module directly — the
+    /// `Tools` surface stays the single seam between the reactor and
+    /// the persistence layer.
+    pub async fn mark_goal_fired(
+        &self,
+        goal_id: crate::store::supervisor_goals::SupervisorGoalId,
+    ) -> Result<MarkOutcome, ToolError> {
+        self.store_arc()
+            .mark_fired(goal_id, now_ms())
+            .await
+            .map_err(ToolError::Db)
     }
 
     async fn stop_job_inner(&self, job_id: JobId) -> Result<(), ToolError> {
