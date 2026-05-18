@@ -1,0 +1,30 @@
+{
+  "name": "@codeless/plugin-notes-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Notes plugin UI bundle: a Module-Federated AssistantPanel remote consumed by the codeless host shell. Substrate plugin #0 — the test bed for the plugin UI federation seam.",
+  "type": "module",
+  "scripts": {
+    "build": "rsbuild build",
+    "dev": "rsbuild dev",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@codeless/plugin-ui-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@module-federation/rsbuild-plugin": "^0.18.0",
+    "@rsbuild/core": "^1.4.0",
+    "@rsbuild/plugin-react": "^1.4.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "^5.8.0"
+  }
+}
