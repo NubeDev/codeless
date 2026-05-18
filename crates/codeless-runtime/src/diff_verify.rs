@@ -29,6 +29,7 @@
 //! never sees the failed pre-check cannot be asked to wave it through.
 
 use std::collections::BTreeSet;
+use std::path::{Component, Path};
 
 use codeless_types::Handover;
 
@@ -335,11 +336,128 @@ fn leaf_of(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
 }
 
-/// Convenience entry point: take a handover and the diff path list,
-/// run extraction + verification, return the outcome.
-pub fn verify_handover(handover: &Handover, diff_paths: &[String]) -> DiffVerifyOutcome {
-    let claimed = extract_paths_from_done(&handover.done);
+/// Convenience entry point: take a handover, the diff path list, and
+/// the worktree root, run extraction + path-shape filtering against
+/// the diff context + verification, return the outcome.
+///
+/// The `worktree` argument carries the contract that the tokenizer is
+/// allowed to consult the on-disk tree to decide whether a Done-bullet
+/// token is path-shaped. Without that signal the shape filter has to
+/// rely on string heuristics alone, and dotted RPC-method tokens
+/// (`tool.call`, `rest_proxy.path`, `metadata_json.delivery.slack`)
+/// keep slipping through as false positives. Tokens that survive
+/// neither the diff-prefix check nor the worktree-resolve check are
+/// dropped before the diff-presence check runs, so they cannot
+/// manufacture a `Fail` outcome on prose that never named a real path.
+pub fn verify_handover(
+    handover: &Handover,
+    diff_paths: &[String],
+    worktree: &Path,
+) -> DiffVerifyOutcome {
+    let candidates = extract_paths_from_done(&handover.done);
+    let prefixes = derive_diff_prefixes(diff_paths);
+    let claimed: Vec<String> = candidates
+        .into_iter()
+        .filter(|t| token_is_path_shaped_for_diff(t, &prefixes, worktree))
+        .collect();
     verify_paths_in_diff(&claimed, diff_paths)
+}
+
+/// Repo-relative prefixes derived from this run's diff file list. The
+/// set is used as a closed allow-list for the tokenizer's path-shape
+/// filter: a Done-bullet token whose prefix is in this set is plausibly
+/// a path the agent touched; a token that does not match any prefix
+/// has to prove itself by resolving to a real file under the worktree.
+///
+/// The derivation is deliberately diff-driven instead of a hard-coded
+/// directory list. A hard-coded list goes stale the moment the repo
+/// grows a new top-level (a vendored crate, a new docs root); deriving
+/// the set from the current diff makes the tokenizer self-updating
+/// without any follow-up patch.
+///
+/// Shape of the returned set:
+///
+/// - `"<seg>/"` for every distinct first segment that appears in the
+///   diff (e.g. `crates/`, `ui/`, `DOCS/`).
+/// - `"<seg1>/<seg2>/"` for every distinct two-segment prefix when the
+///   diff entry is at least three segments deep, so a Done bullet that
+///   names a sub-crate by its full path (`crates/codeless-runtime/`)
+///   matches even when only one file deep into it was changed.
+/// - The literal repo-root filename for every diff entry with no
+///   slash (`Cargo.toml`, `mani.yaml`). Bare repo-root filenames only
+///   flag when the diff actually touched them this run, so a Done
+///   bullet that names `Cargo.toml` does not implicitly resolve when
+///   nothing at the repo root changed.
+fn derive_diff_prefixes(diff_paths: &[String]) -> BTreeSet<String> {
+    let mut prefixes: BTreeSet<String> = BTreeSet::new();
+    for d in diff_paths {
+        let mut segs = d.split('/').filter(|s| !s.is_empty());
+        let Some(first) = segs.next() else { continue };
+        let Some(second) = segs.next() else {
+            prefixes.insert(first.to_string());
+            continue;
+        };
+        prefixes.insert(format!("{first}/"));
+        if segs.next().is_some() {
+            prefixes.insert(format!("{first}/{second}/"));
+        }
+    }
+    prefixes
+}
+
+/// A token survives shape filtering iff it (a) starts with one of the
+/// derived diff prefixes, or (b) resolves to a file under the worktree
+/// at check time. Tokens that satisfy neither are silently dropped and
+/// never reach the diff-presence check.
+///
+/// (b) deliberately covers the case where a Done bullet legitimately
+/// references an unchanged-but-existing file (e.g. a doc the agent
+/// read but did not modify): the tokenizer extracts it, the
+/// diff-presence check fires, and the bullet is flagged as a no-op
+/// claim — which is the correct verdict. Without (b) the token would
+/// drop and the claim would never get checked at all.
+fn token_is_path_shaped_for_diff(
+    token: &str,
+    diff_prefixes: &BTreeSet<String>,
+    worktree: &Path,
+) -> bool {
+    if matches_diff_prefix(token, diff_prefixes) {
+        return true;
+    }
+    // Absolute paths cannot meaningfully resolve "under" the worktree
+    // even when `Path::join` appears to admit them: `join` of an
+    // absolute path replaces the base entirely, which would let an
+    // absolute reference (the operator's home directory, a sibling
+    // worktree path leaked from a stack trace) pass the (b) check on
+    // the basis of a file that exists somewhere else on the host.
+    // Reject them so (b) only ever admits worktree-relative tokens.
+    let p = Path::new(token);
+    if p.is_absolute() {
+        return false;
+    }
+    // Parent-traversal components escape the worktree the same way an
+    // absolute path does; a Done bullet that names `../foo.rs` is never
+    // a claim worth verifying.
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return false;
+    }
+    worktree.join(token).try_exists().unwrap_or(false)
+}
+
+fn matches_diff_prefix(token: &str, prefixes: &BTreeSet<String>) -> bool {
+    for p in prefixes {
+        if let Some(rest) = p.strip_suffix('/') {
+            if rest.is_empty() {
+                continue;
+            }
+            if token.starts_with(p.as_str()) {
+                return true;
+            }
+        } else if token == p {
+            return true;
+        }
+    }
+    false
 }
 
 /// Render a one-line `FAIL:` reason for the `Fail` outcome, suitable
@@ -634,18 +752,188 @@ mod tests {
             next: vec!["go".into()],
             ..Default::default()
         };
+        // The diff already touches an `unrelated/` file so the prefix
+        // `unrelated/` lives in the derived prefix set; the missing
+        // `unrelated/notes.md` token survives the shape filter (via
+        // prefix (a)) and is correctly flagged by the diff-presence
+        // check. Without something in `unrelated/` in the diff the
+        // new tokenizer would silently drop the token.
         let diff = vec![
             "a/b.rs".into(),
             "c/d.rs".into(),
-            // notes.md missing — verifier must report it.
+            "unrelated/other.md".into(),
         ];
-        match verify_handover(&h, &diff) {
+        let wt = tempfile::tempdir().unwrap();
+        match verify_handover(&h, &diff, wt.path()) {
             DiffVerifyOutcome::Fail { missing } => {
                 let claimed: Vec<&str> = missing.iter().map(|m| m.claimed.as_str()).collect();
                 assert_eq!(claimed, vec!["unrelated/notes.md"]);
             }
             other => panic!("expected Fail, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tokenizer_drops_real_world_false_positives() {
+        // The four motivating false positives from jobs
+        // 01KRX4ZPF10J3QZ35R5GK8336X and 01KRXH0RYTT6EYGF435WPQS70Q:
+        // dotted RPC method names, JSON key paths, and an absolute
+        // path that points outside the worktree. None of them are
+        // claims of a file the agent touched; all of them tripped the
+        // prior tokenizer and surfaced as diff-verify FAILs.
+        let h = Handover {
+            done: vec![
+                "wired the new tool.call dispatch through the RPC seam".into(),
+                "rest_proxy.path config now routes via the gateway".into(),
+                "metadata_json.delivery.slack maps onto SlackChip".into(),
+                "regenerated `/home/user/.codeless/worktrees/ai-runner/Cargo.toml`".into(),
+            ],
+            next: vec!["next".into()],
+            ..Default::default()
+        };
+        // Diff touches real repo paths so the prefix set is populated
+        // with `crates/`, `ui/`, `crates/codeless-runtime/`. None of
+        // the false-positive tokens start with any of these prefixes
+        // and none resolve under the (fresh, empty) worktree.
+        let diff = vec![
+            "crates/codeless-runtime/src/diff_verify.rs".into(),
+            "ui/codeless-ui/src/lib/rpc/client.ts".into(),
+        ];
+        let wt = tempfile::tempdir().unwrap();
+        let outcome = verify_handover(&h, &diff, wt.path());
+        assert_eq!(
+            outcome,
+            DiffVerifyOutcome::NothingToVerify,
+            "the four real-world false positives must all drop at the \
+             shape filter so the verifier never produces a FAIL on them"
+        );
+    }
+
+    #[test]
+    fn tokenizer_still_flags_real_missing_paths_under_known_prefix() {
+        // A token that LOOKS like a path AND starts with a derived
+        // diff prefix must survive the shape filter and reach the
+        // diff-presence check. If it is absent from the diff the
+        // verifier must still flag it — the new rule tightens what
+        // counts as path-shaped, it does not weaken the miss check.
+        let h = Handover {
+            done: vec![
+                "added `crates/codeless-runtime/src/diff_verify.rs`".into(),
+                "added `crates/codeless-types/src/never-added.rs`".into(),
+            ],
+            next: vec!["next".into()],
+            ..Default::default()
+        };
+        let diff = vec![
+            "crates/codeless-runtime/src/diff_verify.rs".into(),
+            "crates/codeless-types/src/lib.rs".into(),
+        ];
+        let wt = tempfile::tempdir().unwrap();
+        match verify_handover(&h, &diff, wt.path()) {
+            DiffVerifyOutcome::Fail { missing } => {
+                let claimed: Vec<&str> = missing.iter().map(|m| m.claimed.as_str()).collect();
+                assert_eq!(
+                    claimed,
+                    vec!["crates/codeless-types/src/never-added.rs"],
+                    "the genuinely missing path under a known prefix \
+                     must still be flagged"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tokenizer_admits_unchanged_existing_file_via_worktree_resolve() {
+        // (b) of the shape rule: a Done bullet that names an existing
+        // unchanged file is plausibly a claim. The tokenizer extracts
+        // it; the diff-presence check then correctly flags it as a
+        // no-op claim (the file exists but the agent did not actually
+        // touch it this run). Without (b) the token would drop
+        // silently and the no-op claim would never get checked.
+        let wt = tempfile::tempdir().unwrap();
+        let unchanged = wt.path().join("docs/old.md");
+        std::fs::create_dir_all(unchanged.parent().unwrap()).unwrap();
+        std::fs::write(&unchanged, b"already here").unwrap();
+
+        let h = Handover {
+            done: vec![
+                "wrote `crates/codeless-runtime/src/diff_verify.rs`".into(),
+                "verified against `docs/old.md`".into(),
+            ],
+            next: vec!["next".into()],
+            ..Default::default()
+        };
+        // Diff has no `docs/` entries, so prefix derivation does NOT
+        // admit `docs/old.md` via (a); only (b) — worktree-resolves —
+        // can keep it as a candidate.
+        let diff = vec!["crates/codeless-runtime/src/diff_verify.rs".into()];
+        match verify_handover(&h, &diff, wt.path()) {
+            DiffVerifyOutcome::Fail { missing } => {
+                let claimed: Vec<&str> = missing.iter().map(|m| m.claimed.as_str()).collect();
+                assert_eq!(claimed, vec!["docs/old.md"]);
+            }
+            other => panic!("expected Fail (no-op claim on unchanged file), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derive_diff_prefixes_covers_one_two_and_root_segments() {
+        let diff = vec![
+            "crates/codeless-runtime/src/diff_verify.rs".to_string(),
+            "ui/codeless-ui/src/lib/rpc/client.ts".to_string(),
+            "DOCS/SCOPE.md".to_string(),
+            "Cargo.toml".to_string(),
+            "mani.yaml".to_string(),
+        ];
+        let prefixes = derive_diff_prefixes(&diff);
+        // Single-segment files contribute their literal name; multi-
+        // segment files contribute the first-segment directory; three+
+        // segment files additionally contribute the two-segment prefix.
+        for expected in [
+            "crates/",
+            "crates/codeless-runtime/",
+            "ui/",
+            "ui/codeless-ui/",
+            "DOCS/",
+            "Cargo.toml",
+            "mani.yaml",
+        ] {
+            assert!(
+                prefixes.contains(expected),
+                "expected prefix `{expected}` in {prefixes:?}"
+            );
+        }
+        // Two-segment-only paths do NOT contribute a `<a>/<b>/` prefix
+        // because that would degenerate to `<dir>/<file>/`, which no
+        // token will ever match.
+        assert!(
+            !prefixes.contains("DOCS/SCOPE.md/"),
+            "two-segment paths must not yield a `<dir>/<file>/` prefix"
+        );
+    }
+
+    #[test]
+    fn tokenizer_rejects_absolute_and_parent_traversal_tokens() {
+        let prefixes = derive_diff_prefixes(&["crates/codeless-runtime/src/diff_verify.rs".into()]);
+        let wt = tempfile::tempdir().unwrap();
+        // Absolute path: (a) cannot match (no prefix starts with `/`),
+        // (b) must reject defensively so a real file at the absolute
+        // location on the host cannot satisfy a worktree-relative
+        // claim by accident.
+        assert!(!token_is_path_shaped_for_diff(
+            "/home/user/.codeless/worktrees/ai-runner/Cargo.toml",
+            &prefixes,
+            wt.path(),
+        ));
+        // Parent traversal: cannot point at anything legitimately
+        // inside the worktree, so (b) must reject it before
+        // `try_exists` follows the `..` out of the tree.
+        assert!(!token_is_path_shaped_for_diff(
+            "../outside.rs",
+            &prefixes,
+            wt.path(),
+        ));
     }
 
     #[test]

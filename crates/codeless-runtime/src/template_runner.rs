@@ -1853,7 +1853,7 @@ async fn run_diff_verify_precheck(
         }
     };
 
-    match verify_handover(&handover, &diff_paths) {
+    match verify_handover(&handover, &diff_paths, worktree) {
         DiffVerifyOutcome::Pass { verified } => {
             tracing::info!(
                 count = verified.len(),
@@ -3224,7 +3224,14 @@ stages:
     #[tokio::test]
     async fn precheck_fails_when_handover_claims_a_path_no_commit_touched() {
         use codeless_types::{Handover, JobId};
-        let tmp = seed_worktree_with(&["a/b.rs"]);
+        // The diff has to touch *something* under `unrelated/` so the
+        // diff-prefix derivation admits `unrelated/notes.md` as a
+        // path-shaped claim; without that the new tokenizer would
+        // drop the token before it ever reaches the diff-presence
+        // check. The point of the test is that a path-shaped claim
+        // missing from the diff still gets flagged, not that the
+        // tokenizer is permissive about unknown prefixes.
+        let tmp = seed_worktree_with(&["a/b.rs", "unrelated/other.md"]);
         let job_id = JobId::new();
         let prev = StageId::new();
         let h = Handover {
