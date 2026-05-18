@@ -139,8 +139,18 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/edit_scope_patch", post(edit_scope_patch))
         .route("/rpc/revert_scope_patch", post(revert_scope_patch))
         .route("/rpc/list_proposed_patches", post(list_proposed_patches))
-        .route("/rpc/set_job_policy", post(set_job_policy))
-        .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
+        .route("/rpc/set_job_policy", post(set_job_policy));
+    // `GET /plugins` rides alongside the `/rpc/*` routes inside the
+    // bearer-gated sub-router: discovery of which plugins are loaded
+    // is operator-facing and must not leak before a token is supplied.
+    // The ServeDir mounts at `/plugins/<id>/ui/*` are intentionally
+    // outside this gate -- see `plugins::ui_routes`.
+    let rpc_routes = if let Some(r) = crate::plugins::bearer_routes(&state) {
+        rpc_routes.merge(r)
+    } else {
+        rpc_routes
+    }
+    .layer(middleware::from_fn_with_state(state.clone(), bearer_layer));
 
     let events = Router::new().route("/events", get(events_handler));
 
@@ -181,11 +191,22 @@ pub(crate) fn router(state: AppState) -> Router {
     // safe. See `src/ai_ui.rs` for the per-route detail.
     let ai_ui_router = state.ai_ui.is_some().then(crate::ai_ui::router);
 
+    // Per-plugin `ServeDir` mounts for `/plugins/<id>/ui/*`. Mounted
+    // outside the bearer gate: the bundle bytes are no more sensitive
+    // than the host UI bundle the browser already loads (the bearer
+    // protects the *listing* of which plugins exist, not the bundles
+    // themselves). See `DOCS/plugins/PLUGIN-UI-FEDERATION.md` §
+    // Server wiring.
+    let plugin_ui = crate::plugins::ui_routes(&state);
+
     let mut app = Router::new()
         .merge(rpc_routes)
         .merge(events)
         .merge(unauthenticated);
     if let Some(r) = ai_ui_router {
+        app = app.merge(r);
+    }
+    if let Some(r) = plugin_ui {
         app = app.merge(r);
     }
     app.layer(cors).layer(trace).with_state(state)

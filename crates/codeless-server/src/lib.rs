@@ -15,6 +15,7 @@
 
 mod ai_ui;
 mod auth;
+pub mod plugins;
 mod routes;
 mod sse;
 
@@ -24,6 +25,7 @@ use axum::Router;
 use codeless_rpc::{RpcServer, ServerInfo};
 
 pub use auth::TokenLoadError;
+pub use plugins::{PluginCatalog, PluginCatalogEntry, PluginListResponse, PluginListRow};
 
 /// How the server gates incoming requests. `Required` means every
 /// `/rpc/*` request must carry the bearer token and every `/events`
@@ -69,6 +71,13 @@ pub struct AppState {
     /// registry and a component manifest — see
     /// `codeless-cli/src/serve.rs` for the production wiring.
     pub ai_ui: Option<ai_ui_core::AiUiState>,
+    /// Plugin catalog projection. When present, the router exposes
+    /// `GET /plugins` (bearer-gated) and `GET /plugins/<id>/ui/*`
+    /// (ServeDir, no auth — same posture as the host UI bundle).
+    /// `None` skips both registrations entirely so a server compiled
+    /// without plugin support is byte-for-byte identical on the wire.
+    /// Wrapped in `Arc` to share the allocation across cloned states.
+    pub plugins: Option<Arc<PluginCatalog>>,
 }
 
 impl AppState {
@@ -81,6 +90,7 @@ impl AppState {
             auth: AuthMode::required(bearer_token),
             server_info: Arc::new(ServerInfo::default()),
             ai_ui: None,
+            plugins: None,
         }
     }
 
@@ -93,6 +103,7 @@ impl AppState {
             auth: AuthMode::Open,
             server_info: Arc::new(ServerInfo::default()),
             ai_ui: None,
+            plugins: None,
         }
     }
 
@@ -110,6 +121,15 @@ impl AppState {
     /// absent. Cheap to clone (`AiUiState` is `Arc`-backed internally).
     pub fn with_ai_ui(mut self, ai_ui: ai_ui_core::AiUiState) -> Self {
         self.ai_ui = Some(ai_ui);
+        self
+    }
+
+    /// Attach a [`PluginCatalog`]. The router will then expose
+    /// `GET /plugins` and a per-plugin `GET /plugins/<id>/ui/*`
+    /// ServeDir mount for every entry whose `ui_dir` is set. Cheap to
+    /// clone — the catalog is shared through `Arc`.
+    pub fn with_plugins(mut self, catalog: Arc<PluginCatalog>) -> Self {
+        self.plugins = Some(catalog);
         self
     }
 }
