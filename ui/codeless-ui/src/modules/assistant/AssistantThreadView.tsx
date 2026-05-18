@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useEventStream,
   useRpc,
@@ -7,15 +7,25 @@ import {
   type AssistantActionStatus,
   type AssistantAttachmentCard,
   type AssistantMessage,
+  type AssistantMessageId,
   type AssistantThread,
   type EventEnvelope,
   type JobId,
+  type Repo,
+  type SubmitJobArgs,
 } from "@/lib/rpc";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { MarkdownBubble } from "../chat";
+import {
+  JobComposer,
+  composerToSubmitArgs,
+  slugifyName,
+  useJobComposerState,
+  type JobComposerInitial,
+} from "../jobs/composer";
 import { useAssistantFocus } from "./focusStore";
 
 // Stage-6 assistant view. Renders the persisted transcript for one
@@ -213,6 +223,49 @@ export function AssistantThreadView({
     [rpc, thread.id, onThreadTouched],
   );
 
+  // `draft_job` cards confirm via `submit_job` directly so the
+  // composer's user-edited values reach the runtime — the existing
+  // `confirm_assistant_action` path dispatches `draft_job_from_conversation`
+  // which reads the planner's original args back off the card. Once the
+  // job exists, flip the card's locally-rendered status to "confirmed"
+  // and append a synthetic tool row pointing at the new job so the
+  // transcript reflects the outcome without a refetch. The persisted
+  // card row stays `pending` on the server; a follow-up server endpoint
+  // (parity-scope §W3) will accept the edited args alongside the card
+  // id so reload sees the same confirmed state. Until then a thread
+  // re-list would surface the card as pending — acceptable for the
+  // W2-only UI cut.
+  const onConfirmDraftJob = useCallback(
+    async (messageId: string, args: SubmitJobArgs) => {
+      setErr(null);
+      const job = await rpc.call("submit_job", args);
+      const now = Date.now();
+      setMessages((prev) => {
+        const next = prev.map((m) => {
+          if (m.id !== messageId) return m;
+          const card = parseActionCard(m.meta_json);
+          if (!card) return m;
+          const updated: AssistantActionCard = {
+            ...card,
+            status: "confirmed",
+          };
+          return { ...m, meta_json: JSON.stringify(updated) };
+        });
+        next.push({
+          id: `local-${messageId}` as AssistantMessageId,
+          thread_id: thread.id,
+          role: "tool",
+          content: `Drafted job \`${job.id}\` (status: ${job.status}).`,
+          meta_json: JSON.stringify({ tool: "draft_job", job }),
+          created_at: now,
+        });
+        return next;
+      });
+      onThreadTouched?.();
+    },
+    [rpc, thread.id, onThreadTouched],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-border/60 px-4 py-2">
@@ -237,6 +290,7 @@ export function AssistantThreadView({
                 message={m}
                 onConfirmAction={onConfirmAction}
                 onCancelAction={onCancelAction}
+                onConfirmDraftJob={onConfirmDraftJob}
               />
             ))
           )}
@@ -289,12 +343,14 @@ type MessageBubbleProps = {
   message: AssistantMessage;
   onConfirmAction: (messageId: string) => void;
   onCancelAction: (messageId: string) => void;
+  onConfirmDraftJob: (messageId: string, args: SubmitJobArgs) => Promise<void>;
 };
 
 function MessageBubble({
   message,
   onConfirmAction,
   onCancelAction,
+  onConfirmDraftJob,
 }: MessageBubbleProps) {
   // Action cards are stored as `Assistant`-role messages whose
   // `meta_json` decodes to an `AssistantActionCard`. The role
@@ -309,6 +365,7 @@ function MessageBubble({
         card={card}
         onConfirm={() => onConfirmAction(message.id)}
         onCancel={() => onCancelAction(message.id)}
+        onConfirmDraftJob={(args) => onConfirmDraftJob(message.id, args)}
       />
     );
   }
@@ -372,20 +429,27 @@ type ActionCardViewProps = {
   card: AssistantActionCard;
   onConfirm: () => void;
   onCancel: () => void;
+  onConfirmDraftJob: (args: SubmitJobArgs) => Promise<void>;
 };
 
 // Confirmation-gated action card. The user-facing "confirm" button is
 // only live while `status == "pending"`; once a card is resolved the
 // buttons retire so a re-render of the transcript cannot fire the
 // same RPC twice (the server enforces this too — the UI is just
-// cooperating).
+// cooperating). `draft_job` cards branch to the editable composer
+// instead of the read-only preview while pending — the planner's
+// proposed JobSpec is review-then-edit, not review-then-accept-only,
+// so the composer surfaces every field the dialog shell does.
 function ActionCardView({
   message,
   card,
   onConfirm,
   onCancel,
+  onConfirmDraftJob,
 }: ActionCardViewProps) {
   const isPending = card.status === "pending";
+  const draftJobEditable =
+    isPending && card.action.tool === "draft_job";
   return (
     <div className="flex justify-start">
       <div
@@ -403,13 +467,20 @@ function ActionCardView({
           </span>
         </div>
         <div className="whitespace-pre-wrap">{message.content}</div>
-        {card.action.tool === "draft_job" && (
+        {card.action.tool === "draft_job" && !draftJobEditable && (
           <DraftJobPreview action={card.action} />
+        )}
+        {draftJobEditable && card.action.tool === "draft_job" && (
+          <DraftJobComposerPanel
+            action={card.action}
+            onConfirm={onConfirmDraftJob}
+            onCancel={onCancel}
+          />
         )}
         {card.action.tool === "edit_scope" && (
           <EditScopePreview action={card.action} />
         )}
-        {isPending && (
+        {isPending && !draftJobEditable && (
           <div className="mt-1 flex justify-end gap-2">
             <Button
               size="sm"
@@ -428,6 +499,191 @@ function ActionCardView({
             </Button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Editable companion to `DraftJobPreview`. Renders the same form
+// `SubmitJobDialog` mounts (`JobComposer`) so the user can edit every
+// field — runner, branch, caps, model overrides, auto-bypass policy —
+// before confirming the planner's draft. `composerToSubmitArgs` maps
+// the state to `submit_job` wire args verbatim, which is the parity
+// guarantee §W2 of `DOCS/SCOPE-ASSISTANT-PARITY.md` exists to enforce:
+// a slug or cap-cents bug fixed in the composer reaches both surfaces.
+//
+// The planner's `draft_job` action does not carry a job name (the
+// composer derives the on-disk folder slug); the proposed branch is
+// the strongest signal we have, so seed the name from the branch with
+// the workspace's "codeless/" prefix stripped. The user can rename
+// before confirming.
+type DraftJobComposerPanelProps = {
+  action: Extract<AssistantAction, { tool: "draft_job" }>;
+  onConfirm: (args: SubmitJobArgs) => Promise<void>;
+  onCancel: () => void;
+};
+
+function DraftJobComposerPanel({
+  action,
+  onConfirm,
+  onCancel,
+}: DraftJobComposerPanelProps) {
+  const rpc = useRpc();
+  const [repo, setRepo] = useState<Repo | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRepo(null);
+    setLoadErr(null);
+    void rpc
+      .call("list_repos", {})
+      .then((res) => {
+        if (cancelled) return;
+        const found = res.repos.find((r) => r.id === action.repo_id) ?? null;
+        if (!found) {
+          setLoadErr(`repo ${action.repo_id} is no longer registered`);
+        } else {
+          setRepo(found);
+        }
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setLoadErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, action.repo_id]);
+
+  if (loadErr) {
+    return (
+      <div className="mt-1 rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+        {loadErr}
+      </div>
+    );
+  }
+  if (!repo) {
+    return (
+      <div className="mt-1 text-xs text-muted-foreground">
+        Loading composer…
+      </div>
+    );
+  }
+  return (
+    <DraftJobComposerPanelInner
+      repo={repo}
+      action={action}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
+  );
+}
+
+type DraftJobComposerPanelInnerProps = DraftJobComposerPanelProps & {
+  repo: Repo;
+};
+
+function DraftJobComposerPanelInner({
+  repo,
+  action,
+  onConfirm,
+  onCancel,
+}: DraftJobComposerPanelInnerProps) {
+  const rpc = useRpc();
+  const initial: JobComposerInitial = useMemo(
+    () => ({
+      // Planner emits a branch but no folder slug. Strip the conventional
+      // `codeless/` prefix to reach a name the user is likely to want;
+      // the field stays editable so any non-conforming branch can be
+      // overridden before confirm.
+      name: slugifyName(action.branch.replace(/^codeless\//, "")),
+      branch: action.branch,
+      runner: action.runner,
+      workspaceMode: action.workspace_mode ?? undefined,
+      costCapUsd: (action.cost_cap_cents / 100).toString(),
+      wallClockMin: (action.wall_clock_cap_ms / 60_000).toString(),
+      policy: action.auto_bypass_policy ?? null,
+      model: action.model ?? undefined,
+      permissionMode: action.permission_mode ?? undefined,
+      effort: action.effort ?? undefined,
+    }),
+    [action],
+  );
+  const state = useJobComposerState({ repo, initial });
+  const [submitting, setSubmitting] = useState(false);
+  const [submitErr, setSubmitErr] = useState<string | null>(null);
+
+  // `JobComposer` reads `state.info` to populate the runner dropdown.
+  // The dialog shell fetches `/server/info` on each open; the card
+  // mirrors that — one fetch per mount surfaces a server restarted with
+  // `--enable-claude` between the planner's draft and the user's review.
+  useEffect(() => {
+    let cancelled = false;
+    rpc
+      .serverInfo()
+      .then((i) => {
+        if (cancelled) return;
+        state.setInfo(i);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setSubmitErr(
+          `could not load runner list: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+    // `state` is held by the caller; we only want to fire this on mount
+    // / rpc change. Re-running on every `state` identity flip would
+    // cancel + re-fetch on each keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rpc]);
+
+  const onConfirmClick = async () => {
+    if (!state.canSubmit || submitting) return;
+    setSubmitting(true);
+    setSubmitErr(null);
+    try {
+      await onConfirm(composerToSubmitArgs(state));
+    } catch (e: unknown) {
+      setSubmitErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mt-1 flex flex-col gap-2 rounded border border-border/40 bg-background/40 p-2 text-xs">
+      <JobComposer state={state} hideRunImmediately />
+      <details className="text-muted-foreground">
+        <summary className="cursor-pointer select-none">prompt</summary>
+        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-2">
+          {action.prompt}
+        </pre>
+      </details>
+      {submitErr && (
+        <div className="text-destructive">{submitErr}</div>
+      )}
+      <div className="mt-1 flex justify-end gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onCancel}
+          disabled={submitting}
+          aria-label="Cancel action"
+        >
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => void onConfirmClick()}
+          disabled={!state.canSubmit || submitting}
+          aria-label="Confirm action"
+        >
+          {submitting ? "Submitting…" : "Confirm"}
+        </Button>
       </div>
     </div>
   );
