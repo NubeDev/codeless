@@ -372,15 +372,147 @@ so a substrate change that breaks plugin contract fails CI
 immediately. The estimating plugin lands only after `notes` is
 green.
 
+### 9. WASM plugin host (second runtime flavour)
+
+Status: **new**. Full design in [`PLUGIN-WASM.md`](./PLUGIN-WASM.md).
+
+A plugin's tool implementations may ship as one or more `.wasm` files
+loaded by a Wasmtime-based host living in a new host-only crate
+`codeless-plugin-host-wasm`. The same `plugin.toml` from item 6 gains
+a `[[runtimes]]` array; a plugin can declare `kind = "builtin"`
+(today's static link), `kind = "wasm"` (new), or both. The
+authoring crate writes a `ToolBehavior` trait impl — one trait, one
+authoring API; the build target (`cargo build` vs `cargo build
+--target wasm32-wasip2`) decides the packaging.
+
+Load-bearing reasons WASM is the second flavour (not process):
+
+- **R1 stays intact.** Wasmtime is a library; loading a `.wasm` does
+  not spawn a process. The host crate is host-only but the *plugin
+  artifact* is portable. A future mobile shell that wants in-app
+  plugins can run trusted WASM without ever depending on
+  `codeless-adapters-host`.
+- **No build toolchain on the user's machine.** A `.wasm` blob drops
+  into `plugins/<id>/wasm/tool.wasm` and registers. Static linking
+  alone forces every plugin through a rebuild of `codeless-server`,
+  killing third-party authoring.
+- **Capability sandbox is native to WASI-p2.** Persona
+  `allowed_tools` (item 3) controls which tools the agent may call.
+  WASI capabilities control what the plugin code itself can touch
+  (no host FS by default; no clock; no network unless granted). The
+  two layers compose without either reaching into the other.
+
+Acceptance: the `notes` plugin from item #0 can be rebuilt with
+`cargo build --target wasm32-wasip2`, dropped into `plugins/notes/
+wasm/notes.wasm`, registered through the same `PluginRegistry::
+load_plugin` entry point, and pass the same end-to-end test
+(`plugin_substrate_e2e::notes_plugin_loads_and_seeds_persona_
+addressable_by_thread`) with the runtime flavour swapped.
+
+### 10. Module-federated plugin UI (R6)
+
+Status: **new**. Full design in
+[`PLUGIN-UI-FEDERATION.md`](./PLUGIN-UI-FEDERATION.md).
+
+A plugin may contribute UI in addition to (or instead of) tools, via
+a Module Federation remote bundle. The host page registers the remote
+at boot and mounts its exposed modules at declared slots
+(`assistant-panel`, `persona-picker`, `tool-result:<tool_id>`,
+`settings-page:<plugin_id>`). React, zustand, and tanstack-query are
+shared singletons pinned in both host and remote `rsbuild.config.ts`.
+
+The MF host shell lives in `ui/codeless-ui/`; the contract is
+documented and tested at the codeless side and frozen on a major
+version. Plugin UI is authored against an in-tree SDK package
+`@codeless/plugin-ui-sdk` (a fork of rubix's `extension-ui-sdk` —
+see the reuse table at the end of this doc).
+
+**New R-rule — R6:** plugin MF remotes import `RpcClient` from the
+host's shared scope and never import `@tauri-apps/*`, `fetch(...)`
+to the codeless server directly, or any non-shared React. Same
+reasoning as R2, applied to plugin code.
+
+Acceptance: the `notes` plugin gains a `ui/` directory, declares
+`contributes.ui.entry` in its manifest, and renders an inline
+"recent notes" panel in the Assistant via MF without any host-side
+code change beyond the generic MF loader.
+
+### 11. Process plugin host (deferred, seam reserved)
+
+Status: **deferred**. Design lifted from rubix in
+[`PLUGIN-PROCESS.md`](./PLUGIN-PROCESS.md); landing waits until either
+(a) a polyglot authoring story is needed (Python/Go/TS plugins), or
+(b) a plugin needs crash isolation the WASM sandbox can't provide
+(long-running drivers, native deps).
+
+Reserving the seam now means `plugin.toml` accepts
+`[[runtimes]] kind = "process"` and the manifest parser strict-
+validates it; the actual gRPC supervisor lands later. This is the
+same shape rubix uses (`block.proto` + `BehaviorProxy` +
+`process-wrap` + circuit breaker), narrowed to the codeless tool
+trait.
+
+Mobile-safety note: the process host crate
+`codeless-plugin-host-process` is host-only and gated behind a Cargo
+feature that the mobile build does not enable, exactly like
+`codeless-adapters-host`.
+
+## Reuse from rubix — what we lift, what we don't
+
+The rubix workspace (`rubix-workspace/extension-sdk/`,
+`rubix-workspace/extension-ui-sdk/`,
+`rubix-workspace/rubix-agent/crates/extensions-host/`) ships a
+production three-flavour plugin system (native/WASM/process) with a
+matching Module-Federation UI SDK. Codeless reuses it the same way
+[`TOOLS-PORTING.md`](../TOOLS-PORTING.md) reuses moxxy — **port files,
+do not depend on the upstream crate**. The author-facing model in
+rubix is dataflow nodes (kinds, slots, messages, ports); codeless's
+is AI tools (input schema, output schema, `call(args) → result`).
+Forcing one into the other would import the entire rubix graph SPI.
+The substrate plumbing, in contrast, is genuinely shared shape.
+
+| Rubix asset | Codeless action | Effort saved |
+|---|---|---|
+| `extension-ui-sdk/` (TypeScript MF helpers, ~6 files + tests) | **Fork in-tree** as `ui/codeless-ui/packages/plugin-ui-sdk/`. Rename `@rubix/agent-client` → codeless `RpcClient`, `@rubix/ui-core` → codeless shadcn primitives. Drop rubix git history; we own it outright. | ~1 week of MF plumbing |
+| `extensions-sdk/src/lib.rs` mutually-exclusive feature-flag pattern | Copy the `compile_error!` guard verbatim into `codeless-plugin-sdk/src/lib.rs`. Swap the flavour names if needed, keep the shape. | Half a day; gets the "one SDK, three flavours" enforcement right at compile time |
+| `extensions-sdk/src/wasm.rs` (187 LoC, WASI host-function ABI) | Copy as the starting point for `codeless-plugin-sdk/src/wasm.rs`. Rewrite the envelope from `OnInputEnvelope { node_id, port, msg_json }` to `ToolCallEnvelope { tool_id, args_json }`. ABI symbols (`alloc`, `describe`, exported tool entry point) keep the same pack/leak/read_slice scaffolding. | Days; the raw-pointer/`#[allow(unsafe_code)]` dance is correct in rubix and worth not re-deriving |
+| `extensions-sdk-macros` (`#[derive(NodeKind)]`) | Lift the derive-macro pattern into `#[derive(Tool)]` that generates input/output JSON schema (via `schemars`) from the struct and impls a `ToolBehavior::manifest()` returning the codeless tool manifest shape. | A day; we get tool-schema-from-struct for free |
+| `extensions-host/src/registry.rs` two-phase scan + namespace check | **Pattern lift, no code lift.** Codeless's `PluginRegistry::load_plugin` (item 6) already validates manifests; extend it with the rubix "validate all, then commit" structure so a partial load can't leave the tool/persona/migration registries half-populated. Document the two-phase rule in this doc, not the rubix source. | A day of design transposition |
+| `extensions-sdk/src/process.rs` (757 LoC, gRPC + UDS + supervisor) | **Reference only**, for [`PLUGIN-PROCESS.md`](./PLUGIN-PROCESS.md) when it lands. Codeless's process host will use the same shape (UDS, identity check on `Describe`, circuit-breaker supervisor) but its own proto matching the tool trait. | Weeks, if/when process lands |
+| `block-client` (rubix `BootCtx`, kind registry) | **Do not lift.** Welded to rubix's graph SPI; codeless has its own runtime, RPC layer, persona model. | n/a — would be net-negative |
+| `extensions-sdk/src/node.rs`, `ctx.rs`, `subscribe.rs`, `settings.rs` | **Do not lift.** All graph-node/slot/message vocabulary; no codeless analogue. The codeless `ToolBehavior` trait is `fn call(ctx: &ToolCtx, args: JsonValue) -> Result<JsonValue, ToolError>` — flat. | n/a |
+| `rubix-extensions-sdk` as a Cargo dependency | **Never.** Pulls in `spi`, `block-client`, the whole rubix graph SPI. Same anti-pattern [`TOOLS-PORTING.md`](../TOOLS-PORTING.md) rejected for moxxy. | Avoids permanent upstream coupling |
+
+Operational note: every ported file gets a `// codeless-ported-from:
+<rubix-path>@<sha>` header recording origin and the SHA at port
+time. There is no patch log — once ported, the file is codeless code
+by every standard ([CLAUDE.md § File-level rules](../../CLAUDE.md)).
+If a rubix fix is worth pulling later, it's a re-port decision, not
+a merge.
+
 ## Non-goals (for this doc)
 
 - The estimator itself. Scoped separately once items 1–6 are landed.
-- A WASI plugin host. Static linking is fine for MVP; revisit when
-  the plugin count exceeds ~3 or a third-party authoring story is
-  needed. See [`TOOLS-PORTING.md`](./TOOLS-PORTING.md) for the path.
-- A workflow DSL or visual builder. A plugin is Rust + data. If a
-  domain needs a DSL, that DSL is a plugin-internal concern, not a
-  substrate concern.
+- The full WASM host design — that lives in
+  [`PLUGIN-WASM.md`](./PLUGIN-WASM.md).
+- The full MF UI contract — that lives in
+  [`PLUGIN-UI-FEDERATION.md`](./PLUGIN-UI-FEDERATION.md).
+- The process-flavour design — reserved seam only;
+  [`PLUGIN-PROCESS.md`](./PLUGIN-PROCESS.md) carries the design but
+  is explicitly not in MVP scope.
+- The MCP-contribution surface (plugin tools / resources / prompts
+  visible to third-party MCP clients) — that lives in
+  [`PLUGIN-MCP.md`](./PLUGIN-MCP.md). The substrate's item 1
+  (`codeless-tools` registry) is the prerequisite; PLUGIN-MCP is
+  the outbound view of the same tools.
+- A workflow DSL or visual builder. A plugin is Rust (or WASM) + data.
+  If a domain needs a DSL, that DSL is a plugin-internal concern, not
+  a substrate concern.
+- Rhai-style scripted plugins. Considered and skipped: WASM with a
+  small Rust authoring surface covers the "no manual ABI" goal, and
+  codeless plugins are non-trivial (tool calls with structured I/O
+  and attachments) — a Rhai tier would not pay for itself before
+  WASM ships.
 - Per-user permissions. R5 ([`SCOPE.md`](./SCOPE.md#r5-single-tenant-trust-boundary))
   still holds — single bearer token, single trust boundary.
 

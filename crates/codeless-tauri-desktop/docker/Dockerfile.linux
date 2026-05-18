@@ -1,8 +1,11 @@
 # Linux build image for codeless-tauri-desktop
-# Build context must be the workspace root (codeless-workspace/)
+# Build context is the parent of codeless-workspace/, i.e. the directory
+# containing both codeless-workspace/ and the sibling ai-ui/ repo that
+# codeless-ai-ui path-depends on. The in-container layout mirrors the
+# host so the `../../../../ai-ui` path-dep resolves.
 #
 # Usage:
-#   docker build -f codeless/crates/codeless-tauri-desktop/docker/Dockerfile.linux \
+#   docker build -f codeless-workspace/codeless/crates/codeless-tauri-desktop/docker/Dockerfile.linux \
 #     -t codeless-desktop-linux .
 
 FROM rust:1.95-bookworm AS builder
@@ -25,24 +28,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 22 + pnpm for building the UI (pnpm v11 requires Node >= 22.13)
+# Node.js 22 + pnpm for building the UI. Pin pnpm to v10 so the
+# lockfile format matches what host developers produce; mismatched
+# major versions trip ERR_PNPM_LOCKFILE_CONFIG_MISMATCH under
+# --frozen-lockfile.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
-    && npm install -g pnpm@11 \
+    && npm install -g pnpm@10 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# Copy the full workspace (ai-runner + codeless)
-COPY ai-runner/ /build/ai-runner/
-COPY codeless/ /build/codeless/
+# Copy both the codeless workspace and the sibling ai-ui repo. The
+# layout mirrors the host so codeless-ai-ui's `../../../../ai-ui`
+# path-dep resolves to /build/ai-ui.
+COPY codeless-workspace/ /build/codeless-workspace/
+COPY ai-ui/ /build/ai-ui/
 
-# Build the UI frontend
-WORKDIR /build/codeless/ui/codeless-ui
-RUN pnpm install && pnpm build
+# Build the UI frontend. CI=true keeps pnpm non-interactive so it
+# doesn't abort when an existing node_modules slips into the context.
+WORKDIR /build/codeless-workspace/codeless/ui/codeless-ui
+ENV CI=true
+RUN pnpm install --frozen-lockfile && pnpm build
 
 # Build the Rust binary
-WORKDIR /build/codeless
+WORKDIR /build/codeless-workspace/codeless
 RUN cargo build --release -p codeless-tauri-desktop
 
 # Output stage — just the binary
@@ -61,6 +71,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/codeless/target/release/codeless-tauri-desktop /usr/local/bin/codeless-tauri-desktop
+COPY --from=builder /build/codeless-workspace/codeless/target/release/codeless-tauri-desktop /usr/local/bin/codeless-tauri-desktop
 
 ENTRYPOINT ["codeless-tauri-desktop"]

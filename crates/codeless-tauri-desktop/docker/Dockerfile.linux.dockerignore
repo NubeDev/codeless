@@ -1,0 +1,8 @@
+# BuildKit picks up <Dockerfile>.dockerignore next to the Dockerfile.
+# Build context for Dockerfile.linux is the parent of codeless-workspace/
+# (so the sibling ai-ui/ repo is reachable).
+**/target/
+**/node_modules/
+**/.git/
+**/dist/
+codeless-workspace/codeless/crates/codeless-tauri-desktop/docker/dist/

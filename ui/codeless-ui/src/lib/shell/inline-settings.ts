@@ -1,8 +1,6 @@
-// Single source of truth for the in-app Settings overlay. Lives next
-// to the shell-injection adapters because that's the seam: the desktop
-// shell opens a separate Tauri window and never touches this store;
-// browser / mobile shells flip the store to render `<SettingsApp />`
-// inline inside `<App />`. App.tsx subscribes and renders the overlay
+// Single source of truth for the in-app Settings overlay. Every shell
+// (browser, desktop, mobile) flips this store to render `<SettingsApp />`
+// inline inside `<App />`; App.tsx subscribes and renders the overlay
 // when `open === true`.
 //
 // The store is a Zustand singleton because settings is a singleton —

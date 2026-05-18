@@ -6,9 +6,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Workspace root is 4 levels up: docker/ -> codeless-tauri-desktop/ -> crates/ -> codeless/ -> codeless-workspace/
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../../../../" && pwd)"
+# Build context is one level higher so the sibling `ai-ui/` repo
+# (path-dep'd by codeless-ai-ui via ../../../../ai-ui) is reachable.
+BUILD_CONTEXT="$(cd "$WORKSPACE_ROOT/.." && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/dist"
 
 mkdir -p "$OUTPUT_DIR"
+
+# BuildKit is required for per-Dockerfile dockerignore files
+# (Dockerfile.linux.dockerignore next to the Dockerfile).
+export DOCKER_BUILDKIT=1
 
 usage() {
     cat <<EOF
@@ -31,7 +38,7 @@ build_linux() {
     docker build \
         -f "$SCRIPT_DIR/Dockerfile.linux" \
         -t codeless-desktop-linux \
-        "$WORKSPACE_ROOT"
+        "$BUILD_CONTEXT"
 
     # Extract the binary from the image
     container_id=$(docker create codeless-desktop-linux)

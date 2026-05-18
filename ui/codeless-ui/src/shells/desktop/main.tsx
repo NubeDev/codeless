@@ -9,6 +9,7 @@ import App from "../../app/App";
 import { IS_MAC } from "../../lib/platform";
 import { RpcProvider, TauriIpcClient } from "../../lib/rpc";
 import {
+  browserSettingsWindow,
   fallbackAppInfo,
   registerCrossWindowEvents,
   registerKVStoreFactory,
@@ -24,7 +25,6 @@ import { tauriKVFactory } from "./kv-store";
 import { tauriNetworkProbe } from "./network-probe";
 import { tauriPathPicker } from "./path-picker";
 import { tauriPaths } from "./paths";
-import { tauriSettingsWindow } from "./settings-window";
 import { tauriUpdater } from "./updater";
 import { tauriWindowControls } from "./window-controls";
 
@@ -56,7 +56,7 @@ function mount(appInfo: AppInfo) {
       paths={tauriPaths}
       pathPicker={tauriPathPicker}
       autostart={tauriAutostart}
-      settingsWindow={tauriSettingsWindow}
+      settingsWindow={browserSettingsWindow}
       networkProbe={tauriNetworkProbe}
     >
       <RpcProvider client={new TauriIpcClient()}>

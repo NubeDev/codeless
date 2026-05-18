@@ -43,11 +43,16 @@ Windows SDK and MSVC CRT headers. The resulting `.exe` uses WebView2
 
 ## Build Context
 
-The Docker build context is the workspace root
-(`codeless-workspace/`) because the Cargo workspace references
-`../ai-runner` as a path dependency. The `.dockerignore` at the
-workspace root excludes `target/`, `node_modules/`, and `.git/` to
-keep the context transfer fast.
+The Docker build context is the **parent of `codeless-workspace/`**
+(i.e. the directory containing both `codeless-workspace/` and the
+sibling `ai-ui/` repo). This is required because `codeless-ai-ui`
+path-depends on `../../../../ai-ui`, which escapes the workspace.
+The in-container layout mirrors the host so the path-deps resolve.
+
+A per-Dockerfile ignore file (`Dockerfile.linux.dockerignore`) sits
+next to the Dockerfile and BuildKit picks it up automatically; it
+excludes `target/`, `node_modules/`, `.git/`, and prior build output
+to keep the context transfer fast.
 
 ## Notes
 
