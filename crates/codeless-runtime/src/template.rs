@@ -32,8 +32,13 @@
 //! flat strings and structured maps. The runtime always sees the
 //! structured form after `parse_yaml`.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
+use codeless_types::pause_point::{
+    PausePoint, PausePointId, PausePointPosition, PausePointTarget, TodoSelector,
+};
+use codeless_types::todo::TodoKind;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
@@ -65,7 +70,222 @@ pub struct JobTemplate {
     /// `"1h"`, `"45s"`) or a bare integer interpreted as seconds.
     #[serde(default, deserialize_with = "deserialize_optional_duration")]
     pub session_idle_timeout: Option<Duration>,
+    /// Operator-declared breakpoints, held in their raw, *unvalidated*
+    /// shape after `parse_yaml`. Structural YAML errors (wrong scalar
+    /// type, malformed map) still surface as `TemplateError::Yaml`;
+    /// semantic resolution — symbolic name → ordinal, trio-kind
+    /// whitelist, duplicate detection — is deferred to
+    /// [`JobTemplate::resolve_pause_points`] so the submit path
+    /// collects every violation in one pass rather than
+    /// short-circuiting on the first. See `DOCS/SCOPED-PAUSE-POINTS.md`
+    /// §3 for the rejection table this resolver enforces.
+    #[serde(default)]
+    pub pause_points: Vec<RawPausePoint>,
 }
+
+/// One scoped pause entry as it sits in `template.yaml` before name
+/// resolution. Distinct from `codeless_types::PausePoint` so the YAML
+/// layer can be permissive (string-or-integer `stage`, optional
+/// `todo`, free-form `position`) while the wire type stays strict
+/// (resolved ordinals, `TodoSelector` enum, kebab-case `before` /
+/// `after`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RawPausePoint {
+    pub stage: StageRef,
+    #[serde(default)]
+    pub todo: Option<TodoRef>,
+    /// Required at the grammar level (SCOPED-PAUSE-POINTS §1.3). Held
+    /// as `Option<String>` so a missing or non-`before`/`after` value
+    /// surfaces as `ScopeError::MissingOrInvalidPosition` from the
+    /// resolver rather than killing the whole YAML parse, which would
+    /// hide every other schedule error in the same file.
+    #[serde(default)]
+    pub position: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// YAML scalar for the `stage:` key — an integer ordinal (1-based) or
+/// a string name. Resolution to a canonical ordinal happens in
+/// `resolve_pause_points`; this type only captures the surface shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StageRef {
+    Ordinal(i64),
+    Name(String),
+}
+
+impl<'de> Deserialize<'de> for StageRef {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(i64),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Int(n) => Ok(StageRef::Ordinal(n)),
+            Raw::Text(s) => Ok(StageRef::Name(s)),
+        }
+    }
+}
+
+/// YAML scalar for the optional `todo:` key. A bare integer is an
+/// ordinal; a string prefixed with `~` is a title substring (the
+/// tilde marks it explicitly so a runner-authored todo titled
+/// `"checks"` cannot accidentally collide with the trio kind); any
+/// other string is a bare word matched against the reserved trio
+/// kinds (`checks` / `docs` / `git`) by the resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TodoRef {
+    Ordinal(i64),
+    /// Tilde-prefixed substring with the leading `~` stripped. Empty
+    /// ⇒ `ScopeError::EmptyTitleSubstring` at resolve time.
+    Substring(String),
+    /// Any other bare string. Held verbatim so the error message can
+    /// echo the operator's exact spelling on a trio-whitelist miss.
+    Word(String),
+}
+
+impl<'de> Deserialize<'de> for TodoRef {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(i64),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Int(n) => Ok(TodoRef::Ordinal(n)),
+            Raw::Text(s) => match s.strip_prefix('~') {
+                Some(rest) => Ok(TodoRef::Substring(rest.to_string())),
+                None => Ok(TodoRef::Word(s)),
+            },
+        }
+    }
+}
+
+/// Typed schedule-resolution failure. Surfaces every way a
+/// `pause_points:` entry can violate the grammar in
+/// `DOCS/SCOPED-PAUSE-POINTS.md` §3. Each variant carries the
+/// operator's original spelling (not a normalised form) so the error
+/// quotes the YAML verbatim and the operator can ctrl-F the file.
+///
+/// Returned in batches: `resolve_pause_points` collects every
+/// violation it sees within a resolution pass before bailing, so the
+/// operator fixes the whole schedule once rather than re-submitting
+/// four times. Pass order is pinned by tests:
+///
+/// 1. Empty-stage-list guard (`PausePointOnEmptyStageList`).
+/// 2. Stage resolution — ordinal range, name match, ambiguity.
+/// 3. Position validation — `before` / `after`.
+/// 4. Todo resolution — trio whitelist, ordinal floor, substring empty.
+/// 5. Reason length.
+/// 6. Cross-point duplicate detection over the resolved set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeError {
+    UnknownStageName {
+        name: String,
+    },
+    AmbiguousStageName {
+        name: String,
+        count: usize,
+    },
+    StageOrdinalOutOfRange {
+        ordinal: i64,
+        n: usize,
+    },
+    UnknownTrioKind {
+        kind: String,
+    },
+    EmptyTitleSubstring,
+    TodoOrdinalOutOfRange {
+        stage: u32,
+        ordinal: i64,
+    },
+    /// `found = None` ⇒ key absent; `found = Some(s)` ⇒ key present
+    /// but not `before` / `after`. The two cases share a variant
+    /// because they share a fix.
+    MissingOrInvalidPosition {
+        found: Option<String>,
+    },
+    /// Indices are 1-based YAML positions in `pause_points:`.
+    DuplicatePausePoint {
+        existing: usize,
+        duplicate: usize,
+    },
+    ReasonTooLong {
+        len: usize,
+    },
+    PausePointOnEmptyStageList,
+}
+
+impl std::fmt::Display for ScopeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopeError::UnknownStageName { name } => {
+                write!(f, "pause_points: unknown stage name `{name}`")
+            }
+            ScopeError::AmbiguousStageName { name, count } => write!(
+                f,
+                "pause_points: stage name `{name}` matches {count} stages; use the ordinal"
+            ),
+            ScopeError::StageOrdinalOutOfRange { ordinal, n } => write!(
+                f,
+                "pause_points: stage ordinal {ordinal} out of range (have {n} stages, 1-based)"
+            ),
+            ScopeError::UnknownTrioKind { kind } => write!(
+                f,
+                "pause_points: todo `{kind}` is not a trio kind (expected checks, docs, or git; use `~{kind}` for a title substring)"
+            ),
+            ScopeError::EmptyTitleSubstring => {
+                write!(f, "pause_points: empty title substring (`todo: ~`)")
+            }
+            ScopeError::TodoOrdinalOutOfRange { stage, ordinal } => write!(
+                f,
+                "pause_points: todo ordinal {ordinal} on stage {stage} must be >= 1"
+            ),
+            ScopeError::MissingOrInvalidPosition { found } => match found {
+                Some(v) => write!(
+                    f,
+                    "pause_points: invalid position `{v}` (expected `before` or `after`)"
+                ),
+                None => write!(
+                    f,
+                    "pause_points: missing position (expected `before` or `after`)"
+                ),
+            },
+            ScopeError::DuplicatePausePoint {
+                existing,
+                duplicate,
+            } => write!(
+                f,
+                "pause_points: entry #{duplicate} duplicates entry #{existing} (same stage, todo, and position)"
+            ),
+            ScopeError::ReasonTooLong { len } => write!(
+                f,
+                "pause_points: reason is {len} bytes; cap is {REASON_BYTE_CAP}"
+            ),
+            ScopeError::PausePointOnEmptyStageList => write!(
+                f,
+                "pause_points: cannot schedule a pause when the template has no stages"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ScopeError {}
+
+/// 512 bytes per SCOPED-PAUSE-POINTS §1.4. Byte length, not character
+/// count, because that's the cheap upper bound on the persisted column
+/// width — a graphemes budget would invite encoding mismatches between
+/// the parser and the column.
+const REASON_BYTE_CAP: usize = 512;
 
 /// One stage's authored content. The wire form is permissive — a
 /// bare string is just a `title`, the `REVIEW ` prefix maps to
@@ -248,6 +468,191 @@ impl JobTemplate {
         Ok(parsed)
     }
 
+    /// Resolve `pause_points:` against the parsed `stages:` list,
+    /// collecting every violation in a single sweep so the operator
+    /// sees the full punch list. Returns the resolved schedule keyed
+    /// by YAML position so the persistence layer can write
+    /// `(job_id, ordinal)` rows directly without re-walking the source.
+    ///
+    /// Resolution happens at submit time (the runtime calls this on
+    /// the parsed template before the job leaves `draft`); a fresh id
+    /// per `PausePoint` is therefore safe — the row hasn't been
+    /// persisted yet, so the ULID generated here is the canonical one
+    /// for the schedule. The runtime contract:
+    ///
+    /// - `Err(es)` ⇒ refuse the submit; the job never reaches `draft`
+    ///   with a broken schedule.
+    /// - `Ok(ps)` ⇒ caller writes the rows verbatim, in order.
+    ///
+    /// See `DOCS/SCOPED-PAUSE-POINTS.md` §3 for the rejection table
+    /// and the pinned pass order.
+    pub fn resolve_pause_points(&self) -> Result<Vec<PausePoint>, Vec<ScopeError>> {
+        if self.pause_points.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut errors: Vec<ScopeError> = Vec::new();
+        if self.stages.is_empty() {
+            errors.push(ScopeError::PausePointOnEmptyStageList);
+            return Err(errors);
+        }
+
+        // Precompute case-sensitive name → ordinal index for the stage
+        // name lookup. Stored as `Vec<u32>` so duplicates surface as a
+        // count rather than collapsing silently.
+        let n = self.stages.len();
+        let mut by_name: HashMap<String, Vec<u32>> = HashMap::with_capacity(n);
+        for (i, s) in self.stages.iter().enumerate() {
+            let name = stage_short_name(&s.title);
+            if !name.is_empty() {
+                by_name.entry(name).or_default().push((i + 1) as u32);
+            }
+        }
+
+        let mut resolved: Vec<PausePoint> = Vec::with_capacity(self.pause_points.len());
+        let mut keys: Vec<(ResolvedKey, usize)> = Vec::with_capacity(self.pause_points.len());
+
+        for (idx, raw) in self.pause_points.iter().enumerate() {
+            let entry_no = idx + 1;
+            // Pass 2: stage resolution.
+            let stage_ordinal = match &raw.stage {
+                StageRef::Ordinal(o) => {
+                    if *o < 1 || (*o as usize) > n {
+                        errors.push(ScopeError::StageOrdinalOutOfRange { ordinal: *o, n });
+                        None
+                    } else {
+                        Some(*o as u32)
+                    }
+                }
+                StageRef::Name(name) => match by_name.get(name).map(Vec::as_slice) {
+                    Some([only]) => Some(*only),
+                    Some(many) => {
+                        errors.push(ScopeError::AmbiguousStageName {
+                            name: name.clone(),
+                            count: many.len(),
+                        });
+                        None
+                    }
+                    None => {
+                        errors.push(ScopeError::UnknownStageName { name: name.clone() });
+                        None
+                    }
+                },
+            };
+
+            // Pass 3: position validation. Parsed independently of the
+            // stage so a typo in `position:` still reports against this
+            // entry even when the stage name is wrong.
+            let position = match raw.position.as_deref().map(str::trim) {
+                Some("before") => Some(PausePointPosition::Before),
+                Some("after") => Some(PausePointPosition::After),
+                Some(other) => {
+                    errors.push(ScopeError::MissingOrInvalidPosition {
+                        found: Some(other.to_string()),
+                    });
+                    None
+                }
+                None => {
+                    errors.push(ScopeError::MissingOrInvalidPosition { found: None });
+                    None
+                }
+            };
+
+            // Pass 4: todo resolution. Title-substring failures that
+            // are *runtime-deferred* (multi-match at bind time) are
+            // out of scope here — only parse-time failures land in
+            // this batch.
+            let selector_result: Option<Option<TodoSelector>> = match &raw.todo {
+                None => Some(None),
+                Some(TodoRef::Ordinal(o)) => {
+                    if *o < 1 {
+                        errors.push(ScopeError::TodoOrdinalOutOfRange {
+                            stage: stage_ordinal.unwrap_or(0),
+                            ordinal: *o,
+                        });
+                        None
+                    } else {
+                        Some(Some(TodoSelector::Ordinal { ordinal: *o as u32 }))
+                    }
+                }
+                Some(TodoRef::Substring(pat)) => {
+                    if pat.is_empty() {
+                        errors.push(ScopeError::EmptyTitleSubstring);
+                        None
+                    } else {
+                        Some(Some(TodoSelector::TitleSubstring {
+                            pattern: pat.clone(),
+                        }))
+                    }
+                }
+                Some(TodoRef::Word(w)) => match trio_kind_from_word(w) {
+                    Some(kind) => Some(Some(TodoSelector::Trio { kind })),
+                    None => {
+                        errors.push(ScopeError::UnknownTrioKind { kind: w.clone() });
+                        None
+                    }
+                },
+            };
+
+            // Pass 5: reason length. Cheap, runs even when other
+            // fields failed — same rationale as position.
+            if let Some(r) = raw.reason.as_ref() {
+                if r.len() > REASON_BYTE_CAP {
+                    errors.push(ScopeError::ReasonTooLong { len: r.len() });
+                }
+            }
+
+            // Only assemble the resolved point when every field
+            // contributing to its identity is well-formed; otherwise
+            // skip duplicate-detection for this entry rather than
+            // emit spurious follow-on errors.
+            if let (Some(stage_ord), Some(pos), Some(selector_opt)) =
+                (stage_ordinal, position, selector_result)
+            {
+                let target = match selector_opt.clone() {
+                    None => PausePointTarget::Stage { ordinal: stage_ord },
+                    Some(sel) => PausePointTarget::StageTodo {
+                        stage_ordinal: stage_ord,
+                        selector: sel,
+                    },
+                };
+                let key = ResolvedKey {
+                    stage: stage_ord,
+                    selector: selector_key(&selector_opt),
+                    position: position_key(pos),
+                };
+                keys.push((key, entry_no));
+                resolved.push(PausePoint {
+                    id: PausePointId::new(),
+                    target,
+                    position: pos,
+                    reason: raw.reason.clone(),
+                });
+            }
+        }
+
+        // Pass 6: cross-point duplicates. Detection runs over the
+        // resolved set so two entries that *resolve* to the same
+        // (stage_ordinal, selector, position) collide even when their
+        // YAML spellings differ ("stage: 3" vs "stage: parser").
+        let mut seen: HashMap<ResolvedKey, usize> = HashMap::with_capacity(keys.len());
+        for (key, entry_no) in &keys {
+            if let Some(prev) = seen.get(key) {
+                errors.push(ScopeError::DuplicatePausePoint {
+                    existing: *prev,
+                    duplicate: *entry_no,
+                });
+            } else {
+                seen.insert(key.clone(), *entry_no);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(resolved)
+        } else {
+            Err(errors)
+        }
+    }
+
     /// Orchestrator-facing view of each stage. Borrows from the
     /// template so callers don't pay an allocation per stage; the
     /// `docs` slice is empty when the stage opted out.
@@ -331,6 +736,80 @@ where
         Some(Raw::Text(s)) => parse_duration_str(s.trim())
             .map(Some)
             .map_err(D::Error::custom),
+    }
+}
+
+/// Derive the "name" used to address a stage from its title. Stage
+/// titles in practice carry two trailing bits of decoration the
+/// pause-point grammar should not require the operator to repeat:
+///
+/// - a size suffix `(S)` / `(M)` / `(L)` describing rough effort, and
+/// - a colon-prefixed long-form sentence (`design: extend …`) where
+///   the first token is the actual handle.
+///
+/// `stage_short_name` strips the size suffix first, then takes the
+/// portion before the first colon. The result is the string the YAML
+/// `stage: <name>` lookup matches against — case-sensitive, per
+/// SCOPED-PAUSE-POINTS §1.1.
+fn stage_short_name(title: &str) -> String {
+    let trimmed = title.trim();
+    let without_size = strip_size_suffix(trimmed);
+    let head = match without_size.find(':') {
+        Some(idx) => &without_size[..idx],
+        None => without_size,
+    };
+    head.trim().to_string()
+}
+
+fn strip_size_suffix(s: &str) -> &str {
+    let trimmed = s.trim_end();
+    for suffix in [" (S)", " (M)", " (L)"] {
+        if let Some(stripped) = trimmed.strip_suffix(suffix) {
+            return stripped.trim_end();
+        }
+    }
+    trimmed
+}
+
+/// Map the bare `todo:` word forms onto the reserved trio kinds.
+/// Anything else returns `None` and surfaces as `UnknownTrioKind` so
+/// the operator sees the misspelling instead of getting a silent
+/// title-substring binding. Per SCOPED-PAUSE-POINTS §1.2.3 these
+/// words are reserved at the YAML layer.
+fn trio_kind_from_word(w: &str) -> Option<TodoKind> {
+    match w {
+        "checks" => Some(TodoKind::Checks),
+        "docs" => Some(TodoKind::Docs),
+        "git" => Some(TodoKind::Git),
+        _ => None,
+    }
+}
+
+/// Identity key for duplicate detection after resolution. The
+/// `PausePointId` does *not* participate — every new entry gets a
+/// fresh ULID so identity would defeat the check. Selector and
+/// position are flattened to owned strings so `TodoSelector` and
+/// `PausePointPosition` (which live in `codeless-types` and don't
+/// derive `Hash`) don't need to grow traits just for this sweep.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ResolvedKey {
+    stage: u32,
+    selector: Option<String>,
+    position: &'static str,
+}
+
+fn selector_key(s: &Option<TodoSelector>) -> Option<String> {
+    s.as_ref().map(|sel| match sel {
+        TodoSelector::Ordinal { ordinal } => format!("ord:{ordinal}"),
+        TodoSelector::Trio { kind } => format!("trio:{kind:?}"),
+        TodoSelector::TitleSubstring { pattern } => format!("sub:{pattern}"),
+    })
+}
+
+fn position_key(p: PausePointPosition) -> &'static str {
+    match p {
+        PausePointPosition::Before => "before",
+        PausePointPosition::After => "after",
     }
 }
 
@@ -634,5 +1113,445 @@ stages:
             JobTemplate::parse_yaml(src),
             Err(TemplateError::Yaml(_))
         ));
+    }
+
+    // ---- pause_points ------------------------------------------------
+
+    fn resolve(src: &str) -> Result<Vec<PausePoint>, Vec<ScopeError>> {
+        JobTemplate::parse_yaml(src).unwrap().resolve_pause_points()
+    }
+
+    #[test]
+    fn pause_points_default_to_empty_and_resolve_to_empty() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - one
+"#;
+        let t = JobTemplate::parse_yaml(src).unwrap();
+        assert!(t.pause_points.is_empty());
+        assert_eq!(t.resolve_pause_points().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn stage_only_ordinal_resolves_to_stage_target() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+  - b
+  - c
+pause_points:
+  - { stage: 2, position: before, reason: "look here" }
+"#;
+        let ps = resolve(src).unwrap();
+        assert_eq!(ps.len(), 1);
+        assert!(matches!(
+            ps[0].target,
+            PausePointTarget::Stage { ordinal: 2 }
+        ));
+        assert_eq!(ps[0].position, PausePointPosition::Before);
+        assert_eq!(ps[0].reason.as_deref(), Some("look here"));
+    }
+
+    #[test]
+    fn stage_name_resolves_after_stripping_size_suffix_and_colon_prefix() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - "design: extend template.yaml (S)"
+  - "parser (M)"
+  - "persistence (M)"
+pause_points:
+  - { stage: parser, position: after }
+  - { stage: design, position: before }
+"#;
+        let ps = resolve(src).unwrap();
+        assert!(matches!(
+            ps[0].target,
+            PausePointTarget::Stage { ordinal: 2 }
+        ));
+        assert!(matches!(
+            ps[1].target,
+            PausePointTarget::Stage { ordinal: 1 }
+        ));
+    }
+
+    #[test]
+    fn trio_word_resolves_to_trio_selector() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - one
+  - two
+pause_points:
+  - { stage: 2, todo: docs, position: after }
+  - { stage: 2, todo: checks, position: before }
+  - { stage: 2, todo: git, position: after }
+"#;
+        let ps = resolve(src).unwrap();
+        assert!(matches!(
+            &ps[0].target,
+            PausePointTarget::StageTodo {
+                stage_ordinal: 2,
+                selector: TodoSelector::Trio {
+                    kind: TodoKind::Docs
+                }
+            }
+        ));
+        assert!(matches!(
+            &ps[1].target,
+            PausePointTarget::StageTodo {
+                selector: TodoSelector::Trio {
+                    kind: TodoKind::Checks
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &ps[2].target,
+            PausePointTarget::StageTodo {
+                selector: TodoSelector::Trio {
+                    kind: TodoKind::Git
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn tilde_prefix_is_title_substring_with_prefix_stripped() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - one
+  - two
+pause_points:
+  - { stage: 2, todo: "~migrate", position: before }
+"#;
+        let ps = resolve(src).unwrap();
+        match &ps[0].target {
+            PausePointTarget::StageTodo {
+                selector: TodoSelector::TitleSubstring { pattern },
+                ..
+            } => assert_eq!(pattern, "migrate"),
+            other => panic!("expected title substring target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn todo_ordinal_resolves_to_ordinal_selector() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - one
+pause_points:
+  - { stage: 1, todo: 3, position: after }
+"#;
+        let ps = resolve(src).unwrap();
+        assert!(matches!(
+            &ps[0].target,
+            PausePointTarget::StageTodo {
+                stage_ordinal: 1,
+                selector: TodoSelector::Ordinal { ordinal: 3 }
+            }
+        ));
+    }
+
+    #[test]
+    fn position_keyword_after_resolves_correctly() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - one
+pause_points:
+  - { stage: 1, position: after }
+"#;
+        let ps = resolve(src).unwrap();
+        assert_eq!(ps[0].position, PausePointPosition::After);
+    }
+
+    #[test]
+    fn unknown_stage_name_rejects() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - alpha
+  - beta
+pause_points:
+  - { stage: gamma, position: before }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert_eq!(
+            errs,
+            vec![ScopeError::UnknownStageName {
+                name: "gamma".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn ambiguous_stage_name_rejects_with_match_count() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - "core (S)"
+  - "core (M)"
+  - "tail"
+pause_points:
+  - { stage: core, position: before }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert_eq!(
+            errs,
+            vec![ScopeError::AmbiguousStageName {
+                name: "core".into(),
+                count: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn stage_ordinal_below_one_or_past_end_rejects() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+  - b
+pause_points:
+  - { stage: 0, position: before }
+  - { stage: 9, position: before }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert!(errs.contains(&ScopeError::StageOrdinalOutOfRange { ordinal: 0, n: 2 }));
+        assert!(errs.contains(&ScopeError::StageOrdinalOutOfRange { ordinal: 9, n: 2 }));
+    }
+
+    #[test]
+    fn unknown_trio_word_rejects_and_suggests_substring_form() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - { stage: 1, todo: typos, position: before }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert_eq!(
+            errs,
+            vec![ScopeError::UnknownTrioKind {
+                kind: "typos".into()
+            }]
+        );
+        // Error message names the substring escape hatch so the operator
+        // sees the fix in the message rather than going hunting in DOCS.
+        assert!(errs[0].to_string().contains("~typos"));
+    }
+
+    #[test]
+    fn empty_tilde_substring_rejects() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - { stage: 1, todo: "~", position: before }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert_eq!(errs, vec![ScopeError::EmptyTitleSubstring]);
+    }
+
+    #[test]
+    fn todo_ordinal_below_one_rejects() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - { stage: 1, todo: 0, position: before }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert_eq!(
+            errs,
+            vec![ScopeError::TodoOrdinalOutOfRange {
+                stage: 1,
+                ordinal: 0
+            }]
+        );
+    }
+
+    #[test]
+    fn missing_position_rejects() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - { stage: 1 }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert_eq!(
+            errs,
+            vec![ScopeError::MissingOrInvalidPosition { found: None }]
+        );
+    }
+
+    #[test]
+    fn invalid_position_value_rejects_with_operator_spelling() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - { stage: 1, position: midway }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert_eq!(
+            errs,
+            vec![ScopeError::MissingOrInvalidPosition {
+                found: Some("midway".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn duplicate_resolved_points_reject_with_yaml_indices() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - "parser (M)"
+  - other
+pause_points:
+  - { stage: 1, position: before }
+  - { stage: parser, position: before }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert_eq!(
+            errs,
+            vec![ScopeError::DuplicatePausePoint {
+                existing: 1,
+                duplicate: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn duplicate_detection_distinguishes_different_selectors() {
+        // Same stage and position but different selectors must not
+        // collide — the trio/docs and trio/git pauses are separate
+        // operator intents, even though they share an ordinal.
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - { stage: 1, todo: docs, position: after }
+  - { stage: 1, todo: git, position: after }
+"#;
+        let ps = resolve(src).unwrap();
+        assert_eq!(ps.len(), 2);
+    }
+
+    #[test]
+    fn reason_over_byte_cap_rejects() {
+        let long = "x".repeat(513);
+        let src = format!(
+            r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - {{ stage: 1, position: before, reason: "{long}" }}
+"#
+        );
+        let errs = resolve(&src).unwrap_err();
+        assert_eq!(errs, vec![ScopeError::ReasonTooLong { len: 513 }]);
+    }
+
+    #[test]
+    fn reason_at_byte_cap_accepts() {
+        let exact = "x".repeat(512);
+        let src = format!(
+            r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - {{ stage: 1, position: before, reason: "{exact}" }}
+"#
+        );
+        assert!(resolve(&src).is_ok());
+    }
+
+    #[test]
+    fn multiple_independent_errors_are_collected_in_one_pass() {
+        // The operator should see the full punch list, not just the
+        // first failure — pinned because the doc promises this exact
+        // posture in SCOPED-PAUSE-POINTS §3.
+        let src = r#"
+name: x
+goal: y
+stages:
+  - alpha
+pause_points:
+  - { stage: 9, position: before }
+  - { stage: unknown, position: sideways }
+  - { stage: 1, todo: nope, position: before }
+"#;
+        let errs = resolve(src).unwrap_err();
+        assert!(errs.contains(&ScopeError::StageOrdinalOutOfRange { ordinal: 9, n: 1 }));
+        assert!(errs.contains(&ScopeError::UnknownStageName {
+            name: "unknown".into()
+        }));
+        assert!(errs.contains(&ScopeError::MissingOrInvalidPosition {
+            found: Some("sideways".into())
+        }));
+        assert!(errs.contains(&ScopeError::UnknownTrioKind {
+            kind: "nope".into()
+        }));
+        assert!(errs.len() >= 4);
+    }
+
+    #[test]
+    fn pause_point_id_is_freshly_minted_per_resolved_entry() {
+        let src = r#"
+name: x
+goal: y
+stages:
+  - a
+pause_points:
+  - { stage: 1, position: before }
+  - { stage: 1, position: after }
+"#;
+        let ps = resolve(src).unwrap();
+        assert_ne!(ps[0].id, ps[1].id);
+    }
+
+    #[test]
+    fn stage_short_name_helper_strips_size_suffix_and_colon_prefix() {
+        assert_eq!(stage_short_name("parser (M)"), "parser");
+        assert_eq!(stage_short_name("design: extend foo (S)"), "design");
+        assert_eq!(stage_short_name("runtime hook (L)"), "runtime hook");
+        assert_eq!(stage_short_name("plain title"), "plain title");
+        assert_eq!(stage_short_name("  trim me  "), "trim me");
     }
 }
