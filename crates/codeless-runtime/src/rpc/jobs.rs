@@ -5,9 +5,10 @@ use codeless_adapters_host::WorktreeManager;
 use codeless_rpc::{
     DraftJobFromConversationArgs, GcWorktreeEntry, GcWorktreesArgs, GcWorktreesResult, GetJobArgs,
     JobReportArgs, JobReportEventTally, JobReportResult, JobReportSpecChange, JobReportStage,
-    JobReportToolCall, JobReportTurn, ListJobsArgs, ListJobsResult, ListStagesArgs,
-    ListStagesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, RerunJobArgs, ResetJobArgs,
-    ResumeJobArgs, RpcError, RpcResult, SetJobPolicyArgs, StartJobArgs, StopJobArgs, SubmitJobArgs,
+    JobReportToolCall, JobReportTurn, ListJobsArgs, ListJobsResult, ListScheduledPausePointsArgs,
+    ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
+    OverridePreCheckAndResumeArgs, PauseJobArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs,
+    RpcError, RpcResult, SetJobPolicyArgs, StartJobArgs, StopJobArgs, SubmitJobArgs,
     UpdateJobScopeArgs, UpdateJobScopeResult, WriteJobFileArgs,
 };
 use codeless_types::{
@@ -396,6 +397,27 @@ pub(super) async fn list_stages(
         })
         .collect();
     Ok(ListStagesResult { stages })
+}
+
+pub(super) async fn list_scheduled_pause_points(
+    rpc: &InProcessRpc,
+    args: ListScheduledPausePointsArgs,
+) -> RpcResult<ListScheduledPausePointsResult> {
+    let exists = rpc
+        .store
+        .get_job(args.job_id)
+        .await
+        .map_err(super::db_err)?
+        .is_some();
+    if !exists {
+        return Err(RpcError::NotFound(format!("job {}", args.job_id)));
+    }
+    let points = rpc
+        .store
+        .list_scheduled_pause_points(args.job_id)
+        .await
+        .map_err(super::db_err)?;
+    Ok(ListScheduledPausePointsResult { points })
 }
 
 pub(super) async fn job_report(

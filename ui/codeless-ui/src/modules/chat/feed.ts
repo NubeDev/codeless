@@ -1,4 +1,34 @@
-import type { EventEnvelope } from "@/lib/rpc";
+import type { EventEnvelope, StopReason } from "@/lib/rpc";
+
+// Pull the `point_id` out of a `StopReason` when it is the scoped-pause
+// variant. The wire shape is `{ "scoped-pause-point": { point_id } }`
+// (serde JSON keeps the field as `point_id`; specta TS spells it
+// `point-id`, which is the known specta/serde divergence noted in the
+// stage-6 handover — the runtime emits the underscore form). Returns
+// `null` for the string variants (`user`, `cost-cap`, …).
+export function scopedPausePointId(
+  reason: StopReason | null | undefined,
+): string | null {
+  if (!reason || typeof reason !== "object") return null;
+  const r = reason as Record<string, unknown>;
+  const inner = r["scoped-pause-point"];
+  if (!inner || typeof inner !== "object") return null;
+  const obj = inner as Record<string, unknown>;
+  const id = obj.point_id ?? obj["point-id"];
+  return typeof id === "string" ? id : null;
+}
+
+// Short human-renderable form of a StopReason. The wire is a string
+// union for the unit variants and an object for `ScopedPausePoint`;
+// every UI surface that wants to interpolate a stop reason into text
+// goes through here so the object form doesn't bleed into JSX.
+export function stopReasonLabel(reason: StopReason | null | undefined): string {
+  if (!reason) return "";
+  if (typeof reason === "string") return reason;
+  const pid = scopedPausePointId(reason);
+  if (pid !== null) return `scoped-pause-point:${pid}`;
+  return "unknown";
+}
 
 // Wire-shape for one persisted chat row. Both `JobChat` (loading
 // `CHAT.md`) and `AssistantThreadView` (loading `list_assistant_messages`)
@@ -143,14 +173,33 @@ export function liveItemFromEvent(env: EventEnvelope): LiveFeedItem | null {
         label: `stopped: ${e.reason}`,
         tone: e.reason === "user" ? "neutral" : "warn",
       };
-    case "job-paused":
+    case "job-paused": {
+      const sp = scopedPausePointId(e.reason);
+      if (sp !== null) {
+        // The chat divider must be unambiguously the *planned* pause
+        // surface — the resume affordance is identical, but the label
+        // identifies it as operator-authored rather than mid-run. The
+        // human label is resolved by the renderer from the schedule
+        // it already fetched (`list_scheduled_pause_points`); the
+        // raw `point_id` rides on `label` as a fallback for the
+        // wrapper that never loaded the schedule.
+        return {
+          kind: "lifecycle",
+          cursor,
+          created_at,
+          label: `paused at scoped point ${sp}`,
+          tone: "warn",
+        };
+      }
+      const reasonStr = typeof e.reason === "string" ? e.reason : "scoped";
       return {
         kind: "lifecycle",
         cursor,
         created_at,
-        label: e.reason === "user" ? "paused" : `paused: ${e.reason}`,
+        label: reasonStr === "user" ? "paused" : `paused: ${reasonStr}`,
         tone: "warn",
       };
+    }
     case "job-failed":
       return {
         kind: "lifecycle",

@@ -20,12 +20,12 @@
 // ordinals are `u32::MAX - 2 ..= u32::MAX`. Everything else is the
 // same render path verify-step and task child rows already use.
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { MockRpcClient } from "@/lib/rpc/mock-client";
 import { RpcProvider } from "@/lib/rpc/provider";
-import type { Event, EventEnvelope } from "@/lib/rpc/wire";
+import type { Event, EventEnvelope, Job, PausePoint } from "@/lib/rpc/wire";
 
 import {
   aggregateTaskStatus,
@@ -404,5 +404,157 @@ describe("StagesOverview render — todo rows", () => {
     expect(screen.getAllByText("checks")).toHaveLength(2);
     expect(screen.getAllByText("docs")).toHaveLength(2);
     expect(screen.getAllByText("git")).toHaveLength(2);
+  });
+});
+
+// Stage 8 scope: the Stage overview renders an operator-declared
+// planned-pause chip for every scheduled point on the job, and when
+// the job is actually paused at one of those points the chip's Resume
+// button advances the runner past it via the existing `resume_job`
+// RPC. No new RPC, no new pause primitive — this test pins the wire
+// shape the chip consumes and the click path the Resume button drives.
+describe("StagesOverview render — planned-pause divider", () => {
+  afterEach(() => cleanup());
+
+  // Mint a draft job through the mock so `get_job` returns a row
+  // (the mock indexes by id; ad-hoc test ids 404). Returns the seeded
+  // `Job` so the test can mutate `status` / `stop_reason` between
+  // renders to simulate the scoped-pause transition the runtime drives.
+  async function seedJob(client: MockRpcClient): Promise<Job> {
+    const repos = await client.call("list_repos", {});
+    const repo = repos.repos[0];
+    return client.call("submit_job", {
+      repo_id: repo.id,
+      template_yaml: "name: test\nstages:\n  - design\n  - implement\n",
+      prompt: "do stage 2",
+      runner: "claude",
+      branch: "feat/test",
+      workspace_mode: "in-repo",
+      cost_cap_cents: 10_000,
+      wall_clock_cap_ms: 600_000,
+      model: null,
+      permission_mode: null,
+      effort: null,
+      system_prompt: null,
+      persona_id: null,
+      auto_bypass_policy: null,
+      start_immediately: false,
+    });
+  }
+
+  it("renders a planned-pause chip per scheduled point in YAML order", async () => {
+    const client = new MockRpcClient();
+    const job = await seedJob(client);
+    const point1: PausePoint = {
+      id: "01HPP000000000000000000001",
+      target: { kind: "stage", ordinal: 1 },
+      position: "before",
+      reason: "smoke test stage 1",
+    };
+    const point2: PausePoint = {
+      id: "01HPP000000000000000000002",
+      target: { kind: "stage", ordinal: 2 },
+      position: "after",
+      reason: null,
+    };
+    client.seedScheduledPausePoints(job.id, [point1, point2]);
+
+    render(
+      <RpcProvider client={client}>
+        <StagesOverview jobId={job.id} />
+      </RpcProvider>,
+    );
+
+    // Seed the stage rows the chips attach to. The mock's auto
+    // lifecycle didn't run (start_immediately: false), so emit by hand.
+    const emit = (ev: Event, sid: string | null) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).emit(ev, job.id, sid, null);
+    };
+    emit(
+      { type: "stage-started", stage_id: "S-1", job_id: job.id, name: "design", ordinal: 0 },
+      "S-1",
+    );
+    emit(
+      {
+        type: "stage-started",
+        stage_id: "S-2",
+        job_id: job.id,
+        name: "implement",
+        ordinal: 1,
+      },
+      "S-2",
+    );
+
+    const chips = await screen.findAllByTestId("planned-pause-chip");
+    expect(chips).toHaveLength(2);
+    // Chip 1: before stage 1 (the operator-authored reason wins as
+    // the label, not the structural fallback).
+    expect(chips[0].getAttribute("data-pause-point-id")).toBe(point1.id);
+    expect(chips[0].getAttribute("data-pause-position")).toBe("before");
+    expect(chips[0].textContent).toContain("smoke test stage 1");
+    // Chip 2: after stage 2 (no reason — structural fallback wins).
+    expect(chips[1].getAttribute("data-pause-point-id")).toBe(point2.id);
+    expect(chips[1].getAttribute("data-pause-position")).toBe("after");
+    expect(chips[1].textContent).toContain("pause after stage 2");
+    // Neither chip is "fired" — the job is still in draft.
+    for (const chip of chips) {
+      expect(chip.getAttribute("data-pause-fired")).toBe("false");
+    }
+    expect(screen.queryByTestId("planned-pause-resume")).toBeNull();
+  });
+
+  it("surfaces a Resume button when paused on a scoped point and clears the pause on click", async () => {
+    const client = new MockRpcClient();
+    const job = await seedJob(client);
+    const pointId = "01HPP00000000000000000FIRE";
+    const point: PausePoint = {
+      id: pointId,
+      target: { kind: "stage", ordinal: 1 },
+      position: "before",
+      reason: "halt before design",
+    };
+    client.seedScheduledPausePoints(job.id, [point]);
+
+    // Simulate the runtime: the scoped pause hook flipped the row to
+    // `paused` and stamped `stop_reason = ScopedPausePoint { point_id }`.
+    // The wire shape is the serde-JSON form (underscore `point_id`),
+    // not the specta-hyphen form — the SSE pump uses serde-JSON.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stored = (client as any).jobs.find((j: Job) => j.id === job.id) as Job;
+    stored.status = "paused";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (stored as any).stop_reason = { "scoped-pause-point": { point_id: pointId } };
+
+    render(
+      <RpcProvider client={client}>
+        <StagesOverview jobId={job.id} />
+      </RpcProvider>,
+    );
+
+    // Seed the stage row so the chip has a host to attach to.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).emit(
+      { type: "stage-started", stage_id: "S-1", job_id: job.id, name: "design", ordinal: 0 },
+      job.id,
+      "S-1",
+      null,
+    );
+
+    const chip = await screen.findByTestId("planned-pause-chip");
+    await waitFor(() =>
+      expect(chip.getAttribute("data-pause-fired")).toBe("true"),
+    );
+    const resumeBtn = screen.getByTestId("planned-pause-resume");
+    expect(resumeBtn.textContent).toMatch(/Resume/i);
+
+    await act(async () => {
+      fireEvent.click(resumeBtn);
+    });
+
+    await waitFor(() => {
+      expect(stored.status).toBe("queued");
+      expect(stored.stop_reason).toBeNull();
+    });
   });
 });

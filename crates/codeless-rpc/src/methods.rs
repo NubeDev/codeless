@@ -1,3 +1,4 @@
+use codeless_types::pause_point::PausePoint;
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
     AssistantMessageId, AssistantThread, AssistantThreadId, AutoBypassPolicy, FsEntry, FsEntryKind,
@@ -215,6 +216,23 @@ pub struct ListStagesArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct ListStagesResult {
     pub stages: Vec<StageRollup>,
+}
+
+/// Read-only enumeration of the operator-authored pause points for one
+/// job. The UI seeds its planned-pause divider chips from this list on
+/// `JobPage` mount and re-fetches when a `template-resynced` event
+/// fires; the schedule itself is rewritten server-side inside
+/// `resync_template_from_disk`, so a stale snapshot is only a one-tick
+/// problem. Returns an empty list for jobs that predate scoped pause
+/// points or whose template carries no `pause_points:` block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListScheduledPausePointsArgs {
+    pub job_id: JobId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct ListScheduledPausePointsResult {
+    pub points: Vec<PausePoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]

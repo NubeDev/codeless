@@ -13,6 +13,7 @@ import { JobTimeline } from "./JobTimeline";
 import { ReviewPanel } from "./ReviewPanel";
 import { StageTree } from "./StageTree";
 import { StatusBadge } from "./StatusBadge";
+import { stopReasonLabel } from "../chat/feed";
 
 // Side-panel content for a single selected job. The header surfaces
 // every piece of "where did this actually happen" state the user
@@ -96,7 +97,10 @@ export function JobDetail({ jobId }: { jobId: JobId }) {
             </div>
             {job.stop_reason && (
               <div className="text-destructive mt-2 text-xs">
-                stopped: <span className="font-mono">{job.stop_reason}</span>
+                stopped:{" "}
+                <span className="font-mono">
+                  {stopReasonLabel(job.stop_reason)}
+                </span>
               </div>
             )}
             <div className="mt-3 grid gap-1.5">

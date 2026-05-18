@@ -20,6 +20,7 @@ import { JobReport } from "./JobReport";
 import { ReviewPanel } from "./ReviewPanel";
 import { RunStrip } from "./RunPane";
 import { CommonChat } from "../chat";
+import { stopReasonLabel } from "../chat/feed";
 import { SpecPane } from "./spec/SpecPane";
 import { StageTree } from "./StageTree";
 import { StatusBadge } from "./StatusBadge";
@@ -306,7 +307,8 @@ function SidebarContent({
         )}
         {job.stop_reason && (
           <div className="text-destructive mt-2 text-xs">
-            stopped: <span className="font-mono">{job.stop_reason}</span>
+            stopped:{" "}
+            <span className="font-mono">{stopReasonLabel(job.stop_reason)}</span>
           </div>
         )}
         <div className="mt-3 grid gap-1.5">

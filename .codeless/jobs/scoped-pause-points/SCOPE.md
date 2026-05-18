@@ -181,7 +181,13 @@ in [`DOCS/SCOPED-PAUSE-POINTS.md`](../../../DOCS/SCOPED-PAUSE-POINTS.md).
   sites in `template_runner` and `trio_emitter`,
   `StopReason::ScopedPausePoint { point_id }` variant, pause/resume
   cycle test).
-- [ ] Stages 7-9 deliverables — pending later stages.
+- [x] Stage 8 — UI: `list_scheduled_pause_points` RPC, planned-pause
+  divider chip in `StagesOverview` (dashed border, "planned" tag),
+  `paused at scoped point …` chat divider on `JobPaused { reason:
+  ScopedPausePoint }`, in-chip Resume button that reuses the
+  existing `resume_job` surface, vitest coverage for chip rendering
+  + Resume click.
+- [ ] Stage 9 — final REVIEW gate.
 
 ## References
 

@@ -19,17 +19,17 @@ use codeless_rpc::{
     JobReportResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
     ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobFilesArgs, ListJobFilesResult,
     ListJobsArgs, ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
-    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
-    ListStagesResult, ListWorkspacesResult, OverridePreCheckAndResumeArgs, PauseJobArgs,
-    ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs,
-    ResetJobArgs, ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError,
-    ScopePatchActionResult, ServerInfo, SetJobPolicyArgs, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateJobArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListScheduledPausePointsArgs, ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
+    ListWorkspacesResult, OverridePreCheckAndResumeArgs, PauseJobArgs, ReadJobFileArgs,
+    ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
+    ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, ScopePatchActionResult,
+    ServerInfo, SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UpsertPersonaArgs, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, Job, Persona, Repo, Review};
 use serde_json::Value;
@@ -47,6 +47,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/rpc/get_job", post(get_job))
         .route("/rpc/list_jobs", post(list_jobs))
         .route("/rpc/list_stages", post(list_stages))
+        .route(
+            "/rpc/list_scheduled_pause_points",
+            post(list_scheduled_pause_points),
+        )
         .route("/rpc/job_report", post(job_report))
         .route("/rpc/stop_job", post(stop_job))
         .route("/rpc/pause_job", post(pause_job))
@@ -265,6 +269,17 @@ async fn list_stages(
     Json(args): Json<ListStagesArgs>,
 ) -> HandlerResult<ListStagesResult> {
     st.rpc.list_stages(args).await.map(Json).map_err(map_err)
+}
+
+async fn list_scheduled_pause_points(
+    State(st): State<AppState>,
+    Json(args): Json<ListScheduledPausePointsArgs>,
+) -> HandlerResult<ListScheduledPausePointsResult> {
+    st.rpc
+        .list_scheduled_pause_points(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
 }
 
 async fn job_report(

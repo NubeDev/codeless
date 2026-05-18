@@ -23,6 +23,7 @@ import type {
   JobDiffArgs,
   JobDiffResult,
   JobId,
+  PausePoint,
   ListProposedPatchesArgs,
   ListProposedPatchesResult,
   RejectScopePatchArgs,
@@ -185,6 +186,21 @@ export interface ListStagesArgs {
 
 export interface ListStagesResult {
   stages: StageRollup[];
+}
+
+// Mirrors the wire shape of `codeless_types::pause_point` — kept
+// hand-mirrored here for now because `methods.ts` is the call-table's
+// type contract and the UI imports its `PausePoint*` from `./wire`
+// already (the specta-generated module). We re-export those types via
+// `./wire` to keep one source of truth at the wire boundary.
+export interface ListScheduledPausePointsArgs {
+  job_id: JobId;
+}
+
+export interface ListScheduledPausePointsResult {
+  // The wire is an ordered list; preserve the YAML order so the divider
+  // chips render in the same sequence the operator wrote.
+  points: PausePoint[];
 }
 
 export interface JobReportArgs {
@@ -594,6 +610,10 @@ export interface RpcMethodMap {
   get_job: { args: GetJobArgs; result: Job };
   list_jobs: { args: ListJobsArgs; result: ListJobsResult };
   list_stages: { args: ListStagesArgs; result: ListStagesResult };
+  list_scheduled_pause_points: {
+    args: ListScheduledPausePointsArgs;
+    result: ListScheduledPausePointsResult;
+  };
   job_report: { args: JobReportArgs; result: JobReportResult };
   stop_job: { args: StopJobArgs; result: null };
   stop_active: { args: StopActiveArgs; result: StopActiveResult };

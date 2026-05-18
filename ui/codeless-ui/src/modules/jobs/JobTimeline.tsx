@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { useEventStream, type EventEnvelope, type JobId } from "@/lib/rpc";
 
 import { summariseToolArgs } from "./eventFormat";
+import { stopReasonLabel } from "../chat/feed";
 
 interface Props {
   jobId: JobId;
@@ -323,7 +324,11 @@ function PayloadLine({ env }: { env: EventEnvelope }) {
     case "task-completed":
       return <div className="text-muted-foreground text-xs">{e.status}</div>;
     case "job-stopped":
-      return <div className="text-muted-foreground text-xs">{e.reason}</div>;
+      return (
+        <div className="text-muted-foreground text-xs">
+          {stopReasonLabel(e.reason)}
+        </div>
+      );
     default:
       return null;
   }

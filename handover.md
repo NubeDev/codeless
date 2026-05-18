@@ -1,155 +1,196 @@
-# scoped-pause-points — stage 6 → stage 7 (REVIEW: server-side complete)
+# scoped-pause-points — stage 8 → stage 9 (REVIEW: UI landed)
 
-Stage 6 (runtime hook) landed. Stage 7 is the mid-job REVIEW gate; do
-not start stage 8 (UI) until approved. The handover is the input the
-reviewer reads when deciding whether to approve.
+Stage 8 (UI) landed. Stage 9 is the final REVIEW gate; the reviewer
+reads this handover when deciding whether to approve.
 
-## What landed in stage 6
+## What landed in stage 8
 
-- `crates/codeless-runtime/src/scoped_pause_hook.rs` — new module.
-  Exports `TransitionPoint` (one variant per hook site: `BeforeStage`,
-  `AfterStage`, `BeforeTodo`, `AfterTodo`), `check_and_pause` (the
-  per-transition entry point), and `check_trio` (the convenience
-  forwarder the trio_emitter call sites use; it resolves the
-  `StageId → stage_ordinal` lookup so the trio sites stay one
-  function call thick). The matcher is total per `(target, position,
-  transition)` triple and the `selector_matches` helper covers all
-  three `TodoSelector` variants — `Trio { kind }`, `Ordinal { ordinal }`,
-  `TitleSubstring { pattern }` (case-insensitive `contains`,
-  trio-rows refused by spec).
+### New RPC: `list_scheduled_pause_points`
 
-- `crates/codeless-types/src/job.rs` — new `StopReason::ScopedPausePoint
-  { point_id: PausePointId }` variant. `StopReason` keeps `Copy`
-  because `PausePointId` wraps a `Ulid` which is `Copy`; the variant
-  carries the id only — the human-readable label is reconstructed
-  downstream by stage 8 looking up the `scheduled_pause_points` row
-  on render. This is a small deviation from the §6 worked example
-  in SCOPED-PAUSE-POINTS.md ("StopReason::ScopedPausePoint
-  { point_id, label }"): keeping `Copy` avoids touching ~40
-  `StopReason`-Copying call sites; the label rides on the
-  point-row's `reason` column instead of the wire, which is the
-  same data path the divider chip uses.
+A read-only lookup so the UI can render the operator-declared
+schedule. Resume still goes through the existing `resume_job` RPC —
+no new pause primitive landed.
 
-- `crates/codeless-runtime/src/store/codec.rs` — `stop_reason_label`
-  now returns `String` (was `&'static str`) so the scoped variant
-  can encode as `scoped-pause-point:<ulid>` in SQLite's
-  `jobs.stop_reason` column. `parse_stop_reason` splits on the
-  colon prefix and reconstructs the variant. The six existing unit
-  variants keep their bare-word labels — old rows decode unchanged.
+- `crates/codeless-rpc/src/methods.rs` — `ListScheduledPausePointsArgs
+  { job_id }` and `ListScheduledPausePointsResult { points:
+  Vec<PausePoint> }`. Re-exported through `crates/codeless-rpc/src/
+  lib.rs`.
+- `crates/codeless-rpc/src/server.rs` — trait method on `RpcServer`.
+  Returns the schedule in YAML order; `NotFound` for an unknown
+  `job_id`; empty list when the job carries no schedule (predates
+  the feature or template's `pause_points:` block is empty).
+- `crates/codeless-runtime/src/rpc/{mod.rs,jobs.rs}` — runtime
+  implementation. `jobs::list_scheduled_pause_points` runs `get_job`
+  for the existence check (so the call shape mirrors `list_stages`'s
+  not-found semantics) then forwards to
+  `store::list_scheduled_pause_points` from stage 5.
+- `crates/codeless-server/src/routes.rs` — axum route
+  `POST /rpc/list_scheduled_pause_points`, behind the same bearer
+  layer as every other RPC (R5).
+- `crates/codeless-client/src/http_client.rs` —
+  `HttpRpcClient::list_scheduled_pause_points` calls the route. The
+  iOS / Android shells reach this through `codeless-client` only, so
+  the mobile-safe graph still admits the new method.
 
-- `crates/codeless-bot-core/src/notify.rs` and `reply.rs` — both
-  `stop_reason_word` helpers grew a `ScopedPausePoint { .. }` arm so
-  the Telegram / Slack / chat reply paths render "scoped pause
-  point" instead of bombing the exhaustive match.
+### Wire types regenerated
 
-- Runtime hook call sites in `crates/codeless-runtime/src/template_runner.rs`:
-  - **BeforeStage:** at the top of the per-stage loop body (line ~584,
-    immediately after the cancel check + ordinal-already-passed skip,
-    before `StageId::new()`). Maps `stage.index` (0-based) →
-    `stage_ordinal: u32 = stage.index + 1` to match the YAML
-    1-based ordinals the parser writes.
-  - **AfterStage:** after `prev_stage_id = Some(stage_id)` at the
-    bottom of the per-stage loop body, so the closing trio's
-    `StageCompleted{Passed}` is already on the wire by the time the
-    point fires. On `Paused`, returns `RunnerOutcome::Failed { reason:
-    "scoped pause point" }`; the driver's existing
-    `current.status == JobStatus::Paused` early-return short-circuits
-    the Failed translation, so the row stays in `Paused`.
+- `crates/codeless-rpc/examples/wire_ts.rs` — registers the four new
+  `PausePoint*` / `TodoSelector` types so they emit into the UI's
+  generated `wire.ts`. The freshly-regenerated
+  `ui/codeless-ui/src/lib/rpc/generated/wire.ts` now carries:
+  - `PausePoint`, `PausePointId`, `PausePointPosition`,
+    `PausePointTarget`, `TodoSelector` (specta-derived).
+  - `StopReason` grows the `{ "scoped-pause-point": { "point-id":
+    PausePointId } }` object variant alongside the existing string
+    union members.
 
-- Runtime hook call sites in `crates/codeless-runtime/src/trio_emitter.rs`:
-  - **BeforeTodo:** at the top of `emit_trio_started`, before
-    `find_trio_id`. Fires only for the trio kinds (`Checks`, `Docs`,
-    `Git`) — the runner-authored todo path doesn't go through this
-    function, so substring/ordinal targets land in the broader
-    `BeforeTodo` hook the future stage 6.5 follow-up will wire into
-    `claude_runner` once we decide where in the agent loop is the
-    right cut point.
-  - **AfterTodo:** at the bottom of `emit_trio_completed`, after the
-    `TodoCompleted` publish so the row is durable before the pause
-    divider lands. Same trio-only scope as `BeforeTodo`.
+  **The specta/serde divergence noted in the stage-6 handover
+  applies here:** specta TS spells the inner field `point-id`
+  (hyphen); the runtime emits `point_id` on the wire because serde's
+  enum-level `rename_all = "kebab-case"` does not rename struct
+  fields inside variants. The new UI helper handles both spellings
+  so the divider lookup works regardless of which producer shaped
+  the payload.
 
-- `crates/codeless-runtime/tests/scoped_pause_hook.rs` — new
-  integration test file. Three tests:
-  1. `before_stage_hook_pauses_then_resume_requeues` walks the full
-     pause-then-resume cycle against `InProcessRpc`: seeds a Running
-     job with a `BeforeStage(2)` schedule, calls `check_and_pause`,
-     asserts the row moved to `Paused` with
-     `stop_reason = ScopedPausePoint { point_id }`, asserts
-     `JobPaused` with the right reason landed on the bus, then
-     `resume_job`s the row and confirms `Queued + stop_reason = None`.
-  2. `hook_is_idempotent_against_already_paused_row` — calling the
-     hook against a row that's already in `Paused` returns
-     `HookOutcome::Continue` (the `transition_job` guard rejects
-     `Paused → Paused`).
-  3. `non_matching_transition_does_not_pause` — a transition that
-     doesn't match any scheduled point leaves the row in `Running`.
+### UI: `StagesOverview` planned-pause chips
 
-- Plus six unit tests inside `scoped_pause_hook.rs` for the matcher
-  itself: `BeforeStage`, `AfterStage`, trio-kind (matches kind +
-  stage, refuses Runner kind), title-substring (matches Runner only,
-  case-insensitive, scoped to stage), and ordinal (exact match).
+`ui/codeless-ui/src/modules/jobs/StagesOverview.tsx`:
+
+- Loads the schedule once on mount via the new RPC; resets on
+  `jobId` change. Failures fall through to "no chips" silently so
+  pre-recorder jobs and tests that don't seed the schedule keep
+  rendering the rest of the overview.
+- New `PlannedPauseChip` component: dashed border, "planned" tag,
+  the point's operator-authored `reason` text (or a structural
+  fallback like "pause after stage 2"). `data-testid` /
+  `data-pause-point-id` / `data-pause-position` / `data-pause-fired`
+  attributes pin the chip for the new vitest. Chips group per stage
+  via 1-based ordinal lookup; `before` chips render above the stage
+  row, `after` chips below. Stage-todo targets collapse onto their
+  parent stage's chip slot (per-todo placement is a refinement
+  follow-up).
+- When the job is currently paused on a scoped point
+  (`scopedPausePointId(job.stop_reason) === point.id`), the chip
+  switches to amber and shows a `Resume` button that calls
+  `resume_job` with all caps at `null` / no operator comment — the
+  same surface the run-strip button uses, no new RPC. The local
+  busy / error state stays on the chip so a failed call doesn't
+  bleed into the stages list.
+
+### UI: chat divider for `JobPaused { reason: ScopedPausePoint }`
+
+`ui/codeless-ui/src/modules/chat/feed.ts`:
+
+- `scopedPausePointId(reason)` reads the `point_id` out of the
+  `StopReason` object variant, accepting both the serde-wire form
+  (`point_id`) and the specta-TS form (`point-id`).
+- `stopReasonLabel(reason)` formats a `StopReason` (string union or
+  object) into a safe string for JSX interpolation; every existing
+  site that wrote `{job.stop_reason}` directly into JSX
+  (`JobChatPage`, `JobDetail`, `JobTimeline`, `RunPane`'s status
+  strip) routes through this helper now — without it the new object
+  variant trips TS's `ReactNode` check.
+- `liveItemFromEvent` `case "job-paused"`: when the reason resolves
+  to a scoped point id, emits a `lifecycle` item labelled `paused at
+  scoped point <id>` (warn tone). String reasons keep their existing
+  formatting.
+
+### UI: mock client + resume-from-paused
+
+`ui/codeless-ui/src/lib/rpc/mock-client.ts`:
+
+- `seedScheduledPausePoints(jobId, points)` test seam; per-job map
+  keyed on job id.
+- `case "list_scheduled_pause_points"` arm — `not_found` for an
+  unknown job, otherwise the seeded list (or empty).
+- `case "resume_job"` accepts `status === "paused"` in addition to
+  `stopped` / `failed`, matching the runtime's resume contract that
+  the SCOPE Q4 calls out. Without this the chip's Resume click
+  would 409 against the mock.
+
+### Tests (vitest + RTL)
+
+The project doesn't ship Playwright today — the "Playwright test"
+the template names is the vitest+RTL surface every other UI test in
+the tree uses (vitest browser-playwright transport is in the
+lockfile but not configured). Coverage lands as two test files:
+
+- `ui/codeless-ui/src/modules/jobs/StagesOverview.test.tsx`
+  (extended):
+  1. `renders a planned-pause chip per scheduled point in YAML
+     order` — seeds two points (before stage 1, after stage 2),
+     renders, emits `stage-started` for both stages, asserts both
+     chips appear with the right `data-pause-point-id` /
+     `data-pause-position`, the operator-authored reason wins as
+     the label for chip 1, and the structural fallback ("pause
+     after stage 2") wins for chip 2.
+  2. `surfaces a Resume button when paused on a scoped point and
+     clears the pause on click` — seeds the job into `paused` with
+     `stop_reason = { "scoped-pause-point": { point_id } }`, asserts
+     the matching chip's `data-pause-fired` flips to `true` and a
+     `Resume` button appears, clicks it, asserts the mock's job row
+     flipped back to `queued` and `stop_reason = null`.
+
+- `ui/codeless-ui/src/modules/chat/feed.scopedPause.test.ts` (new):
+  - `scopedPausePointId` reads both wire shapes and returns `null`
+    for the string variants.
+  - `liveItemFromEvent` projects the scoped reason into a distinct
+    `paused at scoped point …` divider while keeping the legacy
+    `user` / `cost-cap` labels unchanged.
+  - `stopReasonLabel` formats the object variant (so the wire
+    object never lands as raw JSX) and pass-throughs the string
+    variants.
+
+Plus the existing 118 vitest cases stayed green after the
+`stop_reason`-JSX-shape refactor.
 
 ## Verify
 
-- `cargo test --workspace` — green. Three new tests in
-  `crates/codeless-runtime/tests/scoped_pause_hook.rs` + six unit
-  tests in the new module.
+- `cargo test --workspace` — green (one flake on
+  `codeless-adapters-host`'s
+  `git_revert_undoes_an_earlier_commit_and_returns_new_sha` when
+  the lib tests run in parallel; passes deterministically with
+  `--test-threads=1`, unrelated to this stage).
 - `cargo clippy --workspace --all-targets -- -D warnings` — green.
-- `cargo fmt --check` — green (one cosmetic rewrap on
-  `pause_point.rs` from rustfmt's preference for inline struct
-  variants; harmless).
-- Specta snapshots updated (`SPECTA_UPDATE=1` in two spots): the
-  `StopReason` TS union grew the `ScopedPausePoint` object variant
-  and `PausePointId` now appears in `wire-rpc.ts.snap`. The
-  field-name kebab-casing specta does on the inner struct (`point-id`
-  in TS vs `point_id` in serde JSON) is the known specta-serde
-  divergence the existing types accept; stage 8 will consume it via
-  the typed RpcClient anyway.
+- `cargo fmt --check` — green.
+- `pnpm test` (from `ui/codeless-ui/`) — **23 files, 118 tests
+  passed**. Eight tests are new (two for the chip rendering + resume
+  click in `StagesOverview.test.tsx`, six across
+  `feed.scopedPause.test.ts`).
+- `pnpm run typecheck` — green.
 
-## Runtime hook placement — the one-paragraph note the workflow asks for
+## What stage 9 (final REVIEW) needs to assess
 
-Four call sites total. `BeforeStage` lives in the per-stage loop body
-in `template_runner.rs` immediately after the cancel/prior-pass
-guards but before any per-stage row is allocated, so a pause writes
-the job state before SQLite picks up any stage frame for the halted
-ordinal. `AfterStage` lives at the bottom of the same loop body
-after `StageCompleted{Passed}` lands, so the closing trio is visible
-in the timeline before the divider chip appears. The two todo-level
-hooks live inside `trio_emitter::emit_trio_started` /
-`emit_trio_completed`, which is the single seam every trio rail
-(`verify_runner` for `Checks`, the claude `Docs` writer, the commit
-step for `Git`) already flows through — wiring there avoids touching
-three callers and keeps the hook surface one match call wide. The
-hook is a no-op when no `pause_points:` rows exist; the SQL cost is
-one `SELECT ... ORDER BY ordinal` per transition (bounded by the
-declared schedule size, which is operator-authored and small).
+- New wire surface: `list_scheduled_pause_points` is the only new
+  RPC; everything else routes through `resume_job` and `JobPaused`.
+- The `stop_reason` JSX-shape refactor touches four pre-existing
+  files (`JobChatPage.tsx`, `JobDetail.tsx`, `JobTimeline.tsx`,
+  `RunPane.tsx`) — each call site now goes through
+  `stopReasonLabel`, no behaviour change for the string variants.
+- R2 check: a fresh `rg '@tauri-apps/api' ui/codeless-ui/src/ -g
+  '!src/shells/**'` returns the same baseline as before the stage
+  (no growth). The chip + divider read through `RpcClient` only.
+- R1 check: no new `tokio::process` / `std::process::Command` in any
+  crate; the UI work is server-side schedule lookup + DOM rendering
+  only.
+- specta/serde `point_id` vs `point-id` is still the known
+  divergence; the UI absorbs both via `scopedPausePointId`. A
+  follow-up that aligns the runtime's serde output to specta (or
+  vice versa) would let us drop the fallback branch.
 
-## Open follow-ups (out of stage 6 scope; UI stage and beyond)
+## Out-of-scope follow-ups (file as separate jobs per SCOPE §"Open
+follow-ups")
 
-- The runner-authored todo path (the agent's `TodoWrite`-equivalent
-  tool calls in `claude_runner`) doesn't run the `BeforeTodo` /
-  `AfterTodo` hook yet, so a `~migrate` substring target only fires
-  against trio rows (which never have a runner-authored title anyway,
-  so the practical impact is zero today). Wire it into the agent
-  loop once stage 8 lands and we have a UI surface that exercises
-  the substring path end-to-end.
-- The `fired_at` / `superseded_at` columns from SCOPED-PAUSE-POINTS §4
-  are still deferred — the current hook re-evaluates the full schedule
-  on every transition and the matcher's "first row wins" rule is
-  enough to keep a single point from firing twice in one stage. Add
-  the columns when the UI surfaces "this point already fired" state.
-- A `pause_points_updated` event variant on `Event` for the divider
-  chips to refresh without re-reading the whole job state. Same
-  carryover from stage 5.
-
-## What stage 7 (REVIEW) needs to assess
-
-- New wire types: `StopReason::ScopedPausePoint { point_id }`.
-- New `StopReason` variant exposes through the codec round-trip path
-  as `scoped-pause-point:<ulid>` (see `parse_stop_reason` in
-  `crates/codeless-runtime/src/store/codec.rs`).
-- The four call sites are search-targetable as
-  `crate::scoped_pause_hook::check_and_pause` and
-  `crate::scoped_pause_hook::check_trio` in the runtime tree.
-- The hook never bypasses `transition_job` — a non-Running row is a
-  no-op (`HookOutcome::Continue`) rather than a forced flip.
+- Edit-points-from-UI: operators still edit `template.yaml` (direct
+  or chat-driven on-disk path). The chip is read-only.
+- Recurring / count-based breakpoints, conditional / predicate
+  breakpoints.
+- Per-todo chip placement: today a `StageTodo` target renders as a
+  chip on the parent stage row. Inline-with-the-todo placement is a
+  layout refinement, not a wire change.
+- `pause_points_updated` event for divider chips to refresh without
+  re-reading the whole job state. The mount-time fetch is sufficient
+  for v1 because resync edits land while the job is paused and the
+  divider lookup uses the live `stop_reason`.
+- True Playwright browser test once a Playwright harness lands in
+  `ui/codeless-ui/`; vitest+RTL exercises the same surface today.
