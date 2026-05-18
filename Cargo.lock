@@ -885,6 +885,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "codeless-plugin-sdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "codeless-plugin-sdk-macros",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "codeless-plugin-sdk-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "codeless-predicates"
 version = "0.0.0"
 dependencies = [

@@ -30,6 +30,14 @@ members = [
     # DOCS/PLUGIN-SUBSTRATE.md "Plugin #0: notes" so substrate
     # breakage fails CI here before it reaches a real workflow plugin.
     "crates/codeless-plugin-notes",
+    # Plugin authoring SDK + its proc-macros. Mobile-safe; host
+    # bridges (codeless-tools shim for builtin, codeless-plugin-host-
+    # wasm for wasm) live in separate host-only crates so this pair
+    # stays clean of host deps. See DOCS/plugins/PLUGIN-SUBSTRATE.md
+    # "Reuse from rubix" and DOCS/plugins/PLUGIN-WASM.md "The
+    # authoring SDK".
+    "crates/codeless-plugin-sdk",
+    "crates/codeless-plugin-sdk-macros",
     # Vendored from rubix-agent. Path is `../ai-runner` because the
     # crate lives one level up in `codeless-workspace/` alongside
     # this inner repo. Treated as read-only here — updates flow from
