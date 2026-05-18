@@ -202,4 +202,52 @@ describe("AssistantThreadView draft_job round-trip", () => {
       expect(screen.getByText(/Drafted job/i)).toBeInTheDocument();
     });
   });
+
+  // W3c: the planner's `auto_bypass_policy` reaches the composer's
+  // policy picker. The composer reads the seed via `pickerFromPolicy`
+  // in `useJobComposerState`; this test asserts the seeded value
+  // surfaces on the rendered picker, so a regression that loses the
+  // mapping at the `JobComposerInitial` boundary fails here instead
+  // of silently submitting `auto_bypass_policy: null`.
+  it("seeds the policy picker from the planner's auto_bypass_policy", async () => {
+    const seedClient = new MockRpcClient();
+    const { repos } = await seedClient.call("list_repos", {});
+    const repoId = repos[0].id;
+
+    const card = plannerSeededDraftJobCard(repoId);
+    const action = JSON.parse(card.meta_json!);
+    action.action.auto_bypass_policy = { type: "long-term" };
+    card.meta_json = JSON.stringify(action);
+
+    const client = new AssistantStubMock([card]);
+
+    render(
+      <RpcProvider client={client}>
+        <AssistantThreadView thread={threadFixture()} />
+      </RpcProvider>,
+    );
+
+    // The picker is a shadcn Select whose trigger reflects the chosen
+    // preset's label. Waiting on /Long-term/ asserts both that the
+    // composer mounted (so the trigger exists) and that the planner's
+    // seed propagated through `useJobComposerState` to the visible
+    // label, which is what users see and act on.
+    await waitFor(() => {
+      expect(screen.getByText(/Long-term/i)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm action/i }));
+
+    await waitFor(() => {
+      expect(client.submittedJobs).toHaveLength(1);
+    });
+    // The picker round-trips the seed back onto the wire via
+    // `composerToSubmitArgs` — confirming without editing must hand
+    // the planner's policy to `submit_job` verbatim. A regression
+    // that drops the value at the composer-state boundary surfaces
+    // as `null` here.
+    expect(client.submittedJobs[0].auto_bypass_policy).toEqual({
+      type: "long-term",
+    });
+  });
 });

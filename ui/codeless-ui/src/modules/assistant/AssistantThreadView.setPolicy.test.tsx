@@ -43,12 +43,14 @@ class SetPolicyStubMock extends MockRpcClient {
   public pauseArgs: RpcArgs<"pause_job">[] = [];
   public confirmArgs: RpcArgs<"confirm_assistant_action">[] = [];
   private cards: AssistantMessage[];
-  private jobs: Map<JobId, Job>;
+  // Avoids the inherited `MockRpcClient#jobs: Job[]` field; the
+  // index form is what `get_job` / `pause_job` need anyway.
+  private jobIndex: Map<JobId, Job>;
 
   constructor(cards: AssistantMessage[], jobs: Job[]) {
     super();
     this.cards = cards;
-    this.jobs = new Map(jobs.map((j) => [j.id, j]));
+    this.jobIndex = new Map(jobs.map((j) => [j.id, j]));
   }
 
   async call<M extends RpcMethod>(
@@ -61,7 +63,7 @@ class SetPolicyStubMock extends MockRpcClient {
     }
     if (method === "get_job") {
       const a = args as RpcArgs<"get_job">;
-      const job = this.jobs.get(a.job_id);
+      const job = this.jobIndex.get(a.job_id);
       if (!job) {
         return super.call(method, args);
       }
@@ -70,7 +72,7 @@ class SetPolicyStubMock extends MockRpcClient {
     if (method === "pause_job") {
       const a = args as RpcArgs<"pause_job">;
       this.pauseArgs.push(a);
-      const job = this.jobs.get(a.job_id);
+      const job = this.jobIndex.get(a.job_id);
       if (job) {
         job.status = "paused";
         job.stop_reason = "user";
