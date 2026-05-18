@@ -1,0 +1,7 @@
+name: user-profile
+goal: |
+  Placeholder scope for the user-profile job. Edit SCOPE.md before running.
+stages:
+  - draft initial scope
+  - REVIEW before implementation
+  - implement
