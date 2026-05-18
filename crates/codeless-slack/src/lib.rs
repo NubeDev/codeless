@@ -33,6 +33,7 @@
 //! table because mobile shells reach the same RPC surface through the
 //! HTTP/SSE transport — they do not need the Slack bridge.
 
+pub mod chat;
 pub mod config;
 pub mod envelope;
 pub mod socket_mode;
@@ -75,6 +76,14 @@ pub struct SlackBot {
     shutdown_tx: Option<oneshot::Sender<()>>,
     threads: ThreadMap,
     outbound: Option<OutboundPublisher>,
+    /// Per-Job chat substrate forwarder (JOB-CHAT.md). Subscribes to
+    /// `ChatMessageAppended` and fans every non-Slack-origin message
+    /// out to the Slack-side bindings registered for the Job. Always
+    /// spawned — unlike the failure-card publisher this surface has
+    /// no channel configuration; the destination is whatever
+    /// `/codeless bind` has armed for the Job. Mirrors
+    /// [`codeless_telegram::TelegramBot`]'s `chat` field.
+    chat: chat::ChatForwarder,
 }
 
 impl SlackBot {
@@ -102,9 +111,16 @@ impl SlackBot {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let backend: Arc<dyn CommandBackend> = Arc::new(RpcServerBackend::new(rpc.clone()));
         let poster = ChatPoster::new(http.clone(), config.bot_token.clone());
-        let transport: Arc<dyn BotTransport> = Arc::new(poster);
+        let transport: Arc<dyn BotTransport> = Arc::new(poster.clone());
         let threads = ThreadMap::new();
         let dispatcher = Dispatcher::new(backend.clone(), transport.clone(), threads.clone());
+
+        // Per-Job chat substrate forwarder: subscribes to
+        // `ChatMessageAppended` and fans non-Slack-origin messages
+        // out to every Slack binding for the Job. Echo suppression
+        // and idempotency live in the forwarder itself (chat.rs).
+        let chat_events: Arc<dyn EventSource> = Arc::new(RpcServerEventSource::new(rpc.clone()));
+        let chat_forwarder = chat::ChatForwarder::spawn(chat_events, rpc.clone(), poster.clone());
 
         // The outbound publisher only spawns when a channel is
         // configured — a deployment that wants commands-only behaviour
@@ -114,7 +130,7 @@ impl SlackBot {
         // startup so a half-configured deployment is visible.
         let outbound = match config.channel_id.clone() {
             Some(channel_id) => {
-                let events: Arc<dyn EventSource> = Arc::new(RpcServerEventSource::new(rpc));
+                let events: Arc<dyn EventSource> = Arc::new(RpcServerEventSource::new(rpc.clone()));
                 Some(OutboundPublisher::spawn(
                     OutboundConfig::new(channel_id),
                     events,
@@ -141,6 +157,7 @@ impl SlackBot {
             shutdown_tx: Some(shutdown_tx),
             threads,
             outbound,
+            chat: chat_forwarder,
         }
     }
 
@@ -165,5 +182,6 @@ impl SlackBot {
         if let Some(outbound) = self.outbound.take() {
             outbound.shutdown().await;
         }
+        self.chat.shutdown().await;
     }
 }
