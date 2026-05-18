@@ -34,7 +34,7 @@ import {
   POLICY_PRESETS,
   pickerFromPolicy,
   policyFromPicker,
-} from "./policyPresets";
+} from "@/lib/policy/presets";
 
 // Sentinel for "no persona" in the dropdown. `useForJobs`-filtered
 // personas appear below this option; the job runs with the server's

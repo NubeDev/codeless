@@ -5,11 +5,16 @@ import type { AutoBypassPolicy } from "@/lib/rpc";
 // failure halts the job and waits for the operator. The other
 // options pre-authorise the runtime to advance past a non-cap
 // failure with the matching guidance threaded into the next stage's
-// prompt. Cap-breach failures always halt regardless (Q2). Lifted
-// out of `SubmitJobDialog` so the assistant `draft_job` card and
-// the planner's prompt builder consume the same list — keeping the
-// UI / model / dialog aligned is the whole reason this file is
-// load-bearing for SCOPE-ASSISTANT-PARITY W3.
+// prompt. Cap-breach failures always halt regardless (Q2).
+//
+// Lives under `lib/policy/` rather than the composer module so the
+// planner's `draft_job` / `update` / `set_policy` cards consume the
+// same list the composer does without importing through a UI
+// surface. The matching Rust file is
+// `crates/codeless-runtime/src/auto_bypass_presets.rs`; the parity
+// test there reads this file's text and asserts the seven-variant
+// list stays aligned (SCOPE-ASSISTANT-PARITY W3, open question 3 —
+// "hand-mirror with a CI assert").
 export const NO_POLICY = "__no_policy__";
 export const POLICY_CUSTOM = "custom";
 
