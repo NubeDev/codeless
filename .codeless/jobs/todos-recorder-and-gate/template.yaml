@@ -7,6 +7,8 @@ goal: |
   stage entry, and the runtime must refuse to emit StageCompleted
   until trio_resolved() returns true for the stage's terminal task.
 
+docs:
+  - CHAT.md
 stages:
   - StageRecorder persists todo events to SQLite
   - Trio injection at stage entry plus completion gate wired through state_machine
