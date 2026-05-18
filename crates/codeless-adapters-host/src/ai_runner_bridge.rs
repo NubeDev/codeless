@@ -263,6 +263,7 @@ fn status_flip_event(todo_id: TodoId, prior: TodoStatus, next: TodoStatus) -> Ev
         Event::TodoCompleted {
             todo_id,
             status: next,
+            failure_detail: None,
         }
     } else {
         Event::TodoUpdated {

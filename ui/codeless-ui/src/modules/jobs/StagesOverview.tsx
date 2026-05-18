@@ -40,6 +40,13 @@ export interface TodoRow {
   title: string;
   kind: TodoKind;
   status: TodoStatus;
+  // Populated when `status === "failed"` and the runtime carried a
+  // per-rail reason on the `TodoCompleted` envelope (e.g. handover
+  // write IO error, verify step exit code, git commit failure). The
+  // row's hover tooltip surfaces this so an operator sees *which*
+  // rail failed and *why* without diving into server logs — the
+  // regression that hung job `01KRX4ZPF...` for 90 minutes.
+  failureDetail?: string | null;
 }
 
 export interface TaskRow {
@@ -434,21 +441,38 @@ export function applyEvent(state: StagesState, env: EventEnvelope): StagesState 
 
     case "todo-updated":
     case "todo-completed": {
-      // Both events carry only `todo_id` + `status`. Look up the
-      // owning task via the routing index; if the index is missing
-      // the entry (we never saw `todo-added`), drop the event — the
-      // recorder will rebuild on replay through `list_stages` and the
-      // gate logic lives in the runtime, not here.
+      // Both events carry `todo_id` + `status`; `todo-completed` may
+      // additionally carry `failure_detail` when the rail ended
+      // `failed`. Look up the owning task via the routing index; if
+      // the index is missing the entry (we never saw `todo-added`),
+      // drop the event — the recorder will rebuild on replay through
+      // `list_stages` and the gate logic lives in the runtime, not
+      // here.
       const route = state.todoIndex.get(e.todo_id);
       if (!route) return state;
       const stage = state.stages.get(route.stageId);
       if (!stage) return state;
+      const completedDetail =
+        e.type === "todo-completed" ? e.failure_detail ?? null : null;
       const children = stage.children.map((c) => {
         if (c.kind === "task" && c.taskId === route.taskId) {
           return {
             ...c,
             todos: c.todos.map((t) =>
-              t.todoId === e.todo_id ? { ...t, status: e.status } : t,
+              t.todoId === e.todo_id
+                ? {
+                    ...t,
+                    status: e.status,
+                    // Only `todo-completed` carries the rail failure
+                    // reason; `todo-updated` keeps any prior value
+                    // (e.g. a retry that goes pending → in-progress
+                    // again before a final terminal state).
+                    failureDetail:
+                      e.type === "todo-completed"
+                        ? completedDetail
+                        : t.failureDetail ?? null,
+                  }
+                : t,
             ),
           };
         }
@@ -1065,37 +1089,59 @@ function TaskChildRow({ row }: { row: TaskRow }) {
 function TodoChildRow({ row }: { row: TodoRow }) {
   const glyph = todoGlyph(row.status);
   const kindLabel = todoKindLabel(row.kind);
+  const isFailed = row.status === "failed";
+  const detail = isFailed ? row.failureDetail ?? null : null;
   return (
     <li
-      className="flex items-baseline gap-2 text-[11px]"
+      className="flex flex-col gap-0.5 text-[11px]"
       data-testid="todo-row"
       data-todo-kind={row.kind}
       data-todo-status={row.status}
     >
-      <span
-        className={cn("w-3 shrink-0 text-center font-mono", glyph.tone)}
-        aria-label={glyph.label}
-      >
-        {glyph.char}
-      </span>
-      {kindLabel !== null ? (
-        <span className="text-muted-foreground w-10 shrink-0 font-mono">
-          {kindLabel}
+      <div className="flex items-baseline gap-2">
+        <span
+          className={cn("w-3 shrink-0 text-center font-mono", glyph.tone)}
+          aria-label={glyph.label}
+        >
+          {glyph.char}
         </span>
-      ) : (
-        // Reserve the same column width as the trio label so titles
-        // line up across runner- and runtime-emitted rows.
-        <span className="w-10 shrink-0" aria-hidden="true" />
-      )}
-      <span
-        className={cn(
-          "min-w-0 flex-1 truncate",
-          row.status === "failed" ? glyph.tone : "text-foreground/90",
+        {kindLabel !== null ? (
+          <span className="text-muted-foreground w-10 shrink-0 font-mono">
+            {kindLabel}
+          </span>
+        ) : (
+          // Reserve the same column width as the trio label so titles
+          // line up across runner- and runtime-emitted rows.
+          <span className="w-10 shrink-0" aria-hidden="true" />
         )}
-        title={row.title}
-      >
-        {row.title}
-      </span>
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate",
+            isFailed ? glyph.tone : "text-foreground/90",
+          )}
+          title={detail ?? row.title}
+        >
+          {row.title}
+        </span>
+      </div>
+      {detail !== null && detail.length > 0 && (
+        // Inline the per-rail failure reason under the row so the
+        // operator sees *why* the closing-trio rail failed without
+        // hunting through server logs. The runtime gates a failing
+        // trio row into `StageCompleted { Failed }`, but the rail's
+        // own reason is more specific than the stage-level message
+        // (`write handover: Permission denied` vs `trio rail docs
+        // failed`).
+        <p
+          className={cn(
+            "pl-[3.25rem] font-mono text-[10px] leading-snug whitespace-pre-wrap break-words",
+            glyph.tone,
+          )}
+          data-testid="todo-failure-detail"
+        >
+          {detail}
+        </p>
+      )}
     </li>
   );
 }

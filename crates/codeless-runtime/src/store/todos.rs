@@ -3,6 +3,44 @@ use codeless_types::{TaskId, Todo, TodoId, TodoKind, TodoStatus, UnixMillis};
 use super::codec::{parse_todo_kind, todo_from_row, todo_kind_label, todo_status_label};
 use super::SqliteStore;
 
+/// Tri-state outcome of the closing-trio gate query.
+///
+/// `Pending` keeps the stage open; the runner polls again after a
+/// short sleep. `Resolved` lets the stage emit
+/// `StageCompleted { Passed }`. `Failed` carries a per-rail summary of
+/// which trio rows ended `TodoStatus::Failed` (and the human-readable
+/// reason if the emitter recorded one on the wire) so the runner can
+/// route the stage through the auto-bypass-eligible failure path
+/// instead of polling forever — the original failure mode that
+/// hung job `01KRX4ZPF...` for 90 minutes on a single failed docs
+/// row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrioGateOutcome {
+    /// All three trio rows are `Done` or `Skipped`. Stage may pass.
+    Resolved,
+    /// At least one trio row is in a non-terminal status (`Pending` or
+    /// `InProgress`), or the row hasn't been injected yet. Keep
+    /// polling.
+    Pending,
+    /// At least one trio row landed `Failed`. The stage cannot pass;
+    /// the caller emits `StageCompleted { Failed }` and lets the
+    /// auto-bypass thrashing guard / policy decide whether to advance
+    /// or halt. `failures` lists every failed rail in the order they
+    /// appear in `TodoKind::TRIO` (`Checks`, `Docs`, `Git`).
+    Failed { failures: Vec<TrioFailure> },
+}
+
+/// One failed trio rail. The `reason` is the latest `failure_detail`
+/// the store has recorded for that row (populated when the emitter is
+/// updated to write it; falls back to `None` for older rows). Used to
+/// build the stage's `failure_detail` so the operator sees *which
+/// rail* and *why* in the UI instead of a generic "stage failed".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrioFailure {
+    pub kind: TodoKind,
+    pub reason: Option<String>,
+}
+
 impl SqliteStore {
     /// Idempotent insert keyed on `(task_id, ordinal)`. The StageRecorder
     /// runs as a backlog replay plus a live tail, so two `TodoAdded`
@@ -32,11 +70,16 @@ impl SqliteStore {
     /// out of `Pending` and `ended_at` on any terminal status. Idempotent
     /// for replay — re-applying the same status is a no-op effect on the
     /// timestamp columns because `COALESCE` keeps the earlier value.
+    /// `failure_detail` is persisted alongside the status flip (overwrites
+    /// any prior value) so the closing-trio gate can surface "which rail
+    /// and why" into the stage's `failure_detail` instead of leaving the
+    /// operator with a silent stuck stage.
     pub async fn update_todo_status(
         &self,
         todo_id: TodoId,
         status: TodoStatus,
         at: UnixMillis,
+        failure_detail: Option<&str>,
     ) -> sqlx::Result<bool> {
         let started_bind = (!matches!(status, TodoStatus::Pending)).then_some(at.0);
         let ended_bind = matches!(
@@ -48,12 +91,14 @@ impl SqliteStore {
             "UPDATE todos SET \
                 status = ?, \
                 started_at = COALESCE(started_at, ?), \
-                ended_at   = COALESCE(ended_at,   ?) \
+                ended_at   = COALESCE(ended_at,   ?), \
+                failure_detail = ? \
              WHERE id = ?",
         )
         .bind(todo_status_label(status))
         .bind(started_bind)
         .bind(ended_bind)
+        .bind(failure_detail)
         .bind(todo_id.to_string())
         .execute(&self.pool)
         .await?;
@@ -79,32 +124,35 @@ impl SqliteStore {
         rows.into_iter().map(todo_from_row).collect()
     }
 
-    /// True iff every closing-trio row (`Checks`, `Docs`, `Git`) on the
-    /// task is resolved (`Done` or `Skipped`) **and** all three rows
-    /// exist. The stage-completion gate calls this before emitting
-    /// `StageCompleted`; the runtime injects the trio at stage entry, so
-    /// "row missing" means the injection step has not yet run and the
-    /// gate must keep the stage open.
-    pub async fn trio_resolved(&self, task_id: TaskId) -> sqlx::Result<bool> {
+    /// Three-state closing-trio gate result.
+    ///
+    /// `Resolved` lets the stage pass; `Pending` keeps the runner
+    /// polling; `Failed { failures }` carries the per-rail failure
+    /// reason so the runner can route the stage through the
+    /// auto-bypass-eligible failure path with a real explanation in
+    /// the UI. The previous boolean form silently treated `Failed` as
+    /// "not resolved" and hung the gate forever — the regression that
+    /// stranded job `01KRX4ZPF...` for 90 minutes on a docs-write
+    /// failure.
+    pub async fn trio_gate_outcome(&self, task_id: TaskId) -> sqlx::Result<TrioGateOutcome> {
         use sqlx::Row;
         let rows = sqlx::query(
-            "SELECT kind, status FROM todos \
+            "SELECT kind, status, failure_detail FROM todos \
              WHERE task_id = ? AND kind IN ('checks', 'docs', 'git')",
         )
         .bind(task_id.to_string())
         .fetch_all(&self.pool)
         .await?;
         if rows.len() != 3 {
-            return Ok(false);
+            return Ok(TrioGateOutcome::Pending);
         }
+        let mut failures: Vec<TrioFailure> = Vec::new();
+        let mut any_pending = false;
         let mut seen = [false; 3];
         for row in rows {
             let kind: String = row.try_get("kind")?;
             let status: String = row.try_get("status")?;
-            let resolved = matches!(status.as_str(), "done" | "skipped");
-            if !resolved {
-                return Ok(false);
-            }
+            let reason: Option<String> = row.try_get("failure_detail")?;
             let kind = parse_todo_kind(&kind)?;
             let idx = match kind {
                 TodoKind::Checks => 0,
@@ -113,8 +161,27 @@ impl SqliteStore {
                 _ => continue,
             };
             seen[idx] = true;
+            match status.as_str() {
+                "done" | "skipped" => {}
+                "failed" => failures.push(TrioFailure { kind, reason }),
+                _ => any_pending = true,
+            }
         }
-        Ok(seen.iter().all(|b| *b))
+        if !seen.iter().all(|b| *b) {
+            return Ok(TrioGateOutcome::Pending);
+        }
+        // Failed wins over Pending: even if one rail is still
+        // InProgress, a peer rail that already failed terminally cannot
+        // un-fail, so the stage is doomed and we should surface that
+        // now rather than keep polling. The previous boolean gate
+        // never made this distinction.
+        if !failures.is_empty() {
+            return Ok(TrioGateOutcome::Failed { failures });
+        }
+        if any_pending {
+            return Ok(TrioGateOutcome::Pending);
+        }
+        Ok(TrioGateOutcome::Resolved)
     }
 }
 
@@ -232,6 +299,7 @@ mod tests {
             created_at: UnixMillis(0),
             started_at: None,
             ended_at: None,
+            failure_detail: None,
         }
     }
 
@@ -275,7 +343,7 @@ mod tests {
         store.insert_todo(&t).await.unwrap();
 
         store
-            .update_todo_status(t.id, TodoStatus::InProgress, UnixMillis(100))
+            .update_todo_status(t.id, TodoStatus::InProgress, UnixMillis(100), None)
             .await
             .unwrap();
         let row = store.get_todo(t.id).await.unwrap().unwrap();
@@ -284,20 +352,45 @@ mod tests {
         assert_eq!(row.ended_at, None);
 
         store
-            .update_todo_status(t.id, TodoStatus::Done, UnixMillis(200))
+            .update_todo_status(t.id, TodoStatus::Done, UnixMillis(200), None)
             .await
             .unwrap();
         let row = store.get_todo(t.id).await.unwrap().unwrap();
         assert_eq!(row.status, TodoStatus::Done);
-        // First in-progress timestamp survives via COALESCE.
         assert_eq!(row.started_at, Some(UnixMillis(100)));
         assert_eq!(row.ended_at, Some(UnixMillis(200)));
+        assert!(row.failure_detail.is_none());
     }
 
     #[tokio::test]
-    async fn trio_resolved_requires_all_three_kinds() {
+    async fn update_status_persists_failure_detail_on_failed() {
         let (store, task_id) = fresh_store_with_task().await;
-        assert!(!store.trio_resolved(task_id).await.unwrap());
+        let t = todo(task_id, 0, TodoKind::Docs, "docs");
+        store.insert_todo(&t).await.unwrap();
+        store
+            .update_todo_status(
+                t.id,
+                TodoStatus::Failed,
+                UnixMillis(100),
+                Some("write handover: Permission denied"),
+            )
+            .await
+            .unwrap();
+        let row = store.get_todo(t.id).await.unwrap().unwrap();
+        assert_eq!(row.status, TodoStatus::Failed);
+        assert_eq!(
+            row.failure_detail.as_deref(),
+            Some("write handover: Permission denied")
+        );
+    }
+
+    #[tokio::test]
+    async fn trio_gate_outcome_pending_until_all_three_kinds_resolve() {
+        let (store, task_id) = fresh_store_with_task().await;
+        assert_eq!(
+            store.trio_gate_outcome(task_id).await.unwrap(),
+            TrioGateOutcome::Pending
+        );
 
         let checks = todo(task_id, 10, TodoKind::Checks, "checks");
         let docs = todo(task_id, 11, TodoKind::Docs, "docs");
@@ -305,30 +398,43 @@ mod tests {
         for t in [&checks, &docs, &git] {
             store.insert_todo(t).await.unwrap();
         }
-        // All three rows exist but still pending → not resolved.
-        assert!(!store.trio_resolved(task_id).await.unwrap());
+        assert_eq!(
+            store.trio_gate_outcome(task_id).await.unwrap(),
+            TrioGateOutcome::Pending,
+            "all pending"
+        );
 
         store
-            .update_todo_status(checks.id, TodoStatus::Done, UnixMillis(1))
+            .update_todo_status(checks.id, TodoStatus::Done, UnixMillis(1), None)
             .await
             .unwrap();
         store
-            .update_todo_status(docs.id, TodoStatus::Done, UnixMillis(2))
+            .update_todo_status(docs.id, TodoStatus::Done, UnixMillis(2), None)
             .await
             .unwrap();
-        // Two of three done — still not resolved.
-        assert!(!store.trio_resolved(task_id).await.unwrap());
+        assert_eq!(
+            store.trio_gate_outcome(task_id).await.unwrap(),
+            TrioGateOutcome::Pending,
+            "two of three"
+        );
 
-        // `Skipped` counts as resolved (the no-diff git case).
         store
-            .update_todo_status(git.id, TodoStatus::Skipped, UnixMillis(3))
+            .update_todo_status(git.id, TodoStatus::Skipped, UnixMillis(3), None)
             .await
             .unwrap();
-        assert!(store.trio_resolved(task_id).await.unwrap());
+        assert_eq!(
+            store.trio_gate_outcome(task_id).await.unwrap(),
+            TrioGateOutcome::Resolved
+        );
     }
 
     #[tokio::test]
-    async fn trio_resolved_false_when_any_trio_row_failed() {
+    async fn trio_gate_outcome_failed_when_any_trio_row_failed() {
+        // Regression test for job 01KRX4ZPF...: a failed docs trio row
+        // must surface as Failed (carrying the rail's reason) so the
+        // runner routes the stage through the auto-bypass-eligible
+        // failure path. The previous boolean gate silently treated
+        // Failed as "not resolved" and the runner polled forever.
         let (store, task_id) = fresh_store_with_task().await;
         let checks = todo(task_id, 10, TodoKind::Checks, "checks");
         let docs = todo(task_id, 11, TodoKind::Docs, "docs");
@@ -337,17 +443,71 @@ mod tests {
             store.insert_todo(t).await.unwrap();
         }
         store
-            .update_todo_status(checks.id, TodoStatus::Done, UnixMillis(1))
+            .update_todo_status(checks.id, TodoStatus::Done, UnixMillis(1), None)
             .await
             .unwrap();
         store
-            .update_todo_status(docs.id, TodoStatus::Failed, UnixMillis(2))
+            .update_todo_status(
+                docs.id,
+                TodoStatus::Failed,
+                UnixMillis(2),
+                Some("write handover: disk full"),
+            )
             .await
             .unwrap();
         store
-            .update_todo_status(git.id, TodoStatus::Done, UnixMillis(3))
+            .update_todo_status(git.id, TodoStatus::Done, UnixMillis(3), None)
             .await
             .unwrap();
-        assert!(!store.trio_resolved(task_id).await.unwrap());
+        let outcome = store.trio_gate_outcome(task_id).await.unwrap();
+        match outcome {
+            TrioGateOutcome::Failed { failures } => {
+                assert_eq!(failures.len(), 1);
+                assert_eq!(failures[0].kind, TodoKind::Docs);
+                assert_eq!(
+                    failures[0].reason.as_deref(),
+                    Some("write handover: disk full")
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn trio_gate_outcome_failed_wins_over_pending() {
+        // Even if a peer rail is still InProgress, a terminally-failed
+        // rail cannot un-fail, so the gate surfaces Failed immediately
+        // rather than polling for an outcome that can no longer change.
+        let (store, task_id) = fresh_store_with_task().await;
+        let checks = todo(task_id, 10, TodoKind::Checks, "checks");
+        let docs = todo(task_id, 11, TodoKind::Docs, "docs");
+        let git = todo(task_id, 12, TodoKind::Git, "git");
+        for t in [&checks, &docs, &git] {
+            store.insert_todo(t).await.unwrap();
+        }
+        store
+            .update_todo_status(
+                docs.id,
+                TodoStatus::Failed,
+                UnixMillis(1),
+                Some("write handover: io"),
+            )
+            .await
+            .unwrap();
+        store
+            .update_todo_status(checks.id, TodoStatus::InProgress, UnixMillis(2), None)
+            .await
+            .unwrap();
+        store
+            .update_todo_status(git.id, TodoStatus::Done, UnixMillis(3), None)
+            .await
+            .unwrap();
+        match store.trio_gate_outcome(task_id).await.unwrap() {
+            TrioGateOutcome::Failed { failures } => {
+                assert_eq!(failures.len(), 1);
+                assert_eq!(failures[0].kind, TodoKind::Docs);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }
