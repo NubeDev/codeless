@@ -23,6 +23,7 @@ pub mod plan;
 pub mod plugin;
 pub mod policy;
 mod registry;
+pub mod runtime_adapter;
 pub mod schedule;
 pub mod testing;
 mod tool;

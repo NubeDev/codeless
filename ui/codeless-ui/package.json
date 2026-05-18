@@ -21,6 +21,7 @@
     "@ai-sdk/openai-compatible": "^2.0.42",
     "@ai-sdk/react": "^3.0.170",
     "@ai-sdk/xai": "^3.0.83",
+    "@codeless/plugin-ui-sdk": "workspace:*",
     "@codemirror/autocomplete": "^6.20.1",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-css": "^6.3.1",

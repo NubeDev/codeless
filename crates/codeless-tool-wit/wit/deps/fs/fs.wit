@@ -1,0 +1,42 @@
+// codeless host filesystem probe, v0.1.
+//
+// A deliberately narrow host-implemented interface that exists for
+// one reason: to be the thing a plugin reaches for when it wants to
+// read a host file path, so the capability sandbox has something
+// concrete to deny. Default-deny per `PLUGIN-WASM.md § Capability
+// sandbox` means a plugin with `[runtimes.capabilities] fs = []` --
+// i.e. the default -- does not get this interface linked into its
+// instance at all, and a component that imports it fails at
+// instantiation rather than at the call boundary.
+//
+// This is not `wasi:filesystem`. WASI-fs is a much larger surface
+// (preopens, descriptors, byte streams) than the substrate needs in
+// v0.1. The substrate's escape hatch for host-FS access -- once we
+// decide a plugin should have it -- is to extend this interface,
+// not to graft wasi:filesystem into the linker. See OQ-WASM-3 in
+// `PLUGIN-WASM.md` for the kv-store equivalent decision shape.
+
+package codeless:fs@0.1.0;
+
+interface probe {
+    variant fs-error {
+        // The plugin does not hold the `fs` capability authorising
+        // the requested path. With the default capability set this
+        // is the only failure mode operators will see (the linker
+        // refuses to bind the interface, surfacing as a load-time
+        // failure, not a call-time `denied`).
+        denied,
+        // Path well-formed but missing.
+        not-found,
+        // Path-shape violation (e.g. relative or contains `..`).
+        invalid-path(string),
+        // Host-side IO error.
+        io(string),
+    }
+
+    // Read a file by absolute host path. The host enforces the
+    // manifest's `fs` capability glob list before opening anything;
+    // a plugin that holds `fs = []` would never reach this function
+    // because the interface is unlinked.
+    read-file: func(path: string) -> result<list<u8>, fs-error>;
+}

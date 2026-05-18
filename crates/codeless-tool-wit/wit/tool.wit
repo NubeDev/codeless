@@ -1,0 +1,115 @@
+// codeless tool ABI, v0.1.
+//
+// This is the load-bearing contract between a WASM-flavour plugin
+// (built with `cargo build --target wasm32-wasip2`) and the host
+// loader in `codeless-plugin-host-wasm`. Every WASM tool implements
+// the `tool` interface; the host imports it and dispatches each
+// `tool.call` from the runtime's tool registry.
+//
+// Mirrors the manifest record in `codeless-plugin-sdk::Manifest`
+// one-for-one so the WASM `describe()` export and the builtin
+// inventory entry agree byte-for-byte on the wire.
+//
+// Breaking changes here are ABI changes -- bump the package version
+// and add a successor doc (`PLUGIN-WASM-V2.md`) before touching the
+// existing surface. OQ-WASM-2 is why the wit-bindgen output is
+// committed in-tree: the generated bindings diff is the load-bearing
+// review artefact for an ABI change, not a build.rs side effect.
+
+package codeless:tool@0.1.0;
+
+interface tool {
+    // Identity + JSON Schemas for every tool the plugin contributes.
+    // `input-schema` / `output-schema` are JSON values serialised to
+    // strings -- the runner already validates JSON against schemas,
+    // so the wire format matches the validator. Binary attachments
+    // cross by attachment-id (PLUGIN-SUBSTRATE.md item 7), never
+    // inlined as bytes here.
+    record tool-manifest {
+        id:            string,
+        description:   string,
+        input-schema:  string,
+        output-schema: string,
+        tier:          tier,
+    }
+
+    // Tool risk classification used by the agent loop's confirmation
+    // policy. Mirrors `codeless_plugin_sdk::Tier`.
+    enum tier {
+        read,
+        write,
+        destructive,
+    }
+
+    record tool-call {
+        tool-id:   string,
+        // JSON value (already validated against `input-schema`),
+        // serialised to a string for the same reason as the schemas.
+        args-json: string,
+        // Thread the call is scoped to. Used for attachment lookups
+        // and audit logging.
+        thread-id: string,
+    }
+
+    variant tool-result {
+        // JSON value (validated against `output-schema`), serialised.
+        ok(string),
+        err(tool-error),
+    }
+
+    record tool-error {
+        // Stable machine-readable code (e.g. "limit-exceeded",
+        // "invalid-args"). The host maps a small set to its own
+        // structured-`Failed` reason vocabulary; unknown codes
+        // pass through as "plugin-error".
+        code:      string,
+        message:   string,
+        // Whether the agent loop should retry on this error. False
+        // for limit-exceeded, schema-mismatch, and any error the
+        // host classifies as fatal.
+        retryable: bool,
+    }
+
+    // Identity + manifests for every tool the plugin contributes.
+    describe: func() -> list<tool-manifest>;
+
+    // Synchronous tool invocation. Long-running tools split into
+    // smaller calls; the streaming "action card -> confirmation ->
+    // result" event shape lives in the runtime, not in this ABI.
+    call: func(req: tool-call) -> tool-result;
+}
+
+// The default plugin world is no-IO: only the `tool` interface
+// crosses the boundary. WASI is linked host-side at instantiation
+// time (PLUGIN-WASM.md "Capability sandbox") -- the manifest's
+// `[runtimes.capabilities]` set decides which WASI imports are
+// supplied to the plugin's store. Companion worlds (e.g.
+// `plugin-with-fs`, `plugin-with-http`) get declared here when a
+// future plugin needs static-WIT-visible imports beyond the default
+// no-IO set; v0.1 ships only `plugin`.
+world plugin {
+    export tool;
+}
+
+// Companion world: a plugin that needs scoped attachment access
+// imports `codeless:attachments/store`. The capability gate that
+// admits this world's import set is `[runtimes.capabilities]
+// attachments = ["read", "write"]` (or a subset); a plugin built
+// against `plugin-with-attachments` and loaded without the
+// capability fails at component instantiation, per
+// `PLUGIN-WASM.md § Capability sandbox`'s "fail at the linker, not
+// the call boundary" rule.
+world plugin-with-attachments {
+    export tool;
+    import codeless:attachments/store@0.1.0;
+}
+
+// Companion world: a plugin that wants to reach host filesystem
+// paths imports `codeless:fs/probe`. Gated by
+// `[runtimes.capabilities] fs = [...]`; the default-deny posture
+// keeps the probe unlinked, which is the load-time signal exercised
+// by `plugin_wasm_e2e::wasm_plugin_cannot_open_host_file`.
+world plugin-with-fs {
+    export tool;
+    import codeless:fs/probe@0.1.0;
+}

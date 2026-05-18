@@ -1,0 +1,50 @@
+[package]
+name = "codeless-plugin-host-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless WASM-flavour plugin host. Wasmtime + WASI-p2 component-model loader for `.wasm` plugin artefacts built with `cargo build --target wasm32-wasip2`. Host-only: depends on wasmtime / wasmtime-wasi and never enters the iOS / Android / mobile shells. See DOCS/plugins/PLUGIN-WASM.md for the design contract."
+
+[lints]
+workspace = true
+
+[dependencies]
+# Pinned to the doc-cited minor (`PLUGIN-WASM.md § Why a component-
+# model host`: "`wasmtime` 23+"). Held at 23 deliberately: every
+# minor release of wasmtime ships breaking API moves, and the
+# component-model surface lands in a layout this crate compiles
+# against. Bumping is an OQ-WASM-* sized decision -- record it in
+# `DOCS/plugins/PLUGIN-WASM.md` before lifting the floor.
+# Bumped from 23 to 30 in plugin-substrate-runtimes stage 5: LLVM 19
+# (rustc 1.85+) emits overlong LEB128 encodings of memory index 0
+# that wasmparser 0.212 (which `wasmtime` 23 pins) rejects with
+# "zero byte expected"; the modern format is accepted from wasmtime
+# 27 onward. The doc note in `PLUGIN-WASM.md § Why a component-model
+# host` is updated alongside this bump.
+wasmtime = { version = "30", default-features = false, features = ["runtime", "cranelift", "component-model", "async"] }
+wasmtime-wasi = { version = "30", default-features = false }
+
+# Trait + table this crate implements against.
+codeless-tools = { path = "../codeless-tools" }
+# The committed WIT source -- `wasmtime::component::bindgen!` reads
+# the file path at macro expansion time. The dep also pins the WIT
+# package version we accept; a guest built against a newer
+# `codeless:tool@X.Y` is a manifest-time load failure once stage 5
+# wires the version check, not a silent dispatch error.
+codeless-tool-wit = { path = "../codeless-tool-wit" }
+
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+# Componentise the `tests/fixtures/*` core wasm modules into
+# WASI-p2 components for the `plugin_wasm_e2e` integration tests.
+# Pinned to wasmtime 30's wasmparser minor for the same reason
+# `codeless-runtime/Cargo.toml` pins it on its own e2e suite.
+wit-component = "=0.212.0"

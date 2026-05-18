@@ -38,7 +38,9 @@
 //! shortcuts.
 
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
+use codeless_plugin_host_wasm::{HostPolicy, WasmPlugin, WasmRuntime};
 use codeless_rpc::{
     AppendAssistantMessageArgs, CreateAssistantThreadArgs, RpcServer, UploadAssistantAttachmentArgs,
 };
@@ -131,13 +133,30 @@ async fn upsert_loaded_persona(
         .expect("upsert plugin persona")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn notes_plugin_loads_and_seeds_persona_addressable_by_thread() {
-    // Substrate items 5 + 6 jointly: a plugin's manifest produces a
-    // persona row the Assistant surface can bind a thread to. A
-    // regression in either the namespacing rule (`<plugin>:<slug>`) or
-    // the `create_assistant_thread` FK validation fails here, before
-    // anything more elaborate runs.
+/// One row in the parameterised flavour matrix for
+/// `notes_plugin_loads_and_seeds_persona_addressable_by_thread`. The
+/// substrate-doc claim under plugin-substrate-runtimes stage 5 is:
+/// the **same** `codeless-plugin-notes` source compiles into either a
+/// builtin Rust shim *or* a WASI-p2 component, and the resulting
+/// `notes.append` manifest the host sees is byte-identical at the
+/// `AdapterToolManifest` boundary. The two test functions below are
+/// thin wrappers that drive the same body against each flavour; if
+/// they diverge for any reason other than the build path, the
+/// substrate's "one source, two flavours" promise has slipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotesFlavour {
+    Builtin,
+    Wasm,
+}
+
+/// Body shared by both flavour rows of
+/// `notes_plugin_loads_and_seeds_persona_addressable_by_thread`. The
+/// builtin row dispatches `notes.append` through the host
+/// `ToolRegistry`; the wasm row dispatches the same id through a
+/// `WasmPlugin::load`ed component. Persona-seed and thread-create are
+/// shared because both come from the on-disk `plugin.toml` -- the
+/// runtime flavour does not change the manifest.
+async fn run_notes_loads_and_seeds_persona_addressable_by_thread(flavour: NotesFlavour) {
     let rpc = InProcessRpc::new().await.unwrap();
     let (_registry, loaded) = load_notes_into(&rpc).await;
     let plugin_persona = &loaded.personas[0];
@@ -152,6 +171,44 @@ async fn notes_plugin_loads_and_seeds_persona_addressable_by_thread() {
         .await
         .expect("thread bound to plugin persona");
     assert_eq!(thread.persona_id, "notes:notes");
+
+    // The flavour-specific seam: builtin reads the tool manifest off
+    // the `ToolRegistry` (the host's `Arc<dyn Tool>`), wasm reads it
+    // off a `WasmPlugin::load`ed component's `describe()` export. Both
+    // must surface the same id + tier and an output schema whose PS7
+    // attachment marker survives the manifest round-trip.
+    match flavour {
+        NotesFlavour::Builtin => {
+            let tool = _registry
+                .tool_registry()
+                .get("notes.append")
+                .expect("builtin shim registers notes.append");
+            assert_eq!(tool.name(), "notes.append");
+            let out = tool.output_schema();
+            assert_eq!(
+                out.pointer("/properties/attachment/$ref")
+                    .and_then(|v| v.as_str()),
+                Some("codeless://attachment"),
+                "builtin output schema declares the PS7 marker",
+            );
+        }
+        NotesFlavour::Wasm => {
+            let plugin = wasm_notes_plugin().await;
+            let manifests = plugin.manifests();
+            assert_eq!(manifests.len(), 1, "notes plugin contributes a single tool",);
+            let m = &manifests[0];
+            assert_eq!(m.id, "notes.append");
+            assert_eq!(m.tier, "write");
+            let out: serde_json::Value =
+                serde_json::from_str(&m.output_schema).expect("output schema is JSON");
+            assert_eq!(
+                out.pointer("/properties/attachment/$ref")
+                    .and_then(|v| v.as_str()),
+                Some("codeless://attachment"),
+                "wasm describe() output schema declares the PS7 marker",
+            );
+        }
+    }
 
     // Append a free-form user message; without `with_agent_chat` the
     // planner branch routes to the NOOP fallback, so the round-trip
@@ -176,6 +233,148 @@ async fn notes_plugin_loads_and_seeds_persona_addressable_by_thread() {
         appended.assistant_message.role,
         AssistantMessageRole::Assistant
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notes_plugin_loads_and_seeds_persona_addressable_by_thread_builtin() {
+    // Substrate items 5 + 6 jointly: a plugin's manifest produces a
+    // persona row the Assistant surface can bind a thread to. A
+    // regression in either the namespacing rule (`<plugin>:<slug>`) or
+    // the `create_assistant_thread` FK validation fails here, before
+    // anything more elaborate runs.
+    run_notes_loads_and_seeds_persona_addressable_by_thread(NotesFlavour::Builtin).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notes_plugin_loads_and_seeds_persona_addressable_by_thread_wasm() {
+    // Plugin-substrate-runtimes stage 5: the same `codeless-plugin-
+    // notes` source compiles to a WASI-p2 component, whose
+    // `describe()` export surfaces the same `notes.append` manifest
+    // the builtin shim does. Loading the component through
+    // `WasmPlugin::load` is what `codeless-plugin-host-wasm`'s
+    // adapter table will do once stage 13 wires `[[runtimes]] kind =
+    // "wasm"` into the manifest parser; doing it directly here keeps
+    // the parameterisation independent of that later piece.
+    run_notes_loads_and_seeds_persona_addressable_by_thread(NotesFlavour::Wasm).await;
+}
+
+/// Build (if needed) and load the `notes.wasm` artefact through the
+/// host wasm runtime. Cached behind a `OnceLock` so the parameterised
+/// flavour runs once across the test binary even when the `Wasm` row
+/// is exercised by several tests.
+///
+/// Building inside the test rather than committing the `.wasm`
+/// fixture keeps the artefact in lockstep with the same `src/lib.rs`
+/// the builtin shim compiles against -- a divergence between the
+/// flavours becomes a build failure on this row, not a stale-fixture
+/// pass.
+async fn wasm_notes_plugin() -> Arc<WasmPlugin> {
+    static CELL: OnceLock<Arc<WasmPlugin>> = OnceLock::new();
+    if let Some(p) = CELL.get() {
+        return Arc::clone(p);
+    }
+    let path = ensure_notes_wasm_built();
+    let runtime = Arc::new(WasmRuntime::new().expect("wasm runtime"));
+    let plugin = WasmPlugin::load(
+        runtime,
+        &path,
+        HostPolicy::defaults(),
+        codeless_plugin_host_wasm::LoadOptions::default(),
+    )
+    .await
+    .expect("load notes.wasm component");
+    let arc = Arc::new(plugin);
+    // Race-tolerant init: if a concurrent test populated the cell
+    // first, fall through to the populated value and let the local
+    // build's `Arc` drop on return.
+    let _ = CELL.set(Arc::clone(&arc));
+    Arc::clone(CELL.get().expect("set or already populated"))
+}
+
+/// Build (if needed) the notes plugin as a `wasm32-unknown-unknown`
+/// core module, then encode it as a WASI-p2 component via
+/// `wit-component`. Returns the path to the encoded component.
+///
+/// Why not `wasm32-wasip2` directly: rustc's bundled wasi-preview1-
+/// to-preview2 adapter emits a component-model encoding newer than
+/// `wasmtime` 23's parser accepts. `wit-component` pinned to the
+/// matching minor produces a component the host can load -- and the
+/// notes plugin's `world plugin { export tool; }` has no WASI
+/// imports anyway, so the adapter would be load for an empty cargo.
+fn ensure_notes_wasm_built() -> PathBuf {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .to_path_buf();
+    if let Ok(p) = std::env::var("CODELESS_NOTES_WASM") {
+        let pb = PathBuf::from(p);
+        assert!(pb.exists(), "CODELESS_NOTES_WASM points at missing file");
+        return pb;
+    }
+    let target_dir = workspace_root.join("target-wasm");
+    let core_module = target_dir
+        .join("wasm32-unknown-unknown")
+        .join("release")
+        .join("codeless_plugin_notes.wasm");
+    let component_path = target_dir.join("codeless_plugin_notes.component.wasm");
+    if !core_module.exists() {
+        // Disable newer wasm features rustc enables by default but
+        // `wasmtime` 23 (wasmparser 0.212) does not yet parse. The
+        // notes plugin's `world plugin { export tool; }` has no need
+        // for bulk-memory / reference-types either way; stripping
+        // them produces an MVP-compatible core module that the host
+        // loads cleanly. Bumping wasmtime is the proper fix, gated by
+        // an OQ-WASM-* review.
+        let status = std::process::Command::new(env!("CARGO"))
+            .arg("build")
+            .arg("--release")
+            .arg("--target")
+            .arg("wasm32-unknown-unknown")
+            .arg("-p")
+            .arg("codeless-plugin-notes")
+            .arg("--no-default-features")
+            .arg("--features")
+            .arg("wasm")
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .env(
+                "RUSTFLAGS",
+                "-C target-cpu=mvp \
+                 -C target-feature=-bulk-memory,-reference-types,-multivalue,\
+                 -sign-ext,-nontrapping-fptoint,-mutable-globals",
+            )
+            .current_dir(&workspace_root)
+            .status()
+            .expect("invoke cargo build for wasm32-unknown-unknown");
+        assert!(
+            status.success(),
+            "cargo build of codeless-plugin-notes (wasm32-unknown-unknown) failed: {status:?}",
+        );
+    }
+    if needs_rebuild(&core_module, &component_path) {
+        let core_bytes = std::fs::read(&core_module).expect("read core module");
+        let component_bytes = wit_component::ComponentEncoder::default()
+            .validate(true)
+            .module(&core_bytes)
+            .expect("attach core module to component encoder")
+            .encode()
+            .expect("encode component");
+        std::fs::write(&component_path, &component_bytes).expect("write component artefact");
+    }
+    component_path
+}
+
+fn needs_rebuild(src: &std::path::Path, dst: &std::path::Path) -> bool {
+    let Ok(dst_meta) = std::fs::metadata(dst) else {
+        return true;
+    };
+    let Ok(src_meta) = std::fs::metadata(src) else {
+        return true;
+    };
+    match (src_meta.modified(), dst_meta.modified()) {
+        (Ok(s), Ok(d)) => s > d,
+        _ => true,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -390,6 +589,133 @@ async fn planner_allow_filter_admits_plugin_tool_under_persona_namespace() {
         .expect("persona row exists");
     assert!(tool_allowed(&from_db.allowed_tools, "notes.append"));
     assert!(!tool_allowed(&from_db.allowed_tools, "assistant.start_job"));
+}
+
+/// Plugin-substrate-runtimes stage 13: the manifest parser accepts
+/// `[[runtimes]] kind = "process"` with a `binary` and a
+/// `[runtimes.policy]` block, and the codeless-server two-phase
+/// scanner records the plugin as `Failed` with the stable reason
+/// `process-runtime-not-supported` -- the PLUGIN-PROCESS.md §
+/// Reserve-the-seam contract. Cross-plugin invariant: the rest of
+/// the registry is untouched (no half-populated state), so a
+/// future `codeless plugin info widgets` could still print the
+/// manifest while the supervisor remains dormant.
+///
+/// Living end-to-end in this file (not in
+/// `codeless-tools/src/plugin/substrate.rs`'s unit tests) because
+/// the test pins the boot-path the host CLI walks: write a real
+/// plugin dir, run the same `scan_plugins_dir` codeless-server
+/// will call at startup, and assert on the same outcome surface
+/// `codeless plugin list` projects.
+#[test]
+fn process_runtime_declared_today_loads_failed_with_structured_reason() {
+    use codeless_tools::plugin::{
+        scan_plugins_dir, PluginFailureReason, PluginLoadOutcome, RegistrationTable,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let plugin_root = tmp.path().join("widgets");
+    std::fs::create_dir_all(plugin_root.join("prompts")).unwrap();
+    std::fs::create_dir_all(plugin_root.join("migrations")).unwrap();
+    std::fs::write(
+        plugin_root.join("plugin.toml"),
+        r#"
+[plugin]
+id      = "widgets"
+version = "0.1.0"
+crate   = "codeless-plugin-widgets"
+
+[[personas]]
+id                          = "widgets"
+prompt_file                 = "prompts/system.md"
+allowed_tools               = ["widgets.*"]
+default_model_family        = "smart"
+default_attachments_policy  = "inline-thread-scoped"
+
+[[runtimes]]
+kind   = "process"
+binary = "bin/widgets"
+
+[runtimes.policy]
+socket_ready_timeout = "5s"
+health_interval      = "10s"
+failure_threshold    = 3
+failure_window       = "60s"
+failed_cooldown      = false
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        plugin_root.join("prompts/system.md"),
+        "You are the widgets persona.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        plugin_root.join("migrations/0001_init.sql"),
+        "CREATE TABLE widgets_entries (id TEXT PRIMARY KEY);\n",
+    )
+    .unwrap();
+
+    // Empty registration table on purpose: a process-only plugin
+    // does not need a builtin registration entry. The scanner
+    // must observe that the only declared runtime is `process`
+    // and short-circuit to the structured Failed outcome before
+    // ever consulting the table.
+    let table = RegistrationTable::new();
+    let result = scan_plugins_dir(tmp.path(), &table).expect("scan dir");
+    assert!(
+        result.commit_failure.is_none(),
+        "process-only plugin must not abort the commit phase: {:?}",
+        result.commit_failure
+    );
+
+    let outcome = result
+        .find("widgets")
+        .expect("widgets outcome recorded against its declared id");
+    match outcome {
+        PluginLoadOutcome::Failed {
+            reason, manifest, ..
+        } => {
+            // The structured reason is the contract; the message
+            // form is the operator-facing surface. Both come from
+            // PLUGIN-PROCESS.md § Reserve-the-seam verbatim.
+            assert_eq!(reason.code(), "process-runtime-not-supported");
+            assert_eq!(reason, &PluginFailureReason::ProcessRuntimeNotSupported);
+            assert!(
+                reason
+                    .message()
+                    .contains("process runtime not yet supported"),
+                "human message lifts the doc phrasing: {}",
+                reason.message()
+            );
+            // The manifest is still available so `codeless plugin
+            // info widgets` can render the declared-but-
+            // unsupported runtime to the operator.
+            assert_eq!(manifest.plugin.id, "widgets");
+            assert_eq!(manifest.runtimes.len(), 1);
+            let resolved = manifest.runtimes[0].policy.resolve();
+            assert_eq!(
+                resolved.socket_ready_timeout,
+                Some(std::time::Duration::from_secs(5))
+            );
+            assert_eq!(resolved.failure_threshold, Some(3));
+        }
+        other => panic!("expected Failed outcome, got {other:?}"),
+    }
+
+    // Cross-plugin invariant: the registry the scanner returns is
+    // empty because the process-only plugin contributed nothing.
+    // A regression that half-populated the registry (e.g. by
+    // running the registration table lookup before the runtime-
+    // kind branch) trips here.
+    assert!(
+        result.registry.tool_registry().is_empty(),
+        "registry untouched: process-only plugin does not register tools"
+    );
+    assert!(
+        result.registry.get("widgets").is_none(),
+        "no LoadedPlugin entry for a Failed plugin"
+    );
 }
 
 /// Acceptance §1 -- the substrate-doc shape rule: a new plugin is one

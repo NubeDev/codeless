@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": ["vitest/globals"]
+  },
+  "include": [
+    "src/editable-collection.tsx",
+    "src/editable-collection.test.tsx",
+    "src/index.ts",
+    "src/slots.ts",
+    "src/slots.test.ts",
+    "src/mf.ts",
+    "src/mf.test.ts",
+    "src/registration.ts",
+    "src/registration.test.ts",
+    "src/rsbuild-shared.ts",
+    "src/eslint-config.ts",
+    "src/eslint-config.test.ts",
+    "src/components/PluginSlot.tsx",
+    "src/components/PluginSlot.test.tsx"
+  ]
+}

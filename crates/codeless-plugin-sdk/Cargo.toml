@@ -1,0 +1,45 @@
+[package]
+name = "codeless-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless plugin authoring SDK. One source, three packaging flavours (builtin/wasm/process) selected by mutually-exclusive Cargo features. Mobile-safe by dependency edges so a future iOS/Android shell can host trusted plugins without pulling in codeless-tools or codeless-adapters-host."
+
+[lints]
+workspace = true
+
+[features]
+# Exactly one of `builtin` / `wasm` / `process` must be active per
+# consuming crate. The mutual exclusion is enforced by a
+# `compile_error!` guard in `lib.rs` -- copied from rubix
+# `extensions-sdk/src/lib.rs` because the failure mode (two flavours'
+# `register!` macros expanding into the same translation unit) is
+# the same shape here.
+#
+# `builtin` is default so `cargo build -p codeless-plugin-sdk` from
+# the host workspace just works; a WASM build site overrides with
+# `--no-default-features --features wasm`.
+default = ["builtin"]
+builtin = []
+wasm = []
+# Reserved seam (PLUGIN-SUBSTRATE item 11 / PLUGIN-PROCESS.md). The
+# manifest parser already accepts `kind = "process"`; this flag exists
+# so a plugin author who declares it in their Cargo features file
+# does not get an unknown-feature error. No host or SDK code is gated
+# on it yet -- the gRPC supervisor lands in a separate doc-driven
+# stage.
+process = []
+
+[dependencies]
+codeless-plugin-sdk-macros = { path = "../codeless-plugin-sdk-macros" }
+async-trait = { workspace = true }
+schemars = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

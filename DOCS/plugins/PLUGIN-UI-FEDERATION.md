@@ -60,6 +60,13 @@ host can render fallbacks when a slot has no contributors and so
 operators can read `codeless plugin info <id>` and see exactly where
 the plugin appears.
 
+**v0.1 slot vocabulary is locked as of 2026-05-18
+(plugin-substrate-runtimes stage 1)** to the five rows in the table
+below. None was dropped at stage-1 review because each removes a
+class of plugin UI we know we want; growing the set requires a host-
+side change per § "Adding a new slot is a host-side change" further
+down this section.
+
 v0.1 slots:
 
 | Slot id | Where it renders | Cardinality | Typical use |
@@ -320,14 +327,16 @@ The MF UI flavour is done when:
 
 ## Open questions
 
-- **OQ-UI-1.** Slot vocabulary versioning. Each codeless release
-  may add slots; removing one is breaking. Do we version the slot
-  vocabulary independently of the codeless version
-  (`@codeless/plugin-ui-sdk` version pin), or assume the SDK version
-  pins the vocabulary? **Lean: SDK pins the vocabulary.** A plugin
-  built against `@codeless/plugin-ui-sdk@0.2` knows the 0.2 slots;
-  the host refuses to mount a plugin whose declared SDK version is
-  newer than the host's.
+- **OQ-UI-1. Resolved 2026-05-18 (plugin-substrate-runtimes stage
+  1): the `@codeless/plugin-ui-sdk` semver pin is the slot
+  vocabulary contract.** The host reads each plugin's declared SDK
+  version from its `package.json` (`@codeless/plugin-ui-sdk` in
+  `dependencies`), refuses to mount a plugin whose declared SDK
+  major.minor is newer than the host's, and degrades to "no slot
+  mounted, structured error in the slot's error boundary" rather
+  than crashing the host. A separate "slot vocabulary version"
+  field would drift from the SDK version it claims to pin; the
+  package version is already the contract every plugin declares.
 - **OQ-UI-2.** Server-side render / SSG. Codeless UI is SPA today;
   plugin bundles are dynamic chunks. If/when we add SSR, plugin
   components need to declare whether they're SSR-safe. **Lean: SSR

@@ -30,6 +30,25 @@ members = [
     # DOCS/PLUGIN-SUBSTRATE.md "Plugin #0: notes" so substrate
     # breakage fails CI here before it reaches a real workflow plugin.
     "crates/codeless-plugin-notes",
+    # Plugin authoring SDK + its proc-macros. Mobile-safe; host
+    # bridges (codeless-tools shim for builtin, codeless-plugin-host-
+    # wasm for wasm) live in separate host-only crates so this pair
+    # stays clean of host deps. See DOCS/plugins/PLUGIN-SUBSTRATE.md
+    # "Reuse from rubix" and DOCS/plugins/PLUGIN-WASM.md "The
+    # authoring SDK".
+    "crates/codeless-plugin-sdk",
+    "crates/codeless-plugin-sdk-macros",
+    # WIT contract + committed wit-bindgen guest output. Mobile-safe.
+    # See crates/codeless-tool-wit/src/lib.rs for the regeneration
+    # protocol and OQ-WASM-2 in DOCS/plugins/PLUGIN-WASM.md for why
+    # the bindings live in-tree rather than under build.rs.
+    "crates/codeless-tool-wit",
+    # WASM-flavour plugin host. Host-only (wasmtime + cranelift +
+    # wasmtime-wasi). Implements the runtime-adapter trait that
+    # codeless-tools introduces in the same stage so the dispatch
+    # table can route a tool id to either the builtin shim or this
+    # WASM adapter. See DOCS/plugins/PLUGIN-WASM.md "The crate".
+    "crates/codeless-plugin-host-wasm",
     # Vendored from rubix-agent. Path is `../ai-runner` because the
     # crate lives one level up in `codeless-workspace/` alongside
     # this inner repo. Treated as read-only here — updates flow from

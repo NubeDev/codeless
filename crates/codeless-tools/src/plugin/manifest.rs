@@ -13,6 +13,7 @@
 //! `load_plugin` rather than at the first agent turn.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -30,9 +31,330 @@ pub struct PluginManifest {
     pub personas: Vec<PluginPersona>,
     pub migrations: MigrationsDir,
     pub data: DataDir,
+    /// Per `PLUGIN-WASM.md § Manifest extension (item 6 addendum)`: a
+    /// plugin declares one or more `[[runtimes]]` blocks. v0.1
+    /// accepts at most one entry; if both a `builtin` and a `wasm`
+    /// block are present the manifest parser fails (the operator
+    /// must pick one via codeless config, not by shipping both).
+    /// Empty when the manifest omits the block, which is the
+    /// legacy shape -- a plugin without a `[[runtimes]]` entry is
+    /// treated as builtin for backward compatibility with the
+    /// pre-substrate-runtimes notes plugin.
+    pub runtimes: Vec<PluginRuntime>,
+    /// `[contributes.*]` block. Today the only sub-table is `mcp`
+    /// (DOCS/plugins/PLUGIN-MCP.md), but the wrapper keeps the door
+    /// open for `contributes.ui`, `contributes.rest`, etc. without
+    /// reshaping the manifest a second time. Empty when the manifest
+    /// omits the block.
+    pub contributes: PluginContributes,
     /// Absolute path of the directory the manifest was loaded from.
     /// `None` when parsed from an in-memory string (test path).
     pub root: Option<PathBuf>,
+}
+
+/// `[contributes]` umbrella block. Only `mcp` is wired today; future
+/// contribution surfaces (UI Module-Federation exposes, REST proxy
+/// routes) will land alongside without breaking serialisation order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginContributes {
+    #[serde(default)]
+    pub mcp: Option<PluginMcp>,
+}
+
+/// `[contributes.mcp]` block per DOCS/plugins/PLUGIN-MCP.md.
+///
+/// Per OQ-MCP-1 (resolved 2026-05-18), v0.1 ships exactly two
+/// real dispatch kinds: `tool_call` and `rest_proxy`. The literal
+/// string `"mcp_forward"` parses successfully so a future plugin
+/// can declare it without a manifest-shape break, but the registry
+/// rejects it at load time -- the same `Failed-with-structured-reason`
+/// shape stage 13 lifted from `process` runtime kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcp {
+    /// Plugin-level off-switch (PLUGIN-MCP.md § Off-switch
+    /// hierarchy, layer "Plugin surface (manifest)"). Defaults to
+    /// `true` so a plugin that declares any MCP contribution at all
+    /// is opting in by construction; setting `false` keeps the
+    /// contributions visible to `codeless plugin info` while
+    /// hiding them from the MCP `tools/list` response. Operators
+    /// turn off *all* plugin MCP tools via the host-side
+    /// `mcp.plugin_tools_enabled` config flag (layer "Plugin
+    /// surface (host config)"); per-plugin opt-out lives here.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, rename = "tools")]
+    pub tools: Vec<PluginMcpTool>,
+    #[serde(default, rename = "resources")]
+    pub resources: Vec<PluginMcpResource>,
+    #[serde(default, rename = "prompts")]
+    pub prompts: Vec<PluginMcpPrompt>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PluginMcp {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }
+    }
+}
+
+/// One `[[contributes.mcp.tools]]` entry. Matches the doc example
+/// one-for-one. `description_md`, `input_schema`, and `output_schema`
+/// are paths to static files in the plugin bundle (Invariant 2 --
+/// PLUGIN-MCP.md § Descriptions are static files); they are not
+/// runtime-templated, ever. The path strings are stored verbatim and
+/// resolved against the plugin root at load time the same way
+/// `prompt_file` is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcpTool {
+    /// Stable local id of the tool inside the plugin. The MCP
+    /// server exposes the contribution as `<plugin_id>.<id>` so
+    /// collisions across plugins are impossible by construction.
+    pub id: String,
+    pub title: String,
+    pub description_md: PathBuf,
+    pub input_schema: PathBuf,
+    pub output_schema: PathBuf,
+    /// MCP tool annotation. Surfaced verbatim per OQ-MCP-3.
+    pub tier: McpTier,
+    pub dispatch: PluginMcpDispatch,
+}
+
+/// `tier` annotation for an MCP tool. Mirrors PLUGIN-MCP.md § Manifest
+/// (`read | write | destructive`). Strict-validated at parse time so a
+/// plugin author typoing `"writes"` fails at load, not at first
+/// approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTier {
+    Read,
+    Write,
+    Destructive,
+}
+
+/// `dispatch` discriminator. PLUGIN-MCP.md § Manifest enumerates the
+/// three v0.1 kinds; `mcp_forward` parses but the registry lands the
+/// plugin in `Failed` per OQ-MCP-1 until v0.2 ships the upstream
+/// session lifecycle.
+///
+/// Strict-validated via the parser's tag matcher: unknown kinds trip
+/// `Parse` (not a sibling variant), so plugin authors get an obvious
+/// "unknown variant" message rather than silent acceptance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PluginMcpDispatch {
+    /// MCP handler calls the plugin's registered codeless tool via
+    /// `ToolRegistry::get(tool_id)`. The default and simplest path
+    /// (PLUGIN-MCP.md § Manifest table).
+    ToolCall { tool_id: String },
+    /// MCP handler re-issues the call through the codeless REST
+    /// router (`/api/v1/...`). The parity check at load asserts the
+    /// path is one of the registered REST routes; an absent route
+    /// would otherwise turn a manifest typo into a runtime 404.
+    RestProxy { method: String, path: String },
+    /// PLUGIN-MCP.md OQ-MCP-1 / decision-locked item 2: declared
+    /// today, loaded as `Failed` with the stable structured reason
+    /// `mcp_forward not yet supported`. The variant carries no fields
+    /// so a manifest can declare the seam without committing to
+    /// upstream-session shape that v0.1 has not designed yet.
+    McpForward {},
+}
+
+/// One `[[contributes.mcp.resources]]` entry. v0.1 wires two backings
+/// (`plugin_table` and `rest_get`) per PLUGIN-MCP.md § Resources. The
+/// `node` rubix-side backing has no codeless counterpart. Strict-
+/// validated so a plugin can't accidentally declare a `node` resource
+/// and have it silently disappear.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcpResource {
+    pub uri_pattern: String,
+    pub backing: McpResourceBacking,
+    #[serde(default)]
+    pub table: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpResourceBacking {
+    PluginTable,
+    RestGet,
+}
+
+/// One `[[contributes.mcp.prompts]]` entry. Per PLUGIN-MCP.md
+/// § Prompts, `template` is a path to a markdown file in the plugin
+/// bundle; the MCP server reads it statically and never templates
+/// against runtime data (Invariant 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcpPrompt {
+    pub id: String,
+    pub template: PathBuf,
+}
+
+/// One `[[runtimes]]` entry. The `capabilities` block is the
+/// load-bearing piece for the WASM-flavour capability sandbox; the
+/// builtin flavour ignores it (capabilities only apply to host-
+/// linker-mediated access). Validated at parse time so a
+/// malformed entry fails at `load_plugin` rather than at the first
+/// agent turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginRuntime {
+    pub kind: PluginRuntimeKind,
+    /// For `kind = "builtin"`: the crate that ships the
+    /// registration entry. For `kind = "wasm"`: ignored. Optional
+    /// so an operator-installed `.wasm` artefact does not need a
+    /// crate name. Aliased to TOML `crate` to match the doc
+    /// example (`[[runtimes]] kind = "builtin" crate = "..."`),
+    /// while keeping the Rust field name out of the reserved-word
+    /// space.
+    #[serde(default, rename = "crate")]
+    pub crate_name: Option<String>,
+    /// For `kind = "wasm"`: the relative path under the plugin
+    /// directory of the `.wasm` component artefact. For
+    /// `kind = "builtin"`: ignored.
+    #[serde(default)]
+    pub artefact: Option<PathBuf>,
+    /// For `kind = "process"`: the relative path of the supervised
+    /// plugin binary. Process flavour is a manifest-only seam in
+    /// v0.1 (PLUGIN-PROCESS.md item 11): the parser strict-validates
+    /// the field's presence but no host adapter spawns it.
+    #[serde(default)]
+    pub binary: Option<PathBuf>,
+    /// `[runtimes.capabilities]` sub-block. Defaults to the empty
+    /// default-deny set; a manifest that omits the block gets
+    /// `Capabilities::default()` which keeps every host-implemented
+    /// interface unlinked from the per-plugin linker.
+    #[serde(default)]
+    pub capabilities: PluginCapabilities,
+    /// `[runtimes.policy]` sub-block. Only `kind = "process"`
+    /// honours it (PLUGIN-PROCESS.md § Manifest): supervisor
+    /// timeouts, circuit-breaker thresholds, opt-in retry cooldown.
+    /// Builtin and wasm flavours reject every field
+    /// (`deny_unknown_fields` on the empty subtype `()` keeps the
+    /// rejection structural rather than a side check).
+    #[serde(default)]
+    pub policy: PluginRuntimePolicy,
+}
+
+/// Runtime flavour discriminant. The doc allows three kinds in
+/// v0.1: `builtin`, `wasm`, and the reserved-but-not-implemented
+/// `process`. Strict-validate per `PLUGIN-WASM.md § Manifest
+/// extension`: unknown values are a parse error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginRuntimeKind {
+    Builtin,
+    Wasm,
+    /// Reserved for PLUGIN-PROCESS.md item 11; the manifest parser
+    /// accepts the value so a future plugin can declare it without
+    /// breaking, but the registry rejects it at load time since no
+    /// host adapter ships in this stage. Manifest-only seam per the
+    /// job spec.
+    Process,
+}
+
+/// `[runtimes.capabilities]` block. Mirrors the doc's grant
+/// vocabulary one-for-one. Every field defaults to the empty /
+/// false default-deny value; the host crate's
+/// `codeless_plugin_host_wasm::Capabilities` is the typed mirror.
+///
+/// Limits like `fuel`, `memory_max_bytes`, `deadline_ms` are
+/// **deliberately absent** here per OQ-WASM-5: the plugin manifest
+/// cannot enlarge its own sandbox. The codeless `config.toml`
+/// `[plugins.<id>]` block carries those overrides, and a plugin
+/// `[runtimes.capabilities]` block that tries to set any of them
+/// trips `deny_unknown_fields` -> manifest parse error.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginCapabilities {
+    /// Host filesystem path prefixes the plugin's
+    /// `codeless:fs/probe.read-file` host implementation may open.
+    /// Empty -> the interface is not linked at all (default-deny);
+    /// a non-empty list links the interface and the host
+    /// implementation gates each requested path against it.
+    #[serde(default)]
+    pub fs: Vec<String>,
+    /// Outbound-HTTP grants. Reserved for the future `codeless:
+    /// http/client` interface; today any non-empty value parses
+    /// successfully but no host implementation backs it.
+    #[serde(default)]
+    pub http: Vec<String>,
+    /// Whether the plugin may import `wasi:clocks/wall-clock`.
+    /// Stored as an explicit bool because the doc treats it as a
+    /// single switch, not a list.
+    #[serde(default)]
+    pub wall_clock: bool,
+    /// Attachment scopes. Accepted values: `"read"` and `"write"`.
+    /// The host's
+    /// `codeless_plugin_host_wasm::Capabilities::attachments_*`
+    /// fields are derived from this list; an empty list keeps the
+    /// `codeless:attachments/store` interface out of the linker
+    /// entirely.
+    #[serde(default)]
+    pub attachments: Vec<String>,
+}
+
+/// `[runtimes.policy]` sub-block. The process flavour's supervisor
+/// reads these knobs; builtin and wasm reject them at validate-time
+/// (kind-specific block rule). Duration fields accept the doc shape
+/// (`"5s"`, `"100ms"`, `"2m"`) and parse into `std::time::Duration`
+/// at manifest-load. Numeric fields keep raw integers. The fields
+/// are individually optional so a manifest may declare the block
+/// and omit values it wants supervisor defaults for; an entirely
+/// absent `[runtimes.policy]` yields `PluginRuntimePolicy::default()`,
+/// indistinguishable from "all defaults".
+///
+/// `failed_cooldown` is a TOML sum-type: literal `false` disables
+/// the cooldown ("Failed is sticky", the doc's default), a duration
+/// string switches to "retry forever with this cooldown".
+/// `deny_unknown_fields` keeps a misspelt knob from silently being
+/// the supervisor's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginRuntimePolicy {
+    #[serde(default)]
+    pub socket_ready_timeout: Option<String>,
+    #[serde(default)]
+    pub health_interval: Option<String>,
+    #[serde(default)]
+    pub failure_threshold: Option<u32>,
+    #[serde(default)]
+    pub failure_window: Option<String>,
+    #[serde(default)]
+    pub failed_cooldown: Option<PluginFailedCooldown>,
+}
+
+/// TOML sum-type for `failed_cooldown`. The PLUGIN-PROCESS.md
+/// example uses literal `false` for the default (sticky-Failed)
+/// case and a duration string (`"60s"`) for the headless-retry
+/// case. `#[serde(untagged)]` is what makes TOML accept either
+/// shape against the same field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PluginFailedCooldown {
+    /// `false` -> the supervisor keeps `Failed` sticky; an
+    /// operator must call `enable()` to retry. The doc's default.
+    /// A literal `true` is not meaningful (a `true` cooldown is
+    /// "retry instantly", which is the absence of a cooldown);
+    /// validated below.
+    Disabled(bool),
+    /// Duration string. Validated via `parse_duration` at
+    /// manifest-load.
+    After(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +466,124 @@ pub enum ManifestError {
     DuplicatePersona(String),
     #[error("no personas declared in plugin.toml")]
     NoPersonas,
+    /// Per `PLUGIN-WASM.md § Manifest extension`: a plugin may
+    /// declare at most one active runtime per server process. If a
+    /// manifest ships both a `builtin` and a `wasm` block, codeless
+    /// config picks one at server start -- but the manifest itself
+    /// must not encode the ambiguity. Two entries of the same kind
+    /// is also a flat error.
+    /// Per `PLUGIN-WASM.md § Manifest extension`: a plugin may
+    /// ship more than one `[[runtimes]]` entry (e.g. both a
+    /// `builtin` crate and a `wasm` artefact), but each `kind` may
+    /// appear at most once -- the codeless config picks the active
+    /// runtime by kind, not by ordinal position.
+    #[error("plugin runtime kind `{0:?}` appears more than once in `[[runtimes]]`")]
+    DuplicateRuntimeKind(PluginRuntimeKind),
+    /// `[runtimes.capabilities] attachments` accepts only `"read"`
+    /// and `"write"`. Anything else is a manifest parse error.
+    #[error(
+        "runtime capabilities.attachments[{index}] = `{value}` is not one of \"read\" / \"write\""
+    )]
+    BadAttachmentsScope { index: usize, value: String },
+    /// The `process` runtime kind is a manifest-only seam in v0.1
+    /// (no host adapter ships). A plugin that declares it loads
+    /// successfully at parse time -- so the operator gets a clear
+    /// "this plugin would need a process runtime" signal from
+    /// `codeless plugin info` -- but the registry refuses to wire
+    /// it up. Surfaced here so a future `load_plugin` can return
+    /// it without manifest-parse changes.
+    #[error(
+        "plugin runtime `process` is reserved (PLUGIN-PROCESS.md); v0.1 ships no host adapter"
+    )]
+    ProcessRuntimeReserved,
+    /// Kind-specific block validation: a `[[runtimes]]` entry of
+    /// the given kind declared a field that does not apply to it
+    /// (e.g. `binary` on `kind = "builtin"`). The doc lists which
+    /// fields each kind accepts; mixing them is a manifest error,
+    /// not a silent ignore -- the substrate registry treats the
+    /// manifest as the canonical declaration of intent.
+    #[error(
+        "runtime kind `{kind:?}` cannot carry field `{field}`; \
+         see PLUGIN-WASM.md / PLUGIN-PROCESS.md `[[runtimes]]` shape"
+    )]
+    RuntimeFieldNotApplicable {
+        kind: PluginRuntimeKind,
+        field: &'static str,
+    },
+    /// Kind-specific block validation: a `[[runtimes]]` entry of
+    /// the given kind is missing a field that is required for it
+    /// (e.g. `binary` on `kind = "process"`).
+    #[error(
+        "runtime kind `{kind:?}` requires field `{field}`; \
+         see PLUGIN-WASM.md / PLUGIN-PROCESS.md `[[runtimes]]` shape"
+    )]
+    RuntimeFieldMissing {
+        kind: PluginRuntimeKind,
+        field: &'static str,
+    },
+    /// `[runtimes.policy]` duration string failed to parse. The
+    /// supervisor reads durations as `<integer><unit>` with units
+    /// `ms`, `s`, `m`. Anything else is a manifest error rather
+    /// than a runtime surprise.
+    #[error("runtime policy field `{field}` = `{value}` is not a valid duration ({reason})")]
+    BadRuntimePolicyDuration {
+        field: &'static str,
+        value: String,
+        reason: &'static str,
+    },
+    /// `[runtimes.policy] failed_cooldown = true` is meaningless
+    /// (a `true` cooldown is "retry instantly", indistinguishable
+    /// from no cooldown). The PLUGIN-PROCESS.md example uses
+    /// literal `false` for sticky-Failed or a duration string for
+    /// headless retry; nothing else is accepted.
+    #[error(
+        "runtime policy `failed_cooldown` accepts `false` or a duration string \
+         (e.g. \"60s\"); `true` is not meaningful"
+    )]
+    BadFailedCooldownLiteral,
+    /// Cross-cutting: `[runtimes.policy]` only applies to
+    /// `kind = "process"`. Builtin / wasm entries that declare it
+    /// fail here so the manifest cannot pretend to configure a
+    /// supervisor that does not exist for that flavour.
+    #[error(
+        "runtime kind `{0:?}` does not honour `[runtimes.policy]`; \
+         policy applies to `kind = \"process\"` only"
+    )]
+    RuntimePolicyNotApplicable(PluginRuntimeKind),
+    /// PLUGIN-MCP.md § Manifest: tool ids in `[[contributes.mcp.tools]]`
+    /// must be unique within the plugin. Two entries staking the same
+    /// `id` would otherwise be silently de-duplicated by the MCP
+    /// listing, which is the kind of "silent drop" the rest of the
+    /// substrate is designed to avoid.
+    #[error("contributes.mcp.tools[{0}]: duplicate id `{1}` in the plugin manifest")]
+    DuplicateMcpToolId(usize, String),
+    /// PLUGIN-MCP.md § Manifest: tool ids share the `[a-z_][a-z0-9_]*`
+    /// shape the rest of the substrate enforces -- the MCP server
+    /// exposes the contribution as `<plugin_id>.<id>`, and the
+    /// codeless-tools registry rule (substrate doc OQ-PS-4) is that
+    /// every id passes the same shape check.
+    #[error("contributes.mcp.tools[{index}].id `{id}` is invalid: {reason}")]
+    InvalidMcpToolId {
+        index: usize,
+        id: String,
+        reason: &'static str,
+    },
+    /// PLUGIN-MCP.md § Manifest table: `dispatch.kind = "rest_proxy"`
+    /// declares a `method` that must be uppercase HTTP. A typo
+    /// (`"get"`) would otherwise survive into the dispatcher.
+    #[error(
+        "contributes.mcp.tools[{0}]: dispatch.method `{1}` must be an uppercase HTTP method \
+         (GET, POST, PUT, PATCH, DELETE)"
+    )]
+    BadMcpDispatchMethod(usize, String),
+    /// PLUGIN-MCP.md § Resources: `backing = "plugin_table"` requires
+    /// a `table` field, and `backing = "rest_get"` requires a `path`.
+    #[error("contributes.mcp.resources[{index}]: backing `{backing:?}` requires field `{field}`")]
+    McpResourceFieldMissing {
+        index: usize,
+        backing: McpResourceBacking,
+        field: &'static str,
+    },
 }
 
 /// On-disk TOML shape. The public manifest layers parsed-and-validated
@@ -159,6 +599,10 @@ struct OnDisk {
     migrations: Option<MigrationsDir>,
     #[serde(default)]
     data: Option<DataDir>,
+    #[serde(default, rename = "runtimes")]
+    runtimes: Vec<PluginRuntime>,
+    #[serde(default)]
+    contributes: PluginContributes,
 }
 
 impl PluginManifest {
@@ -204,11 +648,33 @@ impl PluginManifest {
             }
         }
 
+        let mut seen_kinds = std::collections::HashSet::new();
+        for runtime in &parsed.runtimes {
+            if !seen_kinds.insert(runtime.kind) {
+                return Err(ManifestError::DuplicateRuntimeKind(runtime.kind));
+            }
+            validate_runtime_kind_block(runtime)?;
+            for (idx, scope) in runtime.capabilities.attachments.iter().enumerate() {
+                if scope != "read" && scope != "write" {
+                    return Err(ManifestError::BadAttachmentsScope {
+                        index: idx,
+                        value: scope.clone(),
+                    });
+                }
+            }
+        }
+
+        if let Some(mcp) = parsed.contributes.mcp.as_ref() {
+            validate_mcp_block(mcp)?;
+        }
+
         Ok(Self {
             plugin: parsed.plugin,
             personas: parsed.personas,
             migrations: parsed.migrations.unwrap_or_default(),
             data: parsed.data.unwrap_or_default(),
+            runtimes: parsed.runtimes,
+            contributes: parsed.contributes,
             root,
         })
     }
@@ -231,6 +697,279 @@ impl PluginManifest {
             None => rel.to_path_buf(),
         }
     }
+}
+
+/// Kind-specific block validator. Builtin accepts `crate` and no
+/// other kind-specific fields; wasm accepts `artefact` and no
+/// other; process accepts `binary` (required) plus an optional
+/// `[runtimes.policy]` block. Anything else trips an error rather
+/// than a silent ignore -- a manifest that declares `binary` under
+/// `kind = "builtin"` would otherwise leave the operator wondering
+/// why their plugin won't spawn.
+fn validate_runtime_kind_block(runtime: &PluginRuntime) -> Result<(), ManifestError> {
+    let policy_empty = runtime.policy == PluginRuntimePolicy::default();
+    match runtime.kind {
+        PluginRuntimeKind::Builtin => {
+            if runtime.crate_name.is_none() {
+                return Err(ManifestError::RuntimeFieldMissing {
+                    kind: runtime.kind,
+                    field: "crate",
+                });
+            }
+            if runtime.artefact.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "artefact",
+                });
+            }
+            if runtime.binary.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "binary",
+                });
+            }
+            if !policy_empty {
+                return Err(ManifestError::RuntimePolicyNotApplicable(runtime.kind));
+            }
+        }
+        PluginRuntimeKind::Wasm => {
+            if runtime.artefact.is_none() {
+                return Err(ManifestError::RuntimeFieldMissing {
+                    kind: runtime.kind,
+                    field: "artefact",
+                });
+            }
+            if runtime.crate_name.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "crate",
+                });
+            }
+            if runtime.binary.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "binary",
+                });
+            }
+            if !policy_empty {
+                return Err(ManifestError::RuntimePolicyNotApplicable(runtime.kind));
+            }
+        }
+        PluginRuntimeKind::Process => {
+            if runtime.binary.is_none() {
+                return Err(ManifestError::RuntimeFieldMissing {
+                    kind: runtime.kind,
+                    field: "binary",
+                });
+            }
+            if runtime.crate_name.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "crate",
+                });
+            }
+            if runtime.artefact.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "artefact",
+                });
+            }
+            // Process accepts a capabilities block (attachments
+            // read/write is the only reverse interface in the
+            // process v0.1 wire shape -- see PLUGIN-PROCESS.md
+            // § Capability surface); validation of attachment
+            // scopes happens in the shared loop above.
+            validate_policy(&runtime.policy)?;
+        }
+    }
+    Ok(())
+}
+
+/// Parse-time validation of the `[runtimes.policy]` block. The
+/// parsed values are not stored -- callers re-parse via
+/// [`PluginRuntimePolicy::resolve`] when they need typed durations
+/// -- but running the parse here means a malformed `"5seconds"`
+/// fails at `load_plugin`, not at the first supervisor tick.
+fn validate_policy(policy: &PluginRuntimePolicy) -> Result<(), ManifestError> {
+    if let Some(v) = &policy.socket_ready_timeout {
+        parse_duration("socket_ready_timeout", v)?;
+    }
+    if let Some(v) = &policy.health_interval {
+        parse_duration("health_interval", v)?;
+    }
+    if let Some(v) = &policy.failure_window {
+        parse_duration("failure_window", v)?;
+    }
+    if let Some(cooldown) = &policy.failed_cooldown {
+        match cooldown {
+            PluginFailedCooldown::Disabled(false) => {}
+            PluginFailedCooldown::Disabled(true) => {
+                return Err(ManifestError::BadFailedCooldownLiteral);
+            }
+            PluginFailedCooldown::After(s) => {
+                parse_duration("failed_cooldown", s)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Minimal duration parser for `<integer><unit>` with `ms`, `s`,
+/// `m`. Modeled on the doc's examples (`"5s"`, `"10s"`, `"60s"`)
+/// and intentionally narrow: keeping the substrate manifest
+/// duration grammar tiny means the operator's mental model of
+/// "what works" matches the parser one-for-one, with no surprises
+/// hiding inside humantime's broader accept-set. A future bump to
+/// humantime can subsume this without manifest changes.
+pub fn parse_duration(field: &'static str, value: &str) -> Result<Duration, ManifestError> {
+    let trimmed = value.trim();
+    let (digits, unit) = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| trimmed.split_at(i))
+        .unwrap_or((trimmed, ""));
+    if digits.is_empty() {
+        return Err(ManifestError::BadRuntimePolicyDuration {
+            field,
+            value: value.into(),
+            reason: "missing numeric prefix",
+        });
+    }
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| ManifestError::BadRuntimePolicyDuration {
+            field,
+            value: value.into(),
+            reason: "numeric prefix too large",
+        })?;
+    let d = match unit.trim() {
+        "ms" => Duration::from_millis(n),
+        "s" => Duration::from_secs(n),
+        "m" => Duration::from_secs(n * 60),
+        "" => {
+            return Err(ManifestError::BadRuntimePolicyDuration {
+                field,
+                value: value.into(),
+                reason: "missing unit (expected ms / s / m)",
+            });
+        }
+        _ => {
+            return Err(ManifestError::BadRuntimePolicyDuration {
+                field,
+                value: value.into(),
+                reason: "unknown unit (expected ms / s / m)",
+            });
+        }
+    };
+    Ok(d)
+}
+
+impl PluginRuntimePolicy {
+    /// Resolve the raw manifest strings into the typed durations
+    /// the supervisor consumes. Returns `None` for any field the
+    /// manifest omits; the supervisor substitutes its own defaults
+    /// (PLUGIN-PROCESS.md `HostPolicy::*` defaults). Pure function;
+    /// failures here would have been caught at manifest parse.
+    pub fn resolve(&self) -> ResolvedPluginRuntimePolicy {
+        ResolvedPluginRuntimePolicy {
+            socket_ready_timeout: self
+                .socket_ready_timeout
+                .as_deref()
+                .map(|v| parse_duration("socket_ready_timeout", v).expect("validated at parse")),
+            health_interval: self
+                .health_interval
+                .as_deref()
+                .map(|v| parse_duration("health_interval", v).expect("validated at parse")),
+            failure_threshold: self.failure_threshold,
+            failure_window: self
+                .failure_window
+                .as_deref()
+                .map(|v| parse_duration("failure_window", v).expect("validated at parse")),
+            failed_cooldown: match &self.failed_cooldown {
+                None | Some(PluginFailedCooldown::Disabled(_)) => None,
+                Some(PluginFailedCooldown::After(s)) => {
+                    Some(parse_duration("failed_cooldown", s).expect("validated at parse"))
+                }
+            },
+        }
+    }
+}
+
+/// Typed mirror of [`PluginRuntimePolicy`]. The supervisor reads
+/// this; the manifest writes the string shape. Splitting raw vs
+/// resolved lets the manifest still round-trip through Serialize
+/// without losing operator-typed `"5s"` form.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedPluginRuntimePolicy {
+    pub socket_ready_timeout: Option<Duration>,
+    pub health_interval: Option<Duration>,
+    pub failure_threshold: Option<u32>,
+    pub failure_window: Option<Duration>,
+    pub failed_cooldown: Option<Duration>,
+}
+
+/// Strict-validate `[contributes.mcp]`. Tool ids match the same
+/// `[a-z_][a-z0-9_]*` shape every other id in the substrate uses;
+/// duplicates inside one plugin are rejected; `rest_proxy.method` must
+/// be uppercase HTTP. Cross-plugin parity (the `tool_id` is a
+/// registered tool, the `path` is a registered REST route) is the
+/// registry's job -- see `super::mcp::check_parity`. Splitting the
+/// concerns matches the manifest module's "no I/O" contract.
+fn validate_mcp_block(mcp: &PluginMcp) -> Result<(), ManifestError> {
+    let mut seen_ids = std::collections::HashSet::new();
+    for (idx, t) in mcp.tools.iter().enumerate() {
+        if let Err(reason) = validate_mcp_id(&t.id) {
+            return Err(ManifestError::InvalidMcpToolId {
+                index: idx,
+                id: t.id.clone(),
+                reason,
+            });
+        }
+        if !seen_ids.insert(t.id.clone()) {
+            return Err(ManifestError::DuplicateMcpToolId(idx, t.id.clone()));
+        }
+        if let PluginMcpDispatch::RestProxy { method, .. } = &t.dispatch {
+            if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+                return Err(ManifestError::BadMcpDispatchMethod(idx, method.clone()));
+            }
+        }
+    }
+    for (idx, r) in mcp.resources.iter().enumerate() {
+        match r.backing {
+            McpResourceBacking::PluginTable if r.table.is_none() => {
+                return Err(ManifestError::McpResourceFieldMissing {
+                    index: idx,
+                    backing: r.backing,
+                    field: "table",
+                });
+            }
+            McpResourceBacking::RestGet if r.path.is_none() => {
+                return Err(ManifestError::McpResourceFieldMissing {
+                    index: idx,
+                    backing: r.backing,
+                    field: "path",
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_mcp_id(id: &str) -> Result<(), &'static str> {
+    if id.is_empty() {
+        return Err("empty");
+    }
+    let mut chars = id.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return Err("must start with a lowercase ASCII letter or underscore");
+    }
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return Err("only lowercase ASCII letters, digits, and underscore");
+        }
+    }
+    Ok(())
 }
 
 fn validate_plugin_id(id: &str) -> Result<(), ManifestError> {
@@ -352,6 +1091,223 @@ default_attachments_policy  = "inline-thread-scoped"
         );
         let err = PluginManifest::from_str(&bad, None).unwrap_err();
         assert!(matches!(err, ManifestError::DuplicatePersona(_)));
+    }
+
+    #[test]
+    fn parses_runtimes_block_with_capabilities() {
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"wasm/notes.wasm\"\n\
+             [runtimes.capabilities]\n\
+             attachments = [\"read\", \"write\"]\n\
+             fs = [\"/etc/codeless/\"]\n\
+             http = []\n\
+             wall_clock = false\n",
+        );
+        let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
+        assert_eq!(m.runtimes.len(), 1);
+        let r = &m.runtimes[0];
+        assert_eq!(r.kind, PluginRuntimeKind::Wasm);
+        assert_eq!(
+            r.artefact.as_deref(),
+            Some(std::path::Path::new("wasm/notes.wasm"))
+        );
+        assert_eq!(r.capabilities.attachments, vec!["read", "write"]);
+        assert_eq!(r.capabilities.fs, vec!["/etc/codeless/".to_string()]);
+        assert!(!r.capabilities.wall_clock);
+    }
+
+    #[test]
+    fn defaults_runtimes_block_to_empty_default_deny() {
+        // A manifest without `[[runtimes]]` parses cleanly -- the
+        // pre-substrate-runtimes notes plugin shipped that shape and
+        // we keep it loadable. Default-deny is "no runtimes
+        // declared", which the registry treats as builtin in stage
+        // 13's hookup.
+        let m = PluginManifest::from_str(SAMPLE, None).expect("valid manifest");
+        assert!(m.runtimes.is_empty());
+    }
+
+    #[test]
+    fn rejects_unknown_capability_field() {
+        // OQ-WASM-5: the plugin manifest cannot enlarge its sandbox.
+        // `fuel` belongs on the codeless config, not the manifest,
+        // so a `[runtimes.capabilities] fuel = ...` entry trips
+        // `deny_unknown_fields` here.
+        let bad = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"x.wasm\"\n\
+             [runtimes.capabilities]\nfuel = 1\n",
+        );
+        let err = PluginManifest::from_str(&bad, None).unwrap_err();
+        assert!(matches!(err, ManifestError::Parse(_)));
+    }
+
+    #[test]
+    fn rejects_bad_attachments_scope() {
+        let bad = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"x.wasm\"\n\
+             [runtimes.capabilities]\nattachments = [\"admin\"]\n",
+        );
+        let err = PluginManifest::from_str(&bad, None).unwrap_err();
+        assert!(matches!(err, ManifestError::BadAttachmentsScope { .. }));
+    }
+
+    #[test]
+    fn rejects_duplicate_runtime_kind() {
+        let bad = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"a.wasm\"\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"b.wasm\"\n",
+        );
+        let err = PluginManifest::from_str(&bad, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::DuplicateRuntimeKind(PluginRuntimeKind::Wasm),
+        ));
+    }
+
+    #[test]
+    fn process_kind_parses_for_future_seam() {
+        // PLUGIN-PROCESS.md item 11 is design-only in this job; the
+        // manifest still parses so a future plugin can declare it.
+        // The registry refuses to wire it up until item 11 ships.
+        let extended =
+            format!("{SAMPLE}\n[[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n",);
+        let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
+        assert_eq!(m.runtimes[0].kind, PluginRuntimeKind::Process);
+        assert_eq!(
+            m.runtimes[0].binary.as_deref(),
+            Some(std::path::Path::new("bin/notes"))
+        );
+    }
+
+    #[test]
+    fn process_kind_accepts_policy_block_with_durations_and_threshold() {
+        // PLUGIN-PROCESS.md § Manifest: the policy knobs are
+        // optional individually; the parser validates duration
+        // strings up-front so a misspelt `"5seconds"` fails at
+        // manifest-load, not at the first supervisor tick.
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n\
+             [runtimes.policy]\n\
+             socket_ready_timeout = \"5s\"\n\
+             health_interval      = \"10s\"\n\
+             failure_threshold    = 3\n\
+             failure_window       = \"60s\"\n\
+             failed_cooldown      = false\n",
+        );
+        let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
+        let resolved = m.runtimes[0].policy.resolve();
+        assert_eq!(resolved.socket_ready_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(resolved.health_interval, Some(Duration::from_secs(10)));
+        assert_eq!(resolved.failure_threshold, Some(3));
+        assert_eq!(resolved.failure_window, Some(Duration::from_secs(60)));
+        assert_eq!(resolved.failed_cooldown, None);
+    }
+
+    #[test]
+    fn process_kind_policy_failed_cooldown_accepts_duration_string() {
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n\
+             [runtimes.policy]\nfailed_cooldown = \"60s\"\n",
+        );
+        let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
+        assert_eq!(
+            m.runtimes[0].policy.resolve().failed_cooldown,
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn process_kind_rejects_failed_cooldown_true() {
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n\
+             [runtimes.policy]\nfailed_cooldown = true\n",
+        );
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(err, ManifestError::BadFailedCooldownLiteral));
+    }
+
+    #[test]
+    fn process_kind_rejects_bad_duration_string() {
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n\
+             [runtimes.policy]\nhealth_interval = \"5seconds\"\n",
+        );
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::BadRuntimePolicyDuration { field, .. } if field == "health_interval"
+        ));
+    }
+
+    #[test]
+    fn process_kind_rejects_missing_binary() {
+        let extended = format!("{SAMPLE}\n[[runtimes]]\nkind = \"process\"\n");
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::RuntimeFieldMissing {
+                kind: PluginRuntimeKind::Process,
+                field: "binary",
+            },
+        ));
+    }
+
+    #[test]
+    fn builtin_kind_rejects_binary_field() {
+        // Kind-specific block validation: a `binary` field on a
+        // builtin entry would silently be ignored by a permissive
+        // parser; the substrate-doc rule is to fail so the operator
+        // sees the mistake at boot rather than at first call.
+        let extended = format!(
+            "{SAMPLE}\n[[runtimes]]\nkind = \"builtin\"\ncrate = \"x\"\nbinary = \"bin/y\"\n",
+        );
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::RuntimeFieldNotApplicable {
+                kind: PluginRuntimeKind::Builtin,
+                field: "binary",
+            },
+        ));
+    }
+
+    #[test]
+    fn wasm_kind_rejects_policy_block() {
+        // `[runtimes.policy]` applies to process only; declaring
+        // it on a wasm runtime means the manifest pretends to
+        // configure a supervisor that does not exist for that
+        // flavour.
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"x.wasm\"\n\
+             [runtimes.policy]\nhealth_interval = \"10s\"\n",
+        );
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::RuntimePolicyNotApplicable(PluginRuntimeKind::Wasm),
+        ));
+    }
+
+    #[test]
+    fn builtin_kind_requires_crate_field() {
+        let extended = format!("{SAMPLE}\n[[runtimes]]\nkind = \"builtin\"\n");
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::RuntimeFieldMissing {
+                kind: PluginRuntimeKind::Builtin,
+                field: "crate",
+            },
+        ));
     }
 
     #[test]

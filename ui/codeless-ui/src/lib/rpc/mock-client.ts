@@ -1191,6 +1191,13 @@ export class MockRpcClient implements RpcClient {
         return null as RpcResultOf<M>;
       }
 
+      case "list_plugins":
+        // The mock fixture has no plugins registered. Host wiring
+        // exercises the boot path and every `<PluginSlot/>` renders
+        // its fallback. Once a fixture plugin gets seeded the result
+        // will mirror the server projection.
+        return { plugins: [] } as RpcResultOf<M>;
+
       default:
         throw new RpcError("internal", `mock: unhandled method ${method}`);
     }

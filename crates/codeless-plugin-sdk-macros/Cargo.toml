@@ -1,0 +1,19 @@
+[package]
+name = "codeless-plugin-sdk-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Proc-macros for codeless-plugin-sdk -- the #[derive(Tool)] derive that emits ToolMeta constants from a #[tool(...)] attribute. Companion to codeless-plugin-sdk; not used directly by plugin authors."
+
+[lints]
+workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
