@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { CommonChat } from "@/modules/chat";
+import { PluginSlot } from "@/lib/plugin-host";
 import { useAssistantFocus } from "./focusStore";
 
 // Stage-6 `/assistant` surface. Two-pane layout: a thread-list rail on
@@ -210,6 +211,28 @@ export function AssistantPage() {
           </div>
         )}
       </section>
+
+      {/*
+        Plugin UI federation slot — DOCS/plugins/PLUGIN-UI-FEDERATION.md
+        § Slot vocabulary, row "assistant-panel". Mounted unconditionally
+        at the right of the Assistant page; the slot renders nothing
+        when no plugin contributes to it (R6 fallback path). When the
+        active thread's persona belongs to a plugin and that plugin's
+        manifest declares an `assistant-panel` exposed module, the SDK
+        lazy-loads it inside a per-contributor error boundary so a
+        misbehaving plugin can never blank the chat pane.
+
+        `threadId` is forwarded as a prop alongside the SDK's
+        `slotArg` — the plugin's `AssistantPanel` author API is
+        documented alongside the SDK.
+      */}
+      {selected && (
+        <PluginSlot
+          id="assistant-panel"
+          threadId={selected.id}
+          fallback={null}
+        />
+      )}
     </div>
   );
 }

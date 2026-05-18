@@ -35,6 +35,9 @@ importers:
       '@ai-sdk/xai':
         specifier: ^3.0.83
         version: 3.0.83(zod@4.3.6)
+      '@codeless/plugin-ui-sdk':
+        specifier: workspace:*
+        version: link:packages/plugin-ui-sdk
       '@codemirror/autocomplete':
         specifier: ^6.20.1
         version: 6.20.1
