@@ -1,0 +1,12 @@
+name: todos-smoketest
+goal: |
+  Two-stage smoke test exercising the todo-event pipeline shipped by
+  todos-recorder-and-gate. Each stage's trio (checks / docs / git)
+  is runtime-injected and should surface as three todo rows nested
+  under the stage's task in the Stages overview tab. The Claude
+  runner may additionally emit its own TodoWrite tool calls that
+  appear above the trio.
+
+stages:
+  - say hello in a fresh file under /tmp and confirm it
+  - count to three out loud and confirm
