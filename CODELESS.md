@@ -137,6 +137,69 @@ captured in SCOPE.md. Keep entries short; if something needs more than
 a paragraph, write a `DOCS/` page in the parent workspace and link to
 it.
 
+- **2026-05-18** — `plugin-substrate-runtimes` job landed on
+  `codeless/plugin-substrate-runtimes` (stages 1–15). Three plugin
+  surfaces are now in the binary:
+  - **WASM runtime flavour (substrate item 9).** A plugin's tools
+    can ship as a WASI-p2 component loaded by `codeless-plugin-host-
+    wasm` (Wasmtime 30, per-call instantiation). One Rust source
+    compiles to both builtin and WASM through `codeless-plugin-sdk`
+    + the schemars-driven `#[derive(Tool)]` macro. The WIT ABI
+    lives in `codeless-tool-wit/wit/tool.wit` with the
+    `wit-bindgen` bindings checked in (OQ-WASM-2). The capability
+    sandbox is WASI default-deny; `[runtimes.capabilities]` in
+    `plugin.toml` is the only way to widen it, and the
+    `codeless:attachments/store@0.1.0` host interface gives
+    sandboxed attachment R/W without ambient FS. Fuel / memory /
+    wall-clock caps come from `HostPolicy`; plugin manifests
+    cannot self-raise them (OQ-WASM-5). WASM kv (OQ-WASM-3) and
+    hot reload are deferred. Coverage: `plugin_substrate_e2e::
+    notes_plugin_loads_and_seeds_persona_addressable_by_thread`
+    parameterised over builtin + WASM rows; `plugin_wasm_e2e::{
+    wasm_plugin_cannot_open_host_file, wasm_plugin_attachment_
+    round_trip, wasm_plugin_respects_fuel_cap}`.
+  - **Module-federated plugin UI (substrate item 10, R6).**
+    `ui/codeless-ui/packages/plugin-ui-sdk/` is a rubix-ported
+    in-tree fork of `extension-ui-sdk`; it owns the slot
+    vocabulary (`assistant-panel`, `persona-picker`,
+    `tool-result:<tool_id>`, `settings-page:<plugin_id>`), the
+    `PluginSlot` React component, the rsbuild shared-singleton
+    pin (React, zustand, tanstack-query, `RpcClient`), and the
+    R6 ESLint config rejecting `@tauri-apps/*` and direct
+    `fetch(...)` to the codeless server. The host shell calls
+    `rpc.plugins.list()` at boot, registers each enabled remote,
+    and mounts `<PluginSlot id=…/>` at the resolved sites with a
+    fallback when no contributor is registered.
+    `codeless-server` exposes bearer-authed `GET /plugins` and a
+    `ServeDir`-rooted `GET /plugins/<id>/ui/*`. The `notes` plugin
+    ships an `AssistantPanel` remote against `@codeless/plugin-
+    ui-sdk/rsbuild-shared`; desktop parity is hand-verified.
+    Mobile (iOS/Android) MF host wiring is deferred. Coverage:
+    `plugin_ui_e2e::{host_loads_plugin_remote_and_mounts_assistant_
+    panel, mismatched_react_fails_loudly, r6_eslint_rejects_
+    forbidden_imports}`.
+  - **MCP contribution surface (PLUGIN-MCP.md).** `[contributes.mcp]`
+    parses with strict validation; the two real dispatch kinds are
+    `tool_call` (against the codeless tool registry) and
+    `rest_proxy` (against a registered REST route). The load-time
+    parity check rejects a manifest whose `tool_id` or REST `path`
+    has no twin; the audit log carries `plugin_id` + `dispatch`;
+    `mcp.plugin_tools_enabled = false` is the global off-switch.
+    `mcp_forward` is deferred to v0.2 — a plugin declaring it
+    loads `Failed` with `"mcp_forward not yet supported"` (OQ-MCP-1).
+    Coverage: `plugin_mcp_e2e::{tool_call_dispatch_round_trip,
+    parity_rule_rejects_missing_twin, plugin_tools_off_switch_
+    hides_listings}`.
+  - **Process runtime seam (substrate item 11).** `[[runtimes]] kind
+    = "process"` parses with its kind-specific block, but the gRPC
+    supervisor is not implemented; a plugin declaring `process`
+    loads `Failed` with `"process runtime not yet supported"`. The
+    two-phase scan lifted from rubix `extensions-host` is the
+    durable shape: validate every plugin manifest first, only
+    commit to the tool / persona / migration registries if every
+    one validates, so a partial failure cannot half-populate.
+    Coverage: `plugin_substrate_e2e::process_runtime_declared_today
+    _loads_failed_with_structured_reason`.
 - **2026-05-17** — Phase 5 design landed in
   [`../DOCS/SCOPE-TAURI-DESKTOP.md`](../DOCS/SCOPE-TAURI-DESKTOP.md).
   Implementation is *not yet* started; the doc spells out the

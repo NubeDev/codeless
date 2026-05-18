@@ -1,0 +1,40 @@
+[package]
+name = "codeless-tool-wit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codeless tool ABI (WIT) and committed wit-bindgen guest bindings. Versioned home of the load-bearing contract between WASM plugins and the host loader in codeless-plugin-host-wasm. Mobile-safe: the WIT-derived Rust types are pure data, the wit-bindgen guest glue compiles only on wasm32 targets, and no host runtime (wasmtime, tokio) is pulled in."
+
+[lints.rust]
+# The workspace `forbid(unsafe_code)` does not survive contact with
+# a wit-bindgen-generated guest bindings file: the CABI alloc glue
+# and `String::from_utf8_unchecked` lifts are inherently unsafe.
+# Downgraded to `deny` so the crate compiles and a stray hand-
+# written unsafe still trips review. Hand-written unsafe outside
+# `src/bindings.rs` is a review failure regardless of what the
+# linter says. See `src/lib.rs` for the rationale; mirrors the
+# rubix `extensions-sdk/src/wasm.rs` exception.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]
+# Guest-side wit-bindgen runtime. On host (non-wasm32) targets only
+# the pure data types in the generated bindings are reachable; the
+# WASM ABI glue is gated behind `#[cfg(target_arch = "wasm32")]` in
+# the generated file. Host code that needs *host* bindings calls
+# `wasmtime::component::bindgen!` against `wit/tool.wit` in
+# codeless-plugin-host-wasm -- that is a separate generator and does
+# not need this dep.
+wit-bindgen = { version = "0.57", default-features = false }
+
+[dev-dependencies]
+# Loads `wit/tool.wit` at test time so the smoke test catches a
+# malformed package definition before stage 4's host-side
+# `wasmtime::component::bindgen!` does. Doc-only check: the WIT
+# parser is authoritative on syntax; we don't run any plugin code
+# here.
+wit-parser = "0.249"

@@ -73,6 +73,10 @@ import type {
   ConfirmAssistantActionResult,
   CancelAssistantActionArgs,
   CancelAssistantActionResult,
+  ListPluginsResult,
+  PluginListEntry,
+  PluginUiContribution,
+  PluginUiExposeEntry,
 } from "./wire";
 import type {
   AttachWorkspaceArgs,
@@ -798,6 +802,16 @@ export interface RpcMethodMap {
   get_persona: { args: GetPersonaArgs; result: Persona };
   upsert_persona: { args: UpsertPersonaArgs; result: Persona };
   delete_persona: { args: DeletePersonaArgs; result: null };
+
+  // Plugin substrate — UI federation host wiring
+  // (DOCS/plugins/PLUGIN-UI-FEDERATION.md § Host wiring). Returns the
+  // enabled-plugin projection the host shell reads at boot to
+  // register MF remotes and resolve <PluginSlot/> contributors. The
+  // server-side implementation lands with the rest of the
+  // `[[runtimes]]` + `[contributes.ui]` manifest parsing; until then
+  // the host catches the "method not found" error and degrades to
+  // the empty list — every slot site renders its fallback.
+  list_plugins: { args: Record<string, never>; result: ListPluginsResult };
 }
 
 export type {
@@ -839,6 +853,10 @@ export type {
   ListJobMessagesResult,
   MessageId,
   PostJobMessageArgs,
+  ListPluginsResult,
+  PluginListEntry,
+  PluginUiContribution,
+  PluginUiExposeEntry,
 };
 
 // Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,

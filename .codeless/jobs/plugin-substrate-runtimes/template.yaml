@@ -13,6 +13,8 @@ goal: |
   The estimating plugin remains gated on substrate items 2 + 4 and is
   out of scope for this job.
 
+docs:
+  - CHAT.md
 stages:
   - "stage 1: resolve open questions (OQ-WASM-1, -2, -4, -5; OQ-MCP-1; OQ-UI-1; final v0.1 slot vocab) under SCOPE.md §Open questions and propagate the resolutions into the four plugin docs; no implementation"
   - "stage 2: scaffold codeless-plugin-sdk (mobile-safe) with the rubix-lifted compile_error! mutual-exclusion guard for native/wasm/process features, the ToolBehavior trait, the #[derive(Tool)] macro (schemars-driven), and the register! macro stub; the existing notes plugin keeps compiling unchanged via a thin shim"

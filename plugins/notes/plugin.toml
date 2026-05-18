@@ -25,3 +25,47 @@ dir = "migrations"
 
 [data]
 dir = "domains"
+
+# Substrate-runtimes stage 6 (PLUGIN-WASM.md § Manifest extension):
+# notes ships both flavours. Codeless config (`plugins.notes.runtime
+# = "wasm"`) picks the active one at server start; default is
+# `builtin` if available, else `wasm`. The capability set is empty
+# because the tool body returns the documented "wire-up pending"
+# error today; PS-ACCEPT lands the attachments/notes-table writer.
+# An empty capability set means the per-plugin linker (default-deny)
+# does not link `codeless:attachments/store` or `codeless:fs/probe`,
+# so the wasm build of this plugin can only export `tool` and reach
+# nothing else from the host.
+[[runtimes]]
+kind  = "builtin"
+crate = "codeless-plugin-notes"
+
+[[runtimes]]
+kind     = "wasm"
+artefact = "wasm/notes.wasm"
+
+[runtimes.capabilities]
+attachments = []
+fs          = []
+http        = []
+wall_clock  = false
+
+# Substrate-runtimes stage 14 (DOCS/plugins/PLUGIN-MCP.md): notes
+# contributes a single MCP tool dispatched via `tool_call` against
+# its own registered `notes.append`. The MCP server exposes it as
+# `notes.notes_append` so collisions across plugins are impossible
+# by construction (decision-locked item 1 of PLUGIN-MCP.md). The
+# description/schema files are stage-15 wiring -- this stage lands
+# the contribution surface and parity check, not the static-file
+# reader; the paths still validate.
+[contributes.mcp]
+enabled = true
+
+[[contributes.mcp.tools]]
+id              = "notes_append"
+title           = "Append a note via MCP"
+description_md  = "docs/mcp/notes_append.md"
+input_schema    = "schemas/notes_append_in.json"
+output_schema   = "schemas/notes_append_out.json"
+tier            = "write"
+dispatch        = { kind = "tool_call", tool_id = "notes.append" }

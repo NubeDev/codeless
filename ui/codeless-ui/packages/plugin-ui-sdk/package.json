@@ -1,0 +1,59 @@
+{
+  "name": "@codeless/plugin-ui-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stable, versioned SDK for codeless plugin UI authors. Forked from @rubix/extension-ui-sdk@a7fecef.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    },
+    "./mf": {
+      "import": "./src/mf.ts",
+      "types": "./src/mf.ts"
+    },
+    "./slots": {
+      "import": "./src/slots.ts",
+      "types": "./src/slots.ts"
+    },
+    "./registration": {
+      "import": "./src/registration.ts",
+      "types": "./src/registration.ts"
+    },
+    "./rsbuild-shared": {
+      "import": "./src/rsbuild-shared.ts",
+      "types": "./src/rsbuild-shared.ts"
+    },
+    "./eslint-config": {
+      "import": "./src/eslint-config.ts",
+      "types": "./src/eslint-config.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@codeless/ui-core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.0.0",
+    "jsdom": "^29.1.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.6",
+    "zustand": "^5.0.12"
+  }
+}

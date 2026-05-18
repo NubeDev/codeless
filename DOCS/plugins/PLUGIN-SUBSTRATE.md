@@ -374,7 +374,25 @@ green.
 
 ### 9. WASM plugin host (second runtime flavour)
 
-Status: **new**. Full design in [`PLUGIN-WASM.md`](./PLUGIN-WASM.md).
+Status: **landed (plugin-substrate-runtimes, stages 2–7).** Full
+design in [`PLUGIN-WASM.md`](./PLUGIN-WASM.md). `codeless-plugin-sdk`
+ships the mutually-exclusive flavour-feature guard, the
+`ToolBehavior` trait, and the `#[derive(Tool)]` schemars-driven macro
+(stage 2). `codeless-tool-wit` carries `tool.wit` + the
+checked-in `wit-bindgen` bindings (stage 3). `codeless-plugin-host-
+wasm` is a host-only Wasmtime + WASI-p2 component-model host with
+per-call instantiation and a `HostPolicy`-driven fuel / memory /
+wall-clock cap layer (stages 4 + 7). The capability sandbox is
+default-deny; `[runtimes.capabilities]` is the only way to widen it,
+and the `codeless:attachments/store@0.1.0` WIT interface lets
+plugins read/write attachments without ambient FS (stage 6). The
+`notes` plugin (item #0) compiles to both flavours from one source
+and `plugin_substrate_e2e::notes_plugin_loads_and_seeds_persona_
+addressable_by_thread` is parameterised over both (stage 5);
+`plugin_wasm_e2e::{wasm_plugin_cannot_open_host_file,
+wasm_plugin_attachment_round_trip, wasm_plugin_respects_fuel_cap}`
+pin sandbox + caps. WASM kv (OQ-WASM-3) and hot reload are out of
+v0.1.
 
 A plugin's tool implementations may ship as one or more `.wasm` files
 loaded by a Wasmtime-based host living in a new host-only crate
@@ -411,8 +429,27 @@ addressable_by_thread`) with the runtime flavour swapped.
 
 ### 10. Module-federated plugin UI (R6)
 
-Status: **new**. Full design in
-[`PLUGIN-UI-FEDERATION.md`](./PLUGIN-UI-FEDERATION.md).
+Status: **landed (plugin-substrate-runtimes, stages 8–12).** Full
+design in [`PLUGIN-UI-FEDERATION.md`](./PLUGIN-UI-FEDERATION.md).
+`ui/codeless-ui/packages/plugin-ui-sdk/` is forked in-tree from
+rubix's `extension-ui-sdk` (stage 8) and implements the slot
+vocabulary, the `PluginSlot` React component, the rsbuild shared-
+singleton pin (React + zustand + tanstack-query + `RpcClient`), and
+the R6 ESLint config rejecting `@tauri-apps/*` and direct
+`fetch(...)` to the codeless server (stage 9). The host shell calls
+`rpc.plugins.list()` at boot, registers each enabled remote at the
+declared MF entry, and mounts `<PluginSlot id=…/>` at the resolved
+sites with a fallback when no contributor exists (stage 10).
+`codeless-server` exposes `GET /plugins` (bearer-auth) reflecting the
+registry and `GET /plugins/<id>/ui/*` via a `ServeDir` rooted at the
+plugin's `ui/` subdir (stage 11). The `notes` plugin's `ui/` subtree
+builds an `AssistantPanel` remote against `@codeless/plugin-ui-sdk/
+rsbuild-shared` (stage 12); `plugin_ui_e2e::{host_loads_plugin_
+remote_and_mounts_assistant_panel, mismatched_react_fails_loudly,
+r6_eslint_rejects_forbidden_imports}` pin the contract. Desktop
+shell parity is verified by hand; mobile (iOS/Android) MF host
+wiring is out of v0.1 and listed under deferred items in the job
+handover.
 
 A plugin may contribute UI in addition to (or instead of) tools, via
 a Module Federation remote bundle. The host page registers the remote
@@ -439,11 +476,22 @@ code change beyond the generic MF loader.
 
 ### 11. Process plugin host (deferred, seam reserved)
 
-Status: **deferred**. Design lifted from rubix in
-[`PLUGIN-PROCESS.md`](./PLUGIN-PROCESS.md); landing waits until either
-(a) a polyglot authoring story is needed (Python/Go/TS plugins), or
-(b) a plugin needs crash isolation the WASM sandbox can't provide
-(long-running drivers, native deps).
+Status: **manifest seam landed (plugin-substrate-runtimes, stage 13);
+runtime deferred.** Design lifted from rubix in
+[`PLUGIN-PROCESS.md`](./PLUGIN-PROCESS.md); the gRPC supervisor lands
+later, blocked on (a) a polyglot authoring story (Python/Go/TS) or
+(b) a plugin needing crash isolation WASM can't provide (long-
+running drivers, native deps). The seam reserved today: the
+`plugin.toml` parser accepts `[[runtimes]] kind = "process"` with
+its kind-specific block, `[runtimes.capabilities]` and
+`[runtimes.policy]` validate, and a plugin declaring it loads in
+`Failed` with the structured reason `"process runtime not yet
+supported"` — same shape as `mcp_forward` (OQ-MCP-1). The two-phase
+scan lifted from rubix `extensions-host` (validate-all-then-commit)
+means that a partial failure across plugins cannot half-populate
+the tool / persona / migration registries. Pinned by
+`plugin_substrate_e2e::process_runtime_declared_today_loads_failed_
+with_structured_reason`.
 
 Reserving the seam now means `plugin.toml` accepts
 `[[runtimes]] kind = "process"` and the manifest parser strict-
@@ -568,10 +616,14 @@ The substrate is done when all of the following are true:
 
 Until all three are true, the estimating plugin does not start.
 
-### Status (stage PS-ACCEPT, 2026-05-17)
+### Status (stage PS-ACCEPT, 2026-05-17; updated 2026-05-18 for plugin-substrate-runtimes)
 
-Items 1, 3, 5, 6, 7, 8 are **complete**, with the load-bearing
-integration coverage living in:
+Items 1, 3, 5, 6, 7, 8, 9, 10 are **complete**, item 11 ships the
+manifest seam only (process runtime deferred), and the
+out-of-band MCP-contribution surface from
+[`PLUGIN-MCP.md`](./PLUGIN-MCP.md) is **complete** for the two
+real dispatch kinds (`tool_call`, `rest_proxy`).
+The load-bearing integration coverage lives in:
 
 | Item | Integration test |
 |---|---|
@@ -581,6 +633,10 @@ integration coverage living in:
 | 6. Plugin manifest + registry | `crates/codeless-tools` unit tests (manifest / migration / model-family / registry) + `crates/codeless-cli/tests/plugin_cli.rs` + `plugin_substrate_e2e::notes_plugin_directory_shape_matches_substrate_contract`. |
 | 7. Tool-result attachments | `crates/codeless-runtime/src/rpc/attachment.rs` unit tests + `plugin_substrate_e2e::plugin_tool_output_schema_round_trips_through_attachment_reconciler` (stored row wins over tool hints, end-to-end through an upload). |
 | 8. Assistant agent loop | `crates/codeless-runtime/src/rpc/assistant_planner.rs` unit tests (persona-bound prompt, persona-filtered catalogue, cap on emit-time tool calls) + `plugin_substrate_e2e::planner_allow_filter_admits_plugin_tool_under_persona_namespace` (load-time grant survives through SQLite to agent-call time). |
+| 9. WASM runtime flavour | `crates/codeless-plugin-sdk`, `crates/codeless-tool-wit`, `crates/codeless-plugin-host-wasm` unit + integration tests + `plugin_substrate_e2e::notes_plugin_loads_and_seeds_persona_addressable_by_thread` parameterised over builtin and WASM rows + `plugin_wasm_e2e::{wasm_plugin_cannot_open_host_file, wasm_plugin_attachment_round_trip, wasm_plugin_respects_fuel_cap}`. |
+| 10. MF plugin UI (R6) | `ui/codeless-ui/packages/plugin-ui-sdk/` unit tests (the rubix-ported `editable-collection.test.tsx` and the SDK's own MF surface tests) + `plugin_ui_e2e::{host_loads_plugin_remote_and_mounts_assistant_panel, mismatched_react_fails_loudly, r6_eslint_rejects_forbidden_imports}` + the desktop-parity hand-verification recorded in the job handover. |
+| 11. Process runtime seam | `crates/codeless-server` manifest parser unit tests (kind ∈ {builtin, wasm, process}, two-phase scan) + `plugin_substrate_e2e::process_runtime_declared_today_loads_failed_with_structured_reason` (manifest accepts, plugin loads `Failed` with `"process runtime not yet supported"`). |
+| MCP contributions | `crates/codeless-tools` `[contributes.mcp]` parser + parity-rule unit tests + `plugin_mcp_e2e::{tool_call_dispatch_round_trip, parity_rule_rejects_missing_twin, plugin_tools_off_switch_hides_listings}` + audit-log surface carrying `plugin_id` + `dispatch`. |
 
 Items 2 and 4 are **partially landed**; the remaining work is
 documented in

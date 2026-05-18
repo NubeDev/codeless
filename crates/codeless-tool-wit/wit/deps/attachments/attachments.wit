@@ -1,0 +1,53 @@
+// codeless attachments ABI, v0.1.
+//
+// Host-implemented WIT interface that gives a WASM plugin scoped
+// read/write access to the thread's `assistant_attachments` rows
+// without ever exposing `wasi:filesystem`. The codeless-side counterpart
+// to substrate-doc item 7 (`PLUGIN-SUBSTRATE.md`) and the WASM-side
+// rendering of the same in `PLUGIN-WASM.md § Capability sandbox`.
+//
+// The interface is gated by the manifest's
+// `[runtimes.capabilities] attachments = [...]` set: a plugin that
+// neither lists `"read"` nor `"write"` does not get the interface
+// linked into its instance, so a component that imports `store` and
+// the plugin has no `attachments` capability fails at instantiation
+// rather than dispatching a runtime denial -- the same "fail at the
+// linker, not the call boundary" rule the rest of the default-deny
+// capability set follows.
+
+package codeless:attachments@0.1.0;
+
+interface store {
+    // Structured failure shape so a plugin can branch on the reason
+    // without parsing free-form strings. `denied` is the runtime gate
+    // (read attempted without `"read"`, mint attempted without
+    // `"write"`); the others describe lookup / IO failures inside the
+    // host implementation.
+    variant attachment-error {
+        // The capability that would have authorised the call is not
+        // in the plugin's `[runtimes.capabilities] attachments` set.
+        // The plugin's own retry / error handling should treat this
+        // as fatal -- the operator must edit the manifest, not the
+        // plugin.
+        denied,
+        // The attachment id is well-formed but does not resolve in
+        // the current thread's scope.
+        not-found,
+        // The attachment id failed structural validation (e.g. not a
+        // UUID).
+        invalid-id(string),
+        // Host-side IO error. The string carries an operator-facing
+        // diagnostic; the plugin should treat the failure as
+        // non-retryable.
+        io(string),
+    }
+
+    // Read the byte stream backing a previously-minted attachment.
+    // Requires `attachments` includes `"read"`.
+    read: func(id: string) -> result<list<u8>, attachment-error>;
+
+    // Mint a new attachment, scoped to the plugin's current thread
+    // (`tool-call.thread-id`). Returns the new attachment id.
+    // Requires `attachments` includes `"write"`.
+    mint: func(filename: string, bytes: list<u8>) -> result<string, attachment-error>;
+}

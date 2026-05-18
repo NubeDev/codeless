@@ -1,0 +1,27 @@
+# Test-only fixture for `plugin_wasm_e2e::
+# wasm_plugin_cannot_open_host_file`. A minimal plugin that imports
+# `codeless:fs/probe@0.1.0` and (in `tool.call`) asks the host to
+# read `/etc/passwd`. With `[runtimes.capabilities] fs = []` -- the
+# default-deny set the test loads it under -- the host does not
+# link the interface into the per-plugin linker; component
+# instantiation fails at load time and the integration test
+# observes the load-time failure rather than a runtime denial. See
+# the head comment of `attachment_probe/Cargo.toml` for the
+# detached-workspace rationale.
+
+[package]
+name = "codeless-plugin-host-wasm-fixture-fs-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[dependencies]
+wit-bindgen = { version = "0.20", default-features = false, features = ["macros", "realloc"] }

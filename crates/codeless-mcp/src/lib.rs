@@ -12,10 +12,16 @@
 //! parent process choosing to spawn this server with a specific
 //! `ToolRegistry`.
 
+pub mod audit;
+pub mod contrib;
 pub mod handler;
 pub mod personas;
 pub mod server;
 
+pub use audit::{AuditSink, InMemoryAuditSink, McpAuditEvent, McpCallOutcome, NullAuditSink};
+pub use contrib::{
+    rows_for_loaded_plugin, McpContribution, McpContributionTable, ResolvedMcpDispatch,
+};
 pub use handler::CodelessMcpHandler;
 pub use personas::{EmptyPersonaSource, PersonaSource, SqlitePersonaSource};
 pub use server::{serve_stdio, ServerContext};

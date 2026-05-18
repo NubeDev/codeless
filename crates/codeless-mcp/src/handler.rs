@@ -9,6 +9,7 @@
 //! but we double-check).
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use codeless_tools::ToolError;
 use codeless_types::Persona;
@@ -23,6 +24,8 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ErrorData;
 use serde_json::Map;
 
+use crate::audit::{McpAuditEvent, McpCallOutcome};
+use crate::contrib::{McpContribution, ResolvedMcpDispatch};
 use crate::server::ServerContext;
 
 pub struct CodelessMcpHandler {
@@ -62,22 +65,7 @@ impl ServerHandler for CodelessMcpHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let tools: Vec<Tool> = self
-            .ctx
-            .registry
-            .iter()
-            .map(|tool| {
-                Tool::new(
-                    tool.name().to_string(),
-                    "",
-                    Arc::new(object_or_empty(tool.schema())),
-                )
-            })
-            .collect();
-        Ok(ListToolsResult {
-            tools,
-            ..Default::default()
-        })
+        Ok(self.list_tools_inner())
     }
 
     async fn call_tool(
@@ -86,23 +74,11 @@ impl ServerHandler for CodelessMcpHandler {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let name = request.name.as_ref();
-        let Some(tool) = self.ctx.registry.get(name) else {
-            return Err(ErrorData::invalid_params(
-                format!("unknown tool '{name}'"),
-                None,
-            ));
-        };
-
         let args_value = match request.arguments {
             Some(map) => serde_json::Value::Object(map),
             None => serde_json::Value::Object(Map::new()),
         };
-
-        let tool_ctx = self.ctx.build_tool_ctx();
-        match tool.call(&tool_ctx, args_value).await {
-            Ok(value) => Ok(success_result(value)),
-            Err(err) => Ok(error_result(err)),
-        }
+        self.call_tool_inner(name, args_value).await
     }
 
     async fn list_prompts(
@@ -123,6 +99,202 @@ impl ServerHandler for CodelessMcpHandler {
 }
 
 impl CodelessMcpHandler {
+    /// Pure-function form of `list_tools` -- the rmcp trait method
+    /// is a thin wrapper around this so unit tests can exercise the
+    /// filter logic without faking a `RequestContext`.
+    pub fn list_tools_inner(&self) -> ListToolsResult {
+        let mut tools: Vec<Tool> = self
+            .ctx
+            .registry
+            .iter()
+            .map(|tool| {
+                Tool::new(
+                    tool.name().to_string(),
+                    "",
+                    Arc::new(object_or_empty(tool.schema())),
+                )
+            })
+            .collect();
+        // Plugin contributions ride alongside core tools when the
+        // host-side off-switch is enabled. PLUGIN-MCP.md § Off-switch
+        // hierarchy layer 4: flipping `plugin_tools_enabled = false`
+        // hides every row here while keeping the core listing live.
+        // The schema we expose is derived from the contribution's
+        // dispatch target -- for `tool_call`, the registered tool's
+        // input schema -- so an MCP client sees the same argument
+        // shape it would have seen calling the codeless tool directly.
+        for contrib in self.ctx.contributions.visible_rows() {
+            let schema = match &contrib.dispatch {
+                ResolvedMcpDispatch::ToolCall { tool_id } => self
+                    .ctx
+                    .registry
+                    .get(tool_id)
+                    .map(|t| object_or_empty(t.schema()))
+                    .unwrap_or_default(),
+                ResolvedMcpDispatch::RestProxy { .. } => Map::new(),
+            };
+            tools.push(Tool::new(
+                contrib.listing_name.clone(),
+                contrib.title.clone(),
+                Arc::new(schema),
+            ));
+        }
+        ListToolsResult {
+            tools,
+            ..Default::default()
+        }
+    }
+
+    /// Pure-function form of `call_tool`. The rmcp trait method peels
+    /// off the `RequestContext` and delegates here; tests call it
+    /// straight against a constructed `ServerContext` without spawning
+    /// a child process.
+    pub async fn call_tool_inner(
+        &self,
+        name: &str,
+        args_value: serde_json::Value,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(contrib) = self.ctx.contributions.lookup(name) {
+            return Ok(self.dispatch_contribution(contrib, args_value).await);
+        }
+
+        // PLUGIN-MCP.md § Off-switch: when plugin_tools_enabled is
+        // false and the caller names a plugin tool that the listing
+        // hid, surface a clean "unknown tool" rather than a generic
+        // not-found error. Distinguishing the two states lets an
+        // operator's MCP client log the off-switch state explicitly.
+        if let Some(known) = self
+            .ctx
+            .contributions
+            .rows()
+            .iter()
+            .find(|r| r.listing_name == name)
+        {
+            let event = McpAuditEvent {
+                tool_name: name.to_string(),
+                plugin_id: Some(known.plugin_id.clone()),
+                dispatch_kind: Some(match &known.dispatch {
+                    ResolvedMcpDispatch::ToolCall { .. } => "tool_call",
+                    ResolvedMcpDispatch::RestProxy { .. } => "rest_proxy",
+                }),
+                outcome: McpCallOutcome::Denied,
+                duration: std::time::Duration::ZERO,
+            };
+            self.ctx.audit.record(event);
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "tool '{name}' is a plugin contribution hidden by the host's \
+                     `mcp.plugin_tools_enabled = false` setting"
+                ),
+                None,
+            ));
+        }
+
+        let Some(tool) = self.ctx.registry.get(name) else {
+            return Err(ErrorData::invalid_params(
+                format!("unknown tool '{name}'"),
+                None,
+            ));
+        };
+
+        let tool_ctx = self.ctx.build_tool_ctx();
+        let started = Instant::now();
+        let result = tool.call(&tool_ctx, args_value).await;
+        let duration = started.elapsed();
+        let (outcome, response) = match result {
+            Ok(value) => (McpCallOutcome::Ok, success_result(value)),
+            Err(err) => {
+                let outcome = match err {
+                    ToolError::Denied(_) => McpCallOutcome::Denied,
+                    _ => McpCallOutcome::Err,
+                };
+                (outcome, error_result(err))
+            }
+        };
+        self.ctx.audit.record(McpAuditEvent {
+            tool_name: name.to_string(),
+            plugin_id: None,
+            dispatch_kind: None,
+            outcome,
+            duration,
+        });
+        Ok(response)
+    }
+
+    /// Dispatch a plugin contribution. PLUGIN-MCP.md § Dispatch path:
+    /// the MCP handler is structurally a thin router; the real work
+    /// is whatever the resolved dispatch target does. v0.1 wires
+    /// `tool_call` end-to-end -- the same `ToolRegistry::get` the
+    /// codeless agent uses -- so Invariant 1 ("every MCP tool has a
+    /// non-MCP twin") is enforced by construction, not by policy.
+    /// `rest_proxy` is recognised but returns a structured error
+    /// today; wiring it through the in-process REST router is a
+    /// follow-up stage.
+    async fn dispatch_contribution(
+        &self,
+        contrib: &McpContribution,
+        args_value: serde_json::Value,
+    ) -> CallToolResult {
+        let dispatch_kind = match &contrib.dispatch {
+            ResolvedMcpDispatch::ToolCall { .. } => "tool_call",
+            ResolvedMcpDispatch::RestProxy { .. } => "rest_proxy",
+        };
+        let started = Instant::now();
+        let (outcome, response) = match &contrib.dispatch {
+            ResolvedMcpDispatch::ToolCall { tool_id } => match self.ctx.registry.get(tool_id) {
+                Some(tool) => {
+                    let tool_ctx = self.ctx.build_tool_ctx();
+                    match tool.call(&tool_ctx, args_value).await {
+                        Ok(value) => (McpCallOutcome::Ok, success_result(value)),
+                        Err(err) => {
+                            let outcome = match err {
+                                ToolError::Denied(_) => McpCallOutcome::Denied,
+                                _ => McpCallOutcome::Err,
+                            };
+                            (outcome, error_result(err))
+                        }
+                    }
+                }
+                None => (
+                    McpCallOutcome::Err,
+                    CallToolResult::structured_error(serde_json::json!({
+                        "error": {
+                            "kind": "failed",
+                            "message": format!(
+                                "plugin `{}` dispatch.tool_call.tool_id `{}` is no \
+                                 longer in the host's ToolRegistry; parity check \
+                                 drifted post-boot",
+                                contrib.plugin_id, tool_id,
+                            ),
+                        }
+                    })),
+                ),
+            },
+            ResolvedMcpDispatch::RestProxy { method, path } => (
+                McpCallOutcome::Err,
+                CallToolResult::structured_error(serde_json::json!({
+                    "error": {
+                        "kind": "failed",
+                        "message": format!(
+                            "plugin `{}` rest_proxy `{} {}` dispatch lands in a follow-up \
+                             stage; the parity rule already verified the twin exists",
+                            contrib.plugin_id, method, path,
+                        ),
+                    }
+                })),
+            ),
+        };
+        let duration = started.elapsed();
+        self.ctx.audit.record(McpAuditEvent {
+            tool_name: contrib.listing_name.clone(),
+            plugin_id: Some(contrib.plugin_id.clone()),
+            dispatch_kind: Some(dispatch_kind),
+            outcome,
+            duration,
+        });
+        response
+    }
+
     /// Pure-function form of `list_prompts` so unit tests can call
     /// it without faking a `RequestContext`. Every persona with
     /// `use_for_jobs = 1` becomes one prompt; the id is the prompt

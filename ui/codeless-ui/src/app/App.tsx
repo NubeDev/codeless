@@ -68,6 +68,7 @@ import { usePaths } from "@/lib/shell";
 import { useRpc } from "@/lib/rpc/provider";
 import { navigate } from "@/lib/route";
 import { configureNative } from "@/modules/ai/lib/native";
+import { installPluginUiHost } from "@/lib/plugin-host";
 import type { SearchAddon } from "@xterm/addon-search";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -107,6 +108,16 @@ export default function App() {
   // keeps the binding out of the render path.
   useEffect(() => {
     configureNative(rpc);
+  }, [rpc]);
+  // Boot the plugin UI host. The call is idempotent and resolves to
+  // an empty registry when `list_plugins` is unavailable on the
+  // server — every `<PluginSlot/>` then renders its fallback without
+  // blocking the rest of the app. The browser / desktop shell entry
+  // is the one that will eventually push a real `mfRuntime` adapter
+  // via the same call; here we accept whatever the SDK's placeholder
+  // gives us so the registry table is populated either way.
+  useEffect(() => {
+    void installPluginUiHost(rpc);
   }, [rpc]);
   const {
     tabs,

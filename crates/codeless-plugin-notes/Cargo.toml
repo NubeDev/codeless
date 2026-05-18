@@ -7,15 +7,78 @@ license.workspace = true
 repository.workspace = true
 description = "Codeless plugin #0 (notes): one tool, one persona, one migration. Exists to exercise the plugin substrate (DOCS/PLUGIN-SUBSTRATE.md items 1-8) end-to-end; lives in-tree so substrate breakage fails CI here first."
 
-[lints]
-workspace = true
+[lints.rust]
+# The workspace-wide `forbid(unsafe_code)` does not survive contact
+# with `wit_bindgen::generate!`: the CABI alloc glue and the
+# generated `export!` block emit `unsafe extern "C"` exports. The
+# `forbid` level cannot be relaxed with `#[allow]`, so downgrade to
+# `deny` for this one crate (mirrors the
+# `crates/codeless-tool-wit/Cargo.toml` exception). Hand-written
+# unsafe outside the generated module is still a review failure.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Both crate types so the same source builds:
+#   - as a normal `lib` linked into the host binary (builtin flavour);
+#   - as a WASI-p2 component `cdylib` (`cargo build --target wasm32-
+#     wasip2 --no-default-features --features wasm`), producing the
+#     `.wasm` artefact the WASM host loads through `WasmAdapter`.
+# Stage 5 of plugin-substrate-runtimes ("port onto codeless-plugin-
+# sdk -- same source, two flavours"); the feature pair below picks
+# which set of dependencies + macro expansions the source pulls in.
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[features]
+# Default to the builtin packaging so `cargo test --workspace` on the
+# host keeps loading the plugin through `codeless-tools::plugin`. The
+# wasm flavour is opt-in via `--no-default-features --features wasm`.
+default = ["builtin"]
+builtin = [
+    "dep:codeless-tools",
+    "codeless-plugin-sdk/builtin",
+]
+wasm = [
+    "dep:wit-bindgen",
+    "dep:pollster",
+    "codeless-plugin-sdk/wasm",
+]
 
 [dependencies]
-codeless-tools = { path = "../codeless-tools" }
-codeless-types = { path = "../codeless-types" }
+# Mobile-safe authoring trait + derive. `default-features = false` so
+# the consumer's feature flag (above) picks the flavour, not this
+# Cargo.toml's transitive default.
+codeless-plugin-sdk = { path = "../codeless-plugin-sdk", default-features = false }
+# Host-only builtin bridge: wraps the SDK's `ToolBehavior` into a
+# `codeless_tools::Tool` for the existing `RegistrationTable` path.
+# Optional because a wasm-target build cannot link `codeless-tools`
+# (it pulls reqwest, tokio::process, ...).
+codeless-tools = { path = "../codeless-tools", optional = true }
+# `ToolBehavior` is `#[async_trait]`, so this is always pulled in --
+# both flavours need the impl block to compile.
 async-trait = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+schemars = "0.8"
 thiserror = { workspace = true }
+# Guest-side WIT glue. Only pulled in on a wasm build; the
+# `wit_bindgen::generate!` invocation inside `lib.rs` is gated on
+# `target_arch = "wasm32"` so a host build with the `wasm` feature
+# accidentally enabled would compile, just with no exports emitted.
+# Held at the wit-bindgen minor compatible with `wasmtime` 23 in
+# `codeless-plugin-host-wasm`. Newer wit-bindgen minors emit a
+# component-model encoding `wasmtime` 23 cannot parse (the canonical
+# ABI moved several times in 2024). Bumping either side is an
+# OQ-WASM-* sized decision -- record it in `DOCS/plugins/
+# PLUGIN-WASM.md` before lifting the floor.
+wit-bindgen = { version = "0.20", default-features = false, features = ["macros", "realloc"], optional = true }
+# Synchronous executor for the wasm `Guest::call` boundary -- the
+# WIT signature is sync but `ToolBehavior::call` is async; pollster
+# runs the future to completion without pulling tokio (which does
+# not build for wasm32-wasip2 with its default features).
+pollster = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

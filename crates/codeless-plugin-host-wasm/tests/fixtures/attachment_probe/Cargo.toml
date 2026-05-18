@@ -1,0 +1,44 @@
+# Test-only fixture compiled to a `wasm32-unknown-unknown` core
+# module + componentised via `wit-component` (the same dual-step
+# `codeless-plugin-notes` uses; see the `ensure_notes_wasm_built`
+# helper in `codeless-runtime/tests/plugin_substrate_e2e.rs` and
+# the head comment in `codeless-plugin-notes/Cargo.toml`).
+#
+# Exists for `plugin_wasm_e2e::wasm_plugin_attachment_round_trip`:
+# a minimal plugin that imports `codeless:attachments/store@0.1.0`,
+# mints a single attachment in `tool.call`, reads it back, and
+# returns `ok` if the bytes round-tripped. Lives **outside** the
+# codeless workspace (own `[workspace]` block below) so a host
+# `cargo build` does not pull in `wit-bindgen` 0.20's
+# `wasm32-unknown-unknown` constraints.
+
+[package]
+name = "codeless-plugin-host-wasm-fixture-attachment-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Detached workspace -- this fixture lives outside the codeless
+# workspace because the wasm-only deps it pulls in (wit-bindgen
+# 0.20, no-std-targeted) collide with the host workspace's MSRV
+# and lints. The integration test builds it via an explicit
+# `cargo build --manifest-path ...`.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints.rust]
+# wit-bindgen-generated CABI glue is `unsafe extern "C"`; the host
+# crate's `[lints]` block downgrades the workspace-wide
+# `forbid(unsafe_code)` to `deny`. Mirror that here so the fixture
+# compiles -- the generated module already carries `#[allow(...)]`
+# but the package-level lint must permit it.
+unsafe_code = "deny"
+
+[dependencies]
+# Pinned to the same minor `codeless-plugin-notes` uses so the
+# bindgen output round-trips through `wasmtime` 30 / `wit-component`
+# 0.212 cleanly. See `codeless-plugin-notes/Cargo.toml` for the
+# rationale.
+wit-bindgen = { version = "0.20", default-features = false, features = ["macros", "realloc"] }

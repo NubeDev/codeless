@@ -67,3 +67,15 @@ wiremock = "0.6"
 # direction (`codeless-runtime` does not depend on plugins at the
 # library layer) is preserved.
 codeless-plugin-notes = { path = "../codeless-plugin-notes" }
+# Plugin-substrate-runtimes stage 5: the parameterised flavour pair
+# of `plugin_substrate_e2e::notes_plugin_loads_and_seeds_persona_
+# addressable_by_thread` loads a built `notes.wasm` artefact through
+# `WasmPlugin::load`, asserting that the same source compiles into a
+# WIT component whose `describe()` returns the same manifest the
+# builtin shim does.
+codeless-plugin-host-wasm = { path = "../codeless-plugin-host-wasm" }
+# Encodes the `wasm32-unknown-unknown` core module produced by
+# `codeless-plugin-notes` into a WASI-p2 component the host loader
+# understands. Pinned to the wasmparser minor `wasmtime` 23 ships
+# with; mismatched minors emit a component the host cannot parse.
+wit-component = "0.212"
