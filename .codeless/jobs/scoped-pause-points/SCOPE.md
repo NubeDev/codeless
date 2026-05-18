@@ -121,29 +121,56 @@ time.
    rules, and three worked examples (stage-only, stage+trio,
    stage+title-substring).
 
-## Open questions (resolve in stage 1, before any code)
+## Open questions — resolved in stage 1
+
+The grammar, examples, and rejection rules these decisions encode live
+in [`DOCS/SCOPED-PAUSE-POINTS.md`](../../../DOCS/SCOPED-PAUSE-POINTS.md).
 
 1. **Default `position:` if omitted — `before` or required?**
-   Bias: required. Declaring a point without a position is a footgun;
-   "pause stage 3" reads ambiguously to the next agent.
+   **Required.** Declaring a point without a position is a foot-gun:
+   "pause stage 3" reads ambiguously to the next agent (halt before
+   the runner spawns vs. halt after the closing trio). Forcing the
+   keyword keeps the YAML self-explaining and removes one class of
+   silently-wrong schedule. Parser rejects missing `position:` with
+   `ScopeError::MissingOrInvalidPosition`.
+
 2. **Title-substring selector — keep or drop?**
-   Bias: keep, but reject ambiguous matches at parse time. It's the
-   only way to address agent-authored intermediate todos (which don't
-   exist at submit time but the operator can still target after a
-   `resync`). Drop if the runtime cost is non-trivial.
+   **Keep.** It is the only way to address runner-authored
+   intermediate todos that don't exist at submit time but show up
+   after a `resync_template_from_disk`. The runtime cost is local —
+   one case-insensitive `contains` per stage entry per selection
+   tick — so the unhappy path doesn't tax the happy path. Ambiguity
+   fails loudly: empty substring rejects at parse time
+   (`EmptyTitleSubstring`), multi-match at bind time
+   (`AmbiguousTitleSubstring`) halts the job into `Paused` with the
+   error in `stop_reason_message` rather than choosing arbitrarily.
+
 3. **Should `resync_template_from_disk` fire `JobPaused` retroactively
    if the user adds a point whose target stage already passed?**
-   Bias: no. New points only apply to transitions that haven't happened
-   yet. Past points are silently no-ops with a one-line note in the
-   resync event payload.
+   **No.** New points only apply to transitions that haven't happened
+   yet. A point whose target has already run inserts with
+   `superseded_at = <now>, fired_at = NULL` and the resync event
+   payload lists the silenced point ids. Replaying pauses against
+   already-completed state would lie about what the runner did and
+   confuse the chat divider, which renders forward in time.
+
 4. **`StopReason::ScopedPausePoint` — does it count toward the cost-cap
    reset semantics that other resumable pauses use?**
-   Bias: yes. A scoped pause is operator intent, indistinguishable from
-   a manual `pause_job` from the runner's perspective; the existing
-   cap-reset path applies unchanged.
+   **Yes.** A scoped pause is operator intent expressed ahead of
+   time; from the runner's perspective it is indistinguishable from
+   a manual `pause_job` followed by an immediate `resume_job`. The
+   existing cap-reset path therefore applies unchanged — no new
+   branch in the cap accounting, no new policy knob.
 
-Record the chosen answer + one-line *why* under each in this file
-during stage 1, then proceed to stage 2's REVIEW gate.
+## Stage 1 deliverables (this stage)
+
+- [x] `DOCS/SCOPED-PAUSE-POINTS.md` lands with §1 grammar, §2 three
+  worked examples (stage-only, stage+trio, stage+title-substring),
+  §3 rejection-rules table mapping each `ScopeError` variant to its
+  trigger, §4 resync semantics, §5 the four open-question
+  resolutions, and §6 a fully-resolved schedule worked example.
+- [x] Four open questions resolved above with one-line *why* each.
+- [ ] Stages 3-8 deliverables — pending later stages.
 
 ## References
 
