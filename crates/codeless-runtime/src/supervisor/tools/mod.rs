@@ -23,6 +23,9 @@
 //! `WorktreeManager` uses for the Run's worktree so the path layout
 //! matches the rest of the runtime.
 
+pub mod actions;
+pub use actions::{AdHocOutcome, AD_HOC_PREVIEW_WINDOW};
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

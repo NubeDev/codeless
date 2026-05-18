@@ -14,13 +14,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codeless_rpc::{AddRepoArgs, EventFilter, PostJobMessageArgs, RpcServer, SubmitJobArgs};
+use codeless_runtime::supervisor::tools::AdHocOutcome;
 use codeless_runtime::{
     drive_job, spawn_supervisor, spawn_supervisor_with_tools, InProcessRpc, MockRunner, MockStep,
-    RunnerOutcome,
+    RunnerOutcome, SupervisorTools,
 };
 use codeless_types::{
-    ChatRole, ChatTransport, Event, GitAuth, JobId, Stage, StageId, StageStatus, StopReason,
-    UnixMillis,
+    ChatRole, ChatTransport, Event, GitAuth, JobId, JobStatus, Stage, StageId, StageStatus,
+    StopReason, UnixMillis,
 };
 use futures_util::StreamExt;
 
@@ -409,4 +410,189 @@ async fn each_run_spawns_an_independent_supervisor() {
         .await
         .expect("second supervisor exits on its own terminal")
         .unwrap();
+}
+
+/// Stage-12 contract: ad-hoc destructive actions get a 5-second
+/// preview window. The test shortens the window to 800ms so the suite
+/// does not block on a real five-second sleep; the production constant
+/// (`AD_HOC_PREVIEW_WINDOW`) is unchanged. A user-role chat message
+/// matching `/^wait\b/i` lands inside the window, the action stands
+/// down, and no `JobStopped` envelope is produced. The cancellation
+/// row is a supervisor message with `metadata.resolves` pointing back
+/// at the preview row's id — the audit-trail pairing JOB-CHAT.md's
+/// OQ-CHAT-2 resolution describes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ad_hoc_stop_aborts_on_user_wait() {
+    let rpc = Arc::new(InProcessRpc::new().await.unwrap());
+    let job_id = fresh_queued_job(&rpc).await;
+    let tools = SupervisorTools::new(rpc.bus().clone(), rpc.store().clone());
+
+    let window = Duration::from_millis(800);
+    let tools_clone = Arc::new(tools);
+    let tools_for_call = Arc::clone(&tools_clone);
+    let job = job_id;
+    let action = tokio::spawn(async move {
+        tools_for_call
+            .stop_job_ad_hoc_with_window(job, "ran for >1h".into(), window)
+            .await
+    });
+
+    // Race window: the action posts its preview row then arms the
+    // sleep + bus-watch. A small head-start makes sure the user's
+    // wait message lands *after* the action's `subscribe_since` is
+    // attached so the broadcast picks it up.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    rpc.post_job_message(codeless_rpc::PostJobMessageArgs {
+        job_id,
+        transport: ChatTransport::Web,
+        external_id: None,
+        thread_key: None,
+        author: "alice".into(),
+        role: ChatRole::User,
+        body: "wait, hold off — I'm still reading the logs".into(),
+        metadata_json: None,
+    })
+    .await
+    .expect("post wait message");
+
+    let outcome = tokio::time::timeout(Duration::from_secs(3), action)
+        .await
+        .expect("action did not return inside the preview window")
+        .expect("task join")
+        .expect("ad-hoc stop returned Err");
+    assert_eq!(
+        outcome,
+        AdHocOutcome::Aborted,
+        "user 'wait' must abort the ad-hoc stop"
+    );
+
+    // The Run must NOT be stopped: the wait cancelled the destructive
+    // half of the action. Status remains `Queued` (the row the
+    // submit_job + start_immediately fixture leaves behind).
+    let job = rpc.store().get_job(job_id).await.unwrap().unwrap();
+    assert_ne!(
+        job.status,
+        JobStatus::Stopped,
+        "aborted ad-hoc stop must not transition the row to Stopped",
+    );
+
+    // Audit trail: the cancellation message points back to the
+    // preview message via `metadata.resolves`. Both rows are visible
+    // through the normal list_chat_messages surface, so the UI can
+    // render the pair without a private side channel.
+    let rows = rpc
+        .store()
+        .list_chat_messages(job_id, None, 10)
+        .await
+        .unwrap();
+    let preview = rows
+        .iter()
+        .find(|m| {
+            matches!(m.transport, ChatTransport::Supervisor) && matches!(m.role, ChatRole::System)
+        })
+        .expect("preview row must be present");
+    let cancellation = rows
+        .iter()
+        .find(|m| {
+            matches!(m.transport, ChatTransport::Supervisor)
+                && matches!(m.role, ChatRole::Assistant)
+        })
+        .expect("cancellation row must be present");
+    let meta = cancellation
+        .metadata_json
+        .as_deref()
+        .expect("cancellation must carry metadata");
+    assert!(
+        meta.contains(&preview.id.to_string()),
+        "cancellation row must reference the preview id; got: {meta}",
+    );
+}
+
+/// Stage-12 contract: with no `wait` arriving inside the window the
+/// ad-hoc stop fires, the row transitions to `Stopped`, and the same
+/// `JobStopped` envelope every other surface already consumes appears
+/// on the bus. The post-action summary row pairs with the preview via
+/// `metadata.resolves`, matching the abort path's pairing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ad_hoc_stop_fires_after_window() {
+    let rpc = Arc::new(InProcessRpc::new().await.unwrap());
+    let job_id = fresh_queued_job(&rpc).await;
+    let tools = SupervisorTools::new(rpc.bus().clone(), rpc.store().clone());
+
+    let mut stream = rpc
+        .subscribe(codeless_rpc::EventFilter::Job { job_id }, None)
+        .await
+        .expect("subscribe");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(3),
+        tools.stop_job_ad_hoc_with_window(job_id, "ran for >1h".into(), Duration::from_millis(400)),
+    )
+    .await
+    .expect("ad-hoc stop did not return inside the timeout")
+    .expect("ad-hoc stop returned Err");
+    assert_eq!(
+        outcome,
+        AdHocOutcome::Fired,
+        "no wait → ad-hoc stop must fire after the window",
+    );
+
+    // JobStopped is on the bus and visible to the same subscriber any
+    // other transport would use — the audit-trail invariant from
+    // JOB-CHAT.md Hard rule 5 ("action-tool invocations emit events").
+    let mut saw_stopped = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !saw_stopped {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let item = tokio::time::timeout(remaining, stream.next())
+            .await
+            .expect("timed out waiting for JobStopped")
+            .expect("stream end")
+            .expect("stream error");
+        if matches!(
+            item.event,
+            Event::JobStopped {
+                reason: StopReason::User,
+                ..
+            }
+        ) {
+            saw_stopped = true;
+        }
+    }
+
+    let job = rpc.store().get_job(job_id).await.unwrap().unwrap();
+    assert_eq!(
+        job.status,
+        JobStatus::Stopped,
+        "fired ad-hoc stop must transition the row to Stopped",
+    );
+
+    // Summary row pairs to the preview via `metadata.resolves`,
+    // mirroring the abort path's audit-trail pairing.
+    let rows = rpc
+        .store()
+        .list_chat_messages(job_id, None, 10)
+        .await
+        .unwrap();
+    let preview = rows
+        .iter()
+        .find(|m| {
+            matches!(m.transport, ChatTransport::Supervisor) && matches!(m.role, ChatRole::System)
+        })
+        .expect("preview row must be present");
+    let summary = rows
+        .iter()
+        .find(|m| {
+            matches!(m.transport, ChatTransport::Supervisor)
+                && matches!(m.role, ChatRole::Assistant)
+        })
+        .expect("summary row must be present");
+    let meta = summary
+        .metadata_json
+        .as_deref()
+        .expect("summary must carry metadata");
+    assert!(
+        meta.contains(&preview.id.to_string()),
+        "summary row must reference the preview id; got: {meta}",
+    );
 }
