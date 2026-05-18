@@ -8,6 +8,16 @@
 > describes the artifacts; JOB-WORKFLOW describes the loops the user
 > closes with them.
 >
+> The conversational counterpart to this doc is
+> [`JOB-CHAT.md`](./JOB-CHAT.md) — one chat thread per Job shared
+> across web / Telegram / Slack, plus a per-Run supervisor agent
+> that watches the run and replies in that thread. Where this doc
+> covers the **iterate loop** (edit spec, re-run, resume), JOB-CHAT
+> covers the **conversation loop** (ask the run what it is doing,
+> tell it to stop). The two compose: the supervisor's tool surface
+> in JOB-CHAT calls the RPCs introduced here
+> (`add_job_note`, `pause_after_stage`).
+>
 > Where this doc disagrees with `JOB-MODEL.md`, **JOB-MODEL wins** —
 > raise it as an issue, update both files together.
 
@@ -665,7 +675,9 @@ vocabulary, untouched.
    The bot adapters already render Job terminal events; a Plan
    probably renders as a single thread with one message per
    PlanRunStep transition. Belongs in `codeless-bot-core::notify`,
-   not the engine.
+   not the engine. The per-Job chat substrate this rides on is
+   specified in [`JOB-CHAT.md`](./JOB-CHAT.md); a Plan-level chat
+   surface is deferred until Plans get UI (P3).
 4. **What's the failure-cascade default?** A step that fails with no
    `on_failure` falls through to `stop`. The PlanRun's terminal
    status is `failed`, not `success`. The handler-step pattern
