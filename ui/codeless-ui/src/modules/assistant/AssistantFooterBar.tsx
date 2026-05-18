@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { useRpc, type AssistantMessage } from "@/lib/rpc";
+import {
+  useEventStream,
+  useRpc,
+  type AssistantMessage,
+  type EventEnvelope,
+} from "@/lib/rpc";
 import { useChatStore } from "@/modules/ai";
 import { useAssistantFocus } from "./focusStore";
 
@@ -29,14 +34,18 @@ export function AssistantFooterBar({ onOpenAssistant }: AssistantFooterBarProps)
   const rpc = useRpc();
   const currentThreadId = useAssistantFocus((s) => s.currentThreadId);
   const setCurrentThreadId = useAssistantFocus((s) => s.setCurrentThreadId);
-  const bumpRefresh = useAssistantFocus((s) => s.bumpRefresh);
-  const refreshTick = useAssistantFocus((s) => s.refreshTick);
 
   const [value, setValue] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [pendingCards, setPendingCards] = useState<number>(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Bumped on every `assistant-thread-touched` envelope matching
+  // `currentThreadId` so the pending-card counter refreshes without the
+  // legacy `focusStore.refreshTick` polling counter
+  // (`DOCS/SCOPE-ASSISTANT-PARITY.md` §W1c). Local rather than store-
+  // shared because the bar is the only surface that reads it.
+  const [touchTick, setTouchTick] = useState(0);
 
   // `useChatStore.focusSignal` is the legacy "focus the AI composer"
   // bus — `Ctrl-K` / "Ask AI" use it. The store has lost message
@@ -90,7 +99,25 @@ export function AssistantFooterBar({ onOpenAssistant }: AssistantFooterBarProps)
     return () => {
       cancelled = true;
     };
-  }, [rpc, currentThreadId, refreshTick, setCurrentThreadId]);
+  }, [rpc, currentThreadId, touchTick, setCurrentThreadId]);
+
+  // Subscribe to the same `assistant-thread-touched` channel the rail
+  // listens on. A touch matching `currentThreadId` (the bar's pinned
+  // thread) bumps `touchTick`, which re-fires the pending-card probe
+  // above. Touches on other threads are ignored — the bar only renders
+  // the count for the bound thread. `scope: "all"` is required to
+  // observe touches across thread ids (the bus only filters by
+  // `JobId`, not by thread).
+  const onTouchEvent = useCallback(
+    (env: EventEnvelope) => {
+      if (env.event.type !== "assistant-thread-touched") return;
+      if (!currentThreadId) return;
+      if (env.event.thread_id !== currentThreadId) return;
+      setTouchTick((n) => n + 1);
+    },
+    [currentThreadId],
+  );
+  useEventStream({ scope: "all" }, onTouchEvent);
 
   const onNewThread = useCallback(async () => {
     if (sending) return;
@@ -103,14 +130,13 @@ export function AssistantFooterBar({ onOpenAssistant }: AssistantFooterBarProps)
         persona_id: "builtin:general",
       });
       setCurrentThreadId(created.id);
-      bumpRefresh();
       textareaRef.current?.focus();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setSending(false);
     }
-  }, [rpc, sending, setCurrentThreadId, bumpRefresh]);
+  }, [rpc, sending, setCurrentThreadId]);
 
   const onSubmit = useCallback(
     async (e?: React.FormEvent) => {
@@ -137,14 +163,13 @@ export function AssistantFooterBar({ onOpenAssistant }: AssistantFooterBarProps)
           content,
         });
         setValue("");
-        bumpRefresh();
       } catch (e: unknown) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
         setSending(false);
       }
     },
-    [rpc, value, sending, currentThreadId, setCurrentThreadId, bumpRefresh],
+    [rpc, value, sending, currentThreadId, setCurrentThreadId],
   );
 
   const canSend = !sending && value.trim().length > 0;

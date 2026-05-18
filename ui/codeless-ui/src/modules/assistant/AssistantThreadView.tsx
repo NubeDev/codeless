@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  useEventStream,
   useRpc,
   type AssistantAction,
   type AssistantActionCard,
@@ -8,6 +9,7 @@ import {
   type AssistantMessage,
   type AssistantMessageId,
   type AssistantThread,
+  type EventEnvelope,
   type JobId,
   type Repo,
   type SubmitJobArgs,
@@ -27,7 +29,6 @@ import {
   useJobComposerState,
   type JobComposerInitial,
 } from "../jobs/composer";
-import { useAssistantFocus } from "./focusStore";
 
 // Stage-6 assistant view. Renders the persisted transcript for one
 // thread plus a composer that appends a user turn and the no-op
@@ -53,18 +54,20 @@ export function AssistantThreadView({
   onThreadTouched,
 }: AssistantThreadViewProps) {
   const rpc = useRpc();
-  const refreshTick = useAssistantFocus((s) => s.refreshTick);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Bumped on every `assistant-thread-touched` envelope for this
+  // thread so an externally-driven append (footer composer, another
+  // window, a card confirmed on the rail) surfaces here without the
+  // legacy `focusStore.refreshTick` polling counter
+  // (`DOCS/SCOPE-ASSISTANT-PARITY.md` §W1c).
+  const [touchTick, setTouchTick] = useState(0);
 
   // Reload when the parent rail swaps in a different thread, *or*
-  // when `refreshTick` bumps — the footer composer increments the
-  // tick after a successful `append_assistant_message`, so a
-  // message sent from the footer surfaces in this view on the next
-  // render without a per-thread subscription channel.
+  // when an external touch landed on this thread.
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
@@ -84,7 +87,24 @@ export function AssistantThreadView({
     return () => {
       cancelled = true;
     };
-  }, [rpc, thread.id, refreshTick]);
+  }, [rpc, thread.id, touchTick]);
+
+  // The runtime publishes `AssistantThreadTouched` with
+  // `bus_job_id = JobId(thread_id.0)` (`assistant_planner.rs`), so a
+  // `scope: "job"` filter pinned to this thread's id receives every
+  // touch on this thread — no other thread's traffic — without the
+  // rail's `scope: "all"` overhead. Local sends mutate `messages`
+  // directly; this subscription handles the cross-surface case
+  // (footer composer with the same thread bound, confirm/cancel from
+  // another window).
+  const onTouchEvent = useCallback((env: EventEnvelope) => {
+    if (env.event.type !== "assistant-thread-touched") return;
+    setTouchTick((n) => n + 1);
+  }, []);
+  useEventStream(
+    { scope: "job", job_id: thread.id as unknown as JobId },
+    onTouchEvent,
+  );
 
   const onSubmit = useCallback(
     async (e?: React.FormEvent) => {

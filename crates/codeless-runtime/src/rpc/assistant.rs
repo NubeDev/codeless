@@ -11,11 +11,47 @@ use codeless_rpc::{
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, JobId, RepoId, WorkspaceMode,
+    AssistantThread, AssistantThreadId, Event, JobId, RepoId, WorkspaceMode,
 };
 
 use super::InProcessRpc;
 use crate::time::now_ms;
+
+/// Publish the `AssistantThreadTouched` envelope every callsite that
+/// advances `assistant_threads.updated_at` emits. The rail in the
+/// `/assistant` page and the workspace footer composer subscribe to
+/// this event in lieu of the legacy `focusStore.refreshTick` polling
+/// counter (`DOCS/SCOPE-ASSISTANT-PARITY.md` §W1). Errors from the
+/// underlying SQL insert + broadcast are downgraded to a `tracing::warn`
+/// so a transient publish failure cannot tear down an RPC that has
+/// already mutated SQLite — the touch already landed in the DB; the
+/// envelope is a UI freshness hint, not the source of truth (R4).
+///
+/// Publishes with the synthetic `bus_job_id = JobId(thread_id.0)` that
+/// `assistant_planner` already uses for `AiToken` / `ToolCall` /
+/// `AiMessageComplete`, so a per-thread `{ scope: "job", job_id }`
+/// subscription sees the touch alongside the streaming envelopes for
+/// the same turn.
+async fn publish_thread_touched(rpc: &InProcessRpc, thread_id: AssistantThreadId) {
+    let bus_job_id = JobId(thread_id.0);
+    if let Err(e) = rpc
+        .bus
+        .publish(
+            Some(bus_job_id),
+            None,
+            None,
+            Event::AssistantThreadTouched { thread_id },
+            now_ms(),
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            thread_id = %thread_id,
+            "failed to publish AssistantThreadTouched envelope",
+        );
+    }
+}
 
 const DEFAULT_THREAD_TITLE: &str = "New thread";
 
@@ -221,6 +257,7 @@ pub(super) async fn upload_assistant_attachment(
         .touch_assistant_thread(thread.id, now)
         .await
         .map_err(super::db_err)?;
+    publish_thread_touched(rpc, thread.id).await;
 
     Ok(UploadAssistantAttachmentResult { attachment })
 }
@@ -445,6 +482,7 @@ pub(super) async fn append_assistant_message(
         .touch_assistant_thread(args.thread_id, assistant_message.created_at)
         .await
         .map_err(super::db_err)?;
+    publish_thread_touched(rpc, args.thread_id).await;
 
     Ok(AppendAssistantMessageResult {
         user_message,
@@ -1201,6 +1239,7 @@ pub(super) async fn confirm_assistant_action(
                 .touch_assistant_thread(args.thread_id, now)
                 .await
                 .map_err(super::db_err)?;
+            publish_thread_touched(rpc, args.thread_id).await;
             Ok(ConfirmAssistantActionResult {
                 card: card_row,
                 tool_message: tool,
@@ -1225,6 +1264,7 @@ pub(super) async fn confirm_assistant_action(
                 .touch_assistant_thread(args.thread_id, now)
                 .await
                 .map_err(super::db_err)?;
+            publish_thread_touched(rpc, args.thread_id).await;
             Ok(ConfirmAssistantActionResult {
                 card: card_row,
                 tool_message: tool,
@@ -1244,6 +1284,7 @@ pub(super) async fn cancel_assistant_action(
         .touch_assistant_thread(args.thread_id, now_ms())
         .await
         .map_err(super::db_err)?;
+    publish_thread_touched(rpc, args.thread_id).await;
     Ok(CancelAssistantActionResult { card: card_row })
 }
 
@@ -2532,5 +2573,66 @@ mod tests {
         assert!(body.contains("+a"));
         assert!(body.contains("+b"));
         assert!(!body.contains('-'));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_assistant_message_publishes_thread_touched_envelope() {
+        // W1c (DOCS/SCOPE-ASSISTANT-PARITY.md §W1): every touch_assistant_thread
+        // callsite must publish an AssistantThreadTouched envelope so the
+        // /assistant rail can subscribe in place of the legacy refreshTick
+        // counter. Subscribing before the RPC fires keeps the test
+        // deterministic — the bus replays nothing, so we only see the
+        // envelope produced by this turn.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
+            .await
+            .unwrap();
+
+        let mut stream = rpc
+            .bus()
+            .subscribe_since(
+                crate::event_bus::SubscribeFilter::Job(JobId(thread.id.0)),
+                None,
+            )
+            .await
+            .unwrap();
+
+        rpc.append_assistant_message(AppendAssistantMessageArgs {
+            thread_id: thread.id,
+            content: "hello".into(),
+        })
+        .await
+        .unwrap();
+
+        use futures_util::StreamExt;
+        // The NOOP planner branch is taken here (no agent_chat registry);
+        // it emits no AiToken / AiMessageComplete envelopes, so the touch
+        // is the first and only envelope on the channel. A bounded drain
+        // keeps the test from hanging if a future change drops the
+        // publish on the floor.
+        let mut saw_touch = false;
+        for _ in 0..8 {
+            let next =
+                tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await;
+            match next {
+                Ok(Some(Ok(env))) => {
+                    if let Event::AssistantThreadTouched { thread_id } = env.event {
+                        assert_eq!(thread_id, thread.id);
+                        assert_eq!(env.job_id, Some(JobId(thread.id.0)));
+                        saw_touch = true;
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(
+            saw_touch,
+            "append_assistant_message must publish AssistantThreadTouched",
+        );
     }
 }

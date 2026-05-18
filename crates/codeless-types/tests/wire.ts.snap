@@ -531,7 +531,34 @@ failure_detail?: string | null } |
  *  was on `stages.session_id` at archive time; the new session's
  *  id arrives later via `StageSessionCaptured`.
  */
-{ type: "session-archived-then-resumed"; stage_id: StageId; prior_session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
+{ type: "session-archived-then-resumed"; stage_id: StageId; prior_session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | 
+/**
+ *  A new sub-step appeared on a running task — either the runner
+ *  emitted a `TodoWrite`-equivalent tool call (`kind = Runner`) or
+ *  the runtime injected one (`kind` is one of `Checks` / `Docs` /
+ *  `Git` for the closing trio, or `Planner` for the future
+ *  stage-level pre-declared path). See `DOCS/JOB-UI.md` "Todo rows
+ *  (nested under a tick)" for the UI contract — the row's glyph
+ *  flips `○ → ● → ✓` as `TodoUpdated` / `TodoCompleted` arrive.
+ */
+{ type: "todo-added"; todo_id: TodoId; task_id: TaskId; ordinal: number; title: string; kind: TodoKind } | 
+/**
+ *  Status transition on an existing todo. Carried as a separate
+ *  event from `TodoCompleted` so an intermediate `Pending →
+ *  InProgress` flip can light up the `●` glyph without faking a
+ *  completion. `TodoCompleted` is the dedicated terminal event so
+ *  the stage-completion gate (the part that holds back
+ *  `StageCompleted` until the trio is resolved) can subscribe to
+ *  one event type instead of inspecting every `TodoUpdated`.
+ */
+{ type: "todo-updated"; todo_id: TodoId; status: TodoStatus } | 
+/**
+ *  Terminal transition: `Done`, `Skipped`, or `Failed`. Pairs with
+ *  `TodoUpdated` — the runtime emits `TodoUpdated` for non-terminal
+ *  flips and `TodoCompleted` for terminal ones, so subscribers can
+ *  pick the granularity they care about.
+ */
+{ type: "todo-completed"; todo_id: TodoId; status: TodoStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
 /**
  *  `template.yaml` for the job changed in SQLite. Emitted by
  *  `update_job_template` (user edits from the Spec pane) and by
@@ -682,7 +709,26 @@ commit_sha: string } |
  *  cleared. Subscribers refresh their per-job badge / submit-form
  *  state from this event without re-fetching the whole row.
  */
-{ type: "job-policy-changed"; job_id: JobId; policy_name?: string | null };
+{ type: "job-policy-changed"; job_id: JobId; policy_name?: string | null } | 
+/**
+ *  `assistant_threads.updated_at` advanced — a message was appended,
+ *  an action card was confirmed/cancelled, or an attachment was
+ *  uploaded. The `/assistant` thread-list rail subscribes to this
+ *  envelope as its re-sort signal so the order stays live without
+ *  the focusStore `refreshTick` polling counter the rail used to
+ *  rely on (`DOCS/SCOPE-ASSISTANT-PARITY.md` §W1). The same envelope
+ *  also lets the footer composer recount pending cards and the open
+ *  thread view re-list messages when a touch arrives from another
+ *  surface — every assistant pane keys off the same channel.
+ * 
+ *  Published with the synthetic `bus_job_id = JobId(thread_id.0)`
+ *  the planner already uses (`assistant_planner.rs`), so a
+ *  `{ scope: "job", job_id: thread_id }` subscriber sees the touch
+ *  alongside the `AiToken` / `AiMessageComplete` envelopes for the
+ *  same turn. Subscribers that need touches across every thread
+ *  (the rail) subscribe with `scope: "all"`.
+ */
+{ type: "assistant-thread-touched"; thread_id: AssistantThreadId };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -1390,6 +1436,27 @@ export type TaskId = string;
 
 // Task lifecycle. Matches `tasks.status` wire labels.
 export type TaskStatus = "enqueued" | "running" | "completed" | "failed" | "cancelled";
+
+//Identity of one user-visible sub-step within a task (`todos` row).
+export type TodoId = string;
+
+/**
+ *  Origin of a todo. The closing trio (`Checks`, `Docs`, `Git`) is
+ *  runtime-injected so a misbehaving runner cannot silently skip it;
+ *  `Runner` items come from the runner's own plan tool (`TodoWrite`
+ *  for Claude Code, equivalent for Codex). `Planner` items are reserved
+ *  for the future planner-driven path where the stage's checklist is
+ *  declared up-front rather than discovered as the runner works.
+ */
+export type TodoKind = "runner" | "planner" | "checks" | "docs" | "git";
+
+/**
+ *  Todo lifecycle. `Skipped` is a terminal "did not run, will not run"
+ *  state distinct from `Failed` — used for the `git` trio item when a
+ *  stage produced no diff, and for any planner-injected item the runner
+ *  resolved away (e.g. an investigation that proved unnecessary).
+ */
+export type TodoStatus = "pending" | "in-progress" | "done" | "skipped" | "failed";
 
 /**
  *  Unix-milliseconds, UTC. Matches the `INTEGER` timestamp columns in

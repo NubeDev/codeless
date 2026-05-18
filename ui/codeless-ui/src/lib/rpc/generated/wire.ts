@@ -851,7 +851,21 @@ tail: string } |
  *  string so future reasons (e.g. timeout, cancelled) can land
  *  without a wire-format change.
  */
-reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageStatus } | 
+reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageStatus; 
+/**
+ *  Coarse classification when `status = Failed`. The
+ *  StageRecorder writes this onto `stages.failure_class`
+ *  in the same SQL update as `status`. `None` for
+ *  `Passed` and for replayed events from before the field
+ *  existed (which decode unchanged via `serde(default)`).
+ */
+failure_class?: FailureClass | null; 
+/**
+ *  Short human-readable failure description paired with
+ *  `failure_class`. Truncated to ~200 chars at the emit
+ *  site. `None` for `Passed` and for legacy events.
+ */
+failure_detail?: string | null } | 
 /**
  *  First-and-only-time capture of the runner-supplied session id
  *  for this stage. Emitted by `StageRecorder` the first time a
@@ -872,7 +886,34 @@ reason: string } | { type: "stage-completed"; stage_id: StageId; status: StageSt
  *  was on `stages.session_id` at archive time; the new session's
  *  id arrives later via `StageSessionCaptured`.
  */
-{ type: "session-archived-then-resumed"; stage_id: StageId; prior_session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
+{ type: "session-archived-then-resumed"; stage_id: StageId; prior_session_id: string } | { type: "task-enqueued"; task_id: TaskId; stage_id: StageId; depends_on: TaskId[] } | { type: "task-started"; task_id: TaskId } | { type: "tool-call"; task_id: TaskId; tool: string; args_json: string } | { type: "tool-approval-requested"; task_id: TaskId; tool: string; args_json: string } | { type: "ai-token"; task_id: TaskId; delta: string } | { type: "ai-message-complete"; task_id: TaskId; input_tokens: number; output_tokens: number; cost_cents: CostCents } | { type: "task-completed"; task_id: TaskId; status: TaskStatus } | 
+/**
+ *  A new sub-step appeared on a running task — either the runner
+ *  emitted a `TodoWrite`-equivalent tool call (`kind = Runner`) or
+ *  the runtime injected one (`kind` is one of `Checks` / `Docs` /
+ *  `Git` for the closing trio, or `Planner` for the future
+ *  stage-level pre-declared path). See `DOCS/JOB-UI.md` "Todo rows
+ *  (nested under a tick)" for the UI contract — the row's glyph
+ *  flips `○ → ● → ✓` as `TodoUpdated` / `TodoCompleted` arrive.
+ */
+{ type: "todo-added"; todo_id: TodoId; task_id: TaskId; ordinal: number; title: string; kind: TodoKind } | 
+/**
+ *  Status transition on an existing todo. Carried as a separate
+ *  event from `TodoCompleted` so an intermediate `Pending →
+ *  InProgress` flip can light up the `●` glyph without faking a
+ *  completion. `TodoCompleted` is the dedicated terminal event so
+ *  the stage-completion gate (the part that holds back
+ *  `StageCompleted` until the trio is resolved) can subscribe to
+ *  one event type instead of inspecting every `TodoUpdated`.
+ */
+{ type: "todo-updated"; todo_id: TodoId; status: TodoStatus } | 
+/**
+ *  Terminal transition: `Done`, `Skipped`, or `Failed`. Pairs with
+ *  `TodoUpdated` — the runtime emits `TodoUpdated` for non-terminal
+ *  flips and `TodoCompleted` for terminal ones, so subscribers can
+ *  pick the granularity they care about.
+ */
+{ type: "todo-completed"; todo_id: TodoId; status: TodoStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
 /**
  *  `template.yaml` for the job changed in SQLite. Emitted by
  *  `update_job_template` (user edits from the Spec pane) and by
@@ -1023,7 +1064,26 @@ commit_sha: string } |
  *  cleared. Subscribers refresh their per-job badge / submit-form
  *  state from this event without re-fetching the whole row.
  */
-{ type: "job-policy-changed"; job_id: JobId; policy_name?: string | null };
+{ type: "job-policy-changed"; job_id: JobId; policy_name?: string | null } | 
+/**
+ *  `assistant_threads.updated_at` advanced — a message was appended,
+ *  an action card was confirmed/cancelled, or an attachment was
+ *  uploaded. The `/assistant` thread-list rail subscribes to this
+ *  envelope as its re-sort signal so the order stays live without
+ *  the focusStore `refreshTick` polling counter the rail used to
+ *  rely on (`DOCS/SCOPE-ASSISTANT-PARITY.md` §W1). The same envelope
+ *  also lets the footer composer recount pending cards and the open
+ *  thread view re-list messages when a touch arrives from another
+ *  surface — every assistant pane keys off the same channel.
+ * 
+ *  Published with the synthetic `bus_job_id = JobId(thread_id.0)`
+ *  the planner already uses (`assistant_planner.rs`), so a
+ *  `{ scope: "job", job_id: thread_id }` subscriber sees the touch
+ *  alongside the `AiToken` / `AiMessageComplete` envelopes for the
+ *  same turn. Subscribers that need touches across every thread
+ *  (the rail) subscribe with `scope: "all"`.
+ */
+{ type: "assistant-thread-touched"; thread_id: AssistantThreadId };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER
@@ -1058,6 +1118,60 @@ export type EventFilter =
 { scope: "all" } | 
 // Only events tagged with this job (and its stages and tasks).
 { scope: "job"; "job-id": JobId };
+
+/**
+ *  Why a stage row ended `Failed`. Persisted on `stages.failure_class`
+ *  when `status = Failed`; `None` for `Passed` rows and for legacy
+ *  rows written before the column existed. The variant list is the
+ *  vocabulary the UI / CLI render from — a coarser set than the
+ *  per-site free-text `failure_detail` but precise enough that
+ *  dashboards do not have to substring-match on log lines.
+ * 
+ *  Distinct from `StopReason` (which is per-*job*): a job can halt
+ *  for `RunnerCrash` while individual stages along the way have any
+ *  of the failure classes below. The two columns coexist; the
+ *  stage-level `failure_class` is what the per-stage UI badge reads.
+ */
+export type FailureClass = 
+/**
+ *  Layer-1 diff-verify pre-check rejected the prior stage's
+ *  handover before the REVIEW model ran. Paired with
+ *  `StopReason::ReviewPreCheck` at the job level.
+ */
+"pre-check-failed" | 
+/**
+ *  The runner subprocess exited non-zero or the in-process
+ *  runner returned `RunnerOutcome::Failed`. The `failure_detail`
+ *  carries the runner's reason string (typically the last
+ *  non-empty line of its stderr / transcript tail).
+ */
+"runner-error" | 
+/**
+ *  REVIEW model emitted `PASS` but the scope-patch validator
+ *  rejected the proposed patch (parse failure, predicate
+ *  missing on a tightening patch, etc.). The verdict on the
+ *  wire is `AutoFail` with the validator's reason.
+ */
+"review-patch-invalid" | 
+/**
+ *  REVIEW model emitted `FAIL` as its verdict. The
+ *  `failure_detail` carries the model's reason string verbatim.
+ */
+"review-fail" | 
+/**
+ *  REVIEW sentinel parser could not extract a verdict from the
+ *  handover tail. The `failure_detail` carries the parser
+ *  error.
+ */
+"review-unparseable" | 
+/**
+ *  Crash recovery flipped a `Running` stage row to `Failed`
+ *  because the core process restarted without a clean exit.
+ *  Distinct from `RunnerError` so the UI can render
+ *  `interrupted by core restart` rather than a runner-side
+ *  failure, and the operator knows a plain resume is safe.
+ */
+"orphan-reap";
 
 /**
  *  Result of `fs_cwd`. The path is the absolute server root the
@@ -2076,6 +2190,24 @@ export type Stage = {
 	 *  `bypassed_at` is also `None`.
 	 */
 	bypassed_reason?: string | null,
+	/**
+	 *  Coarse machine-readable classification of *why* this stage
+	 *  ended `Failed`. `None` when `status != Failed` and on rows
+	 *  written before the column existed; the UI treats `None +
+	 *  Failed` as "legacy / unclassified failure" and falls back to
+	 *  the event stream. See `FailureClass` for the variant
+	 *  contract.
+	 */
+	failure_class?: FailureClass | null,
+	/**
+	 *  Short human-readable failure description (one line, ~200
+	 *  chars). Typically the runner's reason string, the REVIEW
+	 *  model's FAIL reason, or the pre-check validator's error.
+	 *  Truncated by the writer if the source is longer; the full
+	 *  transcript stays on disk. `None` when no detail was captured
+	 *  or when `status != Failed`.
+	 */
+	failure_detail?: string | null,
 };
 
 //Identity of a verify-gated chunk within a job.
@@ -2254,6 +2386,27 @@ export type TaskId = string;
 
 // Task lifecycle. Matches `tasks.status` wire labels.
 export type TaskStatus = "enqueued" | "running" | "completed" | "failed" | "cancelled";
+
+//Identity of one user-visible sub-step within a task (`todos` row).
+export type TodoId = string;
+
+/**
+ *  Origin of a todo. The closing trio (`Checks`, `Docs`, `Git`) is
+ *  runtime-injected so a misbehaving runner cannot silently skip it;
+ *  `Runner` items come from the runner's own plan tool (`TodoWrite`
+ *  for Claude Code, equivalent for Codex). `Planner` items are reserved
+ *  for the future planner-driven path where the stage's checklist is
+ *  declared up-front rather than discovered as the runner works.
+ */
+export type TodoKind = "runner" | "planner" | "checks" | "docs" | "git";
+
+/**
+ *  Todo lifecycle. `Skipped` is a terminal "did not run, will not run"
+ *  state distinct from `Failed` — used for the `git` trio item when a
+ *  stage produced no diff, and for any planner-injected item the runner
+ *  resolved away (e.g. an investigation that proved unnecessary).
+ */
+export type TodoStatus = "pending" | "in-progress" | "done" | "skipped" | "failed";
 
 /**
  *  Unix-milliseconds, UTC. Matches the `INTEGER` timestamp columns in

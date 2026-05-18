@@ -174,9 +174,19 @@ should rebase clean on master.
    is the user reviews fields in context; pushing them into a
    modal undoes that. Resolve at stage W2a.
 2. **Does W1 need to preserve the assistant view's polling-style
-   `refreshTick`?** Parity doc says no — the planner's
-   thread-touched envelope replaces it. Confirm the envelope is
-   already published or add it at stage W1c. Resolve at W1c.
+   `refreshTick`?** Resolved at W1c: no. The envelope was not yet
+   published — added as `Event::AssistantThreadTouched { thread_id }`
+   in `crates/codeless-types/src/event.rs`, emitted from every
+   `touch_assistant_thread` callsite in
+   `crates/codeless-runtime/src/rpc/assistant.rs` with the synthetic
+   `bus_job_id = JobId(thread_id.0)` (matching what
+   `assistant_planner.rs` already uses for `AiToken` /
+   `AiMessageComplete`). The rail (`AssistantPage`) subscribes via
+   `useEventStream({ scope: "all" }, …)` and the bound surfaces
+   (`AssistantFooterBar`, `AssistantThreadView`) subscribe with the
+   per-thread `{ scope: "job", job_id: thread_id }` filter.
+   `focusStore.refreshTick` / `bumpRefresh` were retired in the same
+   commit.
 3. **W3 presets — share via a generated wire file or
    hand-mirrored?** Bias: hand-mirror with a CI assert. Seven
    variants do not justify the generator. Resolve at W3a.

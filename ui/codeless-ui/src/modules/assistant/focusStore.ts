@@ -35,26 +35,20 @@ function writeStored(value: string | null): void {
 // same thread without one owning the other (R4: SQLite is the source
 // of truth — this store only holds the *pointer* into SQLite).
 //
-// `refreshTick` is a monotonically increasing counter the footer bumps
-// after a successful append. Subscribers (`AssistantPage`,
-// `AssistantThreadView`) read it as a dependency in their effects and
-// re-fetch via `list_assistant_threads` / `list_assistant_messages`.
-// We do this in lieu of a per-thread subscription channel — adding one
-// is a runtime-side change (open question §2 in the session doc) and
-// not in scope for F1.
+// Re-sort / re-fetch fan-out used to ride on a `refreshTick` counter
+// every mutator bumped; that has been retired (`DOCS/SCOPE-ASSISTANT-PARITY.md`
+// §W1c) in favour of the `assistant-thread-touched` event the runtime
+// publishes on every `touch_assistant_thread`. Surfaces subscribe via
+// `useEventStream` directly and refresh on the typed envelope.
 type State = {
   currentThreadId: string | null;
-  refreshTick: number;
   setCurrentThreadId: (id: string | null) => void;
-  bumpRefresh: () => void;
 };
 
 export const useAssistantFocus = create<State>((set) => ({
   currentThreadId: readStored(),
-  refreshTick: 0,
   setCurrentThreadId: (id) => {
     writeStored(id);
     set({ currentThreadId: id });
   },
-  bumpRefresh: () => set((s) => ({ refreshTick: s.refreshTick + 1 })),
 }));
