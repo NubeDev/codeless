@@ -79,6 +79,90 @@ The variant landing alone is the smallest reverting unit; keeping
 the diff small makes the M-INFRA REVIEW gate at stage 5 easy to
 inspect.
 
+## Stage 4 — infrastructure-error halt branch (DONE)
+
+Stage 4 landed the `classify_stage_failure` short-circuit for
+`FailureClass::InfrastructureError`: an infra-classified stage
+failure now halts the job regardless of the row's
+`auto_bypass_policy`, mirroring the existing
+`stop_reason.is_some()` early-exit. The job row's
+`stop_reason` flips to a new `StopReason::Infrastructure` variant so
+the UI labels the halt panel as `infrastructure failure` instead of
+falling back to the driver's `RunnerCrash` default.
+
+What changed:
+
+- `codeless-types::StopReason` grows an `Infrastructure` variant
+  with a one-line doc comment explaining *why* (host-disk / fs /
+  file-invariant failures are not retryable, so the policy must
+  halt instead of bypassing).
+- `store/codec.rs::stop_reason_label` + `parse_stop_reason` carry
+  the new variant with the kebab-case wire name `infrastructure`.
+  Specta wire snapshots for both `codeless-types` and `codeless-rpc`
+  regenerated under `SPECTA_UPDATE=1`.
+- `bot-core` `stop_reason_word` (both the chat-reply formatter and
+  the notification formatter) renders the variant as
+  `infrastructure failure`. The existing match arms were exhaustive
+  so leaving them alone would have been a compile error; the new
+  arm sits next to `ReviewPreCheck` for cohesion.
+- `template_runner::classify_stage_failure` widens its signature to
+  `(store, ctx, failure_class)`. All six call sites pass the same
+  `FailureClass` they just put on the `StageCompleted{Failed}`
+  envelope, so the classifier and the wire event cannot disagree
+  about what tripped. The infra branch stamps `stop_reason` on the
+  job row via a new `record_infrastructure_halt` helper (mirrors
+  `record_thrash_halt` — same warn-only failure mode, same shape).
+
+Tests:
+
+- `classify_halts_on_infra_error_even_under_relentless` — pins the
+  Relentless-policy bypass-everything contract against the new
+  infra branch and asserts the row gets `StopReason::Infrastructure`.
+- `classify_auto_bypasses_runner_error_without_infra_classification`
+  — guards the regression direction: a vanilla `RunnerError` under
+  the same `Quick` policy still auto-bypasses and leaves
+  `stop_reason` `None` so the next stage advances.
+- The five pre-existing `classify_*` tests were updated to pass
+  `Some(FailureClass::RunnerError)` for the new arg; they remain
+  the regression net for cap-breach, cancellation, and no-policy
+  paths.
+
+Stages 1–3 contracts upheld: the `FailureClass::InfrastructureError`
+variant + sqlx-code mapper from stages 2–3 are the producer side of
+this short-circuit; stage 4 is the consumer side. No changes to the
+SCOPE.md decisions.
+
+## Stage 4 — handover for stage 5
+
+Stage 5 is the M-INFRA REVIEW gate. The diff to inspect:
+
+- `crates/codeless-types/src/job.rs` (one new variant + doc comment).
+- `crates/codeless-runtime/src/store/codec.rs` (two one-line arms).
+- `crates/codeless-runtime/src/template_runner.rs`
+  (`classify_stage_failure` signature widening + new
+  `record_infrastructure_halt` helper + six call-site updates +
+  two new unit tests + five updated unit tests).
+- `crates/codeless-bot-core/src/reply.rs` +
+  `crates/codeless-bot-core/src/notify.rs` (exhaustive-match arms).
+- `crates/codeless-types/tests/wire.ts.snap` +
+  `crates/codeless-rpc/tests/wire-rpc.ts.snap` (regen).
+
+Stage 5 should focus on three things the REVIEW gate cares about:
+
+1. The infra short-circuit is **upstream** of the policy match —
+   a Relentless job still halts on `SQLITE_FULL`. The classifier
+   layering (cancel → no-store → row-load → `stop_reason.is_some()`
+   → infra → policy match) is the load-bearing order.
+2. The stamp inside `record_infrastructure_halt` is warn-only.
+   This is the same posture as `record_thrash_halt`; a lost stamp
+   degrades the UI label, not the halt itself.
+3. `classify_runner_failure_reason` (stage 3) is the only producer
+   of `FailureClass::InfrastructureError` in the runtime today. The
+   pre-check / review-fail / review-unparseable / review-patch-
+   invalid call sites pass their statically-known
+   `FailureClass::*`; only the two `RunnerOutcome::Failed` sites
+   (lines ~1051, ~1591) hand off the sqlx-mapped classification.
+
 ## Notes for later stages
 
 - Stage 6 (precheck tokenizer): the existing tokenizer lives in

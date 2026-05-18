@@ -397,6 +397,7 @@ pub(super) fn stop_reason_label(s: StopReason) -> String {
         StopReason::RunnerCrash => "runner-crash".into(),
         StopReason::AutoBypassThrashing => "auto-bypass-thrashing".into(),
         StopReason::ReviewPreCheck => "review-pre-check".into(),
+        StopReason::Infrastructure => "infrastructure".into(),
         // The scoped variant carries a `PausePointId`, so the
         // SQLite column gets a colon-prefixed form that the parser
         // splits on. The unit-variant shape is unchanged for the
@@ -478,6 +479,7 @@ fn parse_stop_reason(s: &str) -> sqlx::Result<StopReason> {
         "runner-crash" => StopReason::RunnerCrash,
         "auto-bypass-thrashing" => StopReason::AutoBypassThrashing,
         "review-pre-check" => StopReason::ReviewPreCheck,
+        "infrastructure" => StopReason::Infrastructure,
         other => {
             return Err(sqlx::Error::Decode(
                 format!("unknown stop reason: {other}").into(),

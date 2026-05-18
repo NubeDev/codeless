@@ -301,6 +301,30 @@ export type AutoBypassPolicy = { type: "quick" } | { type: "long-term" } | { typ
 { type: "relentless" };
 
 /**
+ *  Bind `(transport, channel_id, thread_id)` to a Job so the
+ *  adapter's inbound path can resolve an arriving message to the
+ *  right chat thread (`JOB-CHAT.md` "Data model"). Called by
+ *  `/codeless bind <job_id>` on Telegram / Slack. The web UI never
+ *  needs this — it already has `job_id` from the URL.
+ * 
+ *  `thread_id` is normalised to the empty string `""` on the server
+ *  side when omitted to match the primary-key invariant on
+ *  `chat_bindings`. The call is idempotent on the PK: a second bind
+ *  of the same `(transport, channel, thread)` to the same Job
+ *  returns the existing row stamped with the new `bound_at` /
+ *  `bound_by`; binding the same key to a *different* Job overwrites
+ *  (the user re-pointed the channel) and emits `ChatBindingCreated`
+ *  once goal events land. The runtime stamps `bound_at` itself.
+ */
+export type BindChatThreadArgs = {
+	transport: ChatTransport,
+	channel_id: string,
+	thread_id?: string | null,
+	job_id: JobId,
+	bound_by: string,
+};
+
+/**
  *  `assistant.cancelAction`. Flip a pending action card's status to
  *  `cancelled` and do **nothing else** — no RPC is dispatched, no
  *  `Tool` message appended. The card row stays in the transcript so
@@ -393,12 +417,83 @@ export type ChatContext = {
 };
 
 /**
+ *  One persisted row in `chat_messages`. The single conversation
+ *  every transport reads and writes — see `DOCS/JOB-CHAT.md` "Data
+ *  model".
+ * 
+ *  `run_id` is currently typed as `Option<String>` because the
+ *  JOB-WORKFLOW (B) Job/Run split (and the `RunId` newtype it
+ *  introduces) has not landed yet; the SQL column is already nullable
+ *  and rows minted before (B) leave it NULL. Once (B) lands, this
+ *  field swaps to `Option<RunId>` without a wire-format change — the
+ *  transparent newtype serialises as the same JSON string.
+ * 
+ *  `external_id` is NOT NULL on the SQL side for Telegram and Slack
+ *  rows (the partial UNIQUE index enforces ingest idempotency for
+ *  those transports); the wire type carries `Option<String>` because
+ *  web, CLI, and supervisor rows leave it NULL and the column is
+ *  generic. The invariant is owned by the runtime insert path, not
+ *  the wire type.
+ */
+export type ChatMessage = {
+	id: MessageId,
+	job_id: JobId,
+	run_id: string | null,
+	transport: ChatTransport,
+	external_id: string | null,
+	thread_key: string | null,
+	author: string,
+	role: ChatRole,
+	body: string,
+	/**
+	 *  Transport-specific extras (attachments, formatting, delivery
+	 *  receipts written by outbound forwarders). Carried as the raw
+	 *  JSON text exactly as stored in the SQL `metadata_json` column
+	 *  — keeping the field a `String` avoids pulling `serde_json`
+	 *  into `codeless-types`, which has to compile for mobile (R1).
+	 *  Callers that need a structured view parse it themselves on
+	 *  arrival; the substrate stays opaque.
+	 */
+	metadata_json: string | null,
+	created_at: UnixMillis,
+};
+
+/**
  *  Mode the chat composer is in for a given turn. Default `Work`
  *  keeps the existing footer/job chat behaviour; `Spec` flips the
  *  preamble to "you are authoring the job spec" and clamps tool
  *  access so the agent cannot accidentally edit repo source.
  */
 export type ChatMode = "work" | "spec";
+
+/**
+ *  Speaker class of a chat row. Mirrors the role column on
+ *  `chat_messages` and overlaps deliberately with
+ *  `AssistantMessageRole` so the same CommonChat renderer can paint
+ *  both surfaces. Kept as its own enum (rather than reusing the
+ *  assistant one) because the two surfaces evolve independently —
+ *  JOB-CHAT.md is explicit that the per-Job chat is not the
+ *  `/assistant` surface, even though they look similar in the UI.
+ */
+export type ChatRole = "user" | "assistant" | "tool" | "system";
+
+/**
+ *  Origin surface of a chat row. The wire form is lowercase ASCII on
+ *  every transport (JSON, SQLite `transport` column, Telegram/Slack
+ *  metadata, log fields) — see `DOCS/JOB-CHAT.md` "Wire-name
+ *  convention for `ChatTransport`". Adapters compare values only as
+ *  these lowercase strings; never as Rust identifiers, display names,
+ *  or human-language synonyms.
+ * 
+ *  The v0.1 surface is closed at five variants. `Web`, `Cli`, and
+ *  `Supervisor` ship with the C1 substrate; `Telegram` and `Slack`
+ *  arrive with the first transport adapter. The supervisor agent is
+ *  modelled as a transport rather than a role so a single
+ *  `(transport, external_id)` self-match could in principle suppress
+ *  echo back to a participant — though the actual rule in JOB-CHAT.md
+ *  is asymmetric and lives in the bot-core helper, not here.
+ */
+export type ChatTransport = "web" | "cli" | "telegram" | "slack" | "supervisor";
 
 /**
  *  Best-effort probe result for Claude Code on the host. The host
@@ -582,6 +677,16 @@ export type FailureClass =
  *  non-empty line of its stderr / transcript tail).
  */
 "runner-error" | 
+/**
+ *  Host-environment failure (SQLite disk-full, IOERR, CANTOPEN,
+ *  CORRUPT, READONLY) that the auto-bypass policy must never
+ *  silently retry: a fresh subprocess on the same host with the
+ *  same disk will hit the same wall, burn tokens, and bury the
+ *  original cause under identical noise. Surfacing this as a
+ *  distinct class is the operator-visible contract that infra
+ *  failures halt the job and demand human intervention.
+ */
+"infrastructure-error" | 
 /**
  *  REVIEW model emitted `PASS` but the scope-patch validator
  *  rejected the proposed patch (parse failure, predicate
@@ -1024,6 +1129,34 @@ export type ListJobFilesResult = {
 	directory_path: string | null,
 };
 
+/**
+ *  Paginate one Job's chat history newest-first by `created_at` with
+ *  the message id as tiebreaker. The web `CHAT` tab calls this on
+ *  mount; Telegram and Slack adapters call it on `/codeless bind` to
+ *  compose a single condensed "joining mid-thread" summary (full
+ *  replay would spam the channel — see `JOB-CHAT.md` "Cold-load").
+ * 
+ *  `before` is the seek cursor: pass `None` to fetch the most recent
+ *  `limit` rows, then pass the oldest returned `MessageId` to walk
+ *  further back. The runtime caps `limit` so a runaway caller cannot
+ *  pull the whole table in one shot.
+ */
+export type ListJobMessagesArgs = {
+	job_id: JobId,
+	before?: MessageId | null,
+	limit: number,
+};
+
+/**
+ *  Returned messages are ordered oldest-first within the returned
+ *  page so a UI can render top-to-bottom without sorting. To walk
+ *  further back, the caller passes the *oldest* id of this page as
+ *  the next `before`.
+ */
+export type ListJobMessagesResult = {
+	messages: ChatMessage[],
+};
+
 export type ListJobsArgs = {
 	// `None` returns jobs across every repo.
 	repo_id: RepoId | null,
@@ -1063,6 +1196,9 @@ export type ListStagesResult = {
 	stages: StageRollup[],
 };
 
+//Identity of one row in `chat_messages` — the per-Job chat substrate from `DOCS/JOB-CHAT.md`. Shared by every transport (web, CLI, Telegram, Slack, supervisor); the ULID is minted by the runtime on `post_job_message`, never by the transport adapter.
+export type MessageId = string;
+
 /**
  *  Identity of one scheduled pause point. Defined inline rather than
  *  added to the shared `ulid_newtype!` macro in `id.rs` to keep the
@@ -1070,6 +1206,42 @@ export type ListStagesResult = {
  *  `ScopePatchId` calls out in `scope_patch.rs`.
  */
 export type PausePointId = string;
+
+/**
+ *  Append one message to the per-Job chat thread (`DOCS/JOB-CHAT.md`).
+ *  Used by the web chat input, the Telegram and Slack adapters, the
+ *  CLI, and the supervisor agent — every voice ends up as one row in
+ *  `chat_messages`. The ULID `MessageId` and the `created_at` stamp
+ *  are minted server-side so a clock-skewed transport cannot reorder
+ *  the thread.
+ * 
+ *  `external_id` is the transport-native message id (Telegram
+ *  `chat:id`, Slack `ts`). Required on Telegram and Slack by SQL
+ *  invariant — the partial unique index narrows
+ *  `(transport, external_id)` to non-NULL rows, so a redelivered
+ *  inbound message would land on a `Conflict` error rather than
+ *  double-ingest. Web, CLI, and supervisor rows leave it NULL.
+ * 
+ *  `role` defaults to `User` because that is the overwhelmingly
+ *  common case (every human transport); the supervisor sets it
+ *  explicitly to `Assistant`.
+ */
+export type PostJobMessageArgs = {
+	job_id: JobId,
+	transport: ChatTransport,
+	external_id?: string | null,
+	thread_key?: string | null,
+	author: string,
+	role: ChatRole,
+	body: string,
+	/**
+	 *  Raw transport-extras JSON text (attachments, formatting,
+	 *  outbound delivery receipts). Passed through verbatim to the
+	 *  `metadata_json` column so the substrate stays opaque per
+	 *  `codeless_types::chat::ChatMessage::metadata_json`.
+	 */
+	metadata_json?: string | null,
+};
 
 export type ReadJobFileArgs = {
 	job_id: JobId,
@@ -1526,6 +1698,20 @@ export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash" |
  *  audit-logged opt-in, not a sticky flag.
  */
 "review-pre-check" | 
+/**
+ *  A host-side infrastructure failure (SQLite `SQLITE_FULL` /
+ *  `SQLITE_IOERR` / `SQLITE_CORRUPT` / `SQLITE_CANTOPEN` /
+ *  `SQLITE_READONLY`) terminated the stage. Distinct from
+ *  `RunnerCrash` because retrying the same SQL on the same disk
+ *  is guaranteed not to help — the operator has to fix the host
+ *  (free disk, repair the file, restore writability) before the
+ *  job can advance. The runtime's auto-bypass policy never
+ *  silently retries an infrastructure error; the UI labels this
+ *  halt as `Infrastructure failure` so the operator sees the
+ *  host condition rather than a generic crash chip. See
+ *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q1.
+ */
+"infrastructure" | 
 /**
  *  A pre-declared scope-level pause point (operator-authored in
  *  `template.yaml`) fired. Distinct from `User` so the chat and

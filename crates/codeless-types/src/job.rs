@@ -75,6 +75,18 @@ pub enum StopReason {
     /// threads into the stage prompt; the override is a one-shot
     /// audit-logged opt-in, not a sticky flag.
     ReviewPreCheck,
+    /// A host-side infrastructure failure (SQLite `SQLITE_FULL` /
+    /// `SQLITE_IOERR` / `SQLITE_CORRUPT` / `SQLITE_CANTOPEN` /
+    /// `SQLITE_READONLY`) terminated the stage. Distinct from
+    /// `RunnerCrash` because retrying the same SQL on the same disk
+    /// is guaranteed not to help — the operator has to fix the host
+    /// (free disk, repair the file, restore writability) before the
+    /// job can advance. The runtime's auto-bypass policy never
+    /// silently retries an infrastructure error; the UI labels this
+    /// halt as `Infrastructure failure` so the operator sees the
+    /// host condition rather than a generic crash chip. See
+    /// `DOCS/AUTO-BYPASS-DECISIONS.md` Q1.
+    Infrastructure,
     /// A pre-declared scope-level pause point (operator-authored in
     /// `template.yaml`) fired. Distinct from `User` so the chat and
     /// dashboard can render a "planned pause" divider instead of a

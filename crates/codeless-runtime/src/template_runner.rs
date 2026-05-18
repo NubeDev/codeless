@@ -788,7 +788,12 @@ impl Runner for TemplateRunner {
                                         %reason,
                                         "diff-verify pre-check failed; review stage auto-failed without invoking model"
                                     );
-                                    match classify_stage_failure(self.store.as_deref(), &ctx).await
+                                    match classify_stage_failure(
+                                        self.store.as_deref(),
+                                        &ctx,
+                                        Some(FailureClass::PreCheckFailed),
+                                    )
+                                    .await
                                     {
                                         FailureAction::Halt => {
                                             // Stamp the wire-level stop
@@ -1041,6 +1046,7 @@ impl Runner for TemplateRunner {
                 match outcome {
                     RunnerOutcome::Completed => {}
                     RunnerOutcome::Failed { reason } => {
+                        let failure_class = classify_runner_failure_reason(&reason);
                         publish(
                             &ctx,
                             stage_id,
@@ -1048,12 +1054,18 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
-                                failure_class: Some(classify_runner_failure_reason(&reason)),
+                                failure_class: Some(failure_class),
                                 failure_detail: Some(truncate_failure_detail(&reason)),
                             },
                         )
                         .await;
-                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                        match classify_stage_failure(
+                            self.store.as_deref(),
+                            &ctx,
+                            Some(failure_class),
+                        )
+                        .await
+                        {
                             FailureAction::Halt => {
                                 tracing::warn!(
                                     stage = stage.title,
@@ -1233,7 +1245,13 @@ impl Runner for TemplateRunner {
                                     %reason,
                                     "review gate failed at patch parse/validation"
                                 );
-                                match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                                match classify_stage_failure(
+                                    self.store.as_deref(),
+                                    &ctx,
+                                    Some(FailureClass::ReviewPatchInvalid),
+                                )
+                                .await
+                                {
                                     FailureAction::Halt => {
                                         return RunnerOutcome::Failed {
                                             reason: failure_reason,
@@ -1315,7 +1333,13 @@ impl Runner for TemplateRunner {
                             %reason,
                             "review gate failed; aborting template run"
                         );
-                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                        match classify_stage_failure(
+                            self.store.as_deref(),
+                            &ctx,
+                            Some(FailureClass::ReviewFail),
+                        )
+                        .await
+                        {
                             FailureAction::Halt => {
                                 return RunnerOutcome::Failed {
                                     reason: failure_reason,
@@ -1394,7 +1418,13 @@ impl Runner for TemplateRunner {
                         )
                         .await;
                         tracing::warn!(stage = stage.title, %reason, "review gate aborted run");
-                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                        match classify_stage_failure(
+                            self.store.as_deref(),
+                            &ctx,
+                            Some(FailureClass::ReviewUnparseable),
+                        )
+                        .await
+                        {
                             FailureAction::Halt => {
                                 return RunnerOutcome::Failed { reason };
                             }
@@ -1569,6 +1599,7 @@ impl Runner for TemplateRunner {
                         // advances instead of stranding the operator
                         // with an "apparently running" stage that
                         // will never close on its own.
+                        let failure_class = classify_runner_failure_reason(&reason);
                         publish(
                             &ctx,
                             stage_id,
@@ -1576,12 +1607,18 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
-                                failure_class: Some(classify_runner_failure_reason(&reason)),
+                                failure_class: Some(failure_class),
                                 failure_detail: Some(truncate_failure_detail(&reason)),
                             },
                         )
                         .await;
-                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                        match classify_stage_failure(
+                            self.store.as_deref(),
+                            &ctx,
+                            Some(failure_class),
+                        )
+                        .await
+                        {
                             FailureAction::Halt => {
                                 tracing::warn!(
                                     stage = stage.title,
@@ -1953,7 +1990,24 @@ enum AutoBypassDecision {
 /// the policy. A store-less runner (test harness) cannot read the
 /// policy column, so it falls through to `Halt` — auto-bypass is a
 /// production feature, not a unit-test default.
-async fn classify_stage_failure(store: Option<&SqliteStore>, ctx: &RunnerContext) -> FailureAction {
+///
+/// `failure_class` is the classification the call site computed for
+/// the just-published `StageCompleted{Failed}` envelope. When it is
+/// `FailureClass::InfrastructureError` the classifier short-circuits
+/// to `Halt` regardless of the row's `auto_bypass_policy`, mirroring
+/// the `stop_reason.is_some()` short-circuit below: retrying the
+/// same SQL on the same disk after `SQLITE_FULL` / `SQLITE_IOERR` /
+/// `SQLITE_CORRUPT` / `SQLITE_CANTOPEN` / `SQLITE_READONLY` is
+/// guaranteed not to help, so auto-bypass must never silently
+/// advance past a host-side failure. The infra branch additionally
+/// stamps `StopReason::Infrastructure` on the job row so the UI
+/// renders the halt as an infrastructure failure instead of a
+/// generic crash chip.
+async fn classify_stage_failure(
+    store: Option<&SqliteStore>,
+    ctx: &RunnerContext,
+    failure_class: Option<FailureClass>,
+) -> FailureAction {
     if ctx.cancel.is_cancelled() {
         return FailureAction::Halt;
     }
@@ -1974,6 +2028,16 @@ async fn classify_stage_failure(store: Option<&SqliteStore>, ctx: &RunnerContext
     if job.stop_reason.is_some() {
         return FailureAction::Halt;
     }
+    // Infrastructure failures (host disk / fs / file invariants) are
+    // not retryable: the same SQL on the same disk will fail the
+    // same way, so the policy must halt instead of advancing.
+    // Stamp `StopReason::Infrastructure` before returning so the UI
+    // labels the halt structurally rather than falling back to the
+    // driver's `RunnerCrash` default.
+    if failure_class == Some(FailureClass::InfrastructureError) {
+        record_infrastructure_halt(Some(store), ctx).await;
+        return FailureAction::Halt;
+    }
     match job.auto_bypass_policy {
         Some(policy) => {
             let policy_name = policy.policy_name().to_string();
@@ -1986,6 +2050,39 @@ async fn classify_stage_failure(store: Option<&SqliteStore>, ctx: &RunnerContext
             }
         }
         None => FailureAction::Halt,
+    }
+}
+
+/// Stamp `stop_reason = Infrastructure` on the job row when an
+/// infrastructure-class failure halts the stage. Mirrors
+/// `record_thrash_halt`: `RunnerOutcome::Failed` flowing back to the
+/// driver translates to `JobStatus::Failed` without setting a stop
+/// reason on its own, and the UI reads `stop_reason` to label the
+/// halt panel. Failures here are warn-only — losing the stamp
+/// degrades the halt label to a generic crash chip but does not
+/// silently let the policy retry past the infra failure (the
+/// classifier still returned `Halt`).
+async fn record_infrastructure_halt(store: Option<&SqliteStore>, ctx: &RunnerContext) {
+    let Some(store) = store else {
+        return;
+    };
+    let mut job = match store.get_job(ctx.job_id).await {
+        Ok(Some(j)) => j,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "infrastructure-halt: get_job failed; halt missing stop_reason"
+            );
+            return;
+        }
+    };
+    job.stop_reason = Some(codeless_types::StopReason::Infrastructure);
+    if let Err(err) = store.update_job(&job).await {
+        tracing::warn!(
+            ?err,
+            "infrastructure-halt: update_job failed; halt missing stop_reason"
+        );
     }
 }
 
@@ -2646,7 +2743,9 @@ mod tests {
     async fn classify_halts_when_no_policy_set() {
         let (store, job_id) = seed_store_with_policy(None, None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
+            .await
+        {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
         }
@@ -2657,7 +2756,9 @@ mod tests {
         let (store, job_id) =
             seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Quick), None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
+            .await
+        {
             FailureAction::AutoBypass {
                 policy_name,
                 comment,
@@ -2685,7 +2786,9 @@ mod tests {
         let (store, job_id) =
             seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Relentless), None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
+            .await
+        {
             FailureAction::AutoBypass {
                 policy_name,
                 thrash_guard_applies,
@@ -2708,7 +2811,9 @@ mod tests {
         )
         .await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
+            .await
+        {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
         }
@@ -2723,10 +2828,64 @@ mod tests {
         let mut ctx = test_runner_context(job_id).await;
         ctx.cancel = CancellationToken::new();
         ctx.cancel.cancel();
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
+            .await
+        {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
         }
+    }
+
+    /// Stage 4 contract (a): an infrastructure-class failure halts
+    /// the stage even under `Relentless`, the policy preset that
+    /// otherwise opts out of every halt guard. The job row's
+    /// `stop_reason` flips to `Infrastructure` so the UI can label
+    /// the halt as a host failure rather than a generic crash.
+    #[tokio::test]
+    async fn classify_halts_on_infra_error_even_under_relentless() {
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Relentless), None).await;
+        let ctx = test_runner_context(job_id).await;
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::InfrastructureError),
+        )
+        .await
+        {
+            FailureAction::Halt => {}
+            other => panic!("expected Halt for infra error, got {other:?}"),
+        }
+        let job = store.get_job(job_id).await.unwrap().expect("job row");
+        assert_eq!(
+            job.stop_reason,
+            Some(codeless_types::StopReason::Infrastructure),
+            "infra halt must stamp stop_reason for the UI label"
+        );
+    }
+
+    /// Stage 4 contract (b): a non-infra `RunnerError` continues to
+    /// auto-bypass under a policy, and the job row's `stop_reason`
+    /// stays `None` so the next stage can advance. The new infra
+    /// short-circuit must not regress the bypass path.
+    #[tokio::test]
+    async fn classify_auto_bypasses_runner_error_without_infra_classification() {
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Quick), None).await;
+        let ctx = test_runner_context(job_id).await;
+        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
+            .await
+        {
+            FailureAction::AutoBypass { policy_name, .. } => {
+                assert_eq!(policy_name, "Quick");
+            }
+            other => panic!("expected AutoBypass for runner error, got {other:?}"),
+        }
+        let job = store.get_job(job_id).await.unwrap().expect("job row");
+        assert!(
+            job.stop_reason.is_none(),
+            "non-infra runner error must not stamp stop_reason"
+        );
     }
 
     #[test]
