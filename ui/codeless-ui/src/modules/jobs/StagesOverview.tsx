@@ -9,6 +9,7 @@ import {
   type JobId,
   type StageRollup,
 } from "@/lib/rpc";
+import type { TodoKind, TodoStatus } from "@/lib/rpc/wire";
 
 import { RestartMenu } from "./RestartMenu";
 
@@ -18,13 +19,31 @@ type StageStatus = "pending" | "running" | "passed" | "failed";
 type TaskStatus = "queued" | "running" | "passed" | "failed";
 type VerifyStepStatus = "running" | "passed" | "failed" | "skipped";
 
-interface TaskRow {
+// One sub-step inside a task — runner-emitted (`TodoWrite`) or
+// runtime-injected (the closing trio `Checks` / `Docs` / `Git`). The
+// row's glyph flips `○ → ● → ✓` as `todo-updated` / `todo-completed`
+// arrive. The trio's `Checks` / `Docs` / `Git` rows are load-bearing:
+// `JOB-UI.md` says the stage cannot pass until all three are resolved,
+// and the runtime enforces that gate.
+export interface TodoRow {
+  todoId: string;
+  ordinal: number;
+  title: string;
+  kind: TodoKind;
+  status: TodoStatus;
+}
+
+export interface TaskRow {
   kind: "task";
   taskId: string;
   // 1-based display ordinal within the stage. Tasks are numbered in
   // arrival order (task-enqueued); the spec calls them "tick N".
   ordinal: number;
   status: TaskStatus;
+  // Todo rows nested under this tick. Kept sorted by ordinal so the
+  // runtime's trio (`u32::MAX - 2 ..= u32::MAX`) consistently sorts
+  // below any runner-emitted items (which start at 0).
+  todos: TodoRow[];
 }
 
 interface VerifyStepRow {
@@ -115,15 +134,94 @@ function verifyStepGlyph(status: VerifyStepStatus): Glyph {
   }
 }
 
+// Per `JOB-UI.md`'s "Todo rows (nested under a tick)" glyph table:
+// `○` pending, `●` in-progress, `✓` done, `!` failed, `~` skipped.
+function todoGlyph(status: TodoStatus): Glyph {
+  switch (status) {
+    case "done":
+      return { char: "✓", tone: "text-emerald-600 dark:text-emerald-400", label: "done" };
+    case "in-progress":
+      return { char: "●", tone: "text-blue-500", label: "in progress" };
+    case "failed":
+      return { char: "!", tone: "text-destructive", label: "failed" };
+    case "skipped":
+      return { char: "~", tone: "text-muted-foreground", label: "skipped" };
+    case "pending":
+      return { char: "○", tone: "text-muted-foreground", label: "pending" };
+  }
+}
+
+// Trio rows render their kind ("checks" / "docs" / "git") as the label
+// column so the user sees the safety-step name instead of "tick N".
+// Runner-emitted items have no kind-label — their title is the only
+// summary the runner gave us. `JOB-UI.md` treats the title as the
+// runner's verbatim plan text, no codeless-side prettifying.
+function todoKindLabel(kind: TodoKind): string | null {
+  switch (kind) {
+    case "checks":
+      return "checks";
+    case "docs":
+      return "docs";
+    case "git":
+      return "git";
+    case "runner":
+    case "planner":
+      return null;
+  }
+}
+
+// Aggregated tick glyph when the tick has at least one todo. Spec
+// (`JOB-UI.md` § "State that drives this UI"): `!` if any todo is
+// failed, `●` while any todo is in-progress, `✓` only when every todo
+// (including the closing trio) is `done` or `skipped`, else `○`.
+// Without this aggregation the tick row stays `●` for the full Claude
+// session — todos exist precisely to make that long middle visible.
+export function aggregateTaskStatus(todos: TodoRow[]): TaskStatus {
+  if (todos.some((t) => t.status === "failed")) return "failed";
+  if (todos.some((t) => t.status === "in-progress")) return "running";
+  const allResolved = todos.every(
+    (t) => t.status === "done" || t.status === "skipped",
+  );
+  if (allResolved) return "passed";
+  return "running";
+}
+
+// Compose the task's display status: event-driven `failed`/`passed`
+// wins (the runtime spoke a terminal answer), otherwise let the todo
+// aggregate drive the glyph so a 30-minute tick visibly progresses.
+export function effectiveTaskStatus(task: TaskRow): TaskStatus {
+  if (task.status === "failed") return "failed";
+  if (task.status === "passed" && task.todos.length === 0) return "passed";
+  if (task.todos.length > 0) {
+    const agg = aggregateTaskStatus(task.todos);
+    // Don't downgrade a passed task to running just because the trio
+    // happens to be missing a `TodoCompleted` we never recorded.
+    if (task.status === "passed" && agg !== "failed") return "passed";
+    return agg;
+  }
+  return task.status;
+}
+
 // ------------------------------------------------------------------ reducer
 
-interface StagesState {
+export interface StagesState {
   // Stable insertion-order list of stage ids.
   order: string[];
   stages: Map<string, StageData>;
+  // todo-id → (stage-id, task-id) routing. `todo-updated` and
+  // `todo-completed` only carry `todo_id` on the event payload, so we
+  // record where each todo lives at `todo-added` time and look the
+  // row up here on transitions. Envelopes do carry `task_id` on the
+  // recorder path, but the routing index keeps the reducer
+  // independent of envelope denormalisation.
+  todoIndex: Map<string, { stageId: string; taskId: string }>;
 }
 
-function applyEvent(state: StagesState, env: EventEnvelope): StagesState {
+export function emptyStagesState(): StagesState {
+  return { order: [], stages: new Map(), todoIndex: new Map() };
+}
+
+export function applyEvent(state: StagesState, env: EventEnvelope): StagesState {
   const e = env.event;
   // Stage-id is carried on the envelope's denormalised column or as a
   // field on the event itself; prefer the envelope column when available.
@@ -150,7 +248,7 @@ function applyEvent(state: StagesState, env: EventEnvelope): StagesState {
       const nextOrder = state.order.includes(sid)
         ? state.order
         : [...state.order, sid];
-      return { order: nextOrder, stages: nextStages };
+      return { ...state, order: nextOrder, stages: nextStages };
     }
 
     case "stage-completed": {
@@ -192,6 +290,7 @@ function applyEvent(state: StagesState, env: EventEnvelope): StagesState {
         taskId: e.task_id,
         ordinal: taskOrdinal,
         status: "queued",
+        todos: [],
       };
       const updated: StageData = {
         ...existing,
@@ -232,6 +331,7 @@ function applyEvent(state: StagesState, env: EventEnvelope): StagesState {
                 ordinal:
                   updated.children.filter((c) => c.kind === "task").length + 1,
                 status: "running" as TaskStatus,
+                todos: [],
               },
             ],
           };
@@ -257,6 +357,97 @@ function applyEvent(state: StagesState, env: EventEnvelope): StagesState {
       };
       const nextStages = new Map(state.stages);
       nextStages.set(sid, updated);
+      return { ...state, stages: nextStages };
+    }
+
+    case "todo-added": {
+      // `todo-added` carries `task_id`; the envelope carries `stage_id`.
+      // If the parent stage hasn't been seen yet (replay arrived in
+      // unexpected order), drop the event — the rollup seed plus a
+      // later `stage-started` will reconstruct the row when it shows
+      // up, and the recorder is the source of truth for missed
+      // rebuilds. Likewise for an unknown task: synthesise the tick
+      // so the todo has somewhere to hang, mirroring the
+      // `task-started`-before-`task-enqueued` recovery above.
+      if (!stageId) return state;
+      const existing = state.stages.get(stageId);
+      if (!existing) return state;
+      const dupe = existing.children.some(
+        (c) =>
+          c.kind === "task" &&
+          c.taskId === e.task_id &&
+          c.todos.some((t) => t.todoId === e.todo_id),
+      );
+      if (dupe) return state;
+      const newTodo: TodoRow = {
+        todoId: e.todo_id,
+        ordinal: e.ordinal,
+        title: e.title,
+        kind: e.kind,
+        status: "pending",
+      };
+      let synthesised = false;
+      const children = existing.children.map((c) => {
+        if (c.kind === "task" && c.taskId === e.task_id) {
+          const merged = [...c.todos, newTodo].sort(
+            (a, b) => a.ordinal - b.ordinal,
+          );
+          return { ...c, todos: merged };
+        }
+        return c;
+      });
+      const hasTask = existing.children.some(
+        (c) => c.kind === "task" && c.taskId === e.task_id,
+      );
+      if (!hasTask) {
+        synthesised = true;
+        children.push({
+          kind: "task",
+          taskId: e.task_id,
+          ordinal:
+            existing.children.filter((c) => c.kind === "task").length + 1,
+          status: "running",
+          todos: [newTodo],
+        });
+      }
+      const updated: StageData = { ...existing, children };
+      const nextStages = new Map(state.stages);
+      nextStages.set(stageId, updated);
+      const nextIndex = new Map(state.todoIndex);
+      nextIndex.set(e.todo_id, { stageId, taskId: e.task_id });
+      // `synthesised` is informational only; the surrounding code
+      // already covers the empty-children path through the standard
+      // task-started arm. Silence an unused-binding warning without
+      // adding an emitting side effect.
+      void synthesised;
+      return { ...state, stages: nextStages, todoIndex: nextIndex };
+    }
+
+    case "todo-updated":
+    case "todo-completed": {
+      // Both events carry only `todo_id` + `status`. Look up the
+      // owning task via the routing index; if the index is missing
+      // the entry (we never saw `todo-added`), drop the event — the
+      // recorder will rebuild on replay through `list_stages` and the
+      // gate logic lives in the runtime, not here.
+      const route = state.todoIndex.get(e.todo_id);
+      if (!route) return state;
+      const stage = state.stages.get(route.stageId);
+      if (!stage) return state;
+      const children = stage.children.map((c) => {
+        if (c.kind === "task" && c.taskId === route.taskId) {
+          return {
+            ...c,
+            todos: c.todos.map((t) =>
+              t.todoId === e.todo_id ? { ...t, status: e.status } : t,
+            ),
+          };
+        }
+        return c;
+      });
+      const updated: StageData = { ...stage, children };
+      const nextStages = new Map(state.stages);
+      nextStages.set(route.stageId, updated);
       return { ...state, stages: nextStages };
     }
 
@@ -436,7 +627,7 @@ function mergeRollup(state: StagesState, rollup: StageRollup): StagesState {
   const nextOrder = state.order.includes(s.id)
     ? state.order
     : [...state.order, s.id];
-  return { order: nextOrder, stages: nextStages };
+  return { ...state, order: nextOrder, stages: nextStages };
 }
 
 // ------------------------------------------------------------------ component
@@ -454,12 +645,13 @@ export function StagesOverview({ jobId, onOpenStageTab }: Props) {
   const [state, setState] = useState<StagesState>({
     order: [],
     stages: new Map(),
+    todoIndex: new Map(),
   });
 
   // Reset state when the job changes so stale children from a prior job
   // don't bleed through while the new event stream replays.
   useEffect(() => {
-    setState({ order: [], stages: new Map() });
+    setState({ order: [], stages: new Map(), todoIndex: new Map() });
   }, [jobId]);
 
   // Seed from persisted rollups so completed stages are visible on cold
@@ -637,20 +829,74 @@ function StageRow({
 // ------------------------------------------------------------------ child rows
 
 function TaskChildRow({ row }: { row: TaskRow }) {
-  const glyph = taskGlyph(row.status);
+  // The tick row's glyph is the runtime's terminal answer (`failed` /
+  // `passed`) when present; otherwise it is aggregated from the
+  // nested todos so a long-running Claude session visibly progresses
+  // tick-by-tick instead of staying `●` for half an hour.
+  const glyph = taskGlyph(effectiveTaskStatus(row));
   return (
-    <li className="flex items-baseline gap-2 text-xs">
+    <li className="space-y-0.5">
+      <div className="flex items-baseline gap-2 text-xs">
+        <span
+          className={cn("w-3 shrink-0 text-center font-mono", glyph.tone)}
+          aria-label={glyph.label}
+        >
+          {glyph.char}
+        </span>
+        <span className="text-muted-foreground w-10 shrink-0">
+          tick {row.ordinal}
+        </span>
+        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]">
+          {row.taskId.slice(0, 8)}
+        </span>
+      </div>
+      {row.todos.length > 0 && (
+        <ul
+          className="ml-5 space-y-0 border-l border-border/20 pl-3"
+          data-testid="todo-list"
+        >
+          {row.todos.map((todo) => (
+            <TodoChildRow key={todo.todoId} row={todo} />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function TodoChildRow({ row }: { row: TodoRow }) {
+  const glyph = todoGlyph(row.status);
+  const kindLabel = todoKindLabel(row.kind);
+  return (
+    <li
+      className="flex items-baseline gap-2 text-[11px]"
+      data-testid="todo-row"
+      data-todo-kind={row.kind}
+      data-todo-status={row.status}
+    >
       <span
         className={cn("w-3 shrink-0 text-center font-mono", glyph.tone)}
         aria-label={glyph.label}
       >
         {glyph.char}
       </span>
-      <span className="text-muted-foreground w-10 shrink-0">
-        tick {row.ordinal}
-      </span>
-      <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]">
-        {row.taskId.slice(0, 8)}
+      {kindLabel !== null ? (
+        <span className="text-muted-foreground w-10 shrink-0 font-mono">
+          {kindLabel}
+        </span>
+      ) : (
+        // Reserve the same column width as the trio label so titles
+        // line up across runner- and runtime-emitted rows.
+        <span className="w-10 shrink-0" aria-hidden="true" />
+      )}
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate",
+          row.status === "failed" ? glyph.tone : "text-foreground/90",
+        )}
+        title={row.title}
+      >
+        {row.title}
       </span>
     </li>
   );

@@ -68,6 +68,7 @@ async fn migrator_creates_all_tables_from_appendix_a() {
             "reviews".to_string(),
             "stages".to_string(),
             "tasks".to_string(),
+            "todos".to_string(),
         ]
     );
 }

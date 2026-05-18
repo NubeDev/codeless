@@ -19,7 +19,10 @@ pub mod worktree;
 pub use ai_chat::{
     parse_cli_runner_id, probe_available_cli_runners, run_chat, AgentChatError, ChatRunCfg,
 };
-pub use ai_runner_bridge::{forward_events, map_event};
+pub use ai_runner_bridge::{
+    forward_events, map_event, map_event_with_state, map_todo_write, TodoWriteTracker,
+    CLAUDE_TODO_WRITE_TOOL,
+};
 pub use claude::probe as probe_claude;
 pub use editor::{invoke_editor, pick_editor, EditorError};
 pub use fs::{FsError, HostFs};

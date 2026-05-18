@@ -27,7 +27,10 @@ use tokio::sync::{mpsc, Mutex};
 use crate::event_bus::EventBus;
 use crate::handover::{extract_handover, fallback_handover_from_text, write_handover};
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
+use crate::store::SqliteStore;
 use crate::time::now_ms;
+use crate::trio_emitter::{emit_trio_completed, emit_trio_started};
+use codeless_types::{TodoKind, TodoStatus};
 
 /// Per-run configuration the codeless driver hands to a Claude run.
 /// The adapter does not retain any state between runs — each
@@ -83,6 +86,13 @@ pub struct ClaudeRunnerAdapter {
     /// (stdio transport) so the runner can invoke codeless-registered
     /// tools alongside its built-in set.
     pub mcp_binary_path: Option<String>,
+    /// SQLite store used to look up trio TodoIds at handover-write
+    /// time. `None` keeps legacy callers (the early test harness, the
+    /// in-process integration tests) working without a store on hand;
+    /// production wiring through `TemplateRunner` always populates it
+    /// so the runtime-injected `Docs` trio row flips around the
+    /// handover write rather than staying `Pending` forever.
+    pub store: Option<Arc<SqliteStore>>,
 }
 
 /// Headless default. Codeless's runner has no human at the TTY to
@@ -157,7 +167,17 @@ impl ClaudeRunnerAdapter {
             thinking_budget: None,
             resume_id: None,
             mcp_binary_path: None,
+            store: None,
         }
+    }
+
+    /// Attach a SQLite store so the adapter can flip the `Docs` trio
+    /// row around the per-stage handover write. The store is `Arc`-ed
+    /// because the driver already shares one with the rest of the
+    /// runtime; cloning the handle is cheap.
+    pub fn with_store(mut self, store: Arc<SqliteStore>) -> Self {
+        self.store = Some(store);
+        self
     }
 
     /// Resume the upstream claude session with the given id. The
@@ -380,12 +400,38 @@ impl Runner for ClaudeRunnerAdapter {
                 Some(h) => h,
                 None => fallback_handover_from_text("claude", status, &assistant_text, 2000),
             };
-            match write_handover(worktree, job_id, stage_id, &handover).await {
-                Ok(path) => tracing::info!(handover = %path.display(), "claude handover written"),
-                Err(err) => tracing::warn!(
-                    ?err,
-                    "failed to write claude handover; next session will read no prior handover"
-                ),
+            // Trio: flip the runtime-injected `Docs` row around the
+            // handover write so the stage-completion gate has the row
+            // to resolve. Skipped when no store is wired in (legacy
+            // test harness path) — the trio is store-backed and there
+            // would be no row to flip.
+            if let Some(store) = self.store.as_deref() {
+                emit_trio_started(&ctx, store, self.task_id, stage_id, TodoKind::Docs).await;
+            }
+            let write_result = write_handover(worktree, job_id, stage_id, &handover).await;
+            let trio_status = match &write_result {
+                Ok(path) => {
+                    tracing::info!(handover = %path.display(), "claude handover written");
+                    TodoStatus::Done
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        "failed to write claude handover; next session will read no prior handover"
+                    );
+                    TodoStatus::Failed
+                }
+            };
+            if let Some(store) = self.store.as_deref() {
+                emit_trio_completed(
+                    &ctx,
+                    store,
+                    self.task_id,
+                    stage_id,
+                    TodoKind::Docs,
+                    trio_status,
+                )
+                .await;
             }
         } else if ctx.stage_id.is_none() && ctx.worktree_path.is_some() {
             tracing::debug!(

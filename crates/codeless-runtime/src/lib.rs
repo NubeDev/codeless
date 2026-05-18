@@ -38,6 +38,7 @@ pub mod template;
 pub mod template_runner;
 pub mod time;
 pub mod tracing_init;
+pub mod trio_emitter;
 pub mod verify_runner;
 pub mod webhook;
 pub mod workspace_liveness;
