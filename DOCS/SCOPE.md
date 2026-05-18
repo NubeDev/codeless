@@ -1317,3 +1317,33 @@ that does is `window.location` (Bug 2 above).
   workspace root, no `.git` of its own, patched in-place. Every
   patch logs a row in `ai-runner.PATCHES.md` and leaves a
   `// codeless-patch-NNN` marker in source.
+
+#### Adapter registry, stage 1 (settles the open questions raised in [`WORKSPACE-ATTACH.md`](./WORKSPACE-ATTACH.md#todo--adapter-registry-chat-adapters--ai-runners))
+
+- **Composite-vs-single PK**: chat adapters use composite PK
+  `(kind, instance_id)` in `chat_adapters`; runners keep a single PK
+  `runner_id` in `runner_config`. Reasoning: chat adapters need
+  zero-schema-change multi-instance support (Slack-personal +
+  Slack-work, two Gmail accounts); runners are global per binary and
+  gain nothing from an `instance_id` column.
+- **`--respawn-on-exit` default**: opt-in (off by default) on
+  `codeless serve`; `init-session.sh` and the bare-terminal launcher
+  pass it explicitly. Reasoning: systemd and the Tauri sidecar already
+  own re-exec, and stacking two supervisors is the footgun — only the
+  unsupervised standalone case needs the self-watcher.
+- **Validate-cache lifetime**: successful
+  `validate_chat_adapter_secrets` results are cached in-memory on the
+  server process, keyed by `(kind, instance_id)`, with a 5-minute TTL
+  and explicit invalidation on any secret-write touching that key.
+  Reasoning: validation hits the network and tokens rotate, so the
+  cache must not outlive a token change, but the TTL has to be long
+  enough that "validate, then click Apply" never races.
+- **Kill-vs-resumable partition rule**: a running job is reported
+  `resumable` to `restart_server` iff (a) its runner advertises a
+  `Resumable` capability — template-driven runners do; PTY-bound
+  `claude` / `codex` / `copilot` do not — AND (b) its most recent
+  persisted stage transition is within the last 30 s; everything else
+  is reported `killed`. Reasoning: the runner trait is the authority
+  on "can I replay from my last checkpoint cleanly", and the 30 s
+  window matches the job-driver loop's first retry backoff so the
+  partition tracks the persistence cadence already in production.
