@@ -38,6 +38,11 @@ members = [
     # authoring SDK".
     "crates/codeless-plugin-sdk",
     "crates/codeless-plugin-sdk-macros",
+    # WIT contract + committed wit-bindgen guest output. Mobile-safe.
+    # See crates/codeless-tool-wit/src/lib.rs for the regeneration
+    # protocol and OQ-WASM-2 in DOCS/plugins/PLUGIN-WASM.md for why
+    # the bindings live in-tree rather than under build.rs.
+    "crates/codeless-tool-wit",
     # Vendored from rubix-agent. Path is `../ai-runner` because the
     # crate lives one level up in `codeless-workspace/` alongside
     # this inner repo. Treated as read-only here — updates flow from
