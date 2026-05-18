@@ -423,16 +423,16 @@ something a user can drive end-to-end.
 
 Smallest slice that gets cross-surface history working:
 
-- [ ] Migration: `chat_messages`, `chat_bindings`.
-- [ ] Wire types: `ChatMessage`, `ChatTransport`, `ChatRole`,
+- [x] Migration: `chat_messages`, `chat_bindings`.
+- [x] Wire types: `ChatMessage`, `ChatTransport`, `ChatRole`,
       `ChatBinding`.
-- [ ] RPCs: `post_job_message`, `list_job_messages`,
+- [x] RPCs: `post_job_message`, `list_job_messages`,
       `bind_chat_thread`.
-- [ ] Event: `ChatMessageAppended`, `ChatBindingCreated`.
-- [ ] Web UI: the existing `CHAT` tab's message input + render path
+- [x] Event: `ChatMessageAppended`, `ChatBindingCreated`.
+- [x] Web UI: the existing `CHAT` tab's message input + render path
       go through `post_job_message` / `ChatMessageAppended`. No more
       transport-local store.
-- [ ] Telegram adapter: inbound writes via `post_job_message`,
+- [x] Telegram adapter: inbound writes via `post_job_message`,
       outbound subscribes to `ChatMessageAppended`, `/codeless bind`
       writes to `chat_bindings`.
 
@@ -440,27 +440,69 @@ What (C1) gives the user: a message typed in Telegram appears in the
 web UI on the next tick, and vice versa. **No supervisor yet** —
 nothing answers; the chat is human-only across surfaces.
 
+**Status — shipped on `codeless/job-chat`.** Migrations `0024_chat
+_messages.sql` and `0025_chat_bindings.sql` apply on
+`SqliteStore::with_db`; the three RPCs land on `RpcServer` /
+`InProcessRpc` with the wire-name lowercase contract enforced at the
+SQL boundary; the `ChatMessageAppended` / `ChatBindingCreated`
+variants fan out through `EventBus`; `ui/codeless-ui/`'s `CHAT` tab
+renders the `RpcClient` stream and posts via
+`rpc.post_job_message` with no transport-local store; the
+`codeless-telegram` adapter ingests inbound updates as
+`post_job_message(transport=telegram, external_id=<update_id>)` and
+forwards non-origin rows through the shared
+`codeless-bot-core::chat_forward::classify` helper, with cold-load
+on `/codeless bind` posting a single condensed "joining mid-thread"
+summary derived from `list_job_messages`. The asymmetric
+echo-suppression rule (origin-transport skips, non-origin forwards
+and writes `metadata_json.delivery.<transport>`) is enforced by
+`bot_chat_e2e::origin_transport_skips_self_post` and
+`bot_chat_e2e::cross_transport_forwards_with_receipt`, not just
+prose.
+
 ### (C2) — Supervisor agent, read-only tools
 
-- [ ] `Supervisor` task spawned by `runtime::start_run`.
-- [ ] Subscribes to `ChatMessageAppended` for its Run's `job_id`.
-- [ ] Read-only tools: `get_job_state`, `read_events`,
+- [x] `Supervisor` task spawned by `runtime::start_run`.
+- [x] Subscribes to `ChatMessageAppended` for its Run's `job_id`.
+- [x] Read-only tools: `get_job_state`, `read_events`,
       `read_handover`, `read_template`, `read_stage_log`,
       `read_notes`.
-- [ ] `post_chat_message` is the only write tool (the supervisor's
+- [x] `post_chat_message` is the only write tool (the supervisor's
       voice).
-- [ ] On Run terminal status, supervisor posts a one-paragraph
+- [x] On Run terminal status, supervisor posts a one-paragraph
       summary and exits.
 
 What (C2) gives the user: ask "what stage is it on?" / "why did
 stage 3 take so long?" in any surface, get a real answer that
 references the actual event stream and stage log.
 
+**Status — shipped on `codeless/job-chat`.** The supervisor lives as
+a module inside `codeless-runtime::supervisor` (R1 by construction —
+a grep test inside `supervisor/mod.rs` keeps `tokio::process` and
+`std::process` out of the module tree). `drive_job` spawns one
+supervisor when the Run enters `Running` and aborts it on terminal
+status; a fresh Run spawns a fresh supervisor. The read-only tool
+surface in `supervisor/tools/` routes through the existing
+`SqliteStore` / event-cursor reads; the supervisor's only outbound
+voice is `post_chat_message` with `transport=supervisor`, enforced
+by the same module-scoped grep test (no `eprintln`, no `tracing`
+that surfaces to the user, no direct event publish). The Claude
+session wires through `ClaudeRunnerAdapter` under the
+`supervisor-claude` cargo feature; `supervisor/prompt.rs` keeps the
+system prompt and per-tool descriptions reviewer-readable text
+sized under the 2c-per-turn budget; the deterministic
+`format_terminal_summary` helper covers the on-exit paragraph.
+`supervisor_e2e::supervisor_spawns_on_run_start_and_exits_on_run
+_terminal`,
+`supervisor_e2e::supervisor_answers_what_stage_is_it_on`, and
+`supervisor_e2e::supervisor_posts_terminal_summary_on_run_failed`
+pin the lifetime, the read-only Q/A path, and the terminal summary.
+
 ### (C3) — Action tools, deadline / threshold loops
 
-- [ ] `stop_job` and `add_job_note` action tools.
-- [ ] `pause_after_stage` tool (no-op until JOB-WORKFLOW (A.5)).
-- [ ] `supervisor_goals` table + migration. Columns: `id`,
+- [x] `stop_job` and `add_job_note` action tools.
+- [x] `pause_after_stage` tool (no-op until JOB-WORKFLOW (A.5)).
+- [x] `supervisor_goals` table + migration. Columns: `id`,
       `run_id`, `kind` (`deadline-stop` / `threshold-stop` /
       `event-notify` / …), `condition_json`, `action_json`,
       `authorised_by` (the `chat_messages.id` of the user message
@@ -468,15 +510,52 @@ references the actual event stream and stage log.
       `superseded`), `created_at`, `fired_at`. Load-bearing for the
       "if it runs >1h, stop it" feature surviving a restart —
       C3's example doesn't work without it.
-- [ ] Goal rehydration on supervisor boot — scan `armed` rows for
+- [x] Goal rehydration on supervisor boot — scan `armed` rows for
       the Run, re-arm timers / event watchers, drop stale ones.
-- [ ] Deadline / threshold intent recognition — the supervisor
+- [x] Deadline / threshold intent recognition — the supervisor
       treats "if X then Y" chat requests as inserts into
       `supervisor_goals`, not as in-memory state.
-- [ ] Slack adapter parity with Telegram — same `chat_bindings` shape.
+- [x] Slack adapter parity with Telegram — same `chat_bindings` shape.
 
 What (C3) gives the user: "if it runs more than an hour, stop and
 tell me why" works end-to-end.
+
+**Status — shipped on `codeless/job-chat`.** Migration
+`0026_supervisor_goals.sql` carries the columns from §C3;
+`codeless-runtime::store::supervisor_goals` exposes `insert_goal` /
+`list_armed_for_run` / `mark_fired` / `mark_cancelled` /
+`mark_superseded`, with `condition_json` and `action_json` validated
+against a typed enum at write time (`pause_after_stage` parses but
+records a structured `Failed` until JOB-WORKFLOW (A.5) lands).
+`supervisor/tools/actions.rs` carries `stop_job` (routes through
+`runtime::cancel_job`, same path as the UI's `[stop]` button) and
+`add_job_note` (writes `runs/<run_id>/notes/<ts>-supervisor.md`);
+the resulting `JobCancelled` / `JobNoteAdded` rows carry the
+provenance edge on the `chat_messages` row with
+`transport=supervisor` since the `events` table predates the
+per-action actor concept. The ad-hoc preview window is a 5-second
+`tokio::time::sleep` with cancellation on a fresh
+`ChatMessageAppended` from a user role matching `/^wait\b/i`;
+pre-armed actions fire immediately per Hard rule 4 with the
+post-action summary as the audit trail. The supervisor's
+`select!` loop combines the event bus, a deadline timer, and a
+`tokio::time::sleep_until` per armed goal; on boot (including a
+fresh process after a server bounce) `run_with_tools` scans `armed`
+rows for its `run_id`, re-arms the deadline timers, and walks rows
+whose condition is no longer reachable to `superseded` with a
+`transport=supervisor` chat note quoting the reason. The
+`codeless-slack` crate mirrors `codeless-telegram` one-for-one —
+same `chat_bindings.transport='slack'` rows, same
+`codeless-bot-core::chat_forward::classify` echo-suppression
+decision, same `metadata_json.delivery.slack` receipt shape.
+`supervisor_e2e::deadline_stop_fires_at_t_plus_one_hour`,
+`supervisor_e2e::supervisor_rehydrates_deadline_after_restart`,
+`supervisor_e2e::supervisor_supersedes_armed_goals_when_run_is
+_terminal_at_boot`,
+`supervisor_e2e::ad_hoc_stop_aborts_on_user_wait`,
+`supervisor_e2e::ad_hoc_stop_fires_after_window`, and
+`slack_chat_e2e::{origin_transport_skips_self_post,
+cross_transport_forwards_with_receipt}` are the load-bearing tests.
 
 ## Hard rules specific to this surface
 
