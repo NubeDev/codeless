@@ -124,16 +124,12 @@ impl InProcessRpc {
 
     /// Open the runtime against a file-backed SQLite database. The
     /// file is created if missing so a first-run CLI invocation does
-    /// not have to bootstrap state by hand.
+    /// not have to bootstrap state by hand. Pool config (WAL journal,
+    /// `synchronous=NORMAL`, `busy_timeout=5000`) lives in
+    /// `store::connect_pool` so the production path and any other
+    /// on-disk opener share one source of truth.
     pub async fn with_file(path: &std::path::Path) -> Result<Self, sqlx::Error> {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-        let opts = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(4)
-            .connect_with(opts)
-            .await?;
+        let pool = crate::store::connect_pool(path).await?;
         Self::with_db(pool).await
     }
 
