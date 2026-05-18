@@ -206,6 +206,71 @@ pub fn commit_paths(repo: &Path, subject: &str, paths: &[PathBuf]) -> Result<boo
     Ok(true)
 }
 
+/// Stage every change in the worktree (`git add -A`, respecting
+/// `.gitignore`) and commit with `subject`. Returns `Ok(true)` if a
+/// commit was produced, `Ok(false)` if `git add -A` produced no
+/// staged diff — the no-op case the per-stage commit step maps onto
+/// the `Git` trio rail's `Skipped` status.
+///
+/// Why this exists separately from `commit_paths`: the runner-driven
+/// per-stage commit doesn't track which files the agent touched, so
+/// it wants "stage everything that changed". `commit_paths` uses
+/// `git add -f -- <paths>` which force-stages *past* `.gitignore` —
+/// that's correct for the `.codeless/jobs/<name>.yaml` callers (the
+/// job dir may be ignored) but catastrophic for a "." path against
+/// a developer worktree with a multi-gigabyte `target/`. This
+/// function never passes `-f`, so build artefacts in `.gitignore`
+/// stay out of the commit.
+pub fn commit_all_changes(repo: &Path, subject: &str) -> Result<bool, GitCommitError> {
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["add", "-A"])
+        .output()
+        .map_err(|e| GitCommitError::Io {
+            op: "add -A",
+            source: e,
+        })?;
+    if !add.status.success() {
+        return Err(GitCommitError::GitFailed {
+            op: "add -A",
+            status: add.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&add.stderr).into_owned(),
+        });
+    }
+
+    let staged = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["diff", "--cached", "--quiet"])
+        .status()
+        .map_err(|e| GitCommitError::Io {
+            op: "diff --cached",
+            source: e,
+        })?;
+    if staged.success() {
+        return Ok(false);
+    }
+
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["commit", "-m", subject])
+        .output()
+        .map_err(|e| GitCommitError::Io {
+            op: "commit",
+            source: e,
+        })?;
+    if !commit.status.success() {
+        return Err(GitCommitError::GitFailed {
+            op: "commit",
+            status: commit.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&commit.stderr).into_owned(),
+        });
+    }
+    Ok(true)
+}
+
 /// Revert a previously-produced commit by SHA, producing a new
 /// `Revert "<original subject>"` commit on the current branch. Used by
 /// the UI patch-inbox's 10-second undo toast: when the operator clicks

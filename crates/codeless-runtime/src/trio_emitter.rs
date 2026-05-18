@@ -92,15 +92,26 @@ pub async fn emit_trio_completed(
     .await;
 }
 
-/// Per-stage commit seam. Wraps `codeless_adapters_host::commit_paths`
-/// and emits the `Git` trio updates around it: `InProgress` before the
-/// commit, then `Done` (commit produced), `Skipped` (no diff after
-/// staging — the workflow's no-op case documented in `todos.rs`), or
-/// `Failed` (git surfaced an error). Returns the underlying commit
-/// outcome so the caller can keep going on `Ok(false)` and bail on
-/// `Err`. `commit_paths` itself is synchronous (process spawn lives in
+/// Per-stage commit seam. Wraps
+/// `codeless_adapters_host::commit_all_changes` (which does
+/// `git add -A` + `git commit`, respecting `.gitignore`) and emits
+/// the `Git` trio updates around it: `InProgress` before the commit,
+/// then `Done` (commit produced), `Skipped` (no diff after staging —
+/// the workflow's no-op case documented in `todos.rs`), or `Failed`
+/// (git surfaced an error). Returns the underlying commit outcome
+/// so the caller can keep going on `Ok(false)` and bail on `Err`.
+/// The shell-out is synchronous (process spawn lives in
 /// `codeless-adapters-host` per R1); the offload through
 /// `spawn_blocking` keeps the reactor unblocked on a slow worktree.
+///
+/// Why `commit_all_changes` and not `commit_paths`: the runner does
+/// not track which files the agent touched this stage, so it asks
+/// git for the answer. The older `commit_paths` helper uses
+/// `git add -f -- <paths>` which force-stages past `.gitignore` —
+/// fine for its existing `.codeless/jobs/<name>.yaml` callers (the
+/// job dir may be ignored), but ruinous when paired with a `.` path
+/// against a developer worktree where `target/` is multi-gigabyte
+/// build output.
 pub async fn commit_stage_changes(
     ctx: &RunnerContext,
     store: &SqliteStore,
@@ -108,14 +119,12 @@ pub async fn commit_stage_changes(
     stage_id: StageId,
     repo: &std::path::Path,
     subject: &str,
-    paths: &[std::path::PathBuf],
 ) -> Result<bool, codeless_adapters_host::GitCommitError> {
     emit_trio_started(ctx, store, task_id, stage_id, TodoKind::Git).await;
     let repo = repo.to_path_buf();
     let subject = subject.to_string();
-    let paths = paths.to_vec();
     let join = tokio::task::spawn_blocking(move || {
-        codeless_adapters_host::commit_paths(&repo, &subject, &paths)
+        codeless_adapters_host::commit_all_changes(&repo, &subject)
     })
     .await;
     let result = match join {
@@ -473,7 +482,8 @@ mod tests {
             .unwrap();
         let ctx = ctx_with(Arc::clone(&bus));
 
-        let made = commit_stage_changes(&ctx, &store, task_id, stage_id, tmp.path(), "add", &[p])
+        let _ = p;
+        let made = commit_stage_changes(&ctx, &store, task_id, stage_id, tmp.path(), "add")
             .await
             .unwrap();
         assert!(made, "first commit on a new file produces a commit");
@@ -509,9 +519,9 @@ mod tests {
         init_git_repo(tmp.path());
         let p = tmp.path().join("hello.md");
         tokio::fs::write(&p, "hi").await.unwrap();
-        // Pre-commit the file so the next commit_paths call finds
-        // nothing to stage and returns Ok(false) — the no-diff path
-        // documented as the trio's `Skipped` case.
+        // Pre-commit the file so the next commit_all_changes call
+        // finds nothing to stage and returns Ok(false) — the
+        // no-diff path documented as the trio's `Skipped` case.
         std::process::Command::new("git")
             .arg("-C")
             .arg(tmp.path())
@@ -535,17 +545,10 @@ mod tests {
             .unwrap();
         let ctx = ctx_with(Arc::clone(&bus));
 
-        let made = commit_stage_changes(
-            &ctx,
-            &store,
-            task_id,
-            stage_id,
-            tmp.path(),
-            "noop",
-            std::slice::from_ref(&p),
-        )
-        .await
-        .unwrap();
+        let _ = p;
+        let made = commit_stage_changes(&ctx, &store, task_id, stage_id, tmp.path(), "noop")
+            .await
+            .unwrap();
         assert!(!made, "no diff means no commit");
 
         let mut got: Vec<Event> = Vec::new();
