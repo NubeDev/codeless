@@ -1,87 +1,71 @@
-# scoped-pause-points — stage 1 → stage 2 (REVIEW gate)
+# scoped-pause-points — stage 5 → stage 6 (runtime hook)
 
-Stage 1 was design-only. No code committed. Stage 2 is the REVIEW
-gate; do not start stage 3 until the gate is approved in chat.
+Stage 5 (persistence) landed. Next stage wires the runtime hook in
+the stage/todo state machine to consult the schedule before
+advancing.
 
-## What landed
+## What landed in stage 5
 
-- `DOCS/SCOPED-PAUSE-POINTS.md` (new) — the load-bearing grammar
-  reference for the parser that lands in stage 4. Sections:
-  - §1 Grammar — `pause_points:` key, `stage` (ordinal or name),
-    `todo` (ordinal | trio kind | `~substring`), `position` (required,
-    `before`|`after`), `reason` (optional, 512-byte cap).
-  - §2 Three worked examples — stage-only, stage+trio, stage+title-
-    substring with deferred resolution.
-  - §3 Rejection-rules table mapping every `ScopeError` variant to
-    its trigger. Parser pass order (structural → stage → todo →
-    cross-point) pinned for tests in stage 4.
-  - §4 Source-of-truth and re-resolution — schedule rows are written
-    keyed on `(job_id, ordinal)`; `resync_template_from_disk` diffs
-    in place; past-target points land `superseded_at` rather than
-    firing retroactively.
-  - §5 Open-question resolutions (mirror of job SCOPE.md §"Open
-    questions — resolved in stage 1").
-  - §6 Fully resolved schedule walk-through against a 9-stage plan.
+- Migration `crates/codeless-runtime/migrations/0022_scheduled_pause_points.sql`.
+  Table keyed on `(job_id, ordinal)` per SCOPED-PAUSE-POINTS §4 —
+  `ordinal` is the 1-based YAML index, not the resolved stage
+  ordinal, so a resync that renumbers stages does not orphan rows.
+  Columns: `job_id`, `ordinal`, `point_id`, `target_json`,
+  `position`, `reason`, `created_at`. `target_json` carries a
+  `PausePointTarget` serialised through the wire-shape serde derive
+  so the column round-trips through the same parser the wire uses.
+  FK `job_id` → `jobs(id)` `ON DELETE CASCADE`.
 
-- `.codeless/jobs/scoped-pause-points/SCOPE.md` — four open questions
-  resolved with one-line *why* each:
-  1. `position:` required (no default — ambiguous otherwise).
-  2. Title-substring kept; ambiguity fails loud (parse-time empty,
-     runtime multi-match).
-  3. Resync does **not** retroactively fire `JobPaused`; past-target
-     points are silenced no-ops with a one-line note in the resync
-     event payload.
-  4. `StopReason::ScopedPausePoint` resets cost caps the same way as
-     manual `pause_job` — operator intent is operator intent.
-  Stage 1 deliverables marked `[x]`.
+- `crates/codeless-runtime/src/store/scheduled_pause_points.rs` —
+  store module exposing two methods on `SqliteStore`:
+  - `replace_scheduled_pause_points(job_id, &[PausePoint], now)` —
+    idempotent rebuild inside one transaction (DELETE then bulk
+    INSERT). Empty slice drops the schedule for the job.
+  - `list_scheduled_pause_points(job_id)` — YAML-ordered load.
+  Seven async tests cover round-trip across every selector variant,
+  idempotency on repeated input, row drop on schedule shrink,
+  ordinal renumbering on schedule reorder, per-job isolation, and
+  the `ON DELETE CASCADE` from `jobs`.
 
-- `DOCS/SCOPE.md` — one bullet added under the Appendix A "Notes"
-  block cross-referencing `SCOPED-PAUSE-POINTS.md` and naming the
-  one new `StopReason` variant (`ScopedPausePoint`) and the one new
-  table (`scheduled_pause_points`, keyed on `(job_id, ordinal)`).
+- `resync_template_from_disk` (in `rpc/jobs.rs`) and
+  `update_job_template` (in `rpc/job_files.rs`) now call the new
+  `rebuild_scheduled_pause_points(rpc, job_id, &parsed)` helper
+  before publishing `JobTemplateUpdated`. Resolution failures are
+  surfaced as `RpcError::InvalidArgument` with the full punch list
+  joined by `; ` so a chat-driven edit that breaks the schedule is
+  refused before the row set diverges from the YAML on disk.
 
-## What the stage 2 reviewer should check
+- `crates/codeless-runtime/tests/migrations.rs` —
+  `scheduled_pause_points` added to the Appendix A allow-list and a
+  new test (`scheduled_pause_points_table_keys_on_job_and_ordinal`)
+  asserts the column order, the `scheduled_pause_points_job_idx`
+  index, and the `ON DELETE CASCADE` foreign key.
 
-1. Each of the four open questions in the job SCOPE has a single
-   decisive answer plus one-line rationale. No hedging.
-2. `DOCS/SCOPED-PAUSE-POINTS.md` §3 covers every `ScopeError`
-   variant the parser in stage 4 will emit — adding a variant later
-   means going back to this doc, not silently coding past it.
-3. The worked example in §6 resolves cleanly against the schedule
-   row layout described in §4 (the `ordinal` is the YAML index, not
-   a re-numbered position after name resolution).
-4. Cross-link sanity: job SCOPE.md ↔ `DOCS/SCOPED-PAUSE-POINTS.md`;
-   `DOCS/SCOPE.md` → `DOCS/SCOPED-PAUSE-POINTS.md`.
+## Verify
 
-## What stage 3 (next code stage) needs from this
+- `cargo test --workspace` — green.
+- `cargo clippy --workspace --all-targets -- -D warnings` — green.
+- `cargo fmt --check` — green.
 
-Wire types in `codeless-types`:
+## What stage 6 needs from this
 
-- `PausePoint { id, target, position, reason }`
-- `PausePointPosition { Before, After }`
-- `PausePointTarget { Stage { ordinal }, StageTodo { stage_ordinal, selector } }`
-- `TodoSelector { Ordinal(u32), Trio(TodoKind), TitleSubstring(String) }`
-- `PausePointId` newtype.
+- The schedule is now durable per-job. The runtime hook should read
+  it via `SqliteStore::list_scheduled_pause_points(job_id)` at the
+  same point in the transition where the trio gate inspects stage
+  completion (`stage 1 handover` note).
+- Identity is `PausePointId`. The parser mints a fresh one per
+  resolve, so the runtime cannot rely on id stability across a
+  resync. If stage 6 needs "did this exact point already fire?"
+  semantics, add `fired_at` / `superseded_at` columns in a follow-up
+  migration — those were called out in stage 1 §4 but deferred so
+  the persistence diff stays focused.
+- `StopReason::ScopedPausePoint { point_id, label }` is **not yet**
+  added to `codeless_types::StopReason`; stage 6 owns that change
+  along with the actual `pause_job` call site.
 
-All derive `serde`, `specta::Type`, `Debug`, `Clone`, `PartialEq`,
-`Eq`. Serde round-trip test required. No host deps (iOS / Android
-safe per R1).
+## Open follow-ups (do not act in stage 6 unless explicitly needed)
 
-The `StopReason::ScopedPausePoint { point_id, label }` variant lands
-later (stage 6, with the runtime hook). Stage 3 does **not** touch
-`StopReason` — the wire types alone can land without changing the
-runtime.
-
-## Open follow-ups for later stages (do not act on these now)
-
-- Stage 4 parser: emit the pass-1 errors as a `Vec<ScopeError>` so
-  the operator sees all structural issues at once.
-- Stage 5 persistence: confirm `scheduled_pause_points` migration
-  works against an existing dev DB with in-flight jobs; rebuild on
-  `resync_template_from_disk` must be idempotent.
-- Stage 6 runtime hook: place the schedule check at the same point
-  where the trio-gate inspects stage completion, so `after stage N`
-  semantics align with the existing `StageCompleted` emission.
-
-No code commits in this stage; `cargo test --workspace`, clippy,
-and fmt were not re-run (no Rust files changed).
+- `fired_at` / `superseded_at` columns and the question-3 resync
+  semantics (silenced no-ops with a note in the resync event payload).
+- A `pause_points_updated` event variant on `Event` so the UI can
+  refresh the divider chips without re-reading the whole job state.

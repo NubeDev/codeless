@@ -66,6 +66,7 @@ async fn migrator_creates_all_tables_from_appendix_a() {
             "pty_sessions".to_string(),
             "repos".to_string(),
             "reviews".to_string(),
+            "scheduled_pause_points".to_string(),
             "stages".to_string(),
             "tasks".to_string(),
             "todos".to_string(),
@@ -440,6 +441,50 @@ async fn substrate_doc_personas_are_seeded_with_new_columns() {
         );
         let _model_family: Option<String> = row.get("default_model_family");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduled_pause_points_table_keys_on_job_and_ordinal() {
+    // SCOPED-PAUSE-POINTS §4: the row key is the YAML position
+    // (`ordinal`), not the resolved stage ordinal, so a resync that
+    // renumbers stages does not orphan rows. The composite primary
+    // key plus the explicit job-ordered index back that contract.
+    let pool = fresh_db().await;
+    assert_eq!(
+        columns(&pool, "scheduled_pause_points").await,
+        vec![
+            "job_id",
+            "ordinal",
+            "point_id",
+            "target_json",
+            "position",
+            "reason",
+            "created_at",
+        ],
+    );
+    assert!(index_names(&pool)
+        .await
+        .contains(&"scheduled_pause_points_job_idx".to_string()));
+
+    let fks: Vec<(String, String, String)> =
+        sqlx::query("PRAGMA foreign_key_list(scheduled_pause_points)")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("table"),
+                    r.get::<String, _>("from"),
+                    r.get::<String, _>("on_delete"),
+                )
+            })
+            .collect();
+    assert!(
+        fks.iter()
+            .any(|(t, f, od)| t == "jobs" && f == "job_id" && od == "CASCADE"),
+        "scheduled_pause_points.job_id must FK jobs.id ON DELETE CASCADE; got {fks:?}",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
