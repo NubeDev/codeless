@@ -54,7 +54,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeless_types::review_gate::{PreCheckOutcome as WirePreCheck, ReviewVerdict as WireVerdict};
-use codeless_types::{Event, FailureClass, ReviewId, StageId, StageStatus, StopReason, TaskId};
+use codeless_types::{
+    Event, FailureClass, ReviewId, StageId, StageStatus, StopReason, TaskId, TodoId, TodoKind,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::auto_bypass_guard::ThrashingGuard;
@@ -66,6 +68,7 @@ use crate::handover::handover_path;
 use crate::review_gate::{parse_review_verdict_lenient, ReviewVerdict, VerdictParseError};
 use crate::runner::{Runner, RunnerContext, RunnerOutcome};
 use crate::scope_patch_emit::{emit_from_handover, EmitOutcome};
+use crate::state_machine::stage_trio_gate;
 use crate::store::SqliteStore;
 use crate::template::{JobTemplate, PlannedStage};
 use crate::time::now_ms;
@@ -615,6 +618,17 @@ impl Runner for TemplateRunner {
                 },
             )
             .await;
+
+            // Closing-trio injection. The runtime owns these three rows
+            // so a misbehaving runner cannot silently skip the closing
+            // steps; later in this stage the runtime emits
+            // `TodoUpdated` / `TodoCompleted` from `verify_runner`, the
+            // handover writer, and the per-stage commit step. Ordinals
+            // sit at the top of the `u32` range so the trio sorts last
+            // no matter how many runner-authored todos arrive before
+            // stage end. `(task_id, ordinal)` is the store's idempotency
+            // key, so a recorder replay on restart is a no-op.
+            publish_trio(&ctx, stage_id, task_id).await;
 
             // SESSION-MUTABLE-SCOPE Step 2: Layer-1 diff-verify
             // pre-check. For REVIEW stages, walk every path-shaped
@@ -1388,6 +1402,24 @@ impl Runner for TemplateRunner {
                 }
             }
 
+            // Stage-completion gate. The trio rows injected at stage
+            // entry must all be `Done` or `Skipped` before the runtime
+            // is allowed to publish `StageCompleted{ Passed }`. Failed
+            // stages bypass this gate above via `return RunnerOutcome::
+            // Failed { .. }` — a failed run cares about surfacing the
+            // failure, not about trio bookkeeping. The test path
+            // (`self.store.is_none()`) cannot persist trio rows and so
+            // degrades to passthrough; production paths (`with_store`)
+            // hold here until the runtime emitters in `verify_runner`,
+            // the handover writer, and the per-stage commit step flip
+            // each row.
+            if let Some(store) = self.store.as_ref() {
+                if !wait_for_trio_resolved(store, &ctx, stage_id, task_id).await {
+                    return RunnerOutcome::Failed {
+                        reason: "cancelled while waiting for stage trio resolution".into(),
+                    };
+                }
+            }
             publish(
                 &ctx,
                 stage_id,
@@ -1784,6 +1816,86 @@ fn truncate_failure_detail(s: &str) -> String {
         let mut out: String = s.chars().take(MAX - 1).collect();
         out.push('…');
         out
+    }
+}
+
+/// Emit the three closing-trio `TodoAdded` envelopes for a stage's
+/// terminal task. Ordinals occupy the top of the `u32` range so the
+/// trio always sorts to the bottom of the per-task checklist, no
+/// matter how many runner-authored todos appear between stage entry
+/// and stage end. Title strings are short by construction — the UI
+/// row is one line and `WORKFLOW.md` caps the emit-site title around
+/// 200 chars.
+async fn publish_trio(ctx: &RunnerContext, stage_id: StageId, task_id: TaskId) {
+    const TRIO_ORDINAL_BASE: u32 = u32::MAX - 2;
+    for (offset, kind) in TodoKind::TRIO.iter().enumerate() {
+        let title = match kind {
+            TodoKind::Checks => "checks (cargo test / clippy / fmt)",
+            TodoKind::Docs => "docs (handover + session log)",
+            TodoKind::Git => "git (commit + push)",
+            _ => continue,
+        };
+        publish(
+            ctx,
+            stage_id,
+            task_id,
+            Event::TodoAdded {
+                todo_id: TodoId::new(),
+                task_id,
+                ordinal: TRIO_ORDINAL_BASE + offset as u32,
+                title: title.into(),
+                kind: *kind,
+            },
+        )
+        .await;
+    }
+}
+
+/// Poll-loop on the trio gate until `stage_trio_gate` returns true or
+/// the context is cancelled. The runtime refuses to emit
+/// `StageCompleted{ status: Passed }` until the trio is resolved on
+/// the stage's terminal task; a misbehaving runner that short-circuits
+/// one of the closing steps is held here rather than waved through.
+/// A sqlx error is treated as a transient block — log, sleep, retry —
+/// because dropping a stage's terminal envelope on a flaky DB read
+/// would corrupt the recorder's view of the run.
+///
+/// Returns `false` only when the context was cancelled before the gate
+/// resolved; the caller is expected to surface that as a failure
+/// rather than emit a successful `StageCompleted`.
+async fn wait_for_trio_resolved(
+    store: &SqliteStore,
+    ctx: &RunnerContext,
+    stage_id: StageId,
+    task_id: TaskId,
+) -> bool {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+    let mut warned = false;
+    loop {
+        if ctx.cancel.is_cancelled() {
+            tracing::warn!(?stage_id, %task_id, "stage trio gate cancelled before resolution");
+            return false;
+        }
+        match stage_trio_gate(store, task_id).await {
+            Ok(true) => return true,
+            Ok(false) => {
+                if !warned {
+                    tracing::info!(
+                        ?stage_id,
+                        %task_id,
+                        "stage trio gate waiting for checks/docs/git resolution"
+                    );
+                    warned = true;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(?err, ?stage_id, "stage trio gate query failed; retrying");
+            }
+        }
+        tokio::select! {
+            _ = ctx.cancel.cancelled() => {}
+            _ = tokio::time::sleep(POLL) => {}
+        }
     }
 }
 
@@ -2602,5 +2714,245 @@ stages:
             .await
             .unwrap();
         assert!(empty.is_none());
+    }
+
+    #[tokio::test]
+    async fn template_runner_emits_trio_after_stage_started() {
+        // The closing trio is runtime-injected at stage entry so a
+        // misbehaving runner cannot silently skip the closing three
+        // steps. This test pins the event order on the wire:
+        // `StageStarted` first, then exactly one `TodoAdded` per trio
+        // kind (`Checks`, `Docs`, `Git`) in that order, per stage.
+        use crate::event_bus::SubscribeFilter;
+        use crate::rpc::InProcessRpc;
+        use crate::runner::{Runner, RunnerContext};
+        use codeless_types::{Event, JobId, TodoKind};
+        use futures_util::StreamExt;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let runner = TemplateRunner::new(template_with_stages(&["one", "two"])).with_mock_runner();
+        let rpc = InProcessRpc::new().await.unwrap();
+        let bus = rpc.bus().clone();
+        let mut stream = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+        let ctx = RunnerContext {
+            job_id: JobId::new(),
+            stage_id: None,
+            bus: Arc::clone(&bus),
+            worktree_path: None,
+            cancel: CancellationToken::new(),
+        };
+        runner.run(ctx).await;
+
+        let mut order: Vec<&'static str> = Vec::new();
+        let mut trio_kinds: Vec<TodoKind> = Vec::new();
+        while let Ok(Some(env)) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), stream.next()).await
+        {
+            let env = env.unwrap();
+            match env.event {
+                Event::StageStarted { .. } => order.push("stage-started"),
+                Event::TodoAdded { kind, .. } => {
+                    order.push("todo-added");
+                    trio_kinds.push(kind);
+                }
+                _ => {}
+            }
+        }
+
+        // Two stages, each emits one StageStarted followed immediately
+        // by three TodoAdded envelopes — six trio rows total.
+        let stage_started_count = order.iter().filter(|t| **t == "stage-started").count();
+        let todo_added_count = order.iter().filter(|t| **t == "todo-added").count();
+        assert_eq!(stage_started_count, 2);
+        assert_eq!(todo_added_count, 6);
+        assert_eq!(
+            trio_kinds,
+            vec![
+                TodoKind::Checks,
+                TodoKind::Docs,
+                TodoKind::Git,
+                TodoKind::Checks,
+                TodoKind::Docs,
+                TodoKind::Git,
+            ]
+        );
+
+        // First emission per stage: stage-started precedes its trio.
+        let first_started = order
+            .iter()
+            .position(|t| *t == "stage-started")
+            .expect("at least one stage-started");
+        assert!(order[first_started + 1..first_started + 4]
+            .iter()
+            .all(|t| *t == "todo-added"));
+    }
+
+    #[tokio::test]
+    async fn template_runner_blocks_stage_completed_until_trio_resolved() {
+        // The runtime refuses to publish `StageCompleted{ Passed }`
+        // until the trio is `Done`/`Skipped` on the stage's terminal
+        // task. This test installs the recorder so the bus's
+        // `TodoAdded` envelopes land in SQLite, runs one mock stage,
+        // confirms `StageCompleted` is held back, then resolves the
+        // trio out-of-band and asserts the gate releases.
+        use crate::event_bus::SubscribeFilter;
+        use crate::rpc::InProcessRpc;
+        use crate::runner::{Runner, RunnerContext};
+        use codeless_types::{Event, JobStatus, TodoStatus, WorkspaceMode};
+        use futures_util::StreamExt;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let rpc = InProcessRpc::new().await.unwrap();
+        let bus = rpc.bus().clone();
+        let store = rpc.store().clone();
+
+        // Recorder consumes the bus and persists the trio rows so the
+        // gate can find them via `trio_resolved`.
+        let recorder = crate::stage_recorder::spawn_stage_recorder(bus.clone(), store.clone())
+            .await
+            .unwrap();
+
+        let repo = codeless_types::Repo {
+            id: codeless_types::RepoId::new(),
+            name: "demo".into(),
+            clone_url: "file:///dev/null".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp".into(),
+            git_auth: codeless_types::GitAuth::Token {
+                env_var: "X".into(),
+            },
+            concurrency_cap: None,
+            default_runner: Some("mock".into()),
+            created_at: now_ms(),
+            updated_at: now_ms(),
+        };
+        store.insert_repo(&repo).await.unwrap();
+        let job = codeless_types::Job {
+            id: codeless_types::JobId::new(),
+            repo_id: repo.id,
+            status: JobStatus::Running,
+            stop_reason: None,
+            template_yaml: None,
+            prompt: Some("p".into()),
+            runner: "mock".into(),
+            branch: "b".into(),
+            workspace_mode: WorkspaceMode::default(),
+            worktree_path: None,
+            cost_cap_cents: codeless_types::CostCents::ZERO,
+            wall_clock_cap_ms: 0,
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            auto_bypass_policy: None,
+            pending_operator_comment: None,
+            precheck_override_once: false,
+            cost_cents: codeless_types::CostCents::ZERO,
+            started_at: None,
+            ended_at: None,
+            created_at: now_ms(),
+        };
+        store.insert_job(&job).await.unwrap();
+
+        let runner = TemplateRunner::new(template_with_stages(&["only"]))
+            .with_mock_runner()
+            .with_store(store.clone());
+
+        let ctx = RunnerContext {
+            job_id: job.id,
+            stage_id: None,
+            bus: Arc::clone(&bus),
+            worktree_path: None,
+            cancel: CancellationToken::new(),
+        };
+        let cancel_for_test = ctx.cancel.clone();
+        let run_handle = tokio::spawn(async move { runner.run(ctx).await });
+
+        // Tail the bus and wait for the trio to appear. The recorder
+        // persists each `TodoAdded` and the gate then polls
+        // `trio_resolved`; without external resolution the run hangs
+        // here, which is the contract this test pins.
+        let mut sub = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+
+        // Pull events from the bus until the third trio TodoAdded
+        // (`Git`) lands — at that point the recorder has the rows it
+        // needs to answer `trio_resolved`, and the runner is blocked
+        // at the gate. Track whether StageCompleted has shown up; it
+        // must not.
+        let mut saw_stage_completed = false;
+        let mut task_id: Option<TaskId> = None;
+        let mut trio_seen = 0;
+        let deadline_inject = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while trio_seen < 3 && std::time::Instant::now() < deadline_inject {
+            if let Ok(Some(env)) =
+                tokio::time::timeout(std::time::Duration::from_millis(150), sub.next()).await
+            {
+                let env = env.unwrap();
+                match env.event {
+                    Event::TodoAdded { task_id: t, .. } => {
+                        task_id = Some(t);
+                        trio_seen += 1;
+                    }
+                    Event::StageCompleted { .. } => saw_stage_completed = true,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(trio_seen, 3, "three trio TodoAdded envelopes must arrive");
+        let task_id = task_id.expect("trio carries task_id");
+        // Brief settle so the recorder finishes persisting before we
+        // poll the rows out. The recorder is a separate task on the
+        // same bus.
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(
+            !saw_stage_completed,
+            "StageCompleted must not be emitted while trio is unresolved"
+        );
+
+        let todos = store.list_todos_for_task(task_id).await.unwrap();
+        let trio: Vec<_> = todos.iter().filter(|t| t.kind.is_trio()).collect();
+        assert_eq!(trio.len(), 3, "three trio rows must be persisted");
+        for t in &trio {
+            store
+                .update_todo_status(t.id, TodoStatus::Done, now_ms())
+                .await
+                .unwrap();
+        }
+
+        // Gate releases on next poll cycle; await StageCompleted.
+        let mut released = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(env)) =
+                tokio::time::timeout(std::time::Duration::from_millis(150), sub.next()).await
+            {
+                let env = env.unwrap();
+                if matches!(
+                    env.event,
+                    Event::StageCompleted {
+                        status: StageStatus::Passed,
+                        ..
+                    }
+                ) {
+                    released = true;
+                    break;
+                }
+            }
+        }
+        assert!(released, "gate must release once trio rows are resolved");
+
+        // Hand back the join handle: drop the cancel/recorder cleanly.
+        let _ = run_handle.await;
+        let _ = cancel_for_test;
+        recorder.abort();
     }
 }

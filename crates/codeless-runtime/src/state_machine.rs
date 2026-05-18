@@ -1,5 +1,7 @@
-use codeless_types::{JobStatus, StageStatus, TaskStatus};
+use codeless_types::{JobStatus, StageStatus, TaskId, TaskStatus};
 use thiserror::Error;
+
+use crate::store::SqliteStore;
 
 /// Refused transition. The driver treats this as a programming error
 /// (the state machine guarded against an illegal move), not a user
@@ -142,6 +144,19 @@ pub fn transition_task(from: TaskStatus, to: TaskStatus) -> Result<(), Transitio
     }
 }
 
+/// Closing-trio gate on `Running -> Passed`. The runtime injects three
+/// trio rows (`Checks`, `Docs`, `Git`) at stage entry; the stage cannot
+/// emit `Event::StageCompleted{ status: Passed }` until every one is
+/// `Done` or `Skipped`. Returning `false` keeps the stage open — the
+/// caller is expected to retry with delay rather than override the
+/// gate. The transition functions above are pure status guards;
+/// resolving the trio requires the persistent state machine (SQLite
+/// rows the recorder owns), so the gate lives here as the async
+/// counterpart to `transition_stage`.
+pub async fn stage_trio_gate(store: &SqliteStore, terminal_task_id: TaskId) -> sqlx::Result<bool> {
+    store.trio_resolved(terminal_task_id).await
+}
+
 pub fn is_terminal_job(s: JobStatus) -> bool {
     matches!(
         s,
@@ -174,6 +189,150 @@ mod tests {
         let err = transition_job(JobStatus::Running, JobStatus::Draft)
             .expect_err("running -> draft must be refused");
         assert_eq!(err.kind, "job");
+    }
+
+    #[tokio::test]
+    async fn trio_gate_blocks_until_all_three_resolved() {
+        // The gate is the async counterpart to `transition_stage`: a
+        // pure status guard cannot tell whether the trio rows have
+        // landed, so the gate consults the store. This test pins the
+        // "blocked until all three resolved" contract end-to-end so a
+        // future refactor that moves the check out of state_machine
+        // cannot drop the gate semantics.
+        use crate::migrations::MIGRATOR;
+        use codeless_types::{
+            CostCents, GitAuth, Job, JobId, RepoId, Stage, StageId, Task, TaskStatus, Todo, TodoId,
+            TodoKind, TodoStatus, UnixMillis, WorkspaceMode,
+        };
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let store = SqliteStore::new(pool);
+
+        let repo = codeless_types::Repo {
+            id: RepoId::new(),
+            name: "r".into(),
+            clone_url: "u".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp".into(),
+            git_auth: GitAuth::Ssh {
+                key_path: "/k".into(),
+            },
+            concurrency_cap: None,
+            default_runner: None,
+            created_at: UnixMillis(0),
+            updated_at: UnixMillis(0),
+        };
+        store.insert_repo(&repo).await.unwrap();
+        let job = Job {
+            id: JobId::new(),
+            repo_id: repo.id,
+            status: JobStatus::Running,
+            stop_reason: None,
+            template_yaml: None,
+            prompt: None,
+            runner: "mock".into(),
+            branch: "b".into(),
+            workspace_mode: WorkspaceMode::Worktree,
+            worktree_path: None,
+            cost_cap_cents: CostCents(0),
+            wall_clock_cap_ms: 0,
+            cost_cents: CostCents(0),
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            auto_bypass_policy: None,
+            pending_operator_comment: None,
+            precheck_override_once: false,
+            started_at: None,
+            ended_at: None,
+            created_at: UnixMillis(0),
+        };
+        store.insert_job(&job).await.unwrap();
+        let stage = Stage {
+            id: StageId::new(),
+            job_id: job.id,
+            ordinal: 0,
+            name: "s".into(),
+            status: StageStatus::Running,
+            verify_cmd: None,
+            started_at: None,
+            ended_at: None,
+            session_id: None,
+            goal: None,
+            acceptance: None,
+            last_activity_at: None,
+            archived: false,
+            persona_id: None,
+            failure_class: None,
+            failure_detail: None,
+            bypassed_at: None,
+            bypassed_reason: None,
+        };
+        store.insert_stage(&stage).await.unwrap();
+        let task = Task {
+            id: TaskId::new(),
+            stage_id: stage.id,
+            ordinal: 0,
+            status: TaskStatus::Running,
+            depends_on: vec![],
+            lease_holder: None,
+            lease_expires_at: None,
+            cost_cents: CostCents(0),
+            input_tokens: 0,
+            output_tokens: 0,
+            started_at: None,
+            ended_at: None,
+        };
+        store.insert_task_minimal(&task).await.unwrap();
+
+        // No trio rows yet — gate blocks.
+        assert!(!stage_trio_gate(&store, task.id).await.unwrap());
+
+        let mk = |ord: u32, kind: TodoKind| Todo {
+            id: TodoId::new(),
+            task_id: task.id,
+            ordinal: ord,
+            title: "t".into(),
+            status: TodoStatus::Pending,
+            kind,
+            created_at: UnixMillis(0),
+            started_at: None,
+            ended_at: None,
+        };
+        let checks = mk(10, TodoKind::Checks);
+        let docs = mk(11, TodoKind::Docs);
+        let git = mk(12, TodoKind::Git);
+        for t in [&checks, &docs, &git] {
+            store.insert_todo(t).await.unwrap();
+        }
+        // Rows exist but Pending — gate blocks.
+        assert!(!stage_trio_gate(&store, task.id).await.unwrap());
+
+        store
+            .update_todo_status(checks.id, TodoStatus::Done, UnixMillis(1))
+            .await
+            .unwrap();
+        store
+            .update_todo_status(docs.id, TodoStatus::Done, UnixMillis(2))
+            .await
+            .unwrap();
+        // Two of three — gate blocks.
+        assert!(!stage_trio_gate(&store, task.id).await.unwrap());
+
+        // `Skipped` counts as resolved (the no-diff git case).
+        store
+            .update_todo_status(git.id, TodoStatus::Skipped, UnixMillis(3))
+            .await
+            .unwrap();
+        assert!(stage_trio_gate(&store, task.id).await.unwrap());
     }
 
     #[test]

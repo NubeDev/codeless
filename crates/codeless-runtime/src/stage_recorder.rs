@@ -180,6 +180,18 @@ async fn handle_event(
             // no-ops. The row starts in `Pending` with no started/ended
             // timestamps; the `TodoUpdated` / `TodoCompleted` arms fill
             // those columns via `update_todo_status`.
+            //
+            // The runtime injects the trio at stage entry, before the
+            // inner adapter has had a chance to emit `TaskStarted`, so
+            // the parent task row may not exist yet. Seed it with the
+            // envelope's `stage_id` so the FK on `todos.task_id`
+            // resolves — same pattern `add_message_cost` uses.
+            if let Some(stage_id) = env.stage_id {
+                if let Err(e) = upsert_task_started(store, *task_id, stage_id, env.created_at).await
+                {
+                    tracing::trace!(error = ?e, "todo-added task seed skipped");
+                }
+            }
             store
                 .insert_todo(&Todo {
                     id: *todo_id,
