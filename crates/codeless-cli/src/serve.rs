@@ -372,6 +372,14 @@ async fn run_server(
         // wiring `CodelessProvider` + skills dir + components.json is
         // a follow-up. The route mount is opt-in via `with_ai_ui`.
         ai_ui: None,
+        // Plugin catalog left unattached here; production wiring will
+        // hand a built `PluginCatalog` to `AppState::with_plugins`
+        // once the CLI grows a `--plugins-dir` (or equivalent)
+        // surface that scans the plugin registry on boot. `None`
+        // means `/plugins` and `/plugins/<id>/ui/*` are not
+        // registered — byte-for-byte identical to a server compiled
+        // without plugin support.
+        plugins: None,
     };
 
     // Outbound webhook notifier: when both `notifier_webhook_url`
