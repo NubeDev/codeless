@@ -7,7 +7,7 @@ The substrate e2e test
 is parameterised over both flavours; both green.
 
 ## What landed in stage 5
-
+-
 - `crates/codeless-plugin-notes/src/lib.rs` rewritten on top of the
   SDK's `ToolBehavior` trait. `NotesAppend` now carries typed
   `NotesAppendArgs` / `NotesAppendOutput` driven by schemars. The PS7

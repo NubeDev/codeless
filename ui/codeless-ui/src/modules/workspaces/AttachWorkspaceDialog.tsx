@@ -147,8 +147,17 @@ export function AttachWorkspaceDialog({
   }, [path, open, rpc, nameTouched]);
 
   const onBrowse = useCallback(async () => {
-    const picked = await picker.pickDirectory({ startPath: path || undefined });
-    if (picked) setPath(picked);
+    try {
+      const picked = await picker.pickDirectory({ startPath: path || undefined });
+      if (picked) setPath(picked);
+    } catch (e) {
+      // Surface picker failures in the same error slot as submit errors
+      // so a misconfigured shell (missing plugin/permission) shows
+      // visibly instead of looking like a dead button.
+      setSubmitError(
+        `Browse failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }, [picker, path]);
 
   const canSubmit =

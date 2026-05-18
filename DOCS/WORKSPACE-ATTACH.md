@@ -659,3 +659,224 @@ Milestone 3: a typed-wire snapshot test for the four methods.
 Milestones 4–6: at minimum one Playwright/RTL happy-path test per
 milestone (attach modal, switch active, unhealthy badge). No
 milestone lands without its exit test.
+
+## TODO — adapter registry (chat adapters + AI runners)
+
+Follow-on surface, not in scope for the workspace-attach milestones
+above. Captured here so it does not get lost; will graduate to its
+own `SCOPE-ADAPTER-REGISTRY.md` when picked up.
+
+**Goal.** Let the user enable/disable and configure the **chat
+adapters** (Slack, Telegram, Gmail) and **AI runners** (`claude`,
+`anthropic`, `codex`, `copilot`) from the UI, the same way
+workspace-attach replaced `--fs-root`. Today both are boot-time CLI
+flags (`--enable-slack`, `--enable-telegram`, `--enable-claude`, …)
+read once by [`codeless-cli/src/serve.rs`](../crates/codeless-cli/src/serve.rs)
+and baked into [`DefaultRunnerFactory`](../crates/codeless-runtime/src/default_runner_factory.rs)
++ adapter spawn calls. Changing any of them needs a manual restart
+with edited flags.
+
+**Stage 1 — reboot is acceptable.** Server restart on apply is
+explicitly fine; SQLite is the source of truth (R4) and the job
+driver already replays the backlog on boot
+([`job_driver_loop::replay_backlog`](../crates/codeless-runtime/src/job_driver_loop.rs)).
+That removes the `Arc<ArcSwap<…>>` / per-adapter graceful-shutdown
+work and shrinks the milestone to:
+
+1. `[ ]` SQLite tables: `chat_adapters(kind, instance_id, enabled,
+   configured_at, PRIMARY KEY (kind, instance_id))` and
+   `runner_config(runner_id PRIMARY KEY, enabled)`. Boot reads these
+   instead of CLI flags. `--enable-*` flags stay as bootstrap
+   conveniences that upsert the row (same pattern as `--fs-root` →
+   `attached_workspaces`).
+   - **Why two tables, not one** (peer-review pushback): chat
+     adapters and runners have different config shapes. Runners are
+     ~enable + optional binary path. Chat adapters carry per-
+     instance config (workspace IDs, channel filters, mailbox).
+     One `enabled_components(kind, id, enabled, config_json)` table
+     is closer to how workspaces did it; if the per-adapter config
+     stays small enough to live in a `config_json` blob, collapse
+     to one table when graduating to `SCOPE-ADAPTER-REGISTRY.md`.
+   - **Composite PK on `(kind, instance_id)`** so the user can have
+     Slack-personal + Slack-work, or two Gmail accounts, without a
+     schema change. Default `instance_id = "default"` covers the
+     today-case.
+2. `[ ]` Secrets go through the existing `SecretStore`
+   ([`codeless-adapters-host/src/secrets.rs`](../crates/codeless-adapters-host/src/secrets.rs))
+   — XDG-pathed TOML at `~/.config/codeless/secrets.toml`, flat
+   `key = "value"` map, already used for `slack_*`,
+   `telegram_bot_token`, `anthropic_api_key`. New keys:
+   `gmail_refresh_token`, `gmail_client_id`, `gmail_client_secret`.
+   The new tables hold the enable bit only; secrets writes go
+   through the existing secrets RPC. Write-then-fsync-then-restart
+   ordering is load-bearing — UI must not trigger restart before
+   the secrets file is durable on disk.
+3. `[ ]` Harden the secrets store. Today's file is plaintext TOML
+   with no at-rest protection beyond filesystem perms. The Gmail
+   refresh token (long-lived, account-wide mail access) raises the
+   blast radius enough that this should ship alongside the Gmail
+   adapter, not after. Options, in order of preference:
+   - OS keychain via the `keyring` crate (Secret Service on Linux,
+     Keychain on macOS, Credential Manager on Windows). Per-key
+     entries; `SecretStore` becomes a thin facade. Best UX, no
+     passphrase prompt, ties unlock to the desktop session.
+     Headless Linux servers fall back to (b).
+     `codeless-tauri-desktop` already brokers OS-integration
+     calls; this fits the same shape.
+   - `age`-encrypted file under a passphrase the user enters once
+     per server boot. Works headless; adds a startup prompt and a
+     "secrets locked" failure mode that the UI has to handle.
+     Worth doing as the fallback path for the keychain story.
+
+   Sequence: land the keychain backend behind a `SecretBackend`
+   trait so `SecretStore`'s callers don't care which is in use,
+   then migrate existing keys on first read. The TOML file stays
+   as a `--secrets-file` opt-in for CI / fixtures.
+4. `[ ]` RPC: `list_chat_adapters`, `set_chat_adapter_enabled`,
+   `validate_chat_adapter_secrets` (calls `auth.test` for Slack,
+   `getMe` for Telegram, token introspection for Gmail);
+   `list_runners`, `set_runner_enabled`. All behind the bearer gate
+   (R5).
+   - **Validate-before-enable coupling.**
+     `set_chat_adapter_enabled(true)` MUST refuse with
+     `MissingSecrets { keys: Vec<String> }` or
+     `ValidationFailed { reason }` unless a prior
+     `validate_chat_adapter_secrets` for the same `(kind,
+     instance_id)` succeeded within the current session. Otherwise
+     a restart succeeds, the adapter crashes on startup, and the
+     UI has no clean error path.
+   - **Timeouts and rate limiting.**
+     `validate_chat_adapter_secrets` calls (Telegram `getMe` over
+     a fresh bot token can hang ~30s on a bad network) have a
+     hard 5s timeout. Rate limit is per-`(kind, instance_id)`
+     bucket (5/s), not per-connection — otherwise a slow Slack
+     validation blocks a concurrent Telegram one. This is a
+     deliberate divergence from `validate_workspace_path`'s
+     per-connection limit; the precedent does not fit here.
+5. `[ ]` `restart_server` RPC. Three contexts, not two; the
+   peer-review caught that the browser-shell case was unaddressed.
+   - **CLI under a supervisor** (systemd, `init-session.sh`,
+     `--respawn-on-exit` — see below): exit with sentinel code 75
+     `EX_TEMPFAIL`, supervisor re-execs. Or
+     `std::os::unix::process::CommandExt::exec` for in-place
+     replacement when the supervisor is `init-session.sh`-shaped
+     rather than systemd-shaped.
+   - **Tauri desktop**: shell owns the `codeless serve` sidecar,
+     kills and respawns, shows a "restarting" toast while the SSE
+     channel reconnects.
+   - **Bare `codeless serve` in a terminal** (browser-shell user
+     with no supervisor): the RPC returns
+     `RestartUnsupervised { hint }` and refuses to exit. Two ways
+     to make it work:
+     a. Add `codeless serve --respawn-on-exit`, which spawns a
+        thin self-watcher (parent process re-execs the child on
+        exit-75). This is the recommended path — it makes the
+        standalone case Just Work without external tooling.
+     b. Document the hint as "restart manually" with a copy-pasta
+        command. Acceptable fallback; not the default story.
+   The current draft implied this Just Works in all contexts; it
+   does not. Pick (a) before the milestone closes.
+   - **In-flight job impact.** Restart is not free for running
+     jobs. `claude` / `codex` / `copilot` runners are PTY-bound;
+     the child process dies on restart, the stage's last
+     checkpoint replays, but anything between the checkpoint and
+     the restart is lost. The `restart_server` precondition:
+     enumerate running jobs and partition into *resumable*
+     (template-driven, checkpoint within last N seconds) vs
+     *killed* (mid-PTY-stream, no recent checkpoint). The verb
+     returns `RestartHasRunningJobs { resumable: Vec<JobId>,
+     killed: Vec<JobId> }` unless called with `force: true`. The
+     confirm modal at step 6 renders this partition before the
+     user clicks Apply. No `DetachPolicy::LeaveRunning` analogue —
+     the server is going down, there is no "leave running"
+     option — but the user must see which jobs will be killed,
+     not just told "jobs will pause and resume".
+   UI batches "Apply" so three toggle changes = one restart, not
+   three.
+6. `[ ]` Settings → Adapters page. One responsive component (R3):
+   rows for each chat adapter and runner, toggle + secret fields,
+   "Apply (will restart)" button with confirm modal that names the
+   running jobs that will pause/resume.
+
+**Stage 2 — hot-reload (deferred, optional).** Lift adapter
+lifecycle out of `serve.rs` into a `ChatAdapterRegistry` owned by
+`ServerState`; wrap the `DefaultRunnerFactory` `enable_*` fields in
+`AtomicBool` or behind an `ArcSwap<RunnerConfig>`. Removes the
+restart on apply. Triggers (any one promotes stage 2 from
+"deferred" to "next milestone"):
+
+- More than ~5 `restart_server`-initiated job kills per week in
+  dogfood telemetry (i.e. the in-flight-impact warning above is
+  actually firing).
+- iOS / Android shell lifecycle requirements that make restart
+  user-visible (mobile suspend / resume crosses a server restart
+  boundary).
+- A user-facing "rotate Slack token without dropping the active
+  job" ask that lands in the issue tracker more than once.
+
+Until one of those triggers fires, stage 1 is the whole story.
+Without a measurable trigger this stays deferred forever, which
+is the failure mode the peer review flagged.
+
+**Pluggability** (also peer-review). The closed set today is
+Slack, Telegram, Gmail — and the registry's `ChatAdapterRegistry`
+trait is the explicit extension point. Adding Discord / Matrix /
+SMS later means a new `codeless-discord` crate that implements
+`BotTransport` (from `codeless-bot-core`) and registers itself
+with the registry at boot; no schema change because of the
+`(kind, instance_id)` PK from step 1, no RPC change because
+`list_chat_adapters` enumerates whatever is registered. Recompile
+required — adapters are not WASM plugins, and that is a
+deliberate commitment for the foreseeable future.
+
+**Gmail-specific work (separate milestone, slots into the
+registry).** Outbound is already done:
+[`codeless-tools::email::GmailMailer`](../crates/codeless-tools/src/email/gmail.rs)
+posts to `users.messages.send` with a caller-supplied OAuth2 token,
+and the `Mailer` trait is transport-agnostic. What's missing for
+Gmail-as-chat-adapter:
+
+1. `[ ]` OAuth host wiring — PKCE flow + refresh token, stored via
+   the hardened `SecretBackend` from stage 1 step 3. Token
+   acquisition is deliberately out of scope for `codeless-tools`;
+   this lands in a new `codeless-gmail` crate paralleling
+   `codeless-slack` / `codeless-telegram`. (`BotTransport` lives in
+   [`codeless-bot-core`](../crates/codeless-bot-core/) — the new
+   crate implements that trait.)
+   - **Refresh-token rotation.** Google rotates the refresh token
+     on some flows (scope changes, long inactivity, security
+     events). The `SecretBackend` needs update-in-place semantics
+     (already present) *and* a `secrets_changed` event the
+     inbound long-poll subscribes to so it picks up the new token
+     without a restart. Without this the long-poll silently uses
+     a stale token after rotation and inbound mail goes dark.
+2. `[ ]` Inbound transport — long-poll `users.history.list` against
+   a stored `historyId`. Mirrors the existing Telegram long-poll
+   pattern ([`codeless-telegram/src/long_poll.rs`](../crates/codeless-telegram/src/long_poll.rs))
+   and avoids the public-webhook dependency that `users.watch` +
+   Pub/Sub would impose on a local-first tool.
+3. `[ ]` `BotTransport` impl + envelope mapping via
+   `codeless-bot-core`. Reuse the parser; the new piece is
+   `Message-ID` / `In-Reply-To` / `References` → `ThreadMap`
+   (replacing Slack's `thread_ts` / Telegram's
+   `message_thread_id`).
+4. `[ ]` Wire outbound through the existing `GmailMailer` — `Message`
+   construction in the adapter, hand to the already-built sender.
+
+Stage 1 of the registry plus the Gmail crate together replace every
+`--enable-*` flag with a Settings page row.
+
+**Exit tests (peer-review).** No milestone closes without:
+
+- Write-then-fsync-then-restart ordering: a unit test that crashes
+  the process between secrets-write and restart-signal proves the
+  on-disk state is durable. Today's "load-bearing comment" is not
+  enough.
+- `restart_server` partition test: a job with a recent checkpoint
+  is reported `resumable` and resumes; a job mid-PTY-stream is
+  reported `killed` and the kill is logged with a structured event
+  the UI can render post-restart.
+- `set_chat_adapter_enabled(true)` without a prior successful
+  `validate_chat_adapter_secrets` returns the structured
+  `MissingSecrets` / `ValidationFailed` error, not a generic
+  `Conflict`.
