@@ -38,6 +38,7 @@ pub mod session_log;
 pub mod stage_recorder;
 pub mod state_machine;
 pub mod store;
+pub mod supervisor;
 pub mod template;
 pub mod template_runner;
 pub mod time;
@@ -77,6 +78,7 @@ pub use state_machine::{
     is_terminal_job, transition_job, transition_stage, transition_task, TransitionError,
 };
 pub use store::SqliteStore;
+pub use supervisor::spawn_supervisor;
 pub use time::now_ms;
 pub use tracing_init::{try_init_json, try_init_pretty};
 pub use webhook::{WebhookConfig, WebhookNotifier, WebhookSetupError};
