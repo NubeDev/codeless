@@ -23,6 +23,8 @@ goal: |
   forces supervisor_goals rehydration on supervisor boot. Slack
   adapter parity with Telegram is in scope (same chat_bindings shape).
 
+docs:
+  - CHAT.md
 stages:
   - "stage 1: resolve open questions (OQ-CHAT-1..5 from JOB-CHAT.md §Open questions; final v0.1 transport set + the wire-name convention for ChatTransport) under SCOPE.md §Open questions and propagate the resolutions into JOB-CHAT.md inline; no implementation"
   - "stage 2: schema — add codeless-runtime/migrations/0024_chat_messages.sql (chat_messages + chat_messages_job_idx + the partial-unique chat_messages_external_idx) and 0025_chat_bindings.sql (chat_bindings with thread_id NOT NULL DEFAULT '' as the no-thread sentinel), with row-level docs explaining the NULL-vs-empty-string sentinel and why the unique constraint is partial; the existing migration matrix test loads both migrations cleanly on a fresh DB and replay-idempotent on a populated one"
