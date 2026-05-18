@@ -55,3 +55,4 @@ dist/
 .DS_Store
 Thumbs.db
 job-01KRSKS8XYAW47SR6F1GXAWH9F
+target-wasm/

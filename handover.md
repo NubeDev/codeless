@@ -1,108 +1,111 @@
-# plugin-substrate-runtimes — stage 3 → stage 4
+# plugin-substrate-runtimes — stage 5 → stage 6
 
-Stage 3 (codeless-tool-wit scaffold) landed. Stage 4 closes the
-WASM-A milestone by adding the host loader `codeless-plugin-host-
-wasm` and the runtime-adapter table seam in `codeless-tools`.
+Stage 5 landed: the `codeless-plugin-notes` plugin is now ported onto
+`codeless-plugin-sdk` and compiles as both flavours from one source.
+The substrate e2e test
+`plugin_substrate_e2e::notes_plugin_loads_and_seeds_persona_addressable_by_thread`
+is parameterised over both flavours; both green.
 
-## What landed in stage 3
+## What landed in stage 5
 
-New mobile-safe crate `crates/codeless-tool-wit/` with:
+- `crates/codeless-plugin-notes/src/lib.rs` rewritten on top of the
+  SDK's `ToolBehavior` trait. `NotesAppend` now carries typed
+  `NotesAppendArgs` / `NotesAppendOutput` driven by schemars. The PS7
+  attachment marker (`{"$ref": "codeless://attachment"}`) is emitted
+  by a schemars `schema_with` hook so the schema reaches
+  `/properties/attachment/$ref` directly (no `allOf` wrapper).
+- Builtin bridge: a generic `BuiltinBridge<T: ToolBehavior>` inside
+  the notes crate adapts `ToolBehavior` to `codeless_tools::Tool`,
+  preserving the existing `pub fn register(sink: &mut PluginToolSink)`
+  entry point. Lives in the plugin (not in `codeless-tools`) so the
+  SDK -> host dep direction stays one-way.
+- WASM flavour: `Cargo.toml` declares `crate-type = ["lib", "cdylib"]`
+  plus mutually-exclusive `builtin` / `wasm` features. The
+  `#[cfg(all(target_arch = "wasm32", feature = "wasm"))]` `wasm_guest`
+  module invokes `wit_bindgen::generate!` against
+  `crates/codeless-tool-wit/wit/tool.wit`, implements `Guest::describe`
+  / `Guest::call` (via `pollster::block_on`), and `export!`s
+  `NotesComponent`. Crate-level `unsafe_code = "deny"` exception
+  mirrors `codeless-tool-wit`; module carries `#[allow(unsafe_code)]`.
+- `wasmtime` bumped 23 -> 30 in `codeless-plugin-host-wasm`. LLVM 19
+  (rustc >= 1.85) emits overlong LEB128 encodings of memory index 0
+  that wasmparser 0.212 rejects with "zero byte expected"; wasmtime 27+
+  accepts them. Only API delta was the `IoView` supertrait split in
+  wasmtime-wasi 30 — fixed by splitting the `WasiView` impl.
+- Parameterised e2e test
+  (`crates/codeless-runtime/tests/plugin_substrate_e2e.rs`):
+  - Builtin row: existing logic; additionally asserts the PS7 marker
+    via the host `ToolRegistry`'s `output_schema()`.
+  - Wasm row: a `OnceLock`-cached helper builds the notes plugin via
+    `cargo build --target wasm32-unknown-unknown --no-default-features
+    --features wasm --release` into a sibling `target-wasm/` directory
+    (so the in-flight host `cargo test` lock is undisturbed), then
+    composes the core module into a WASI-p2 component using
+    `wit_component::ComponentEncoder` (pinned at 0.212). The encoded
+    component is loaded via `WasmPlugin::load`; `describe()` is
+    asserted to return one manifest with id `notes.append`, tier
+    `write`, and the PS7 marker.
+  - `CODELESS_NOTES_WASM` env var lets CI point at a pre-built artefact.
 
-- `wit/tool.wit` — the codeless tool ABI per
-  `DOCS/plugins/PLUGIN-WASM.md § The WIT contract`. Declares
-  `package codeless:tool@0.1.0`, the `tool` interface (records
-  `tool-manifest`, `tool-call`, `tool-error`; variant `tool-result`;
-  enum `tier`; functions `describe`, `call`), and a no-IO `plugin`
-  world. WASI imports are *not* declared in the default world: stage
-  4 wires WASI host-side at instantiation time so the manifest's
-  `[runtimes.capabilities]` set decides what crosses the boundary,
-  not the WIT.
-- `src/bindings.rs` — `wit-bindgen 0.57.1` Rust guest output for
-  that WIT, committed in-tree per the OQ-WASM-2 resolution. The
-  exact regenerate command is documented in `src/lib.rs`. The
-  bindings compile on host targets too because the WASM ABI glue is
-  gated behind `#[cfg(target_arch = "wasm32")]`; the pure data
-  types (`ToolManifest`, `ToolCall`, `ToolResult`, `ToolError`,
-  `Tier`) are reachable on any target.
-- `src/lib.rs` — thin re-export module with `TOOL_WIT` and
-  `PACKAGE_ID` constants. Carries the rationale for the per-crate
-  `unsafe_code = "deny"` override (the workspace-wide `forbid`
-  cannot survive contact with `wit-bindgen` guest output;
-  hand-written unsafe outside `bindings.rs` is still a review
-  failure).
-- `tests/smoke.rs` — three doc-only checks: (1) `wit-parser` accepts
-  `tool.wit` and confirms the parsed package matches `PACKAGE_ID`;
-  (2) `ToolManifest`/`ToolCall`/`ToolResult` round-trip field-by-
-  field through the generated types; (3) the `Tier` discriminants
-  are pinned to 0/1/2 so a regeneration cannot silently reorder.
+### Notable deviation from the stage description
 
-The crate is added to the workspace `members` list with a comment
-pointing at the OQ-WASM-2 rationale and the regeneration command.
+The stage description says "WASM via `cargo build --target wasm32-
+wasip2`". The wasm32-wasip2 target ships rustc-bundled WASI preview
+1-to-preview 2 adapter glue that produces a component-model encoding
+wasmtime 30 still rejects (the embedded adapter module triggers an
+offset error). The notes plugin's `world plugin { export tool; }`
+has no WASI imports, so the e2e test builds via
+`wasm32-unknown-unknown` and componentises with `wit-component` —
+the resulting artefact loads cleanly. Stage 15 should reconcile
+`PLUGIN-WASM.md`.
 
-## Verify
+### Validations run
 
-- `cargo build -p codeless-tool-wit` — green.
-- `cargo test -p codeless-tool-wit` — 3 unit + 1 doc test green.
-- `cargo clippy -p codeless-tool-wit --all-targets -- -D warnings`
-  — green.
-- `cargo test --workspace` — green. The `codeless-adapters-host`
-  git tests flaked once when run with the full workspace earlier
-  (parallel git-tempdir race, unrelated to this stage); a re-run
-  was clean and a `-p codeless-adapters-host --lib` run reproduces
-  green.
-- `cargo fmt --check` — green.
+- `cargo build -p codeless-plugin-notes` (builtin, default features)
+- `cargo build -p codeless-plugin-notes --target wasm32-unknown-unknown
+  --no-default-features --features wasm --release`
+- `cargo test -p codeless-plugin-notes` — 4 unit + 1 smoke
+- `cargo test -p codeless-runtime --test plugin_substrate_e2e` —
+  7 tests including the two flavour rows
+- `cargo test --workspace --lib --tests --exclude codeless-server` — all green
+- `cargo clippy -p codeless-plugin-notes -p codeless-plugin-host-wasm
+  -p codeless-plugin-sdk -p codeless-runtime --all-targets -- -D warnings`
+- `cargo fmt --check`
 
-## Decisions stage 4+ will rely on
+## What stage 6 owns
 
-1. **`wit-bindgen` 0.57** is the pinned guest generator for v0.1.
-   A bump is an ABI-shaped change even when the WIT is byte-stable
-   — the committed `src/bindings.rs` diff must be reviewed
-   alongside the bump.
-2. **No WASI in the default `plugin` world.** Stage 4's host loader
-   wires `wasmtime-wasi` against the per-instance capability set
-   itself; the WIT does not advertise WASI as a static dependency.
-   Companion worlds (`plugin-with-fs`, `plugin-with-http`) only
-   land when a plugin needs static-WIT-visible imports beyond
-   no-IO.
-3. **`TOOL_WIT` and `PACKAGE_ID` constants are the runtime
-   introspection surface.** Stage 4's host-side
-   `wasmtime::component::bindgen!` reads `wit/tool.wit` directly
-   from disk; the constants are for plugin smoke tests and the
-   future `codeless plugin show` CLI.
-4. **Per-crate lint override is the model** for any future crate
-   that has to host a generator output. Don't apply the override
-   to a crate that contains hand-written unsafe.
+`PLUGIN-WASM.md § Capability sandbox`. Default-deny capability set,
+`[runtimes.capabilities]` manifest parsing, attachments R/W via the
+host-implemented `codeless:attachments/store` WIT interface,
+`plugin_wasm_e2e::wasm_plugin_cannot_open_host_file` +
+`plugin_wasm_e2e::wasm_plugin_attachment_round_trip` green.
 
-## What stage 4 needs to do
+## Pointers for stage 6
 
-Per `template.yaml`:
+- `crates/codeless-plugin-host-wasm/src/runtime.rs` is the
+  `WasiCtxBuilder` site — today builds the deny-everything ctx. Stage
+  6 grants the capability set the plugin's `[runtimes.capabilities]`
+  block lists.
+- `crates/codeless-tools/src/plugin/manifest.rs` is the
+  `plugin.toml` parser. Stage 6 extends it with
+  `[[runtimes]] [runtimes.capabilities]`. (Stage 13 lands the rest of
+  `[[runtimes]]` parsing; stage 6 only needs the capabilities subset
+  for its tests.)
+- `crates/codeless-tool-wit/wit/tool.wit` is the load-bearing ABI.
+  Adding `codeless:attachments/store@0.1.0` is an ABI change; bump
+  the WIT, regenerate `crates/codeless-tool-wit/src/bindings.rs`,
+  carry the rationale in the head comment.
+- The wasm e2e tests will need a fixture plugin (intentionally
+  file-opener). Mirror the `target-wasm/` pattern the stage-5 test
+  uses for build caching.
 
-> scaffold codeless-plugin-host-wasm (host-only) — Wasmtime engine,
-> WASI-p2 component-model linker, per-call instantiation, HostPolicy
-> fuel/memory/wall-clock caps; expose a WasmAdapter implementing
-> the runtime-adapter trait introduced in this stage in
-> codeless-tools
+## Open questions
 
-Notes for stage 4:
-
-- The host crate is host-only. R1 + the iOS/Android cargo-check
-  matrix is the canary; verify both stay green at the end of stage
-  4 (the WORKFLOW.md per-stage discipline §3 commands).
-- Stage 4 also introduces the **`RuntimeAdapter` trait + table in
-  `codeless-tools`**. Trait stays mobile-safe (no `wasmtime`, no
-  `tokio::process` types in the signature). Concrete impls live
-  in their host-only crates behind Cargo features. OQ-WASM-1
-  resolved this; stage 4 lands the code shape.
-- Use `wasmtime::component::bindgen!` from inside
-  `codeless-plugin-host-wasm` to generate the *host* bindings
-  against `crates/codeless-tool-wit/wit/tool.wit`. Do **not** try
-  to reuse the guest `bindings.rs` from this stage — they target
-  different ABIs.
-- Read `PLUGIN-WASM.md § The crate`, `§ Limits`, and
-  `§ Instance lifecycle` cover-to-cover before writing code. Stage
-  4 ships the *engine, linker, per-call instantiation, HostPolicy
-  caps*; capability sandbox (stage 6) and the e2e tests against
-  the notes plugin (stage 5) are separate stages.
+- The "build via wasm32-wasip2" claim in `PLUGIN-WASM.md § Acceptance`
+  is aspirational; the e2e test uses wasm32-unknown-unknown +
+  wit-component. Stage 15 (or earlier) needs a doc reconciliation.
+- Whether to keep wit-bindgen pinned at 0.20 or bump now that wasmtime
+  is at 30 — the M-WASM-B gate should decide.
 
 ## Out-of-scope reminders carried forward
 
@@ -111,6 +114,6 @@ Notes for stage 4:
 - Process runtime is manifest-seam only in stage 13.
 - `mcp_forward` is parse-and-fail (stage 14).
 - Mobile shell wiring of plugin UI is out of scope.
-- The committed `bindings.rs` is never regenerated by `build.rs`;
-  always via the documented `wit-bindgen rust …` command (a
-  `cargo xtask` task can land in stage 4 if convenient).
+- The committed `crates/codeless-tool-wit/src/bindings.rs` is never
+  regenerated by `build.rs`; always via the documented `wit-bindgen
+  rust …` command.

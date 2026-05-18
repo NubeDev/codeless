@@ -10,7 +10,7 @@
 
 use wasmtime::component::Linker;
 use wasmtime::{Config, Engine};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::{IoView, ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 
 use wasmtime::StoreLimits;
 
@@ -34,12 +34,17 @@ pub struct PluginStoreState {
     pub limits: StoreLimits,
 }
 
+// wasmtime-wasi 30 split the table accessor onto the new `IoView`
+// supertrait; `WasiView` now carries only the `ctx()` method.
+impl IoView for PluginStoreState {
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
+    }
+}
+
 impl WasiView for PluginStoreState {
     fn ctx(&mut self) -> &mut WasiCtx {
         &mut self.wasi
-    }
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
     }
 }
 
@@ -93,6 +98,15 @@ impl WasmRuntime {
         let mut config = Config::new();
         config.async_support(true);
         config.consume_fuel(true);
+        // The component-model embedding plus the rustc-emitted core
+        // modules need bulk-memory, reference types, multi-value, and
+        // mutable globals to validate. They are part of standardised
+        // wasm and on by default in wasmtime 23, but pinning them
+        // here defends against an accidental disable on a future
+        // wasmtime bump.
+        config.wasm_bulk_memory(true);
+        config.wasm_multi_value(true);
+        config.wasm_multi_memory(true);
         let engine = Engine::new(&config).map_err(|e| HostError::Engine(format!("{e:#}")))?;
         let mut linker: Linker<PluginStoreState> = Linker::new(&engine);
         wasmtime_wasi::add_to_linker_async(&mut linker)

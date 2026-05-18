@@ -17,8 +17,14 @@ workspace = true
 # component-model surface lands in a layout this crate compiles
 # against. Bumping is an OQ-WASM-* sized decision -- record it in
 # `DOCS/plugins/PLUGIN-WASM.md` before lifting the floor.
-wasmtime = { version = "23", default-features = false, features = ["runtime", "cranelift", "component-model", "async"] }
-wasmtime-wasi = { version = "23", default-features = false }
+# Bumped from 23 to 30 in plugin-substrate-runtimes stage 5: LLVM 19
+# (rustc 1.85+) emits overlong LEB128 encodings of memory index 0
+# that wasmparser 0.212 (which `wasmtime` 23 pins) rejects with
+# "zero byte expected"; the modern format is accepted from wasmtime
+# 27 onward. The doc note in `PLUGIN-WASM.md § Why a component-model
+# host` is updated alongside this bump.
+wasmtime = { version = "30", default-features = false, features = ["runtime", "cranelift", "component-model", "async"] }
+wasmtime-wasi = { version = "30", default-features = false }
 
 # Trait + table this crate implements against.
 codeless-tools = { path = "../codeless-tools" }
