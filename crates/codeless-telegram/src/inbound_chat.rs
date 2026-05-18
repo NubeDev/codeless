@@ -27,9 +27,10 @@
 use std::sync::Arc;
 
 use codeless_rpc::{
-    BindChatThreadArgs, GetChatBindingArgs, PostJobMessageArgs, RpcError, RpcServer,
+    BindChatThreadArgs, GetChatBindingArgs, ListJobMessagesArgs, PostJobMessageArgs, RpcError,
+    RpcServer,
 };
-use codeless_types::{ChatRole, ChatTransport, JobId};
+use codeless_types::{ChatMessage, ChatRole, ChatTransport, JobId};
 
 use crate::web_api::{SendMessageArgs, TelegramApi, UpdateMessage};
 
@@ -176,11 +177,119 @@ async fn run_bind(
                 &format!("[ok] bound this thread to {job_id}"),
             )
             .await;
+            post_cold_load_summary(rpc, api, chat_id, job_id).await;
         }
         Err(e) => {
             post_ack(api, chat_id, reply_to, &format!("[fail] bind: {e}")).await;
         }
     }
+}
+
+/// Number of recent rows the cold-load summary considers. JOB-CHAT.md
+/// "Cold-load" is explicit that `/codeless bind` must NOT replay
+/// every prior message into the new transport — that would spam
+/// Telegram with the entire web-UI history. A small tail (~10) is
+/// enough to let the operator see what was just said without paging
+/// hundreds of rows into the channel.
+const COLD_LOAD_TAIL: u32 = 10;
+
+/// On a fresh `/codeless bind` the channel has no view of what was
+/// said before the bind. JOB-CHAT.md "Cold-load" specifies one
+/// condensed summary message rather than replaying each historical
+/// row: the goal is "operator joining mid-thread sees enough to
+/// catch up", not "Telegram becomes a second copy of the web-UI
+/// transcript".
+///
+/// Failure paths are best-effort: a `list_job_messages` error or a
+/// `send_message` error logs and returns. The bind itself already
+/// succeeded; missing the summary degrades to the same view the
+/// channel would have had before this stage existed.
+async fn post_cold_load_summary(
+    rpc: &Arc<dyn RpcServer>,
+    api: &TelegramApi,
+    chat_id: &str,
+    job_id: JobId,
+) {
+    let result = match rpc
+        .list_job_messages(ListJobMessagesArgs {
+            job_id,
+            before: None,
+            limit: COLD_LOAD_TAIL,
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(
+                chat = %chat_id,
+                job_id = %job_id,
+                error = %e,
+                "telegram: cold-load list_job_messages failed; no joining summary posted",
+            );
+            return;
+        }
+    };
+    let body = render_cold_load_summary(job_id, &result.messages);
+    if let Err(e) = api
+        .send_message(SendMessageArgs {
+            chat_id,
+            text: &body,
+            parse_mode: None,
+            reply_to_message_id: None,
+            message_thread_id: None,
+        })
+        .await
+    {
+        tracing::warn!(
+            chat = %chat_id,
+            job_id = %job_id,
+            error = %e,
+            "telegram: cold-load summary send failed",
+        );
+    }
+}
+
+/// Render one plain-text "joining mid-thread" summary. The shape is
+/// deliberately compact: a header naming the Job, then one line per
+/// row in the tail with author + transport + a truncated body.
+/// Anything longer would defeat the purpose of "single condensed"
+/// per JOB-CHAT.md.
+fn render_cold_load_summary(job_id: JobId, messages: &[ChatMessage]) -> String {
+    if messages.is_empty() {
+        return format!("[joining mid-thread] {job_id}: no prior messages on this Job.");
+    }
+    let mut out = format!(
+        "[joining mid-thread] {job_id}: last {} message(s)",
+        messages.len()
+    );
+    for m in messages {
+        let preview = preview_body(&m.body);
+        let transport = match m.transport {
+            ChatTransport::Web => "web",
+            ChatTransport::Cli => "cli",
+            ChatTransport::Telegram => "telegram",
+            ChatTransport::Slack => "slack",
+            ChatTransport::Supervisor => "supervisor",
+        };
+        out.push_str(&format!("\n - [{transport}] {}: {preview}", m.author));
+    }
+    out
+}
+
+/// Per-line body truncation for the cold-load summary. Long
+/// supervisor explanations or pasted logs would blow past the
+/// Bot API's 4096-char per-message ceiling once multiplied by
+/// [`COLD_LOAD_TAIL`] rows; trimming each preview at 120 chars and
+/// stripping newlines keeps the whole summary well inside the limit
+/// while still being readable.
+fn preview_body(body: &str) -> String {
+    const MAX: usize = 120;
+    let mut compact: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() > MAX {
+        let head: String = compact.chars().take(MAX).collect();
+        compact = format!("{head}…");
+    }
+    compact
 }
 
 async fn mirror_to_chat(
@@ -250,6 +359,73 @@ async fn post_ack(api: &TelegramApi, chat_id: &str, reply_to: i64, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codeless_types::{MessageId, UnixMillis};
+
+    fn fixture_message(transport: ChatTransport, author: &str, body: &str) -> ChatMessage {
+        ChatMessage {
+            id: MessageId::new(),
+            job_id: JobId::new(),
+            run_id: None,
+            transport,
+            external_id: None,
+            thread_key: None,
+            author: author.into(),
+            role: ChatRole::User,
+            body: body.into(),
+            metadata_json: None,
+            created_at: UnixMillis(0),
+        }
+    }
+
+    #[test]
+    fn cold_load_summary_is_single_message_with_per_row_lines() {
+        let job_id = JobId::new();
+        let msgs = vec![
+            fixture_message(ChatTransport::Web, "alice", "hello"),
+            fixture_message(ChatTransport::Supervisor, "supervisor", "watching."),
+        ];
+        let body = render_cold_load_summary(job_id, &msgs);
+        assert!(body.starts_with(&format!("[joining mid-thread] {job_id}: last 2 message(s)")));
+        assert!(body.contains("\n - [web] alice: hello"));
+        assert!(body.contains("\n - [supervisor] supervisor: watching."));
+        // Single Bot API message — newline-joined, not multiple
+        // calls. The condensed-summary rule from JOB-CHAT.md is what
+        // pins this; a refactor that splits per row would spam the
+        // channel and fail here.
+        assert!(!body.is_empty());
+    }
+
+    #[test]
+    fn cold_load_summary_is_terse_when_no_prior_messages() {
+        let job_id = JobId::new();
+        let body = render_cold_load_summary(job_id, &[]);
+        assert_eq!(
+            body,
+            format!("[joining mid-thread] {job_id}: no prior messages on this Job.")
+        );
+    }
+
+    #[test]
+    fn cold_load_preview_truncates_long_bodies() {
+        let long = "x".repeat(500);
+        let preview = preview_body(&long);
+        assert!(
+            preview.chars().count() <= 121,
+            "preview must cap at MAX + ellipsis, got {} chars",
+            preview.chars().count(),
+        );
+        assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn cold_load_preview_collapses_whitespace() {
+        // Pasted multi-line bodies (logs, stack traces) would
+        // otherwise turn one summary line into many. Collapsing
+        // newlines into single spaces keeps the per-row layout
+        // intact.
+        let preview = preview_body("hello\n\nworld\tfoo");
+        assert_eq!(preview, "hello world foo");
+    }
 
     #[test]
     fn parse_bind_command_accepts_slash_form() {

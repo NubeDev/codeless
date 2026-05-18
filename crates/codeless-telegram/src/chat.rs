@@ -29,6 +29,7 @@
 
 use std::sync::Arc;
 
+use codeless_bot_core::chat_forward::{classify, Decision};
 use codeless_bot_core::EventSource;
 use codeless_rpc::{ListChatBindingsForJobArgs, RpcServer, UpdateChatMessageDeliveryArgs};
 use codeless_types::{ChatBinding, ChatMessage, ChatTransport, Event};
@@ -110,19 +111,13 @@ async fn run_loop(
 }
 
 async fn handle_message(rpc: &Arc<dyn RpcServer>, api: &TelegramApi, message: ChatMessage) {
-    // Echo suppression for the origin transport. The user already
-    // typed this message in their Telegram client; the row exists so
-    // the supervisor and other surfaces can see it, but Telegram must
-    // not echo it back to the same channel.
-    if matches!(message.transport, ChatTransport::Telegram) {
-        return;
-    }
-    // Presence-based idempotency: a prior successful send already
-    // wrote `metadata.delivery.telegram` — JOB-CHAT.md "Idempotency"
-    // says to skip on presence rather than re-send. The check is on
-    // the event-payload snapshot, which is sufficient because the
-    // forwarder subscribes live-only (no replay).
-    if has_delivery_receipt(&message) {
+    // The asymmetric echo-suppression rule lives in
+    // `codeless_bot_core::chat_forward` so the Telegram and Slack
+    // forwarders cannot disagree. Both the origin-transport skip and
+    // the presence-based receipt skip collapse into the single
+    // `Decision::Skip` answer here — see JOB-CHAT.md "Transport
+    // adapters" for the rule statement.
+    if matches!(classify(ChatTransport::Telegram, &message), Decision::Skip) {
         return;
     }
     let bindings = match rpc
@@ -234,79 +229,26 @@ fn render_body(message: &ChatMessage) -> String {
     format!("[{prefix}] {}: {}", message.author, message.body)
 }
 
-/// Presence check on `metadata_json.delivery.telegram`. The substrate
-/// stores `metadata_json` as raw JSON text (`codeless_types` is
-/// mobile-safe and does not pull `serde_json`), so the parse happens
-/// here. A malformed metadata blob is treated as "no receipt" — the
-/// forward goes through and the receipt write either succeeds (the
-/// parsed-by-us new value lands) or logs.
-fn has_delivery_receipt(message: &ChatMessage) -> bool {
-    let Some(text) = message.metadata_json.as_deref() else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return false;
-    };
-    v.get("delivery")
-        .and_then(|d| d.get("telegram"))
-        .map(|v| !v.is_null())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use codeless_types::{ChatRole, JobId, MessageId, UnixMillis};
-    use serde_json::json;
 
-    fn web_message_with_metadata(meta: Option<&str>) -> ChatMessage {
-        ChatMessage {
+    #[test]
+    fn render_body_prefixes_with_transport_and_author() {
+        let msg = ChatMessage {
             id: MessageId::new(),
             job_id: JobId::new(),
             run_id: None,
-            transport: ChatTransport::Web,
+            transport: ChatTransport::Supervisor,
             external_id: None,
             thread_key: None,
             author: "alice".into(),
             role: ChatRole::User,
-            body: "hi".into(),
-            metadata_json: meta.map(str::to_owned),
+            body: "stage 3 finished".into(),
+            metadata_json: None,
             created_at: UnixMillis(0),
-        }
-    }
-
-    #[test]
-    fn receipt_present_when_delivery_telegram_set() {
-        let meta = json!({"delivery": {"telegram": "tg:99"}}).to_string();
-        let msg = web_message_with_metadata(Some(&meta));
-        assert!(has_delivery_receipt(&msg));
-    }
-
-    #[test]
-    fn receipt_absent_when_delivery_only_for_other_transport() {
-        let meta = json!({"delivery": {"slack": "ts:1.1"}}).to_string();
-        let msg = web_message_with_metadata(Some(&meta));
-        assert!(!has_delivery_receipt(&msg));
-    }
-
-    #[test]
-    fn receipt_absent_when_metadata_null() {
-        let msg = web_message_with_metadata(None);
-        assert!(!has_delivery_receipt(&msg));
-    }
-
-    #[test]
-    fn receipt_absent_when_metadata_malformed() {
-        let msg = web_message_with_metadata(Some("not json"));
-        assert!(!has_delivery_receipt(&msg));
-    }
-
-    #[test]
-    fn render_body_prefixes_with_transport_and_author() {
-        let mut msg = web_message_with_metadata(None);
-        msg.author = "alice".into();
-        msg.body = "stage 3 finished".into();
-        msg.transport = ChatTransport::Supervisor;
+        };
         assert_eq!(
             render_body(&msg),
             "[supervisor] alice: stage 3 finished".to_string(),
