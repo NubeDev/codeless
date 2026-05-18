@@ -7,6 +7,7 @@
 pub mod allowed_tools;
 pub mod assistant;
 pub mod auto_bypass;
+pub mod chat;
 pub mod event;
 pub mod fs;
 pub mod git_auth;
@@ -32,13 +33,14 @@ pub use assistant::{
     AssistantThread, AttachmentRef,
 };
 pub use auto_bypass::AutoBypassPolicy;
+pub use chat::{ChatBinding, ChatMessage, ChatRole, ChatTransport};
 pub use event::{Event, EventCursor, EventEnvelope};
 pub use fs::{FsEntry, FsEntryKind};
 pub use git_auth::GitAuth;
 pub use handover::{Handover, HandoverParseError};
 pub use id::{
-    AssistantAttachmentId, AssistantMessageId, AssistantThreadId, JobId, RepoId, ReviewId, StageId,
-    TaskId, TodoId,
+    AssistantAttachmentId, AssistantMessageId, AssistantThreadId, JobId, MessageId, RepoId,
+    ReviewId, StageId, TaskId, TodoId,
 };
 pub use job::{Job, JobStatus, StopReason, WorkspaceMode};
 pub use money::CostCents;
