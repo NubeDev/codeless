@@ -22,6 +22,7 @@ pub mod html_text;
 pub mod plugin;
 pub mod policy;
 mod registry;
+pub mod schedule;
 pub mod testing;
 mod tool;
 pub mod tools;

@@ -428,6 +428,214 @@ Commit-on-save is what the (A) plan above assumes. The downside is
 small noise in `git log`; the upside is a real history of how the
 spec evolved.
 
+## Job chaining — the "next job after this one" loop
+
+Everything above is about iterating **one** Job better. This section
+covers the orthogonal problem: stringing **multiple** Jobs together
+so finishing job-1 triggers job-2 with no human in the loop.
+
+These are distinct concepts that happen to share the word "workflow."
+To keep the codebase legible, this doc fixes the names now:
+
+| Term | Meaning |
+|---|---|
+| **Job** / **Run** | One spec, many attempts. The subject of the sections above. |
+| **Plan** | An ordered sequence (later: DAG) of Jobs with transition rules. The subject of this section. |
+
+"Plan" beats "Workflow" / "Pipeline" / "Chain" because (i) it matches
+the user's mental model ("planner"), (ii) it doesn't collide with
+JOB-WORKFLOW's existing usage, and (iii) it composes naturally with
+the scheduler ("on Monday 8am, run Plan X").
+
+### The problem
+
+Today the user can submit a Job and watch it run. They cannot say:
+
+- "When job-1 finishes successfully, start job-2."
+- "When job-1 fails, start job-recover-from-failure."
+- "Every Monday at 08:00, run the release-prep Plan: lint → test →
+  changelog → publish."
+- "Run job-A and job-B in parallel; when both finish, run job-C."
+
+The cheap workaround is a tool the LLM calls inside job-1 (e.g.
+`codeless.job.then`). That works until job-1 dies before reaching
+the call, or the user wants to see the planned chain *before* it
+runs. Chains-as-tool-calls are scattered across prompts; chains-as-
+data are introspectable, persistent, and reusable.
+
+### What "good" looks like
+
+A Plan is a **document with a run history**, mirroring how Job will
+become one under (B):
+
+- The **Plan spec** is what the user keeps refining (a YAML/JSON
+  document listing steps and transitions).
+- Each **PlanRun** is one execution of the spec — which Jobs were
+  spawned, in what order, with what outcome.
+- A Plan can be triggered three ways: manually from the UI / CLI,
+  by the scheduler ([`codeless-tools::schedule`](../crates/codeless-tools/src/schedule/)),
+  or by another Plan finishing.
+
+```
+Plan (1) ── (N) PlanStep
+        ── (N) PlanRun (1) ── (N) PlanRunStep ── (1) Job (1) ── (N) Run
+```
+
+`PlanStep` is the *template* ("after step-1 succeeds, run a Job using
+this template, in this repo, with this policy"). `PlanRunStep` is the
+*attempt* (which Job/Run actually got spawned, what its terminal
+state was). The shape intentionally rhymes with Job/Run from (B):
+mutable spec vs. immutable execution record.
+
+### Integration with what already exists
+
+The engine is small because three of the four pieces are already
+built:
+
+| Piece | Where it lives | What Plans use it for |
+|---|---|---|
+| Job state-machine terminal events (`JobFinished` / `JobFailed` / `JobStopped`) | `codeless-runtime` event bus | The Plan engine subscribes; each terminal event triggers the next `PlanStep` (or marks the PlanRun done). |
+| `codeless-bot-core::outbound` pattern | `codeless-bot-core` | The same `EventSource` abstraction the bots use — Plan engine is a second consumer, no new bus. |
+| `codeless-tools::schedule::Scheduler` | `codeless-tools/src/schedule/` | `Schedule` fires → `Action` calls `start_plan_run(plan_id)`. Recurring chains become a one-liner. |
+| SQLite as the source of truth | `codeless-runtime` migrations | `plans`, `plan_steps`, `plan_runs`, `plan_run_steps` tables; same migration discipline as `runs` in (B). |
+
+The new code is: the `plan_engine` module that owns the state machine
+("PlanRun X is on step 3; step 3's Job just finished successfully;
+look up step 3's `on_success` transition; spawn step 4's Job; record
+the new `PlanRunStep`"), the four tables, and the RPC / UI surface.
+
+### Minimal transition vocabulary
+
+Resist the urge to ship a full DAG with `when:` predicates on day
+one. The 80% case is a linear chain with two branches per step:
+
+```yaml
+name: release-prep
+steps:
+  - id: lint
+    job_template: lint
+    on_success: test
+    on_failure: stop
+
+  - id: test
+    job_template: test
+    on_success: changelog
+    on_failure: notify-and-stop
+
+  - id: changelog
+    job_template: changelog
+    on_success: publish
+
+  - id: publish
+    job_template: publish
+
+  - id: notify-and-stop
+    job_template: notify-failure
+    on_success: stop
+```
+
+Three transition targets: a step id, `stop` (terminate PlanRun
+successfully), or omitted (= same as `stop`). `on_failure` defaults
+to `stop`, so the common case stays terse. Parallel (`fan_out:`) and
+join (`fan_in:`) ship in a follow-up once the linear case has been
+in real use.
+
+### Recommended sequencing — (P1) → (P2) → (P3)
+
+Same phased discipline as (A) → (B) above. Each phase ends with
+something a user can drive end-to-end.
+
+**(P1) — Reusable Plan library + tool, no UI.** ~3 days.
+
+- `codeless-tools/src/plan/` mirrors `email/` and `schedule/`: pure
+  data (`PlanSpec`, `PlanStep`, `Transition`) in one module,
+  in-memory `PlanEngine` with an injected `JobSpawner` trait in
+  another. No SQLite yet; the engine is a function of "the event
+  bus" + "a spawn callback."
+- `codeless.plan.create` / `.start` / `.list` / `.cancel` tools.
+  The LLM (or a script, or a Plan that triggers another Plan) can
+  define and run chains.
+- Wire the engine into `codeless-runtime` as an event-bus consumer.
+  In-memory means a restart loses in-flight PlanRuns; document this
+  as a known limit for (P1).
+- A scheduled Plan = `Schedule` fires → its `Action` calls
+  `PlanEngine::start_run(plan_id)`. That composition is the proof
+  the boundary is right.
+
+**(P2) — Persistence + RPC surface.** ~3 days.
+
+- Migrations: `plans`, `plan_steps`, `plan_runs`, `plan_run_steps`.
+  PlanRun rows carry a `template_snapshot` of the spec at start
+  time, same reason JOB-WORKFLOW Run carries one — re-runs and
+  retries should not silently behave differently because the spec
+  changed.
+- RPCs: `create_plan`, `update_plan`, `start_plan_run`,
+  `cancel_plan_run`, `list_plans`, `list_plan_runs`, `get_plan_run`.
+- Event bus emits `PlanRunStarted` / `PlanRunStepStarted` /
+  `PlanRunStepFinished` / `PlanRunFinished` so the existing bots and
+  the UI can subscribe with no new transport.
+- Restart recovery: on boot, scan for PlanRuns in `running` state,
+  resubscribe to the in-flight Job's events, resume the state
+  machine.
+
+**(P3) — UI + DAG.** ~1 week.
+
+- Plan page: spec editor (same CodeMirror pattern as JOB-WORKFLOW),
+  list of PlanRuns, manual `[run]` button.
+- PlanRun page: visual graph of steps with live status pills,
+  click-through to the Job/Run that step spawned.
+- DAG primitives: `fan_out: [step-a, step-b]`, `fan_in:` waits on
+  named predecessors. Predicate transitions (`when: outputs.x > 0`)
+  if the data is there to support them — defer if not.
+
+### What stays out of scope (deliberately)
+
+- **Cross-repo Plans.** A PlanStep's Job runs in the repo the step
+  names. The engine doesn't try to coordinate worktrees across
+  repos — that's `mani`'s job, and a Plan can call `mani` through
+  the existing shell tool if it needs to.
+- **Conditional re-runs of the same step.** A Plan does not loop
+  back to an earlier step. Retries are a per-Job affair, owned by
+  JOB-WORKFLOW's re-run flow.
+- **Distributed execution.** Single-tenant MVP per R5; the engine
+  runs in the same process as the runtime.
+- **Plan-of-Plans.** A PlanStep spawns a Job, not a Plan. If you
+  want a sub-Plan, expose a "start this Plan" action via the tool
+  surface and have a step call it — keeps the engine's vocabulary
+  one-level.
+
+### Naming inside the code
+
+To make the JOB-WORKFLOW vs. Plan split obvious from filenames
+alone:
+
+- `codeless-runtime/src/plan/` — engine, state machine, persistence.
+- `codeless-tools/src/plan/` — pure data + tool wrappers.
+- Wire types: `Plan`, `PlanStep`, `PlanRun`, `PlanRunStep` — never
+  `Workflow*`.
+- Event variants: `PlanRunStarted`, never `WorkflowStarted`.
+
+`Job` / `Run` / `Stage` / `Task` remain JOB-MODEL / JOB-WORKFLOW's
+vocabulary, untouched.
+
+### Open questions for Plan, to revisit at (P2)
+
+1. **What does cancelling a PlanRun do to the in-flight Job?**
+   Probably stop it — the Plan is the user's intent envelope, and
+   cancelling the envelope cancels the work. Confirm at (P2).
+2. **What does editing a Plan spec do to running PlanRuns?** Same
+   answer as JOB-WORKFLOW's question 5: nothing. Running PlanRuns
+   have their `template_snapshot`; edits apply to the next run.
+3. **How does a Plan surface its history in chat (Slack / Telegram)?**
+   The bot adapters already render Job terminal events; a Plan
+   probably renders as a single thread with one message per
+   PlanRunStep transition. Belongs in `codeless-bot-core::notify`,
+   not the engine.
+4. **What's the failure-cascade default?** A step that fails with no
+   `on_failure` falls through to `stop`. The PlanRun's terminal
+   status is `failed`, not `success`. The handler-step pattern
+   (`notify-and-stop` above) is the explicit recovery path.
+
 ## Open issues / non-decisions
 
 Things I don't have a confident answer for, listed so they don't get

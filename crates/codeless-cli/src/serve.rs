@@ -366,6 +366,10 @@ async fn run_server(
         rpc: rpc_dyn,
         auth,
         server_info,
+        // `ai-ui` surface left unconfigured at this CLI for now —
+        // wiring `CodelessProvider` + skills dir + components.json is
+        // a follow-up. The route mount is opt-in via `with_ai_ui`.
+        ai_ui: None,
     };
 
     // Outbound webhook notifier: when both `notifier_webhook_url`

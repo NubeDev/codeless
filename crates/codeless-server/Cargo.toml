@@ -19,13 +19,25 @@ codeless-types = { path = "../codeless-types" }
 codeless-rpc = { path = "../codeless-rpc" }
 codeless-runtime = { path = "../codeless-runtime" }
 codeless-adapters-host = { path = "../codeless-adapters-host" }
+# ai-ui surface: provider impl + state types. The codeless-ai-ui crate
+# brings in ai-ui-core/types/prompt via its re-exports, but the server
+# uses `ai_ui_prompt::PromptBuilder` and `ai_ui_types::*` directly in
+# the handler module so it pulls them explicitly too. All ai-ui deps
+# resolve through the sibling `../../../../ai-ui` workspace via
+# path-deps inside codeless-ai-ui — codeless-workspace/ sits one
+# level above this inner repo, ai-ui/ sits one level above that.
+codeless-ai-ui = { path = "../codeless-ai-ui" }
+ai-ui-core = { path = "../../../../ai-ui/crates/ai-ui-core", default-features = false }
+ai-ui-types = { path = "../../../../ai-ui/crates/ai-ui-types" }
+ai-ui-prompt = { path = "../../../../ai-ui/crates/ai-ui-prompt" }
 axum = "0.7"
+bytes = "1"
 futures-core = "0.3"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt", "macros", "signal"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 thiserror = "1"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }

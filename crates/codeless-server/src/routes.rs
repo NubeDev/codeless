@@ -170,13 +170,21 @@ pub(crate) fn router(state: AppState) -> Router {
     // see one event per request at info level.
     let trace = TraceLayer::new_for_http();
 
-    Router::new()
+    // ai-ui surface (`/api/ai-ui/*`). Mounted only when the consumer
+    // built an `AiUiState`; merged outside the bearer middleware so the
+    // OpenUI frontend can call it without learning codeless's token —
+    // R5's loopback-bind default is what keeps single-tenant deployments
+    // safe. See `src/ai_ui.rs` for the per-route detail.
+    let ai_ui = state.ai_ui.clone().map(crate::ai_ui::router);
+
+    let mut app = Router::new()
         .merge(rpc_routes)
         .merge(events)
-        .merge(unauthenticated)
-        .layer(cors)
-        .layer(trace)
-        .with_state(state)
+        .merge(unauthenticated);
+    if let Some(r) = ai_ui {
+        app = app.merge(r);
+    }
+    app.layer(cors).layer(trace).with_state(state)
 }
 
 /// Map a typed `RpcError` to the HTTP response shape the browser
