@@ -15,10 +15,12 @@ pub mod manifest;
 pub mod migrations;
 pub mod model_family;
 pub mod registry;
+pub mod substrate;
 
 pub use manifest::{
-    DataDir, ManifestError, MigrationsDir, PluginCapabilities, PluginManifest, PluginMetadata,
-    PluginPersona, PluginRuntime, PluginRuntimeKind,
+    DataDir, ManifestError, MigrationsDir, PluginCapabilities, PluginFailedCooldown,
+    PluginManifest, PluginMetadata, PluginPersona, PluginRuntime, PluginRuntimeKind,
+    PluginRuntimePolicy, ResolvedPluginRuntimePolicy,
 };
 pub use migrations::{
     check_sql as check_migration_sql, load_migrations_dir, MigrationCheckError, PluginMigration,
@@ -29,4 +31,7 @@ pub use model_family::{
 pub use registry::{
     LoadedPersona, LoadedPlugin, PluginLoadError, PluginRegistry, PluginToolSink, RegisterFn,
     RegistrationTable,
+};
+pub use substrate::{
+    resolve_active_runtime, scan_plugins_dir, PluginFailureReason, PluginLoadOutcome, ScanResult,
 };

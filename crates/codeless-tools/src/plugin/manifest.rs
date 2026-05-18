@@ -13,6 +13,7 @@
 //! `load_plugin` rather than at the first agent turn.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -69,12 +70,26 @@ pub struct PluginRuntime {
     /// `kind = "builtin"`: ignored.
     #[serde(default)]
     pub artefact: Option<PathBuf>,
+    /// For `kind = "process"`: the relative path of the supervised
+    /// plugin binary. Process flavour is a manifest-only seam in
+    /// v0.1 (PLUGIN-PROCESS.md item 11): the parser strict-validates
+    /// the field's presence but no host adapter spawns it.
+    #[serde(default)]
+    pub binary: Option<PathBuf>,
     /// `[runtimes.capabilities]` sub-block. Defaults to the empty
     /// default-deny set; a manifest that omits the block gets
     /// `Capabilities::default()` which keeps every host-implemented
     /// interface unlinked from the per-plugin linker.
     #[serde(default)]
     pub capabilities: PluginCapabilities,
+    /// `[runtimes.policy]` sub-block. Only `kind = "process"`
+    /// honours it (PLUGIN-PROCESS.md § Manifest): supervisor
+    /// timeouts, circuit-breaker thresholds, opt-in retry cooldown.
+    /// Builtin and wasm flavours reject every field
+    /// (`deny_unknown_fields` on the empty subtype `()` keeps the
+    /// rejection structural rather than a side check).
+    #[serde(default)]
+    pub policy: PluginRuntimePolicy,
 }
 
 /// Runtime flavour discriminant. The doc allows three kinds in
@@ -133,6 +148,55 @@ pub struct PluginCapabilities {
     /// entirely.
     #[serde(default)]
     pub attachments: Vec<String>,
+}
+
+/// `[runtimes.policy]` sub-block. The process flavour's supervisor
+/// reads these knobs; builtin and wasm reject them at validate-time
+/// (kind-specific block rule). Duration fields accept the doc shape
+/// (`"5s"`, `"100ms"`, `"2m"`) and parse into `std::time::Duration`
+/// at manifest-load. Numeric fields keep raw integers. The fields
+/// are individually optional so a manifest may declare the block
+/// and omit values it wants supervisor defaults for; an entirely
+/// absent `[runtimes.policy]` yields `PluginRuntimePolicy::default()`,
+/// indistinguishable from "all defaults".
+///
+/// `failed_cooldown` is a TOML sum-type: literal `false` disables
+/// the cooldown ("Failed is sticky", the doc's default), a duration
+/// string switches to "retry forever with this cooldown".
+/// `deny_unknown_fields` keeps a misspelt knob from silently being
+/// the supervisor's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginRuntimePolicy {
+    #[serde(default)]
+    pub socket_ready_timeout: Option<String>,
+    #[serde(default)]
+    pub health_interval: Option<String>,
+    #[serde(default)]
+    pub failure_threshold: Option<u32>,
+    #[serde(default)]
+    pub failure_window: Option<String>,
+    #[serde(default)]
+    pub failed_cooldown: Option<PluginFailedCooldown>,
+}
+
+/// TOML sum-type for `failed_cooldown`. The PLUGIN-PROCESS.md
+/// example uses literal `false` for the default (sticky-Failed)
+/// case and a duration string (`"60s"`) for the headless-retry
+/// case. `#[serde(untagged)]` is what makes TOML accept either
+/// shape against the same field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PluginFailedCooldown {
+    /// `false` -> the supervisor keeps `Failed` sticky; an
+    /// operator must call `enable()` to retry. The doc's default.
+    /// A literal `true` is not meaningful (a `true` cooldown is
+    /// "retry instantly", which is the absence of a cooldown);
+    /// validated below.
+    Disabled(bool),
+    /// Duration string. Validated via `parse_duration` at
+    /// manifest-load.
+    After(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +338,60 @@ pub enum ManifestError {
         "plugin runtime `process` is reserved (PLUGIN-PROCESS.md); v0.1 ships no host adapter"
     )]
     ProcessRuntimeReserved,
+    /// Kind-specific block validation: a `[[runtimes]]` entry of
+    /// the given kind declared a field that does not apply to it
+    /// (e.g. `binary` on `kind = "builtin"`). The doc lists which
+    /// fields each kind accepts; mixing them is a manifest error,
+    /// not a silent ignore -- the substrate registry treats the
+    /// manifest as the canonical declaration of intent.
+    #[error(
+        "runtime kind `{kind:?}` cannot carry field `{field}`; \
+         see PLUGIN-WASM.md / PLUGIN-PROCESS.md `[[runtimes]]` shape"
+    )]
+    RuntimeFieldNotApplicable {
+        kind: PluginRuntimeKind,
+        field: &'static str,
+    },
+    /// Kind-specific block validation: a `[[runtimes]]` entry of
+    /// the given kind is missing a field that is required for it
+    /// (e.g. `binary` on `kind = "process"`).
+    #[error(
+        "runtime kind `{kind:?}` requires field `{field}`; \
+         see PLUGIN-WASM.md / PLUGIN-PROCESS.md `[[runtimes]]` shape"
+    )]
+    RuntimeFieldMissing {
+        kind: PluginRuntimeKind,
+        field: &'static str,
+    },
+    /// `[runtimes.policy]` duration string failed to parse. The
+    /// supervisor reads durations as `<integer><unit>` with units
+    /// `ms`, `s`, `m`. Anything else is a manifest error rather
+    /// than a runtime surprise.
+    #[error("runtime policy field `{field}` = `{value}` is not a valid duration ({reason})")]
+    BadRuntimePolicyDuration {
+        field: &'static str,
+        value: String,
+        reason: &'static str,
+    },
+    /// `[runtimes.policy] failed_cooldown = true` is meaningless
+    /// (a `true` cooldown is "retry instantly", indistinguishable
+    /// from no cooldown). The PLUGIN-PROCESS.md example uses
+    /// literal `false` for sticky-Failed or a duration string for
+    /// headless retry; nothing else is accepted.
+    #[error(
+        "runtime policy `failed_cooldown` accepts `false` or a duration string \
+         (e.g. \"60s\"); `true` is not meaningful"
+    )]
+    BadFailedCooldownLiteral,
+    /// Cross-cutting: `[runtimes.policy]` only applies to
+    /// `kind = "process"`. Builtin / wasm entries that declare it
+    /// fail here so the manifest cannot pretend to configure a
+    /// supervisor that does not exist for that flavour.
+    #[error(
+        "runtime kind `{0:?}` does not honour `[runtimes.policy]`; \
+         policy applies to `kind = \"process\"` only"
+    )]
+    RuntimePolicyNotApplicable(PluginRuntimeKind),
 }
 
 /// On-disk TOML shape. The public manifest layers parsed-and-validated
@@ -341,6 +459,7 @@ impl PluginManifest {
             if !seen_kinds.insert(runtime.kind) {
                 return Err(ManifestError::DuplicateRuntimeKind(runtime.kind));
             }
+            validate_runtime_kind_block(runtime)?;
             for (idx, scope) in runtime.capabilities.attachments.iter().enumerate() {
                 if scope != "read" && scope != "write" {
                     return Err(ManifestError::BadAttachmentsScope {
@@ -379,6 +498,214 @@ impl PluginManifest {
             None => rel.to_path_buf(),
         }
     }
+}
+
+/// Kind-specific block validator. Builtin accepts `crate` and no
+/// other kind-specific fields; wasm accepts `artefact` and no
+/// other; process accepts `binary` (required) plus an optional
+/// `[runtimes.policy]` block. Anything else trips an error rather
+/// than a silent ignore -- a manifest that declares `binary` under
+/// `kind = "builtin"` would otherwise leave the operator wondering
+/// why their plugin won't spawn.
+fn validate_runtime_kind_block(runtime: &PluginRuntime) -> Result<(), ManifestError> {
+    let policy_empty = runtime.policy == PluginRuntimePolicy::default();
+    match runtime.kind {
+        PluginRuntimeKind::Builtin => {
+            if runtime.crate_name.is_none() {
+                return Err(ManifestError::RuntimeFieldMissing {
+                    kind: runtime.kind,
+                    field: "crate",
+                });
+            }
+            if runtime.artefact.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "artefact",
+                });
+            }
+            if runtime.binary.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "binary",
+                });
+            }
+            if !policy_empty {
+                return Err(ManifestError::RuntimePolicyNotApplicable(runtime.kind));
+            }
+        }
+        PluginRuntimeKind::Wasm => {
+            if runtime.artefact.is_none() {
+                return Err(ManifestError::RuntimeFieldMissing {
+                    kind: runtime.kind,
+                    field: "artefact",
+                });
+            }
+            if runtime.crate_name.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "crate",
+                });
+            }
+            if runtime.binary.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "binary",
+                });
+            }
+            if !policy_empty {
+                return Err(ManifestError::RuntimePolicyNotApplicable(runtime.kind));
+            }
+        }
+        PluginRuntimeKind::Process => {
+            if runtime.binary.is_none() {
+                return Err(ManifestError::RuntimeFieldMissing {
+                    kind: runtime.kind,
+                    field: "binary",
+                });
+            }
+            if runtime.crate_name.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "crate",
+                });
+            }
+            if runtime.artefact.is_some() {
+                return Err(ManifestError::RuntimeFieldNotApplicable {
+                    kind: runtime.kind,
+                    field: "artefact",
+                });
+            }
+            // Process accepts a capabilities block (attachments
+            // read/write is the only reverse interface in the
+            // process v0.1 wire shape -- see PLUGIN-PROCESS.md
+            // § Capability surface); validation of attachment
+            // scopes happens in the shared loop above.
+            validate_policy(&runtime.policy)?;
+        }
+    }
+    Ok(())
+}
+
+/// Parse-time validation of the `[runtimes.policy]` block. The
+/// parsed values are not stored -- callers re-parse via
+/// [`PluginRuntimePolicy::resolve`] when they need typed durations
+/// -- but running the parse here means a malformed `"5seconds"`
+/// fails at `load_plugin`, not at the first supervisor tick.
+fn validate_policy(policy: &PluginRuntimePolicy) -> Result<(), ManifestError> {
+    if let Some(v) = &policy.socket_ready_timeout {
+        parse_duration("socket_ready_timeout", v)?;
+    }
+    if let Some(v) = &policy.health_interval {
+        parse_duration("health_interval", v)?;
+    }
+    if let Some(v) = &policy.failure_window {
+        parse_duration("failure_window", v)?;
+    }
+    if let Some(cooldown) = &policy.failed_cooldown {
+        match cooldown {
+            PluginFailedCooldown::Disabled(false) => {}
+            PluginFailedCooldown::Disabled(true) => {
+                return Err(ManifestError::BadFailedCooldownLiteral);
+            }
+            PluginFailedCooldown::After(s) => {
+                parse_duration("failed_cooldown", s)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Minimal duration parser for `<integer><unit>` with `ms`, `s`,
+/// `m`. Modeled on the doc's examples (`"5s"`, `"10s"`, `"60s"`)
+/// and intentionally narrow: keeping the substrate manifest
+/// duration grammar tiny means the operator's mental model of
+/// "what works" matches the parser one-for-one, with no surprises
+/// hiding inside humantime's broader accept-set. A future bump to
+/// humantime can subsume this without manifest changes.
+pub fn parse_duration(field: &'static str, value: &str) -> Result<Duration, ManifestError> {
+    let trimmed = value.trim();
+    let (digits, unit) = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| trimmed.split_at(i))
+        .unwrap_or((trimmed, ""));
+    if digits.is_empty() {
+        return Err(ManifestError::BadRuntimePolicyDuration {
+            field,
+            value: value.into(),
+            reason: "missing numeric prefix",
+        });
+    }
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| ManifestError::BadRuntimePolicyDuration {
+            field,
+            value: value.into(),
+            reason: "numeric prefix too large",
+        })?;
+    let d = match unit.trim() {
+        "ms" => Duration::from_millis(n),
+        "s" => Duration::from_secs(n),
+        "m" => Duration::from_secs(n * 60),
+        "" => {
+            return Err(ManifestError::BadRuntimePolicyDuration {
+                field,
+                value: value.into(),
+                reason: "missing unit (expected ms / s / m)",
+            });
+        }
+        _ => {
+            return Err(ManifestError::BadRuntimePolicyDuration {
+                field,
+                value: value.into(),
+                reason: "unknown unit (expected ms / s / m)",
+            });
+        }
+    };
+    Ok(d)
+}
+
+impl PluginRuntimePolicy {
+    /// Resolve the raw manifest strings into the typed durations
+    /// the supervisor consumes. Returns `None` for any field the
+    /// manifest omits; the supervisor substitutes its own defaults
+    /// (PLUGIN-PROCESS.md `HostPolicy::*` defaults). Pure function;
+    /// failures here would have been caught at manifest parse.
+    pub fn resolve(&self) -> ResolvedPluginRuntimePolicy {
+        ResolvedPluginRuntimePolicy {
+            socket_ready_timeout: self
+                .socket_ready_timeout
+                .as_deref()
+                .map(|v| parse_duration("socket_ready_timeout", v).expect("validated at parse")),
+            health_interval: self
+                .health_interval
+                .as_deref()
+                .map(|v| parse_duration("health_interval", v).expect("validated at parse")),
+            failure_threshold: self.failure_threshold,
+            failure_window: self
+                .failure_window
+                .as_deref()
+                .map(|v| parse_duration("failure_window", v).expect("validated at parse")),
+            failed_cooldown: match &self.failed_cooldown {
+                None | Some(PluginFailedCooldown::Disabled(_)) => None,
+                Some(PluginFailedCooldown::After(s)) => {
+                    Some(parse_duration("failed_cooldown", s).expect("validated at parse"))
+                }
+            },
+        }
+    }
+}
+
+/// Typed mirror of [`PluginRuntimePolicy`]. The supervisor reads
+/// this; the manifest writes the string shape. Splitting raw vs
+/// resolved lets the manifest still round-trip through Serialize
+/// without losing operator-typed `"5s"` form.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedPluginRuntimePolicy {
+    pub socket_ready_timeout: Option<Duration>,
+    pub health_interval: Option<Duration>,
+    pub failure_threshold: Option<u32>,
+    pub failure_window: Option<Duration>,
+    pub failed_cooldown: Option<Duration>,
 }
 
 fn validate_plugin_id(id: &str) -> Result<(), ManifestError> {
@@ -582,9 +909,141 @@ default_attachments_policy  = "inline-thread-scoped"
         // PLUGIN-PROCESS.md item 11 is design-only in this job; the
         // manifest still parses so a future plugin can declare it.
         // The registry refuses to wire it up until item 11 ships.
-        let extended = format!("{SAMPLE}\n[[runtimes]]\nkind = \"process\"\n",);
+        let extended =
+            format!("{SAMPLE}\n[[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n",);
         let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
         assert_eq!(m.runtimes[0].kind, PluginRuntimeKind::Process);
+        assert_eq!(
+            m.runtimes[0].binary.as_deref(),
+            Some(std::path::Path::new("bin/notes"))
+        );
+    }
+
+    #[test]
+    fn process_kind_accepts_policy_block_with_durations_and_threshold() {
+        // PLUGIN-PROCESS.md § Manifest: the policy knobs are
+        // optional individually; the parser validates duration
+        // strings up-front so a misspelt `"5seconds"` fails at
+        // manifest-load, not at the first supervisor tick.
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n\
+             [runtimes.policy]\n\
+             socket_ready_timeout = \"5s\"\n\
+             health_interval      = \"10s\"\n\
+             failure_threshold    = 3\n\
+             failure_window       = \"60s\"\n\
+             failed_cooldown      = false\n",
+        );
+        let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
+        let resolved = m.runtimes[0].policy.resolve();
+        assert_eq!(resolved.socket_ready_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(resolved.health_interval, Some(Duration::from_secs(10)));
+        assert_eq!(resolved.failure_threshold, Some(3));
+        assert_eq!(resolved.failure_window, Some(Duration::from_secs(60)));
+        assert_eq!(resolved.failed_cooldown, None);
+    }
+
+    #[test]
+    fn process_kind_policy_failed_cooldown_accepts_duration_string() {
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n\
+             [runtimes.policy]\nfailed_cooldown = \"60s\"\n",
+        );
+        let m = PluginManifest::from_str(&extended, None).expect("valid manifest");
+        assert_eq!(
+            m.runtimes[0].policy.resolve().failed_cooldown,
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn process_kind_rejects_failed_cooldown_true() {
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n\
+             [runtimes.policy]\nfailed_cooldown = true\n",
+        );
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(err, ManifestError::BadFailedCooldownLiteral));
+    }
+
+    #[test]
+    fn process_kind_rejects_bad_duration_string() {
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"process\"\nbinary = \"bin/notes\"\n\
+             [runtimes.policy]\nhealth_interval = \"5seconds\"\n",
+        );
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::BadRuntimePolicyDuration { field, .. } if field == "health_interval"
+        ));
+    }
+
+    #[test]
+    fn process_kind_rejects_missing_binary() {
+        let extended = format!("{SAMPLE}\n[[runtimes]]\nkind = \"process\"\n");
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::RuntimeFieldMissing {
+                kind: PluginRuntimeKind::Process,
+                field: "binary",
+            },
+        ));
+    }
+
+    #[test]
+    fn builtin_kind_rejects_binary_field() {
+        // Kind-specific block validation: a `binary` field on a
+        // builtin entry would silently be ignored by a permissive
+        // parser; the substrate-doc rule is to fail so the operator
+        // sees the mistake at boot rather than at first call.
+        let extended = format!(
+            "{SAMPLE}\n[[runtimes]]\nkind = \"builtin\"\ncrate = \"x\"\nbinary = \"bin/y\"\n",
+        );
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::RuntimeFieldNotApplicable {
+                kind: PluginRuntimeKind::Builtin,
+                field: "binary",
+            },
+        ));
+    }
+
+    #[test]
+    fn wasm_kind_rejects_policy_block() {
+        // `[runtimes.policy]` applies to process only; declaring
+        // it on a wasm runtime means the manifest pretends to
+        // configure a supervisor that does not exist for that
+        // flavour.
+        let extended = format!(
+            "{SAMPLE}\n\
+             [[runtimes]]\nkind = \"wasm\"\nartefact = \"x.wasm\"\n\
+             [runtimes.policy]\nhealth_interval = \"10s\"\n",
+        );
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::RuntimePolicyNotApplicable(PluginRuntimeKind::Wasm),
+        ));
+    }
+
+    #[test]
+    fn builtin_kind_requires_crate_field() {
+        let extended = format!("{SAMPLE}\n[[runtimes]]\nkind = \"builtin\"\n");
+        let err = PluginManifest::from_str(&extended, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::RuntimeFieldMissing {
+                kind: PluginRuntimeKind::Builtin,
+                field: "crate",
+            },
+        ));
     }
 
     #[test]

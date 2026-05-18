@@ -591,6 +591,133 @@ async fn planner_allow_filter_admits_plugin_tool_under_persona_namespace() {
     assert!(!tool_allowed(&from_db.allowed_tools, "assistant.start_job"));
 }
 
+/// Plugin-substrate-runtimes stage 13: the manifest parser accepts
+/// `[[runtimes]] kind = "process"` with a `binary` and a
+/// `[runtimes.policy]` block, and the codeless-server two-phase
+/// scanner records the plugin as `Failed` with the stable reason
+/// `process-runtime-not-supported` -- the PLUGIN-PROCESS.md §
+/// Reserve-the-seam contract. Cross-plugin invariant: the rest of
+/// the registry is untouched (no half-populated state), so a
+/// future `codeless plugin info widgets` could still print the
+/// manifest while the supervisor remains dormant.
+///
+/// Living end-to-end in this file (not in
+/// `codeless-tools/src/plugin/substrate.rs`'s unit tests) because
+/// the test pins the boot-path the host CLI walks: write a real
+/// plugin dir, run the same `scan_plugins_dir` codeless-server
+/// will call at startup, and assert on the same outcome surface
+/// `codeless plugin list` projects.
+#[test]
+fn process_runtime_declared_today_loads_failed_with_structured_reason() {
+    use codeless_tools::plugin::{
+        scan_plugins_dir, PluginFailureReason, PluginLoadOutcome, RegistrationTable,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let plugin_root = tmp.path().join("widgets");
+    std::fs::create_dir_all(plugin_root.join("prompts")).unwrap();
+    std::fs::create_dir_all(plugin_root.join("migrations")).unwrap();
+    std::fs::write(
+        plugin_root.join("plugin.toml"),
+        r#"
+[plugin]
+id      = "widgets"
+version = "0.1.0"
+crate   = "codeless-plugin-widgets"
+
+[[personas]]
+id                          = "widgets"
+prompt_file                 = "prompts/system.md"
+allowed_tools               = ["widgets.*"]
+default_model_family        = "smart"
+default_attachments_policy  = "inline-thread-scoped"
+
+[[runtimes]]
+kind   = "process"
+binary = "bin/widgets"
+
+[runtimes.policy]
+socket_ready_timeout = "5s"
+health_interval      = "10s"
+failure_threshold    = 3
+failure_window       = "60s"
+failed_cooldown      = false
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        plugin_root.join("prompts/system.md"),
+        "You are the widgets persona.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        plugin_root.join("migrations/0001_init.sql"),
+        "CREATE TABLE widgets_entries (id TEXT PRIMARY KEY);\n",
+    )
+    .unwrap();
+
+    // Empty registration table on purpose: a process-only plugin
+    // does not need a builtin registration entry. The scanner
+    // must observe that the only declared runtime is `process`
+    // and short-circuit to the structured Failed outcome before
+    // ever consulting the table.
+    let table = RegistrationTable::new();
+    let result = scan_plugins_dir(tmp.path(), &table).expect("scan dir");
+    assert!(
+        result.commit_failure.is_none(),
+        "process-only plugin must not abort the commit phase: {:?}",
+        result.commit_failure
+    );
+
+    let outcome = result
+        .find("widgets")
+        .expect("widgets outcome recorded against its declared id");
+    match outcome {
+        PluginLoadOutcome::Failed {
+            reason, manifest, ..
+        } => {
+            // The structured reason is the contract; the message
+            // form is the operator-facing surface. Both come from
+            // PLUGIN-PROCESS.md § Reserve-the-seam verbatim.
+            assert_eq!(reason.code(), "process-runtime-not-supported");
+            assert_eq!(reason, &PluginFailureReason::ProcessRuntimeNotSupported);
+            assert!(
+                reason
+                    .message()
+                    .contains("process runtime not yet supported"),
+                "human message lifts the doc phrasing: {}",
+                reason.message()
+            );
+            // The manifest is still available so `codeless plugin
+            // info widgets` can render the declared-but-
+            // unsupported runtime to the operator.
+            assert_eq!(manifest.plugin.id, "widgets");
+            assert_eq!(manifest.runtimes.len(), 1);
+            let resolved = manifest.runtimes[0].policy.resolve();
+            assert_eq!(
+                resolved.socket_ready_timeout,
+                Some(std::time::Duration::from_secs(5))
+            );
+            assert_eq!(resolved.failure_threshold, Some(3));
+        }
+        other => panic!("expected Failed outcome, got {other:?}"),
+    }
+
+    // Cross-plugin invariant: the registry the scanner returns is
+    // empty because the process-only plugin contributed nothing.
+    // A regression that half-populated the registry (e.g. by
+    // running the registration table lookup before the runtime-
+    // kind branch) trips here.
+    assert!(
+        result.registry.tool_registry().is_empty(),
+        "registry untouched: process-only plugin does not register tools"
+    );
+    assert!(
+        result.registry.get("widgets").is_none(),
+        "no LoadedPlugin entry for a Failed plugin"
+    );
+}
+
 /// Acceptance §1 -- the substrate-doc shape rule: a new plugin is one
 /// crate + plugin.toml + domains/. Asserts the on-disk layout the
 /// `notes` plugin actually ships, so a future drive-by that scatters
