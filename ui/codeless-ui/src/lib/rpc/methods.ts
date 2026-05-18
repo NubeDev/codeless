@@ -42,6 +42,15 @@ import type {
   UploadChatAttachmentArgs,
   UploadChatAttachmentResult,
   ShellSessionRunOutput,
+  BindChatThreadArgs,
+  ChatBinding,
+  ChatMessage,
+  ChatRole,
+  ChatTransport,
+  ListJobMessagesArgs,
+  ListJobMessagesResult,
+  MessageId,
+  PostJobMessageArgs,
   AssistantThread,
   AssistantMessage,
   ListAssistantThreadsArgs,
@@ -712,6 +721,21 @@ export interface RpcMethodMap {
   };
   stop_review: { args: ReviewActionArgs; result: Review };
 
+  // Per-Job chat substrate (DOCS/JOB-CHAT.md). `post_job_message`
+  // inserts a row into `chat_messages` and fans out via the
+  // `chat-message-appended` event; `list_job_messages` pages the
+  // history newest-first by `created_at`; `bind_chat_thread` ties an
+  // external `(transport, channel, thread)` to a Job for the
+  // Telegram / Slack adapter inbound path. The web UI never calls
+  // `bind_chat_thread` itself but the typed entry stays here so
+  // every surface compiles against the same shape.
+  post_job_message: { args: PostJobMessageArgs; result: ChatMessage };
+  list_job_messages: {
+    args: ListJobMessagesArgs;
+    result: ListJobMessagesResult;
+  };
+  bind_chat_thread: { args: BindChatThreadArgs; result: ChatBinding };
+
   agent_chat: { args: AgentChatArgs; result: AgentChatResult };
   upload_chat_attachment: {
     args: UploadChatAttachmentArgs;
@@ -806,6 +830,15 @@ export type {
   ConfirmAssistantActionResult,
   CancelAssistantActionArgs,
   CancelAssistantActionResult,
+  BindChatThreadArgs,
+  ChatBinding,
+  ChatMessage,
+  ChatRole,
+  ChatTransport,
+  ListJobMessagesArgs,
+  ListJobMessagesResult,
+  MessageId,
+  PostJobMessageArgs,
 };
 
 // Review RPC surface. `ListReviewsArgs`, `ListReviewsResult`,

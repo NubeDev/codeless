@@ -23,21 +23,22 @@ use std::path::{Path, PathBuf};
 
 use codeless_rpc::methods::{
     AddRepoArgs, AgentChatArgs, AgentChatResult, AppendAssistantMessageArgs,
-    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs,
+    AppendAssistantMessageResult, ApproveReviewArgs, ApproveScopePatchArgs, BindChatThreadArgs,
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, ChatAttachmentRef,
     ChatContext, ClaudeStatus, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
     EditScopePatchArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs,
     JobDiffFile, JobDiffResult, ListAssistantMessagesArgs, ListAssistantMessagesResult,
-    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobsArgs, ListJobsResult,
-    ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, ProposedPatchListEntry, RejectScopePatchArgs, RemoveRepoArgs, ResetJobArgs,
-    RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo, ScopePatchActionResult,
-    ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UserPromptSnippet,
+    ListAssistantThreadsArgs, ListAssistantThreadsResult, ListJobMessagesArgs,
+    ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListProposedPatchesArgs,
+    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    PostJobMessageArgs, ProposedPatchListEntry, RejectScopePatchArgs, RemoveRepoArgs,
+    ResetJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo,
+    ScopePatchActionResult, ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::pause_point::{
@@ -47,13 +48,14 @@ use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
     AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId,
-    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, CostCents,
-    DetachPolicy, DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind,
-    GitAuth, Handover, Job, JobId, JobStatus, ListWorkspacesResult, PreCheckOutcome,
-    ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch,
-    ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task,
-    TaskId, TaskStatus, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
-    WorkspaceError, WorkspaceProblem,
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, ChatBinding,
+    ChatMessage, ChatRole, ChatTransport, CostCents, DetachPolicy, DetachWorkspaceArgs, Event,
+    EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus,
+    ListWorkspacesResult, MessageId, PreCheckOutcome, ProposedScopePatch, Repo, RepoId, Review,
+    ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind,
+    ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
+    UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError,
+    WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -140,6 +142,15 @@ fn collect() -> TypeCollection {
         .register_mut::<UploadChatAttachmentArgs>()
         .register_mut::<UploadChatAttachmentResult>()
         .register_mut::<CancelChatTaskArgs>()
+        .register_mut::<MessageId>()
+        .register_mut::<ChatTransport>()
+        .register_mut::<ChatRole>()
+        .register_mut::<ChatMessage>()
+        .register_mut::<ChatBinding>()
+        .register_mut::<PostJobMessageArgs>()
+        .register_mut::<ListJobMessagesArgs>()
+        .register_mut::<ListJobMessagesResult>()
+        .register_mut::<BindChatThreadArgs>()
         .register_mut::<StopActiveArgs>()
         .register_mut::<StopActiveResult>()
         .register_mut::<AssistantThreadId>()
