@@ -19,7 +19,6 @@ import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import {
   ChatMessageList,
-  MarkdownBubble,
   type ChatMessage,
 } from "../chat";
 import {
@@ -254,6 +253,23 @@ export function AssistantThreadView({
     (msg: ChatMessage, key: string) => {
       const original = msg.meta as AssistantMessage | undefined;
       if (!original) return null;
+      // Plain user/assistant prose carries no card or tool payload;
+      // returning null defers to `ChatMessageList`'s default
+      // `<ChatBubble>` so the message-list DOM matches what `JobChat`
+      // produces for the same row (`SCOPE-ASSISTANT-PARITY.md` §W1d
+      // render-test). The deferral has to happen here, not inside
+      // `MessageBubble`, because a React element whose component
+      // function returns null is still a non-null element — the
+      // wrapper would emit an empty `<li>` around it. Short-circuiting
+      // at the renderer boundary lets `ChatMessageList` recognise the
+      // opt-out and emit `ChatBubble` directly.
+      if (
+        original.role !== "tool"
+        && parseActionCard(original.meta_json) === null
+        && parseAttachmentCard(original.meta_json) === null
+      ) {
+        return null;
+      }
       return (
         <MessageBubble
           key={key}
@@ -380,15 +396,13 @@ function MessageBubble({
   if (message.role === "tool") {
     return <ToolResultView message={message} />;
   }
-  // Plain prose turn. Routed through the shared MarkdownBubble so the
-  // assistant transcript renders the same markdown surface area as the
-  // job chat instead of dumping raw asterisks and fences as text.
-  return (
-    <MarkdownBubble
-      role={message.role === "user" ? "user" : "assistant"}
-      content={message.content}
-    />
-  );
+  // Plain prose turn. Returning null hands the row off to
+  // `ChatMessageList`'s default `<ChatBubble>` so the assistant
+  // transcript renders the same timestamped Streamdown bubble as the
+  // job chat. `SCOPE-ASSISTANT-PARITY.md` §W1d locks this with a
+  // render-time DOM equality assertion — swapping a sibling bubble
+  // back in here would regress that test loudly.
+  return null;
 }
 
 // `meta_json` is the wire-typed `string | null`. Cards are JSON

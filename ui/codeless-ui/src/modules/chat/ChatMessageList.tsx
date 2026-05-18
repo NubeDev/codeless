@@ -65,6 +65,13 @@ export type ChatMessageListProps = {
    * Receives the projected message plus the stable key the renderer
    * would otherwise have generated, so the wrapper can pass it through
    * unchanged when it returns a custom element.
+   *
+   * Returning `null` / `undefined` defers to the default `<ChatBubble />`
+   * for that row. Plain user/assistant prose rows in both surfaces
+   * share that default so the message-list DOM stays at parity
+   * (`SCOPE-ASSISTANT-PARITY.md` §W1d render test); only the rows
+   * whose native shape the default cannot represent (action cards,
+   * attachment cards, tool-result payloads) get a custom node.
    */
   renderMessage?: (message: ChatMessage, key: string) => ReactNode;
   /**
@@ -196,11 +203,18 @@ export function ChatMessageList({
         if (row.kind === "message") {
           const key = row.message.key ?? `m-${i}`;
           if (renderMessage) {
-            // `<li>` wrapper keeps the renderer's output a valid
-            // child of the `<ul>` regardless of what the caller
-            // returns. `ChatBubble` self-wraps in `<li>` so it
-            // bypasses this path.
-            return <li key={key}>{renderMessage(row.message, key)}</li>;
+            const rendered = renderMessage(row.message, key);
+            // A `null` / `undefined` return means "use the default" —
+            // the wrapper is opting out of its custom dispatch for
+            // this row so the rendered DOM matches the surfaces that
+            // never supply a `renderMessage` at all.
+            if (rendered != null) {
+              // `<li>` wrapper keeps the renderer's output a valid
+              // child of the `<ul>` regardless of what the caller
+              // returns. `ChatBubble` self-wraps in `<li>` so the
+              // fall-through path below bypasses this wrapper.
+              return <li key={key}>{rendered}</li>;
+            }
           }
           return <ChatBubble key={key} message={row.message} />;
         }
