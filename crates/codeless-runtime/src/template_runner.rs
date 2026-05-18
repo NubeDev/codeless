@@ -1484,28 +1484,19 @@ impl Runner for TemplateRunner {
                     .await;
                 }
 
-                // Per-stage commit, drives the `Git` trio rail. Pass
-                // `["."]` so the function stages every change in the
-                // worktree — the runner does not track the changed
-                // set itself, and `commit_paths` already returns
-                // `Ok(false)` (mapped to `Skipped` on the `Git` rail
-                // by `commit_stage_changes`) when staging produces no
-                // diff. `ctx.worktree_path` is `None` only on the
-                // test-harness path; production callers always
-                // populate it through the driver.
+                // Per-stage commit, drives the `Git` trio rail.
+                // `commit_stage_changes` shells out to
+                // `git add -A && git commit`, which respects the
+                // worktree's `.gitignore` so build artefacts
+                // (`target/`, `.codeless/worktrees/`, etc.) stay out
+                // of the commit. `ctx.worktree_path` is `None` only
+                // on the test-harness path; production callers
+                // always populate it through the driver.
                 if let Some(wt) = ctx.worktree_path.as_deref() {
                     let subject = format!("stage {}: {}", stage.index, stage.title);
-                    let paths = vec![std::path::PathBuf::from(".")];
-                    if let Err(err) = commit_stage_changes(
-                        &ctx,
-                        store.as_ref(),
-                        task_id,
-                        stage_id,
-                        wt,
-                        &subject,
-                        &paths,
-                    )
-                    .await
+                    if let Err(err) =
+                        commit_stage_changes(&ctx, store.as_ref(), task_id, stage_id, wt, &subject)
+                            .await
                     {
                         tracing::warn!(?err, %stage_id, "stage commit failed; gate will rely on Failed trio row");
                     }
