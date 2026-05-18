@@ -619,6 +619,12 @@ async fn mark_job_failed(rpc: &Arc<InProcessRpc>, job_id: JobId) {
     {
         tracing::warn!(%job_id, error = %e, "mark_job_failed: publish");
     }
+    // SCOPE-ASSISTANT-PARITY W3d: mirror the `driver::drive_job`
+    // terminal-state path so a runner-crash give-up surfaces the same
+    // recommendation card as a runner-completed-Failed outcome. The
+    // helper handles the "no thread / policy already set / cap reason"
+    // suppressions internally.
+    crate::auto_bypass_failure_card::maybe_emit_failure_set_policy_card(rpc, job_id).await;
 }
 
 #[cfg(test)]

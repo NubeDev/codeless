@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useEventStream,
   useRpc,
@@ -7,16 +7,30 @@ import {
   type AssistantActionStatus,
   type AssistantAttachmentCard,
   type AssistantMessage,
+  type AssistantMessageId,
   type AssistantThread,
+  type AutoBypassPolicy,
   type EventEnvelope,
+  type Job,
   type JobId,
+  type Repo,
+  type SubmitJobArgs,
 } from "@/lib/rpc";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
-import { MarkdownBubble } from "../chat";
-import { useAssistantFocus } from "./focusStore";
+import { POLICY_PRESETS } from "@/lib/policy/presets";
+import {
+  ChatMessageList,
+  type ChatMessage,
+} from "../chat";
+import {
+  JobComposer,
+  composerToSubmitArgs,
+  slugifyName,
+  useJobComposerState,
+  type JobComposerInitial,
+} from "../jobs/composer";
 
 // Stage-6 assistant view. Renders the persisted transcript for one
 // thread plus a composer that appends a user turn and the no-op
@@ -42,29 +56,20 @@ export function AssistantThreadView({
   onThreadTouched,
 }: AssistantThreadViewProps) {
   const rpc = useRpc();
-  const refreshTick = useAssistantFocus((s) => s.refreshTick);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Live planner output. The assistant RPC blocks until the turn
-  // finishes; without an event subscription the user would stare at
-  // "Sending…" for the full latency of a model call. The planner
-  // publishes `ai-token` deltas onto the bus keyed on the thread id
-  // reused as a synthetic JobId (see assistant_planner.rs), so the
-  // same SSE channel that powers job chats also feeds this view. The
-  // streaming buffer is cleared the moment the awaited result lands
-  // — at that point the persisted messages are authoritative.
-  const [streamingText, setStreamingText] = useState("");
-  const [streamingActive, setStreamingActive] = useState(false);
-  const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
+  // Bumped on every `assistant-thread-touched` envelope for this
+  // thread so an externally-driven append (footer composer, another
+  // window, a card confirmed on the rail) surfaces here without the
+  // legacy `focusStore.refreshTick` polling counter
+  // (`DOCS/SCOPE-ASSISTANT-PARITY.md` §W1c).
+  const [touchTick, setTouchTick] = useState(0);
 
   // Reload when the parent rail swaps in a different thread, *or*
-  // when `refreshTick` bumps — the footer composer increments the
-  // tick after a successful `append_assistant_message`, so a
-  // message sent from the footer surfaces in this view on the next
-  // render without a per-thread subscription channel.
+  // when an external touch landed on this thread.
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
@@ -84,44 +89,23 @@ export function AssistantThreadView({
     return () => {
       cancelled = true;
     };
-  }, [rpc, thread.id, refreshTick]);
+  }, [rpc, thread.id, touchTick]);
 
-  // Scroll to the bottom on new messages — matches every other chat
-  // surface and keeps the latest turn in view without the user having
-  // to drag the scrollbar.
-  useEffect(() => {
-    scrollAnchorRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, streamingText]);
-
-  // Reset the streaming buffer when the parent rail swaps threads so
-  // tokens from a prior turn don't bleed into the new transcript.
-  useEffect(() => {
-    setStreamingText("");
-    setStreamingActive(false);
-  }, [thread.id]);
-
-  const onAssistantEvent = useCallback(
-    (env: EventEnvelope) => {
-      const ev = env.event;
-      if (ev.type === "ai-token") {
-        setStreamingText((prev) => prev + ev.delta);
-        setStreamingActive(true);
-      } else if (ev.type === "ai-message-complete") {
-        // Completion handshake — the awaited RPC result will arrive
-        // imminently with the persisted final message; freezing the
-        // pulse here avoids a flicker between the last token and the
-        // bubble being replaced by the real row.
-        setStreamingActive(false);
-      }
-    },
-    [],
-  );
-  // `since: 0` replays the full thread history on subscribe; the
-  // accumulator only renders while `sending` is true so a replay of
-  // an old turn doesn't surface as a phantom bubble.
+  // The runtime publishes `AssistantThreadTouched` with
+  // `bus_job_id = JobId(thread_id.0)` (`assistant_planner.rs`), so a
+  // `scope: "job"` filter pinned to this thread's id receives every
+  // touch on this thread — no other thread's traffic — without the
+  // rail's `scope: "all"` overhead. Local sends mutate `messages`
+  // directly; this subscription handles the cross-surface case
+  // (footer composer with the same thread bound, confirm/cancel from
+  // another window).
+  const onTouchEvent = useCallback((env: EventEnvelope) => {
+    if (env.event.type !== "assistant-thread-touched") return;
+    setTouchTick((n) => n + 1);
+  }, []);
   useEventStream(
     { scope: "job", job_id: thread.id as unknown as JobId },
-    onAssistantEvent,
+    onTouchEvent,
   );
 
   const onSubmit = useCallback(
@@ -130,8 +114,6 @@ export function AssistantThreadView({
       const content = input.trim();
       if (!content || sending) return;
       setSending(true);
-      setStreamingText("");
-      setStreamingActive(false);
       setErr(null);
       try {
         const res = await rpc.call("append_assistant_message", {
@@ -155,12 +137,6 @@ export function AssistantThreadView({
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
         setSending(false);
-        // Drop the in-flight buffer — on success the persisted
-        // assistant message just rendered through `messages`; on
-        // failure the partial text would otherwise stick around
-        // alongside the error banner with no way to dismiss it.
-        setStreamingText("");
-        setStreamingActive(false);
       }
     },
     [rpc, thread.id, input, sending, onThreadTouched],
@@ -213,6 +189,146 @@ export function AssistantThreadView({
     [rpc, thread.id, onThreadTouched],
   );
 
+  // `draft_job` cards confirm via `submit_job` directly so the
+  // composer's user-edited values reach the runtime — the existing
+  // `confirm_assistant_action` path dispatches `draft_job_from_conversation`
+  // which reads the planner's original args back off the card. Once the
+  // job exists, flip the card's locally-rendered status to "confirmed"
+  // and append a synthetic tool row pointing at the new job so the
+  // transcript reflects the outcome without a refetch. The persisted
+  // card row stays `pending` on the server; a follow-up server endpoint
+  // (parity-scope §W3) will accept the edited args alongside the card
+  // id so reload sees the same confirmed state. Until then a thread
+  // re-list would surface the card as pending — acceptable for the
+  // W2-only UI cut.
+  // Combined pause-then-confirm path for `set_policy` cards proposed
+  // against a Running / AwaitingReview job. The underlying
+  // `set_job_policy` RPC refuses Running / Queued / AwaitingReview
+  // (`AUTO-BYPASS-DECISIONS.md` Q5); the UI honours that rule by
+  // pausing first so the user does not have to leave the chat,
+  // switch to the job page, click pause, and come back. The pause is
+  // its own RPC call (a typed Conflict from `pause_job` aborts the
+  // sequence before the policy mutation, so the card stays pending
+  // rather than landing in a half-applied state). The confirm step
+  // routes through the same `confirm_assistant_action` dispatcher
+  // every other card uses — the dispatcher's `set_policy` arm calls
+  // `set_job_policy` (see `assistant.rs`), which now succeeds against
+  // the just-paused row.
+  const onConfirmPolicyAfterPause = useCallback(
+    async (messageId: string, jobId: JobId) => {
+      setErr(null);
+      try {
+        await rpc.call("pause_job", { job_id: jobId });
+        const res = await rpc.call("confirm_assistant_action", {
+          thread_id: thread.id,
+          message_id: messageId as AssistantMessage["id"],
+        });
+        setMessages((prev) => {
+          const next = prev.map((m) =>
+            m.id === res.card.id ? res.card : m,
+          );
+          next.push(res.tool_message);
+          return next;
+        });
+        onThreadTouched?.();
+      } catch (e: unknown) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [rpc, thread.id, onThreadTouched],
+  );
+
+  const onConfirmDraftJob = useCallback(
+    async (messageId: string, args: SubmitJobArgs) => {
+      setErr(null);
+      const job = await rpc.call("submit_job", args);
+      const now = Date.now();
+      setMessages((prev) => {
+        const next = prev.map((m) => {
+          if (m.id !== messageId) return m;
+          const card = parseActionCard(m.meta_json);
+          if (!card) return m;
+          const updated: AssistantActionCard = {
+            ...card,
+            status: "confirmed",
+          };
+          return { ...m, meta_json: JSON.stringify(updated) };
+        });
+        next.push({
+          id: `local-${messageId}` as AssistantMessageId,
+          thread_id: thread.id,
+          role: "tool",
+          content: `Drafted job \`${job.id}\` (status: ${job.status}).`,
+          meta_json: JSON.stringify({ tool: "draft_job", job }),
+          created_at: now,
+        });
+        return next;
+      });
+      onThreadTouched?.();
+    },
+    [rpc, thread.id, onThreadTouched],
+  );
+
+  // Project the assistant's native row type into the `ChatMessage`
+  // shape `ChatMessageList` consumes. The wrapper supplies a custom
+  // `renderMessage` below that reads `meta` back to dispatch on the
+  // original — action cards, attachment cards, and `tool`-role
+  // results need shapes `ChatMessage` (role + text + ts) cannot
+  // encode. Keying by the persisted `AssistantMessage.id` lets the
+  // status flip on a card (pending → confirmed) update in place
+  // instead of unmounting and remounting the row.
+  const history = useMemo<ChatMessage[]>(
+    () =>
+      messages.map((m) => ({
+        role: m.role === "user" ? "user" : "assistant",
+        text: m.content,
+        ts: new Date(m.created_at).toISOString(),
+        key: m.id,
+        meta: m,
+      })),
+    [messages],
+  );
+
+  const renderMessage = useCallback(
+    (msg: ChatMessage, key: string) => {
+      const original = msg.meta as AssistantMessage | undefined;
+      if (!original) return null;
+      // Plain user/assistant prose carries no card or tool payload;
+      // returning null defers to `ChatMessageList`'s default
+      // `<ChatBubble>` so the message-list DOM matches what `JobChat`
+      // produces for the same row (`SCOPE-ASSISTANT-PARITY.md` §W1d
+      // render-test). The deferral has to happen here, not inside
+      // `MessageBubble`, because a React element whose component
+      // function returns null is still a non-null element — the
+      // wrapper would emit an empty `<li>` around it. Short-circuiting
+      // at the renderer boundary lets `ChatMessageList` recognise the
+      // opt-out and emit `ChatBubble` directly.
+      if (
+        original.role !== "tool"
+        && parseActionCard(original.meta_json) === null
+        && parseAttachmentCard(original.meta_json) === null
+      ) {
+        return null;
+      }
+      return (
+        <MessageBubble
+          key={key}
+          message={original}
+          onConfirmAction={onConfirmAction}
+          onCancelAction={onCancelAction}
+          onConfirmDraftJob={onConfirmDraftJob}
+          onConfirmPolicyAfterPause={onConfirmPolicyAfterPause}
+        />
+      );
+    },
+    [
+      onConfirmAction,
+      onCancelAction,
+      onConfirmDraftJob,
+      onConfirmPolicyAfterPause,
+    ],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-border/60 px-4 py-2">
@@ -222,34 +338,31 @@ export function AssistantThreadView({
         </p>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-3 p-4">
-          {!loaded ? (
-            <div className="text-xs text-muted-foreground">Loading…</div>
-          ) : messages.length === 0 ? (
-            <div className="text-xs text-muted-foreground">
-              No messages yet. Say hello to seed the thread.
-            </div>
-          ) : (
-            messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                onConfirmAction={onConfirmAction}
-                onCancelAction={onCancelAction}
-              />
-            ))
-          )}
-          {sending && streamingText.length > 0 && (
-            <MarkdownBubble
-              role="assistant"
-              content={streamingText}
-              streaming={streamingActive}
-            />
-          )}
-          <div ref={scrollAnchorRef} />
-        </div>
-      </ScrollArea>
+      <div className="min-h-0 flex-1 overflow-hidden p-4">
+        {!loaded ? (
+          <div className="text-xs text-muted-foreground">Loading…</div>
+        ) : (
+          <ChatMessageList
+            // Planner publishes onto `(thread_id-as-job_id, task_id)`
+            // (see `assistant_planner.rs:108`); the same SSE channel
+            // powers job chats. `append_assistant_message` blocks and
+            // never round-trips the task id to the client, so the
+            // wildcard sentinel accepts the in-flight turn's tokens
+            // — safe because the RPC contract pins one turn per
+            // thread.
+            filter={{ scope: "job", job_id: thread.id as unknown as JobId }}
+            history={history}
+            activeTaskId={sending ? "*" : null}
+            renderMessage={renderMessage}
+            emptyState={
+              <li className="text-xs text-muted-foreground">
+                No messages yet. Say hello to seed the thread.
+              </li>
+            }
+            className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto pr-1"
+          />
+        )}
+      </div>
 
       {err && (
         <div className="border-t border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive">
@@ -289,12 +402,19 @@ type MessageBubbleProps = {
   message: AssistantMessage;
   onConfirmAction: (messageId: string) => void;
   onCancelAction: (messageId: string) => void;
+  onConfirmDraftJob: (messageId: string, args: SubmitJobArgs) => Promise<void>;
+  onConfirmPolicyAfterPause: (
+    messageId: string,
+    jobId: JobId,
+  ) => Promise<void>;
 };
 
 function MessageBubble({
   message,
   onConfirmAction,
   onCancelAction,
+  onConfirmDraftJob,
+  onConfirmPolicyAfterPause,
 }: MessageBubbleProps) {
   // Action cards are stored as `Assistant`-role messages whose
   // `meta_json` decodes to an `AssistantActionCard`. The role
@@ -309,6 +429,10 @@ function MessageBubble({
         card={card}
         onConfirm={() => onConfirmAction(message.id)}
         onCancel={() => onCancelAction(message.id)}
+        onConfirmDraftJob={(args) => onConfirmDraftJob(message.id, args)}
+        onConfirmPolicyAfterPause={(jobId) =>
+          onConfirmPolicyAfterPause(message.id, jobId)
+        }
       />
     );
   }
@@ -326,15 +450,13 @@ function MessageBubble({
   if (message.role === "tool") {
     return <ToolResultView message={message} />;
   }
-  // Plain prose turn. Routed through the shared MarkdownBubble so the
-  // assistant transcript renders the same markdown surface area as the
-  // job chat instead of dumping raw asterisks and fences as text.
-  return (
-    <MarkdownBubble
-      role={message.role === "user" ? "user" : "assistant"}
-      content={message.content}
-    />
-  );
+  // Plain prose turn. Returning null hands the row off to
+  // `ChatMessageList`'s default `<ChatBubble>` so the assistant
+  // transcript renders the same timestamped Streamdown bubble as the
+  // job chat. `SCOPE-ASSISTANT-PARITY.md` §W1d locks this with a
+  // render-time DOM equality assertion — swapping a sibling bubble
+  // back in here would regress that test loudly.
+  return null;
 }
 
 // `meta_json` is the wire-typed `string | null`. Cards are JSON
@@ -372,20 +494,35 @@ type ActionCardViewProps = {
   card: AssistantActionCard;
   onConfirm: () => void;
   onCancel: () => void;
+  onConfirmDraftJob: (args: SubmitJobArgs) => Promise<void>;
+  onConfirmPolicyAfterPause: (jobId: JobId) => Promise<void>;
 };
 
 // Confirmation-gated action card. The user-facing "confirm" button is
 // only live while `status == "pending"`; once a card is resolved the
 // buttons retire so a re-render of the transcript cannot fire the
 // same RPC twice (the server enforces this too — the UI is just
-// cooperating).
+// cooperating). `draft_job` cards branch to the editable composer
+// instead of the read-only preview while pending — the planner's
+// proposed JobSpec is review-then-edit, not review-then-accept-only,
+// so the composer surfaces every field the dialog shell does.
+// `set_policy` cards branch to a status-aware preview so a proposal
+// against a Running / AwaitingReview job offers a "Pause & confirm"
+// affordance instead of dispatching into a guaranteed server-side
+// Conflict (`AUTO-BYPASS-DECISIONS.md` Q5).
 function ActionCardView({
   message,
   card,
   onConfirm,
   onCancel,
+  onConfirmDraftJob,
+  onConfirmPolicyAfterPause,
 }: ActionCardViewProps) {
   const isPending = card.status === "pending";
+  const draftJobEditable =
+    isPending && card.action.tool === "draft_job";
+  const setPolicyHandled =
+    isPending && card.action.tool === "set_policy";
   return (
     <div className="flex justify-start">
       <div
@@ -403,13 +540,28 @@ function ActionCardView({
           </span>
         </div>
         <div className="whitespace-pre-wrap">{message.content}</div>
-        {card.action.tool === "draft_job" && (
+        {card.action.tool === "draft_job" && !draftJobEditable && (
           <DraftJobPreview action={card.action} />
+        )}
+        {draftJobEditable && card.action.tool === "draft_job" && (
+          <DraftJobComposerPanel
+            action={card.action}
+            onConfirm={onConfirmDraftJob}
+            onCancel={onCancel}
+          />
         )}
         {card.action.tool === "edit_scope" && (
           <EditScopePreview action={card.action} />
         )}
-        {isPending && (
+        {setPolicyHandled && card.action.tool === "set_policy" && (
+          <SetPolicyPanel
+            action={card.action}
+            onConfirm={onConfirm}
+            onCancel={onCancel}
+            onConfirmPolicyAfterPause={onConfirmPolicyAfterPause}
+          />
+        )}
+        {isPending && !draftJobEditable && !setPolicyHandled && (
           <div className="mt-1 flex justify-end gap-2">
             <Button
               size="sm"
@@ -428,6 +580,191 @@ function ActionCardView({
             </Button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Editable companion to `DraftJobPreview`. Renders the same form
+// `SubmitJobDialog` mounts (`JobComposer`) so the user can edit every
+// field — runner, branch, caps, model overrides, auto-bypass policy —
+// before confirming the planner's draft. `composerToSubmitArgs` maps
+// the state to `submit_job` wire args verbatim, which is the parity
+// guarantee §W2 of `DOCS/SCOPE-ASSISTANT-PARITY.md` exists to enforce:
+// a slug or cap-cents bug fixed in the composer reaches both surfaces.
+//
+// The planner's `draft_job` action does not carry a job name (the
+// composer derives the on-disk folder slug); the proposed branch is
+// the strongest signal we have, so seed the name from the branch with
+// the workspace's "codeless/" prefix stripped. The user can rename
+// before confirming.
+type DraftJobComposerPanelProps = {
+  action: Extract<AssistantAction, { tool: "draft_job" }>;
+  onConfirm: (args: SubmitJobArgs) => Promise<void>;
+  onCancel: () => void;
+};
+
+function DraftJobComposerPanel({
+  action,
+  onConfirm,
+  onCancel,
+}: DraftJobComposerPanelProps) {
+  const rpc = useRpc();
+  const [repo, setRepo] = useState<Repo | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRepo(null);
+    setLoadErr(null);
+    void rpc
+      .call("list_repos", {})
+      .then((res) => {
+        if (cancelled) return;
+        const found = res.repos.find((r) => r.id === action.repo_id) ?? null;
+        if (!found) {
+          setLoadErr(`repo ${action.repo_id} is no longer registered`);
+        } else {
+          setRepo(found);
+        }
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setLoadErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, action.repo_id]);
+
+  if (loadErr) {
+    return (
+      <div className="mt-1 rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+        {loadErr}
+      </div>
+    );
+  }
+  if (!repo) {
+    return (
+      <div className="mt-1 text-xs text-muted-foreground">
+        Loading composer…
+      </div>
+    );
+  }
+  return (
+    <DraftJobComposerPanelInner
+      repo={repo}
+      action={action}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
+  );
+}
+
+type DraftJobComposerPanelInnerProps = DraftJobComposerPanelProps & {
+  repo: Repo;
+};
+
+function DraftJobComposerPanelInner({
+  repo,
+  action,
+  onConfirm,
+  onCancel,
+}: DraftJobComposerPanelInnerProps) {
+  const rpc = useRpc();
+  const initial: JobComposerInitial = useMemo(
+    () => ({
+      // Planner emits a branch but no folder slug. Strip the conventional
+      // `codeless/` prefix to reach a name the user is likely to want;
+      // the field stays editable so any non-conforming branch can be
+      // overridden before confirm.
+      name: slugifyName(action.branch.replace(/^codeless\//, "")),
+      branch: action.branch,
+      runner: action.runner,
+      workspaceMode: action.workspace_mode ?? undefined,
+      costCapUsd: (action.cost_cap_cents / 100).toString(),
+      wallClockMin: (action.wall_clock_cap_ms / 60_000).toString(),
+      policy: action.auto_bypass_policy ?? null,
+      model: action.model ?? undefined,
+      permissionMode: action.permission_mode ?? undefined,
+      effort: action.effort ?? undefined,
+    }),
+    [action],
+  );
+  const state = useJobComposerState({ repo, initial });
+  const [submitting, setSubmitting] = useState(false);
+  const [submitErr, setSubmitErr] = useState<string | null>(null);
+
+  // `JobComposer` reads `state.info` to populate the runner dropdown.
+  // The dialog shell fetches `/server/info` on each open; the card
+  // mirrors that — one fetch per mount surfaces a server restarted with
+  // `--enable-claude` between the planner's draft and the user's review.
+  useEffect(() => {
+    let cancelled = false;
+    rpc
+      .serverInfo()
+      .then((i) => {
+        if (cancelled) return;
+        state.setInfo(i);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setSubmitErr(
+          `could not load runner list: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+    // `state` is held by the caller; we only want to fire this on mount
+    // / rpc change. Re-running on every `state` identity flip would
+    // cancel + re-fetch on each keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rpc]);
+
+  const onConfirmClick = async () => {
+    if (!state.canSubmit || submitting) return;
+    setSubmitting(true);
+    setSubmitErr(null);
+    try {
+      await onConfirm(composerToSubmitArgs(state));
+    } catch (e: unknown) {
+      setSubmitErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mt-1 flex flex-col gap-2 rounded border border-border/40 bg-background/40 p-2 text-xs">
+      <JobComposer state={state} hideRunImmediately />
+      <details className="text-muted-foreground">
+        <summary className="cursor-pointer select-none">prompt</summary>
+        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-2">
+          {action.prompt}
+        </pre>
+      </details>
+      {submitErr && (
+        <div className="text-destructive">{submitErr}</div>
+      )}
+      <div className="mt-1 flex justify-end gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onCancel}
+          disabled={submitting}
+          aria-label="Cancel action"
+        >
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => void onConfirmClick()}
+          disabled={!state.canSubmit || submitting}
+          aria-label="Confirm action"
+        >
+          {submitting ? "Submitting…" : "Confirm"}
+        </Button>
       </div>
     </div>
   );
@@ -479,6 +816,178 @@ function DraftJobPreview({
 // see what they are about to run without parsing the human summary.
 function actionLabel(action: AssistantAction): string {
   return `tool:${action.tool}`;
+}
+
+// `set_policy` action card panel. Reads the current job to display
+// `current policy -> proposed policy` so the user reviews exactly
+// what the mutation flips, and selects the appropriate confirm path
+// for the row's status. The runtime's `set_job_policy` RPC refuses
+// Running / Queued / AwaitingReview (`AUTO-BYPASS-DECISIONS.md` Q5);
+// the panel honours that rule by surfacing a "Pause & confirm"
+// affordance for Running / AwaitingReview (the statuses `pause_job`
+// accepts) and disabling the confirm button for Queued, Completed,
+// and Failed (statuses the user must transition out of explicitly).
+// Owning its own button row lets the panel co-locate the affordance
+// with the warning copy that explains it.
+type SetPolicyPanelProps = {
+  action: Extract<AssistantAction, { tool: "set_policy" }>;
+  onConfirm: () => void;
+  onCancel: () => void;
+  onConfirmPolicyAfterPause: (jobId: JobId) => Promise<void>;
+};
+
+function SetPolicyPanel({
+  action,
+  onConfirm,
+  onCancel,
+  onConfirmPolicyAfterPause,
+}: SetPolicyPanelProps) {
+  const rpc = useRpc();
+  const [job, setJob] = useState<Job | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [busyErr, setBusyErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setJob(null);
+    setLoadErr(null);
+    void rpc
+      .call("get_job", { job_id: action.job_id })
+      .then((j) => {
+        if (cancelled) return;
+        setJob(j);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setLoadErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, action.job_id]);
+
+  if (loadErr) {
+    return (
+      <div className="mt-1 rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+        Could not load job {action.job_id}: {loadErr}
+      </div>
+    );
+  }
+  if (!job) {
+    return (
+      <div className="mt-1 text-xs text-muted-foreground">
+        Loading job status…
+      </div>
+    );
+  }
+
+  const proposed = action.policy ?? null;
+  const status = job.status;
+  // `pause_job` only accepts Running and AwaitingReview (mirrors the
+  // runtime's pause guard). Queued can neither be paused nor have its
+  // policy changed — the operator must stop the row first. Completed
+  // and Failed are terminal and not addressable by `set_job_policy`
+  // either; show a typed reason so the user knows why the button is
+  // not live rather than confronting a Conflict on confirm.
+  const needsPause = status === "running" || status === "awaiting-review";
+  const directlyApplicable =
+    status === "draft" || status === "stopped" || status === "paused";
+  const blockedReason = needsPause || directlyApplicable
+    ? null
+    : `Auto-bypass policy cannot be changed on a ${status} job — ${
+        status === "queued"
+          ? "stop the job first."
+          : "the row is terminal."
+      }`;
+
+  const onPauseAndConfirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    setBusyErr(null);
+    try {
+      await onConfirmPolicyAfterPause(action.job_id);
+    } catch (e: unknown) {
+      setBusyErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-1 flex flex-col gap-2 rounded border border-border/40 bg-background/40 p-2 text-xs">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+        <dt className="font-mono text-muted-foreground">job</dt>
+        <dd className="truncate font-mono">{action.job_id}</dd>
+        <dt className="font-mono text-muted-foreground">status</dt>
+        <dd className="truncate font-mono">{status}</dd>
+        <dt className="font-mono text-muted-foreground">current</dt>
+        <dd className="truncate">{policyLabel(job.auto_bypass_policy)}</dd>
+        <dt className="font-mono text-muted-foreground">proposed</dt>
+        <dd className="truncate">{policyLabel(proposed)}</dd>
+      </dl>
+      {needsPause && (
+        <div className="rounded border border-yellow-500/40 bg-yellow-500/10 px-2 py-1.5 text-yellow-700 dark:text-yellow-300">
+          Job is {status}. The runtime refuses a policy change while
+          a stage is racing the failure handler — pause first
+          (AUTO-BYPASS-DECISIONS.md Q5), then apply.
+        </div>
+      )}
+      {blockedReason && (
+        <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-destructive">
+          {blockedReason}
+        </div>
+      )}
+      {busyErr && (
+        <div className="text-destructive">{busyErr}</div>
+      )}
+      <div className="mt-1 flex justify-end gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onCancel}
+          disabled={busy}
+          aria-label="Cancel action"
+        >
+          Cancel
+        </Button>
+        {needsPause ? (
+          <Button
+            size="sm"
+            onClick={() => void onPauseAndConfirm()}
+            disabled={busy}
+            aria-label="Pause job then confirm policy change"
+          >
+            {busy ? "Pausing…" : "Pause & confirm"}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={onConfirm}
+            disabled={!directlyApplicable}
+            aria-label="Confirm action"
+          >
+            Confirm
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Human-readable label for an `AutoBypassPolicy`. `null` is the
+// implicit halt-on-failure default; preset variants resolve to their
+// `POLICY_PRESETS` label so the chat surface and the picker speak the
+// same vocabulary; `custom` carries the operator's free text so the
+// preview reflects exactly what the planner proposed.
+function policyLabel(policy: AutoBypassPolicy | null): string {
+  if (!policy) return "None — halt on stage failure";
+  if (policy.type === "custom") {
+    const trimmed = policy.comment.trim();
+    return trimmed.length > 0 ? `Custom: ${trimmed}` : "Custom";
+  }
+  const preset = POLICY_PRESETS.find((p) => p.id === policy.type);
+  return preset ? preset.label : policy.type;
 }
 
 // Structured preview for the `edit_scope` action card. Fetches the

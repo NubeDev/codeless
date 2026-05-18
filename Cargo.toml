@@ -20,6 +20,12 @@ members = [
     "crates/codeless-bot-core",
     "crates/codeless-slack",
     "crates/codeless-telegram",
+    # ai-ui ↔ codeless adapter. Host-only; implements
+    # `ai_ui_core::Provider` against `ai-runner`. See
+    # crates/codeless-ai-ui/src/lib.rs for the design note. The
+    # `ai-ui` repo is a sibling of codeless-workspace/, path-dep'd
+    # at ../../../../ai-ui from inside the crate.
+    "crates/codeless-ai-ui",
     # Plugin #0 — the substrate's own smoke test. Lives in-tree per
     # DOCS/PLUGIN-SUBSTRATE.md "Plugin #0: notes" so substrate
     # breakage fails CI here before it reaches a real workflow plugin.
@@ -30,6 +36,7 @@ members = [
     # upstream rather than from edits made inside this workspace.
     "../ai-runner",
 ]
+exclude = ["demos/openui-poc"]
 
 [workspace.package]
 version = "0.0.0"

@@ -180,6 +180,14 @@ pub async fn drive_job(
     bus.publish(Some(job_id), None, None, event, ended)
         .await
         .map_err(db_err)?;
+    // SCOPE-ASSISTANT-PARITY W3d: a non-cap stage failure under `None`
+    // policy surfaces a `set_policy` recommendation in the most-recent
+    // assistant thread. The helper is best-effort and silently no-ops
+    // when there is nothing to render against, so the terminal-state
+    // path here does not branch on whether a card was actually written.
+    if next_status == JobStatus::Failed {
+        crate::auto_bypass_failure_card::maybe_emit_failure_set_policy_card(rpc, job_id).await;
+    }
     // Same preservation rule as the early-terminal branch above:
     // the worktree stays on disk so the user can inspect or re-run
     // from where it left off. `release_worktree` is kept around for

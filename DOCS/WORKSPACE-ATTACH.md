@@ -504,6 +504,104 @@ transport.
 
 All four resolved before milestone 2 began.
 
+## Port binding — running multiple instances
+
+Attaching N workspaces inside one server is the primary multi-tenant
+story. But the user also runs the *server itself* more than once:
+one per dogfood run, one per integration test, one per
+`codeless-tauri-desktop` window backed by an embedded `codeless serve`
+sidecar, plus whatever ad-hoc instance the developer has open in a
+terminal. Hardcoding `127.0.0.1:7777` makes the second `codeless
+serve` crash with `AddrInUse` for no reason the user can act on.
+
+The fix is the same trick Vite, esbuild, and every modern dev tool
+use: bind to port `0` and let the OS pick. The port is reported back
+to the caller (stdout banner, optional `--port-file`, and the existing
+`on_bound` callback in `codeless-server`).
+
+### Surface
+
+| Surface             | Today                      | Target                                                |
+| ------------------- | -------------------------- | ----------------------------------------------------- |
+| `codeless serve`    | `--bind 127.0.0.1:7777`    | default loopback + ephemeral; `--bind` is an override |
+| `codeless-tauri-desktop` | in-process IPC (no port) | unchanged — never opens a TCP port                    |
+| `codeless-mcp`      | stdio (no port)            | unchanged — stdio handshake, one process per client   |
+| Test harnesses      | mixed (some hardcode)      | all route through the shared helper                   |
+
+`codeless-tauri-desktop` invokes `boot::boot()` over Tauri IPC; there
+is no TCP transport to assign a port to. `codeless-mcp`'s `rmcp`
+transport is `transport-io` (stdin/stdout) — each MCP client spawns
+its own child, so "multi-instance" is the default and no port is
+involved. Both are explicitly out of scope for this change; they show
+up in the table so the next reader does not waste an afternoon
+looking for the port that does not exist. If a future MCP HTTP/SSE
+transport lands, it reuses the same helper as `codeless serve`.
+
+### Reusable helper
+
+Lives in `codeless-adapters-host::net` (host-only, per
+[SCOPE.md](./SCOPE.md) crate layout) so any host binary can pull it
+in without the mobile-safe crates picking up a `tokio::net`
+dependency:
+
+```rust
+pub async fn bind_tcp(
+    requested: Option<SocketAddr>,
+) -> std::io::Result<(tokio::net::TcpListener, SocketAddr)>;
+```
+
+- `requested = None` → binds `127.0.0.1:0`; OS assigns a free port
+  atomically. This is the *only* race-free way to claim a port;
+  "find a free port, then bind to it" has a TOCTOU window the
+  helper exists to forbid.
+- `requested = Some(addr)` → pins the address; returns `AddrInUse`
+  on conflict. Callers decide whether to fall back to `None` or
+  surface the error (CLI surfaces it; sidecar boot falls back).
+- Returns the *live* listener. Callers must not drop and re-bind to
+  the reported address — that reintroduces the TOCTOU race.
+
+`codeless-server::serve_with_shutdown` already accepts a SocketAddr
+and reports the bound addr via its `on_bound` callback; the change
+there is mechanical (take a pre-bound `TcpListener` instead, or call
+`bind_tcp` internally) and lands with the CLI change below.
+
+### CLI surface
+
+```
+codeless serve [--bind <ADDR>] [--port-file <PATH>]
+```
+
+- `--bind` default flips from `127.0.0.1:7777` to *unset*; unset means
+  `bind_tcp(None)`. Passing `--bind 127.0.0.1:7777` restores today's
+  behaviour for scripts that need a stable port.
+- `--port-file <PATH>` (new): after bind, atomically write the chosen
+  `host:port` to `<PATH>` (tmp-file + rename). Discovery for tests,
+  Tauri sidecar supervisor, and `codeless-cli` client commands that
+  want to talk to "the local server I just started" without parsing
+  stdout.
+- Stdout banner stays: `codeless-server listening on http://{addr}`
+  is the human-readable equivalent of `--port-file`.
+
+### Auth gate is unchanged
+
+`codeless-cli/src/serve.rs` lines 183–205 refuse non-loopback binds
+without `--require-token`. Ephemeral ports on `127.0.0.1` satisfy the
+loopback check, so the gate keeps working untouched. Pinning a
+non-loopback address still requires `--require-token`. The helper
+does not encode auth policy; that stays in the CLI.
+
+### Out of scope
+
+- Service discovery beyond `--port-file` + stdout banner. mDNS, a
+  registry file in `~/.codeless`, or a "list running servers" CLI
+  are follow-ups, not this change.
+- Port *reservation* across restarts. Each `codeless serve` invocation
+  re-binds; whatever the OS picks is what you get. A future "sticky
+  port per workspace" feature can persist the last-bound port into
+  `attached_workspaces` and pass it to `bind_tcp` as `Some(addr)`
+  with fallback — but that needs the multi-instance UX to settle
+  first.
+
 ## Milestones
 
 Status legend: `[x]` done, `[~]` partial, `[ ]` not started.
@@ -542,6 +640,14 @@ Status legend: `[x]` done, `[~]` partial, `[ ]` not started.
    `workspace_recovered` from the host adapter; render badges +
    recovery flow. Server-side emits exist (stage 7); UI does not
    subscribe yet.
+7. `[~]` **Port binding.** Land `codeless-adapters-host::net::bind_tcp`
+   (done; 3 unit tests). Flip `codeless serve --bind` default to
+   unset (→ ephemeral loopback), thread the pre-bound listener into
+   `serve_with_shutdown`, and add `--port-file <PATH>` discovery.
+   Update sidecar/test callers to use the helper instead of
+   hardcoded ports. Exit test: two `codeless serve` instances start
+   concurrently without `AddrInUse`; `--port-file` content matches
+   the stdout banner.
 
 Each milestone ships behind the same UI route; partial completion is
 visible but not feature-flagged.

@@ -1064,7 +1064,26 @@ commit_sha: string } |
  *  cleared. Subscribers refresh their per-job badge / submit-form
  *  state from this event without re-fetching the whole row.
  */
-{ type: "job-policy-changed"; job_id: JobId; policy_name?: string | null };
+{ type: "job-policy-changed"; job_id: JobId; policy_name?: string | null } | 
+/**
+ *  `assistant_threads.updated_at` advanced — a message was appended,
+ *  an action card was confirmed/cancelled, or an attachment was
+ *  uploaded. The `/assistant` thread-list rail subscribes to this
+ *  envelope as its re-sort signal so the order stays live without
+ *  the focusStore `refreshTick` polling counter the rail used to
+ *  rely on (`DOCS/SCOPE-ASSISTANT-PARITY.md` §W1). The same envelope
+ *  also lets the footer composer recount pending cards and the open
+ *  thread view re-list messages when a touch arrives from another
+ *  surface — every assistant pane keys off the same channel.
+ * 
+ *  Published with the synthetic `bus_job_id = JobId(thread_id.0)`
+ *  the planner already uses (`assistant_planner.rs`), so a
+ *  `{ scope: "job", job_id: thread_id }` subscriber sees the touch
+ *  alongside the `AiToken` / `AiMessageComplete` envelopes for the
+ *  same turn. Subscribers that need touches across every thread
+ *  (the rail) subscribe with `scope: "all"`.
+ */
+{ type: "assistant-thread-touched"; thread_id: AssistantThreadId };
 
 /**
  *  Monotonic event index, allocated by `events.cursor INTEGER

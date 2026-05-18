@@ -5,7 +5,7 @@ import {
   POLICY_CUSTOM,
   pickerFromPolicy,
   policyFromPicker,
-} from "./policyPresets";
+} from "./presets";
 
 describe("policyFromPicker", () => {
   it("returns null for the sentinel", () => {

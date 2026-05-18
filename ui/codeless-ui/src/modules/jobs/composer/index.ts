@@ -14,7 +14,7 @@ export {
   pickerFromPolicy,
   type PolicyPreset,
   type PresetPolicyKind,
-} from "./policyPresets";
+} from "@/lib/policy/presets";
 export {
   RUNNER_CAPS,
   PERMISSION_MODES,

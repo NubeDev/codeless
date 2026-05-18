@@ -24,6 +24,7 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::InProcessRpc;
+use crate::auto_bypass_presets::POLICY_PRESETS;
 use crate::time::now_ms;
 
 /// CLI runner the F2 planner targets. REST runners (`anthropic`,
@@ -319,9 +320,30 @@ fn append_tool_trailer(out: &mut String, allowed: &[String]) {
         out.push('\n');
     }
     if policy_visible {
-        out.push_str(PLANNER_AUTO_BYPASS_POLICY_DOC);
+        append_auto_bypass_policy_doc(out);
     }
     out.push_str(PLANNER_TOOL_TRAILER_TAIL);
+}
+
+/// Render the auto-bypass policy catalogue from `POLICY_PRESETS`, then
+/// append the `Custom` row and the canned "when to propose" guidance.
+/// The preset list is the single source of truth (UI + Rust mirror per
+/// SCOPE-ASSISTANT-PARITY W3) so a hint change in `auto_bypass_presets`
+/// reaches the planner prompt without a paired edit here. `Custom` is
+/// the seventh variant — it carries operator free text the planner
+/// cannot synthesise from a row, so it is rendered explicitly rather
+/// than read from the preset table.
+fn append_auto_bypass_policy_doc(out: &mut String) {
+    out.push_str(PLANNER_AUTO_BYPASS_POLICY_HEAD);
+    for preset in POLICY_PRESETS {
+        out.push_str("- `{\"type\":\"");
+        out.push_str(preset.id);
+        out.push_str("\"}` — ");
+        out.push_str(preset.hint);
+        out.push('\n');
+    }
+    out.push_str(PLANNER_AUTO_BYPASS_CUSTOM_ROW);
+    out.push_str(PLANNER_AUTO_BYPASS_POLICY_TAIL);
 }
 
 /// Translate a runner-emitted tool name into the namespaced id the
@@ -424,27 +446,29 @@ const PLANNER_TOOL_TRAILER_TAIL: &str =
 clicks Confirm to dispatch it. Do not invent tool names.\n";
 
 /// Appended when `set_policy` is in the persona's visible tool set.
-/// The variant catalogue and the "when to propose" guidance are not
-/// derivable from the tool's one-line arg signature; kept as its own
-/// const rather than baked into `BuiltinAssistantTool::args` because
-/// the catalogue is much longer than one line and the dynamic trailer
-/// consumes only the per-tool args shape.
-const PLANNER_AUTO_BYPASS_POLICY_DOC: &str = "\n\
+/// Split into head / Custom row / tail so the catalogue body can be
+/// rendered from `POLICY_PRESETS` instead of being hand-baked: head
+/// introduces the variant list, the loop emits one row per preset,
+/// the Custom row closes the variant catalogue, and the tail gives the
+/// "when to propose" guidance. The catalogue lives outside
+/// `BuiltinAssistantTool::args` because the per-variant lines are
+/// much longer than one line and the dynamic per-tool trailer consumes
+/// only the args shape.
+const PLANNER_AUTO_BYPASS_POLICY_HEAD: &str = "\n\
 Auto-bypass policies control what the job does when a stage fails for \
 a non-cap reason. Cap-breach failures (cost / wall-clock) always halt \
 regardless. The picker the user sees on the new-job form is the same \
-set you may propose here:\n\
-- `{\"type\":\"quick\"}` — fastest forward progress, light analysis\n\
-- `{\"type\":\"long-term\"}` — hands-off, will iterate on its own\n\
-- `{\"type\":\"cheap\"}` — prefers low-cost actions; halts before \
-spending\n\
-- `{\"type\":\"best-judgement\"}` — model decides per failure\n\
-- `{\"type\":\"just-code\"}` — keep editing code, skip ambient chores\n\
-- `{\"type\":\"relentless\"}` — disables the two-strikes thrashing \
-guard; only caps stop it\n\
-- `{\"type\":\"custom\",\"comment\":\"...\"}` — free-text guidance \
-threaded into the next stage's prompt verbatim\n\
-\n\
+set you may propose here:\n";
+
+/// Seventh variant — Custom carries operator free text, so it is not
+/// in `POLICY_PRESETS` (the picker renders it as a free-text field).
+/// Listed here so the planner still knows it can propose a Custom
+/// policy when the user has supplied bespoke guidance.
+const PLANNER_AUTO_BYPASS_CUSTOM_ROW: &str =
+    "- `{\"type\":\"custom\",\"comment\":\"...\"}` — free-text guidance \
+threaded into the next stage's prompt verbatim\n";
+
+const PLANNER_AUTO_BYPASS_POLICY_TAIL: &str = "\n\
 Propose `set_policy` when the user describes a recovery posture (\"if \
 this fails again, keep going\", \"be hands-off\", \"halt if it gets \
 expensive\"). `set_policy` with `policy` omitted clears the policy and \
@@ -1002,6 +1026,130 @@ pub(crate) mod tests {
             turn.cards[0].action,
             AssistantAction::ListJobs { repo_id: None }
         ));
+    }
+
+    /// Snapshot the rendered auto-bypass policy catalogue. The body is
+    /// composed from `auto_bypass_presets::POLICY_PRESETS` plus the
+    /// hand-coded Custom row; this test is the load-bearing assert that
+    /// a hint change in the preset list reaches the planner prompt and
+    /// that all seven `AutoBypassPolicy` variants are advertised. Any
+    /// drift in wording, ordering, or surrounding chrome fails this
+    /// equality and the trailer body has to be re-eyeballed.
+    #[test]
+    fn auto_bypass_policy_doc_snapshot() {
+        let mut rendered = String::new();
+        super::append_auto_bypass_policy_doc(&mut rendered);
+        let expected = "\n\
+Auto-bypass policies control what the job does when a stage fails for \
+a non-cap reason. Cap-breach failures (cost / wall-clock) always halt \
+regardless. The picker the user sees on the new-job form is the same \
+set you may propose here:\n\
+- `{\"type\":\"quick\"}` — Smallest change that works; skip nice-to-haves and refactors.\n\
+- `{\"type\":\"long-term\"}` — Prefer the durable fix; tests stay in sync with behaviour.\n\
+- `{\"type\":\"cheap\"}` — Minimise tokens and tool calls; one-line fixes ship.\n\
+- `{\"type\":\"best-judgement\"}` — Let the runner decide quality-vs-speed with no operator present.\n\
+- `{\"type\":\"just-code\"}` — Pick a reasonable approach and ship it; do not block on questions.\n\
+- `{\"type\":\"relentless\"}` — Never stops on stage failure; only the cost cap and wall-clock cap halt the job.\n\
+- `{\"type\":\"custom\",\"comment\":\"...\"}` — free-text guidance threaded into the next stage's prompt verbatim\n\
+\n\
+Propose `set_policy` when the user describes a recovery posture (\"if \
+this fails again, keep going\", \"be hands-off\", \"halt if it gets \
+expensive\"). `set_policy` with `policy` omitted clears the policy and \
+restores the default halt-on-failure behaviour. The runtime refuses the \
+change while the job is Running or Queued — pause first if the user \
+wants the change to apply mid-flight.\n";
+        assert_eq!(
+            rendered, expected,
+            "auto-bypass policy doc drifted from the expected catalogue; \
+             update both the preset list and the snapshot in the same commit",
+        );
+    }
+
+    /// Companion assertion to the snapshot: every variant of
+    /// `AutoBypassPolicy` is advertised exactly once. The snapshot
+    /// fails loudly on any wording change; this test guards against
+    /// the silent-drop failure mode where a future preset removal
+    /// leaves the catalogue shorter than the enum.
+    #[test]
+    fn auto_bypass_policy_doc_covers_every_variant() {
+        let mut rendered = String::new();
+        super::append_auto_bypass_policy_doc(&mut rendered);
+        let variants = [
+            "{\"type\":\"quick\"}",
+            "{\"type\":\"long-term\"}",
+            "{\"type\":\"cheap\"}",
+            "{\"type\":\"best-judgement\"}",
+            "{\"type\":\"just-code\"}",
+            "{\"type\":\"relentless\"}",
+            "{\"type\":\"custom\",\"comment\":\"...\"}",
+        ];
+        for v in variants {
+            let occurrences = rendered.matches(v).count();
+            assert_eq!(
+                occurrences, 1,
+                "variant {v} should appear exactly once in the policy doc, saw {occurrences}",
+            );
+        }
+        // Seven variants must be present; the cardinality check defends
+        // against a future variant landing in `AutoBypassPolicy` without
+        // a matching row here (the picker-vs-enum drift that
+        // SCOPE-ASSISTANT-PARITY W3 halt-condition 3 calls out).
+        assert_eq!(
+            variants.len(),
+            7,
+            "AutoBypassPolicy has seven variants; the planner catalogue must mirror that count",
+        );
+    }
+
+    /// End-to-end render through `build_planner_prompt`: a persona with
+    /// `assistant.*` sees the full auto-bypass catalogue as part of the
+    /// tool trailer. Asserts the head/tail framing is reachable through
+    /// the public entry point, not just the helper.
+    #[test]
+    fn build_planner_prompt_includes_auto_bypass_catalogue_when_set_policy_visible() {
+        let persona = test_persona(&["assistant.*"], "Full access.");
+        let prompt = super::build_planner_prompt(&persona, &[], "hi");
+        for v in [
+            "{\"type\":\"quick\"}",
+            "{\"type\":\"long-term\"}",
+            "{\"type\":\"cheap\"}",
+            "{\"type\":\"best-judgement\"}",
+            "{\"type\":\"just-code\"}",
+            "{\"type\":\"relentless\"}",
+            "{\"type\":\"custom\",\"comment\":\"...\"}",
+        ] {
+            assert!(
+                prompt.contains(v),
+                "variant {v} missing from rendered prompt: {prompt}",
+            );
+        }
+        // Auto-bypass head should follow the `set_policy` tool row, not
+        // appear before it — the catalogue is supplemental to the tool's
+        // arg signature, not a replacement.
+        let set_policy_at = prompt
+            .find("`set_policy`")
+            .expect("set_policy tool row must appear in the trailer");
+        let catalogue_at = prompt
+            .find("Auto-bypass policies control")
+            .expect("auto-bypass catalogue must appear when set_policy is visible");
+        assert!(set_policy_at < catalogue_at);
+    }
+
+    /// Personas without `set_policy` granted must not see the
+    /// auto-bypass catalogue at all — listing it would tell the model
+    /// it can propose a policy change the runner would then drop.
+    #[test]
+    fn build_planner_prompt_omits_auto_bypass_catalogue_when_set_policy_hidden() {
+        let persona = test_persona(&["assistant.list_jobs"], "Read-only viewer.");
+        let prompt = super::build_planner_prompt(&persona, &[], "hi");
+        assert!(
+            !prompt.contains("Auto-bypass policies control"),
+            "policy catalogue must be hidden when set_policy is not granted: {prompt}",
+        );
+        assert!(
+            !prompt.contains("{\"type\":\"quick\"}"),
+            "policy variant ids must be hidden when set_policy is not granted: {prompt}",
+        );
     }
 
     #[test]

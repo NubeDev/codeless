@@ -405,7 +405,7 @@ export class MockRpcClient implements RpcClient {
             `job ${a.job_id} is ${job.status}; pause the job before changing its auto-bypass policy`,
           );
         }
-        job.auto_bypass_policy = a.auto_bypass_policy ?? null;
+        job.auto_bypass_policy = a.policy ?? null;
         return job as RpcResultOf<M>;
       }
 

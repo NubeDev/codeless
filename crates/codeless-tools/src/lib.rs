@@ -16,11 +16,13 @@
 pub mod attachment;
 pub mod browser;
 mod ctx;
+pub mod email;
 mod error;
 pub mod html_text;
 pub mod plugin;
 pub mod policy;
 mod registry;
+pub mod schedule;
 pub mod testing;
 mod tool;
 pub mod tools;

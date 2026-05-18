@@ -310,7 +310,7 @@ export interface DeleteJobArgs {
 // inline error message.
 export interface SetJobPolicyArgs {
   job_id: JobId;
-  auto_bypass_policy: AutoBypassPolicy | null;
+  policy: AutoBypassPolicy | null;
 }
 
 export interface GcWorktreesArgs {

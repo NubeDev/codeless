@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
-import { useRpc, type AssistantThread } from "@/lib/rpc";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useEventStream,
+  useRpc,
+  type AssistantThread,
+  type EventEnvelope,
+} from "@/lib/rpc";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -19,7 +24,6 @@ export function AssistantPage() {
   const [loaded, setLoaded] = useState(false);
   const focusThreadId = useAssistantFocus((s) => s.currentThreadId);
   const setFocusThreadId = useAssistantFocus((s) => s.setCurrentThreadId);
-  const refreshTick = useAssistantFocus((s) => s.refreshTick);
   const [selectedId, setSelectedId] = useState<string | null>(focusThreadId);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -64,10 +68,35 @@ export function AssistantPage() {
 
   useEffect(() => {
     void refresh();
-    // `refreshTick` bumps after a footer submission — re-listing
-    // surfaces the touched thread's `updated_at` change so the rail
-    // re-sorts without the user clicking refresh.
-  }, [refresh, refreshTick]);
+  }, [refresh]);
+
+  // Re-sort fan-out keys off the `assistant-thread-touched` envelope
+  // the runtime publishes on every `touch_assistant_thread`. Replaces
+  // the legacy `focusStore.refreshTick` polling counter
+  // (`DOCS/SCOPE-ASSISTANT-PARITY.md` §W1c). `scope: "all"` is the only
+  // filter that captures touches across every thread; the rail
+  // discriminates by event variant client-side so it ignores the
+  // job-scope traffic the bus also carries.
+  //
+  // A microtask-coalesced ref collapses the replay backlog (one
+  // envelope per historical touch) into a single refresh on first
+  // mount, then forwards each live envelope as a refresh trigger. The
+  // alternative — passing a non-zero `since` to skip the replay —
+  // would require a captured cursor the page does not have at mount.
+  const refreshPendingRef = useRef(false);
+  const onTouchEvent = useCallback(
+    (env: EventEnvelope) => {
+      if (env.event.type !== "assistant-thread-touched") return;
+      if (refreshPendingRef.current) return;
+      refreshPendingRef.current = true;
+      queueMicrotask(() => {
+        refreshPendingRef.current = false;
+        void refresh();
+      });
+    },
+    [refresh],
+  );
+  useEventStream({ scope: "all" }, onTouchEvent);
 
   const onNew = useCallback(async () => {
     if (busy) return;

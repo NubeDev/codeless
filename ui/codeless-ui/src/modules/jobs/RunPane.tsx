@@ -21,7 +21,12 @@ import {
 
 import { navigate } from "@/lib/route";
 
-import { CommonChat } from "../chat";
+import {
+  ChatMessageList,
+  CommonChat,
+  PulseDot,
+  type ChatMessage,
+} from "../chat";
 
 import { setGlobalDocs } from "./spec/mutateTemplate";
 
@@ -801,165 +806,6 @@ function TerminalBody({
 // kind of action.
 const CHAT_FILE = "CHAT.md";
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  text: string;
-  ts: string;
-}
-
-// Additional rows the chat feed renders alongside user/assistant
-// bubbles. Sourced from the job's event stream so the user sees
-// what the agent is *doing* (Read foo.rs, Edit bar.rs) and the
-// inflection points (stage started, verify passed, job stopped,
-// resumed) without having to leave the chat for the right-pane
-// Timeline tab.
-//
-// Each item carries its event cursor for dedupe (events can replay
-// on SSE reconnect) and the source `created_at` so the chronological
-// merge with `ChatMessage.ts` stays correct.
-type LiveFeedItem =
-  | {
-      kind: "tool_call";
-      cursor: number;
-      created_at: number;
-      tool: string;
-      args_json: string;
-    }
-  | {
-      kind: "lifecycle";
-      cursor: number;
-      created_at: number;
-      label: string;
-      tone: "neutral" | "good" | "bad" | "warn";
-    };
-
-// Translate one event envelope into a feed item (or `null` if the
-// event has no chat-feed representation). The streaming-token and
-// task-state events are handled separately by the chat surface;
-// only signal that's interesting to the *user* belongs here.
-function liveItemFromEvent(
-  env: import("@/lib/rpc/wire").EventEnvelope,
-): LiveFeedItem | null {
-  const e = env.event;
-  const created_at = env.created_at;
-  const cursor = env.cursor;
-  switch (e.type) {
-    case "tool-call":
-    case "tool-approval-requested":
-      return {
-        kind: "tool_call",
-        cursor,
-        created_at,
-        tool: e.tool,
-        args_json: e.args_json,
-      };
-    case "stage-started":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label:
-          typeof e.ordinal === "number"
-            ? `stage ${e.ordinal + 1} started: ${e.name}`
-            : `stage started: ${e.name}`,
-        tone: "neutral",
-      };
-    case "stage-completed":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: `stage ${e.status}`,
-        tone: e.status === "passed" ? "good" : "bad",
-      };
-    case "verify-started":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: "verify started",
-        tone: "neutral",
-      };
-    case "verify-passed":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: "verify passed",
-        tone: "good",
-      };
-    case "verify-failed":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: `verify failed (exit ${e.exit_code})`,
-        tone: "bad",
-      };
-    case "job-started":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: "job started",
-        tone: "good",
-      };
-    case "job-completed":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: "job completed",
-        tone: "good",
-      };
-    case "job-stopped":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: `stopped: ${e.reason}`,
-        tone: e.reason === "user" ? "neutral" : "warn",
-      };
-    case "job-paused":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label:
-          e.reason === "user" ? "paused" : `paused: ${e.reason}`,
-        tone: "warn",
-      };
-    case "job-failed":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: "job failed",
-        tone: "bad",
-      };
-    case "job-resumed":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: e.previous_reason
-          ? `resumed (was ${e.previous_reason})`
-          : "resumed",
-        tone: "good",
-      };
-    case "review-requested":
-      return {
-        kind: "lifecycle",
-        cursor,
-        created_at,
-        label: "review requested",
-        tone: "warn",
-      };
-    default:
-      return null;
-  }
-}
-
 export type JobChatProps = {
   job: Job;
   /**
@@ -997,19 +843,15 @@ export function JobChat({
   // cannot touch repo source. Mirrors claude-code's plan-mode signal.
   const [chatMode, setChatMode] = useState<"work" | "spec">("work");
   const [busy, setBusy] = useState(false);
-  const [streaming, setStreaming] = useState<{
-    sessionId: JobId;
-    taskId: string;
-    text: string;
-  } | null>(null);
+  // Task id of the in-flight assistant turn, or `null` when no turn
+  // is active. Drives `ChatMessageList`'s streaming-bubble gate: the
+  // placeholder appears the moment we kick off `agent_chat` (under
+  // the `"pending"` sentinel since the real id is server-side), then
+  // is swapped to `result.task_id` so token accumulation only picks
+  // up deltas from this turn. Cleared in the same `finally` as
+  // `busy` so the bubble can never linger past the send.
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // Tool calls + lifecycle moments from the job's event stream,
-  // interleaved into the chat feed below the user/assistant
-  // bubbles. We keep them in a separate state so the existing
-  // streaming-token accumulator and CHAT.md persistence stay
-  // untouched — these are *additional* signal, not a rewrite of
-  // the chat surface.
-  const [liveItems, setLiveItems] = useState<LiveFeedItem[]>([]);
   const sinceCursor = useRef<number>(0);
   // Attachments staged for the next send. Each entry is the result
   // of an `upload_chat_attachment` RPC: the bytes already live in
@@ -1047,18 +889,8 @@ export function JobChat({
   // `InvalidArgument`.
   const [worktreeMissing, setWorktreeMissing] = useState<boolean | null>(null);
 
-  const scrollRef = useRef<HTMLUListElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
-  // Whenever auto-scroll is enabled and feed content changes, pin to
-  // the bottom. We watch the merged feed length and the streaming
-  // buffer so token-by-token updates also keep scroll glued.
-  useEffect(() => {
-    if (!autoScroll) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [autoScroll, history, liveItems, streaming?.text]);
   // Auto-grow the composer textarea up to a sensible cap so a long
   // multi-line message doesn't get clipped behind a small fixed box.
   useEffect(() => {
@@ -1124,41 +956,15 @@ export function JobChat({
   // tool runs, not just a frozen "streaming" bubble.
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
 
-  // Subscribe to the chat session's event stream. We use the job's
-  // own id as session_id so every chat turn for this job shares the
-  // same filter; the streaming-text accumulator distinguishes turns
-  // by task_id (one task per agent_chat call). The `withState`
-  // variant additionally exposes SSE liveness — connecting / live /
-  // reconnecting / disconnected — so the chat header can show the
-  // user when the stream itself is the reason updates have stopped.
+  // SSE liveness for the agent-activity pill. Token accumulation,
+  // tool-call interleave, and lifecycle dividers live inside
+  // `ChatMessageList`; this subscription only carries the state +
+  // last-seen timestamp the indicator needs. Two subscriptions on the
+  // same filter share one EventSource via the hook's connection pool,
+  // so this does not double the network cost.
   const sseStatus = useEventStreamWithState(
     { scope: "job", job_id: job.id },
-    useCallback(
-      (env) => {
-        setLastEventAt(Date.now());
-        // Streaming-token accumulator for the in-flight assistant
-        // bubble (unchanged behaviour). Distinguished by task_id so
-        // a stray event for an earlier turn cannot pollute the
-        // current bubble.
-        const e = env.event;
-        if (streaming && env.task_id === streaming.taskId && e.type === "ai-token") {
-          setStreaming((s) =>
-            s && s.taskId === env.task_id ? { ...s, text: s.text + e.delta } : s,
-          );
-        }
-        // Tool calls and lifecycle moments fold into the feed as
-        // their own items, interleaved chronologically with the
-        // user/assistant bubbles. Cheap append; the render derives
-        // the merged list from `history` + `liveItems` + `streaming`.
-        const item = liveItemFromEvent(env);
-        if (item) {
-          setLiveItems((prev) =>
-            prev.some((p) => p.cursor === item.cursor) ? prev : [...prev, item],
-          );
-        }
-      },
-      [streaming],
-    ),
+    useCallback(() => setLastEventAt(Date.now()), []),
     sinceCursor.current,
   );
 
@@ -1177,7 +983,7 @@ export function JobChat({
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setStreaming(null);
+      setActiveTaskId(null);
       setBusy(false);
     }
   };
@@ -1198,7 +1004,11 @@ export function JobChat({
     setHistory(optimistic);
     setInput("");
     setAttachments([]);
-    setStreaming({ sessionId: job.id, taskId: "pending", text: "" });
+    // `"pending"` shows the in-flight placeholder bubble before the
+    // RPC returns with the real task id; no real envelope carries
+    // `"pending"` as a task_id so no token accumulator runs against
+    // it. The id is replaced below the moment `agent_chat` resolves.
+    setActiveTaskId("pending");
 
     try {
       // The chat runs in the job's worktree so it can read files
@@ -1229,7 +1039,7 @@ export function JobChat({
         mode: chatMode,
       });
 
-      setStreaming({ sessionId: result.session_id, taskId: result.task_id, text: "" });
+      setActiveTaskId(result.task_id);
 
       // Wait for the assistant turn to complete. We poll the
       // streaming bubble's text and resolve when an ai-message-complete
@@ -1248,7 +1058,7 @@ export function JobChat({
       };
       const updated = [...optimistic, assistantMsg];
       setHistory(updated);
-      setStreaming(null);
+      setActiveTaskId(null);
 
       // Persist transcript.
       await rpc.call("write_job_file", {
@@ -1281,7 +1091,7 @@ export function JobChat({
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
-      setStreaming(null);
+      setActiveTaskId(null);
       setHistory(history);
       // Restore the staged attachments so the user can retry without
       // re-picking files. The bytes still live in the worktree from
@@ -1367,7 +1177,7 @@ export function JobChat({
             sseStatus={sseStatus}
             lastEventAt={lastEventAt}
             jobStatus={job.status}
-            chatBusy={busy || streaming != null}
+            chatBusy={busy}
           />
           <span className="text-muted-foreground font-mono text-[10px]">
             {loaded ? `${history.length} message${history.length === 1 ? "" : "s"}` : "loading…"}
@@ -1380,20 +1190,14 @@ export function JobChat({
               type="checkbox"
               className="h-3 w-3 cursor-pointer"
               checked={autoScroll}
-              onChange={(e) => {
-                const on = e.target.checked;
-                setAutoScroll(on);
-                if (on && scrollRef.current) {
-                  scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-                }
-              }}
+              onChange={(e) => setAutoScroll(e.target.checked)}
             />
             auto-scroll
           </label>
         </div>
       </div>
 
-      {history.length === 0 && !streaming && loaded && (
+      {history.length === 0 && activeTaskId == null && loaded && (
         <p className="text-muted-foreground shrink-0 text-[11px] italic">
           ask anything — "how many rows in the csv?", "where did you put the
           files?", "now add a column for reactive power". the chat runs in
@@ -1406,44 +1210,12 @@ export function JobChat({
         <WorktreeMissingBanner worktreePath={job.worktree_path ?? ""} />
       )}
 
-      <ul
-        ref={scrollRef}
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1"
-      >
-        {mergeChatFeed(history, liveItems).map((row, i) => {
-          if (row.kind === "message") {
-            return <ChatBubble key={`m-${i}`} message={row.message} />;
-          }
-          if (row.kind === "tool_call") {
-            return (
-              <ToolCallCard
-                key={`t-${row.cursor}`}
-                tool={row.tool}
-                argsJson={row.args_json}
-                ts={row.created_at}
-              />
-            );
-          }
-          return (
-            <LifecycleDivider
-              key={`l-${row.cursor}`}
-              label={row.label}
-              tone={row.tone}
-              ts={row.created_at}
-            />
-          );
-        })}
-        {streaming && (
-          <ChatBubble
-            message={{
-              role: "assistant",
-              text: streaming.text || "…",
-              ts: "",
-            }}
-            streaming
-          />
-        )}
-      </ul>
+      <ChatMessageList
+        filter={{ scope: "job", job_id: job.id }}
+        history={history}
+        activeTaskId={activeTaskId}
+        autoScroll={autoScroll}
+      />
 
       {refetchJob && (
         <JobActionRow
@@ -1768,79 +1540,6 @@ function JobRefPicker({
       </div>
     </div>
   );
-}
-
-function ChatBubble({
-  message,
-  streaming,
-}: {
-  message: ChatMessage;
-  streaming?: boolean;
-}) {
-  const isUser = message.role === "user";
-  return (
-    <li
-      className={cn(
-        "rounded-md border px-2.5 py-2",
-        isUser
-          ? "border-zinc-500/30 bg-zinc-500/5"
-          : "border-blue-500/30 bg-blue-500/5",
-      )}
-    >
-      <div className="text-muted-foreground mb-1 flex items-center justify-between gap-1.5 text-[9px] uppercase tracking-wide">
-        <span className={isUser ? "" : "text-blue-700 dark:text-blue-300"}>
-          {isUser ? "you" : "assistant"}
-        </span>
-        {streaming && <PulseDot color="bg-blue-500" />}
-        {!streaming && message.ts && (
-          <span className="font-mono normal-case tracking-normal">
-            {shortTime(message.ts)}
-          </span>
-        )}
-      </div>
-      <div className="prose prose-sm dark:prose-invert max-w-none text-[12px] break-words [&_pre]:my-1.5 [&_pre]:bg-background/60 [&_pre]:p-2 [&_pre]:text-[11px] [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-auto [&_code]:bg-background/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[11px] [&_code]:break-all [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-[13px] [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
-        <Streamdown>{message.text}</Streamdown>
-      </div>
-    </li>
-  );
-}
-
-// Merge chat history (user/assistant bubbles persisted to CHAT.md)
-// with live feed items (tool calls, lifecycle dividers from the
-// event stream) into one chronologically-ordered list. The chat
-// surface renders this directly; the in-flight `streaming` bubble
-// is appended separately at the tail.
-//
-// Sort is stable on equal timestamps: history first, then live
-// items. This keeps a conversation that opens with a user message
-// from accidentally rendering a `job-started` divider above it.
-type ChatFeedRow =
-  | { kind: "message"; message: ChatMessage; ts: number }
-  | (LiveFeedItem & { ts: number });
-function mergeChatFeed(
-  history: ChatMessage[],
-  live: LiveFeedItem[],
-): ChatFeedRow[] {
-  const rows: ChatFeedRow[] = [];
-  for (const m of history) {
-    rows.push({ kind: "message", message: m, ts: chatTsToMs(m.ts) });
-  }
-  for (const item of live) {
-    rows.push({ ...item, ts: item.created_at });
-  }
-  rows.sort((a, b) => a.ts - b.ts);
-  return rows;
-}
-
-// `ChatMessage.ts` is an ISO string (or empty for the in-flight
-// streaming bubble). Translate to ms-since-epoch for the merge
-// sort; an unparseable / empty value sorts as 0 which puts it at
-// the top — the right place for the very first user message of a
-// freshly-opened conversation.
-function chatTsToMs(iso: string): number {
-  if (!iso) return 0;
-  const n = Date.parse(iso);
-  return Number.isFinite(n) ? n : 0;
 }
 
 // Surfaced when the job's `worktree_path` no longer resolves on
@@ -2328,196 +2027,6 @@ function fmtCents(c: number): string {
   return `$${(c / 100).toFixed(2)}`;
 }
 
-// One tool call, collapsed by default. Shows tool name + a
-// one-line argument summary (`Edit …/stage.rs`, `Bash <cmd>`) so
-// the user can scan a long run without expanding every card.
-// Click to reveal a Copilot-style preview: a +/- diff for
-// Edit/MultiEdit, the new file body for Write, and the raw
-// pretty-printed args JSON as a fallback for everything else.
-function ToolCallCard({
-  tool,
-  argsJson,
-  ts,
-}: {
-  tool: string;
-  argsJson: string;
-  ts: number;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const summary = toolCallSummary(tool, argsJson);
-  const preview = useMemo(
-    () => editPreviewFromArgs(tool, argsJson),
-    [tool, argsJson],
-  );
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={() => setExpanded((e) => !e)}
-        className="border-border/40 bg-muted/20 hover:bg-muted/40 flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left text-[11px] transition-colors"
-      >
-        <span className="min-w-0 flex-1 truncate">
-          <span className="text-muted-foreground mr-1.5">tool</span>
-          <span className="font-mono font-medium">{tool}</span>
-          {summary && (
-            <span className="text-muted-foreground ml-2 truncate">
-              {summary}
-            </span>
-          )}
-          {preview && preview.totals && (
-            <span className="ml-2 font-mono text-[10px]">
-              <span className="text-emerald-500">+{preview.totals.adds}</span>{" "}
-              <span className="text-destructive">−{preview.totals.dels}</span>
-            </span>
-          )}
-        </span>
-        <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
-          {wallClockTime(ts)}
-        </span>
-      </button>
-      {expanded && preview && (
-        <EditPreviewBody preview={preview} />
-      )}
-      {expanded && !preview && (
-        <pre className="border-border/40 bg-background/60 mt-1 max-h-72 overflow-auto rounded border px-2 py-1.5 font-mono text-[10px] whitespace-pre-wrap break-all">
-          {prettyJson(argsJson)}
-        </pre>
-      )}
-    </li>
-  );
-}
-
-// Parsed shape of an edit-style tool call ready for inline render.
-// `hunks` is one entry per edit; `Write`/`NotebookEdit` produce a
-// single hunk with `dels = []`. Returns null for tools whose args
-// don't fit this shape (Bash, Read, Grep, …) so the card falls back
-// to the raw-JSON view.
-interface EditPreview {
-  path: string | null;
-  hunks: Array<{ dels: string[]; adds: string[] }>;
-  totals: { adds: number; dels: number } | null;
-}
-
-function editPreviewFromArgs(
-  tool: string,
-  argsJson: string,
-): EditPreview | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(argsJson);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const args = parsed as Record<string, unknown>;
-  const path =
-    (typeof args.file_path === "string" && args.file_path) ||
-    (typeof args.path === "string" && args.path) ||
-    (typeof args.notebook_path === "string" && args.notebook_path) ||
-    null;
-  const displayPath = path ? relativiseWorktreePath(path) : null;
-
-  const splitLines = (s: string): string[] =>
-    s === "" ? [] : s.replace(/\n$/, "").split("\n");
-
-  switch (tool) {
-    case "Edit":
-    case "NotebookEdit": {
-      const oldS = typeof args.old_string === "string" ? args.old_string : null;
-      const newS = typeof args.new_string === "string" ? args.new_string : null;
-      if (oldS == null || newS == null) return null;
-      const dels = splitLines(oldS);
-      const adds = splitLines(newS);
-      return {
-        path: displayPath,
-        hunks: [{ dels, adds }],
-        totals: { adds: adds.length, dels: dels.length },
-      };
-    }
-    case "MultiEdit": {
-      const edits = Array.isArray(args.edits) ? args.edits : null;
-      if (!edits) return null;
-      const hunks: Array<{ dels: string[]; adds: string[] }> = [];
-      let adds = 0;
-      let dels = 0;
-      for (const e of edits) {
-        if (!e || typeof e !== "object") continue;
-        const er = e as Record<string, unknown>;
-        const oldS = typeof er.old_string === "string" ? er.old_string : null;
-        const newS = typeof er.new_string === "string" ? er.new_string : null;
-        if (oldS == null || newS == null) continue;
-        const d = splitLines(oldS);
-        const a = splitLines(newS);
-        hunks.push({ dels: d, adds: a });
-        dels += d.length;
-        adds += a.length;
-      }
-      if (hunks.length === 0) return null;
-      return { path: displayPath, hunks, totals: { adds, dels } };
-    }
-    case "Write": {
-      const content = typeof args.content === "string" ? args.content : null;
-      if (content == null) return null;
-      const adds = splitLines(content);
-      return {
-        path: displayPath,
-        hunks: [{ dels: [], adds }],
-        totals: { adds: adds.length, dels: 0 },
-      };
-    }
-    default:
-      return null;
-  }
-}
-
-// Render the parsed edit preview as a small unified-diff body.
-// Same visual vocabulary as `FilesChanged` so an Edit card in the
-// chat reads identically to the same change in the Files tab.
-function EditPreviewBody({ preview }: { preview: EditPreview }) {
-  return (
-    <div className="border-border/40 bg-background/60 mt-1 overflow-hidden rounded border">
-      {preview.path && (
-        <div className="border-border/40 text-muted-foreground border-b px-2 py-1 font-mono text-[10px]">
-          {preview.path}
-        </div>
-      )}
-      <div className="max-h-72 overflow-auto px-2 py-1.5">
-        {preview.hunks.map((h, i) => (
-          <pre
-            key={i}
-            className="font-mono text-[10.5px] leading-tight whitespace-pre"
-          >
-            {i > 0 && (
-              <span className="text-muted-foreground bg-muted/30 block">
-                @@ edit {i + 1} @@
-              </span>
-            )}
-            {h.dels.map((line, j) => (
-              <span key={`d-${j}`} className="text-destructive block">
-                {`- ${line || ""}`}
-              </span>
-            ))}
-            {h.adds.map((line, j) => (
-              <span key={`a-${j}`} className="text-emerald-500 block">
-                {`+ ${line || ""}`}
-              </span>
-            ))}
-          </pre>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Best-effort path shortener: drop everything up to and including
-// the worktree root marker, leaving the repo-relative path the
-// user thinks in. Falls through unchanged for paths that don't
-// match (the model occasionally writes already-relative paths).
-function relativiseWorktreePath(absolute: string): string {
-  const m = absolute.match(/\.codeless\/worktrees\/job-[^/]+\/(.*)$/);
-  return m ? m[1] : absolute;
-}
-
 // Continuous-feedback indicator: tells the user whether the SSE
 // stream is healthy and, when running, how recently the agent
 // produced any signal at all (tool call, token, lifecycle event).
@@ -2650,93 +2159,6 @@ function ActivityPill({
       {label}
     </span>
   );
-}
-
-// Centred divider for lifecycle moments. Tone colours the rule
-// and label so the user's eye lands on bad/warn moments without
-// having to read every divider.
-function LifecycleDivider({
-  label,
-  tone,
-  ts,
-}: {
-  label: string;
-  tone: "neutral" | "good" | "bad" | "warn";
-  ts: number;
-}) {
-  const colour =
-    tone === "good"
-      ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
-      : tone === "bad"
-        ? "text-destructive border-destructive/30"
-        : tone === "warn"
-          ? "text-amber-600 dark:text-amber-400 border-amber-500/40"
-          : "text-muted-foreground border-border/50";
-  return (
-    <li
-      className={`flex items-center gap-2 py-1 font-mono text-[10px] uppercase tracking-wide ${colour}`}
-    >
-      <span className={`h-px flex-1 border-t ${colour}`} />
-      <span>{label}</span>
-      <span className="text-muted-foreground normal-case tracking-normal">
-        {wallClockTime(ts)}
-      </span>
-      <span className={`h-px flex-1 border-t ${colour}`} />
-    </li>
-  );
-}
-
-// First non-empty match from common arg keys. Enough to make a
-// collapsed tool card useful at a glance; the full args sit one
-// click away. Returns "" when the args have no recognisable
-// shape — the card still renders, just without the trailing
-// summary line.
-function toolCallSummary(tool: string, argsJson: string): string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(argsJson);
-  } catch {
-    return "";
-  }
-  if (parsed == null || typeof parsed !== "object") return "";
-  const obj = parsed as Record<string, unknown>;
-  const path =
-    (typeof obj.file_path === "string" && obj.file_path) ||
-    (typeof obj.path === "string" && obj.path) ||
-    "";
-  if (path) {
-    // Trim the worktree prefix; keep the last two segments so
-    // `mod.rs` files stay disambiguated by their parent dir.
-    const idx = path.lastIndexOf("/");
-    if (idx < 0) return path;
-    const parentIdx = path.lastIndexOf("/", idx - 1);
-    return parentIdx < 0 ? path.slice(idx + 1) : `…${path.slice(parentIdx)}`;
-  }
-  if (tool.toLowerCase() === "bash" && typeof obj.command === "string") {
-    const cmd = obj.command.trim().split("\n")[0];
-    return cmd.length > 60 ? `${cmd.slice(0, 60)}…` : cmd;
-  }
-  if (typeof obj.pattern === "string") return obj.pattern;
-  if (typeof obj.query === "string") return obj.query;
-  return "";
-}
-
-function prettyJson(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
-}
-
-function wallClockTime(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
-function shortTime(iso: string): string {
-  return iso.replace("T", " ").replace("Z", "");
 }
 
 function isoNow(): string {
@@ -3500,19 +2922,6 @@ function AssistantBubble({
         </button>
       )}
     </div>
-  );
-}
-
-function PulseDot({ color }: { color: string }) {
-  return (
-    <span className="relative inline-block h-2 w-2">
-      <motion.span
-        aria-hidden
-        animate={{ opacity: [0.4, 1, 0.4], scale: [1, 1.2, 1] }}
-        transition={{ duration: 1.4, repeat: Infinity }}
-        className={cn("absolute inset-0 rounded-full", color)}
-      />
-    </span>
   );
 }
 

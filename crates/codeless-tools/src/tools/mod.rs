@@ -17,7 +17,9 @@ pub mod browser_screenshot;
 pub mod browser_session;
 pub mod github_issue;
 pub mod github_pr;
+pub mod gmail_send;
 pub mod http_request;
+pub mod schedule_create;
 
 pub use browse_fetch::BrowseFetchTool;
 pub use browser_crawl::BrowserCrawlTool;
@@ -34,7 +36,9 @@ pub use browser_session::{
 };
 pub use github_issue::GithubIssueTool;
 pub use github_pr::GithubPrTool;
+pub use gmail_send::GmailSendTool;
 pub use http_request::HttpRequestTool;
+pub use schedule_create::ScheduleCreateTool;
 
 use crate::ctx::ToolCtx;
 use crate::error::ToolError;

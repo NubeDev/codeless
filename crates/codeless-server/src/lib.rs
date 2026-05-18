@@ -13,6 +13,7 @@
 //! Authentication is a single bearer token shared by every client —
 //! single-tenant MVP per SCOPE.md R5. Phase 7 swaps this for OIDC.
 
+mod ai_ui;
 mod auth;
 mod routes;
 mod sse;
@@ -61,6 +62,13 @@ pub struct AppState {
     /// so cloning the state across handler invocations stays cheap;
     /// the contents are immutable for the server's lifetime.
     pub server_info: Arc<ServerInfo>,
+    /// Optional ai-ui surface. When present, the router mounts
+    /// `/api/ai-ui/{chat,push,events,skills,components}`; when `None`,
+    /// those routes are not registered and the server is unchanged.
+    /// Built from `codeless_ai_ui::CodelessProvider` plus a skill
+    /// registry and a component manifest — see
+    /// `codeless-cli/src/serve.rs` for the production wiring.
+    pub ai_ui: Option<ai_ui_core::AiUiState>,
 }
 
 impl AppState {
@@ -72,6 +80,7 @@ impl AppState {
             rpc,
             auth: AuthMode::required(bearer_token),
             server_info: Arc::new(ServerInfo::default()),
+            ai_ui: None,
         }
     }
 
@@ -83,6 +92,7 @@ impl AppState {
             rpc,
             auth: AuthMode::Open,
             server_info: Arc::new(ServerInfo::default()),
+            ai_ui: None,
         }
     }
 
@@ -92,6 +102,14 @@ impl AppState {
     /// snapshot can stick with the constructors above.
     pub fn with_server_info(mut self, info: ServerInfo) -> Self {
         self.server_info = Arc::new(info);
+        self
+    }
+
+    /// Attach an `ai-ui` surface. The router will then mount the
+    /// `/api/ai-ui/*` routes; without this call those routes are
+    /// absent. Cheap to clone (`AiUiState` is `Arc`-backed internally).
+    pub fn with_ai_ui(mut self, ai_ui: ai_ui_core::AiUiState) -> Self {
+        self.ai_ui = Some(ai_ui);
         self
     }
 }

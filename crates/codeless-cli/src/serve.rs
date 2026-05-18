@@ -33,11 +33,15 @@ use crate::rpc_open;
 
 #[derive(Debug, Args)]
 pub struct ServeArgs {
-    /// Address to bind. Defaults to `127.0.0.1:7777` — the demo
-    /// quickstart documents that port; if a hosted deployment needs
-    /// a public bind, supply `0.0.0.0:<port>` explicitly so the
-    /// loopback default never accidentally exposes the core.
-    #[arg(long, default_value = "127.0.0.1:7777")]
+    /// Address to bind. Defaults to `127.0.0.1:0` which lets the OS
+    /// pick a free port — multiple sessions can run in parallel
+    /// without conflicts. The chosen port is printed to stderr on
+    /// startup. Pin a specific port with e.g. `--bind 127.0.0.1:7777`
+    /// when a stable URL is needed (reverse proxy, bookmarks). If a
+    /// hosted deployment needs a public bind, supply
+    /// `0.0.0.0:<port>` explicitly so the loopback default never
+    /// accidentally exposes the core.
+    #[arg(long, default_value = "127.0.0.1:0")]
     pub bind: SocketAddr,
 
     /// Generate a random bearer token, write it to the secrets file
@@ -142,6 +146,13 @@ pub struct ServeArgs {
     /// unauthenticated core.
     #[arg(long)]
     pub require_token: bool,
+
+    /// Write the bound address (host:port) to this file once the
+    /// listener is ready. Useful for scripts and orchestrators that
+    /// need to discover the auto-selected port programmatically.
+    /// The file is overwritten on each boot and deleted on shutdown.
+    #[arg(long, env = "CODELESS_PORT_FILE")]
+    pub port_file: Option<PathBuf>,
 }
 
 pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
@@ -355,6 +366,10 @@ async fn run_server(
         rpc: rpc_dyn,
         auth,
         server_info,
+        // `ai-ui` surface left unconfigured at this CLI for now —
+        // wiring `CodelessProvider` + skills dir + components.json is
+        // a follow-up. The route mount is opt-in via `with_ai_ui`.
+        ai_ui: None,
     };
 
     // Outbound webhook notifier: when both `notifier_webhook_url`
@@ -534,13 +549,21 @@ async fn run_server(
         None
     };
 
+    let port_file = args.port_file.clone();
     serve_with_shutdown(args.bind, state, |addr| {
-        // Stderr is unbuffered, so integration tests reading line-by-
-        // line see this before the server starts accepting requests.
         eprintln!("codeless-server listening on http://{addr}");
+        if let Some(ref path) = port_file {
+            if let Err(e) = std::fs::write(path, addr.to_string()) {
+                eprintln!("warning: failed to write port file {}: {e}", path.display());
+            }
+        }
     })
     .await
     .map_err(|e| anyhow!("serve: {e}"))?;
+
+    if let Some(ref path) = port_file {
+        let _ = std::fs::remove_file(path);
+    }
 
     Ok(ExitCode::SUCCESS)
 }
