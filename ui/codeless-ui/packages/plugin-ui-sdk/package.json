@@ -15,6 +15,22 @@
       "import": "./src/mf.ts",
       "types": "./src/mf.ts"
     },
+    "./slots": {
+      "import": "./src/slots.ts",
+      "types": "./src/slots.ts"
+    },
+    "./registration": {
+      "import": "./src/registration.ts",
+      "types": "./src/registration.ts"
+    },
+    "./rsbuild-shared": {
+      "import": "./src/rsbuild-shared.ts",
+      "types": "./src/rsbuild-shared.ts"
+    },
+    "./eslint-config": {
+      "import": "./src/eslint-config.ts",
+      "types": "./src/eslint-config.ts"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

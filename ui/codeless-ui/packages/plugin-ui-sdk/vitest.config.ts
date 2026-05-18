@@ -15,6 +15,13 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    include: ["src/editable-collection.test.tsx"],
+    include: [
+      "src/editable-collection.test.tsx",
+      "src/slots.test.ts",
+      "src/mf.test.ts",
+      "src/registration.test.ts",
+      "src/eslint-config.test.ts",
+      "src/components/PluginSlot.test.tsx",
+    ],
   },
 });

@@ -19,6 +19,17 @@
   "include": [
     "src/editable-collection.tsx",
     "src/editable-collection.test.tsx",
-    "src/index.ts"
+    "src/index.ts",
+    "src/slots.ts",
+    "src/slots.test.ts",
+    "src/mf.ts",
+    "src/mf.test.ts",
+    "src/registration.ts",
+    "src/registration.test.ts",
+    "src/rsbuild-shared.ts",
+    "src/eslint-config.ts",
+    "src/eslint-config.test.ts",
+    "src/components/PluginSlot.tsx",
+    "src/components/PluginSlot.test.tsx"
   ]
 }
