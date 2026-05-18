@@ -54,6 +54,14 @@ pub struct Todo {
     pub created_at: UnixMillis,
     pub started_at: Option<UnixMillis>,
     pub ended_at: Option<UnixMillis>,
+    /// Human-readable reason this todo ended `Failed`. Always `None`
+    /// for `Done`, `Skipped`, or non-terminal rows. Populated by the
+    /// trio emitters (handover write error, verify-step exit code, git
+    /// commit error) and used by the closing-trio gate to build the
+    /// stage's `failure_detail` so the UI shows *which* rail failed
+    /// and *why*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_detail: Option<String>,
 }
 
 impl TodoKind {

@@ -163,11 +163,26 @@ pub async fn run_verify(
         None => VerifyOutcome::Passed,
     };
     if let Some(store) = store {
-        let trio_status = match outcome {
-            VerifyOutcome::Passed => TodoStatus::Done,
-            VerifyOutcome::Failed { .. } => TodoStatus::Failed,
+        let (trio_status, failure_detail) = match &outcome {
+            VerifyOutcome::Passed => (TodoStatus::Done, None),
+            VerifyOutcome::Failed {
+                step_index,
+                exit_code,
+            } => (
+                TodoStatus::Failed,
+                Some(format!("verify step {step_index} exited {exit_code}")),
+            ),
         };
-        emit_trio_completed(ctx, store, task_id, stage_id, TodoKind::Checks, trio_status).await;
+        emit_trio_completed(
+            ctx,
+            store,
+            task_id,
+            stage_id,
+            TodoKind::Checks,
+            trio_status,
+            failure_detail,
+        )
+        .await;
     }
     outcome
 }
@@ -588,6 +603,7 @@ mod tests {
                 created_at: UnixMillis(0),
                 started_at: None,
                 ended_at: None,
+                failure_detail: None,
             })
             .await
             .unwrap();
@@ -623,7 +639,7 @@ mod tests {
         let completed = got
             .iter()
             .position(|e| {
-                matches!(e, Event::TodoCompleted { todo_id, status }
+                matches!(e, Event::TodoCompleted { todo_id, status, .. }
                 if *todo_id == checks_id && *status == TodoStatus::Done)
             })
             .expect("Done event missing");
@@ -755,6 +771,7 @@ mod tests {
                 created_at: UnixMillis(0),
                 started_at: None,
                 ended_at: None,
+                failure_detail: None,
             })
             .await
             .unwrap();
@@ -780,9 +797,11 @@ mod tests {
         {
             got.push(event);
         }
-        assert!(got
-            .iter()
-            .any(|e| matches!(e, Event::TodoCompleted { todo_id, status }
-            if *todo_id == checks_id && *status == TodoStatus::Failed)));
+        assert!(got.iter().any(
+            |e| matches!(e, Event::TodoCompleted { todo_id, status, failure_detail }
+            if *todo_id == checks_id
+                && *status == TodoStatus::Failed
+                && failure_detail.as_deref().is_some_and(|s| s.contains("verify step")))
+        ));
     }
 }

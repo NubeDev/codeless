@@ -15,6 +15,8 @@ mod stages;
 mod tasks;
 mod todos;
 
+pub use todos::{TrioFailure, TrioGateOutcome};
+
 /// SQLite-backed persistence for repos and jobs. Status enums are
 /// mapped to their kebab-case wire labels (matching SCOPE.md Appendix
 /// A) by explicit pattern match — the labels are wire-stable, so a

@@ -917,6 +917,22 @@ failure_class?: FailureClass | null;
  */
 failure_detail?: string | null } | 
 /**
+ *  Heartbeat the runner emits while the closing-trio gate is
+ *  holding a stage open. Surfaces to the UI which trio rails the
+ *  gate is still waiting on (e.g. `["docs", "git"]`) so an
+ *  operator can tell "the gate is working" from "the gate is
+ *  stuck" without watching server logs. Emitted on the first
+ *  poll where the gate is still `Pending`, then periodically
+ *  (~10s) until the gate resolves, fails, or times out.
+ * 
+ *  `elapsed_ms` is wall time since the gate started waiting;
+ *  it crosses the configured max-wait (5 min) the runner emits
+ *  `StageCompleted { Failed, failure_class: RunnerError }` with
+ *  a `trio gate timed out: …` detail and the stage routes
+ *  through the same auto-bypass path as any other stage failure.
+ */
+{ type: "stage-trio-gate-waiting"; stage_id: StageId; waiting_on: TodoKind[]; elapsed_ms: number } | 
+/**
  *  First-and-only-time capture of the runner-supplied session id
  *  for this stage. Emitted by `StageRecorder` the first time a
  *  task on the stage reports a non-empty `RunResult.session_id`;
@@ -962,8 +978,18 @@ failure_detail?: string | null } |
  *  `TodoUpdated` — the runtime emits `TodoUpdated` for non-terminal
  *  flips and `TodoCompleted` for terminal ones, so subscribers can
  *  pick the granularity they care about.
+ * 
+ *  `failure_detail` is set only when `status == Failed` and carries
+ *  a human-readable reason (e.g. "write handover.json: Permission
+ *  denied", "git commit failed: nothing to commit, working tree
+ *  clean"). The closing-trio gate surfaces this string into the
+ *  stage's `failure_detail` so the UI shows *which rail* failed
+ *  and *why* instead of a generic "stage failed" — the previous
+ *  silent gate-hang behaviour (the docs rail going `Failed` while
+ *  the gate polled forever) is exactly what this field is here to
+ *  prevent.
  */
-{ type: "todo-completed"; todo_id: TodoId; status: TodoStatus } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
+{ type: "todo-completed"; todo_id: TodoId; status: TodoStatus; failure_detail?: string | null } | { type: "review-requested"; review_id: ReviewId; stage_id: StageId } | { type: "review-approved"; review_id: ReviewId } | { type: "review-commented"; review_id: ReviewId; comment: string } | { type: "review-stopped"; review_id: ReviewId } | 
 /**
  *  `template.yaml` for the job changed in SQLite. Emitted by
  *  `update_job_template` (user edits from the Spec pane) and by

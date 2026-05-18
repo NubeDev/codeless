@@ -1509,6 +1509,7 @@ impl Runner for TemplateRunner {
                         Event::TodoCompleted {
                             todo_id,
                             status: codeless_types::TodoStatus::Skipped,
+                            failure_detail: None,
                         },
                     )
                     .await;
@@ -1550,10 +1551,86 @@ impl Runner for TemplateRunner {
             // the handover writer, and the per-stage commit step flip
             // each row.
             if let Some(store) = self.store.as_ref() {
-                if !wait_for_trio_resolved(store, &ctx, stage_id, task_id).await {
-                    return RunnerOutcome::Failed {
-                        reason: "cancelled while waiting for stage trio resolution".into(),
-                    };
+                match wait_for_trio_resolved(store, &ctx, stage_id, task_id).await {
+                    TrioGateWaitOutcome::Resolved => {}
+                    TrioGateWaitOutcome::Cancelled => {
+                        return RunnerOutcome::Failed {
+                            reason: "cancelled while waiting for stage trio resolution".into(),
+                        };
+                    }
+                    TrioGateWaitOutcome::Failed { reason }
+                    | TrioGateWaitOutcome::TimedOut { reason } => {
+                        // Closing-trio gate surfaced a terminal
+                        // failure (one of the trio rails ended
+                        // `Failed`, or the gate ran past its max
+                        // wait). Route through the same auto-bypass
+                        // path as any other stage failure so a job
+                        // configured with an `auto_bypass_policy`
+                        // advances instead of stranding the operator
+                        // with an "apparently running" stage that
+                        // will never close on its own.
+                        publish(
+                            &ctx,
+                            stage_id,
+                            task_id,
+                            Event::StageCompleted {
+                                stage_id,
+                                status: StageStatus::Failed,
+                                failure_class: Some(FailureClass::RunnerError),
+                                failure_detail: Some(truncate_failure_detail(&reason)),
+                            },
+                        )
+                        .await;
+                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                            FailureAction::Halt => {
+                                tracing::warn!(
+                                    stage = stage.title,
+                                    %reason,
+                                    "trio gate failed; aborting template run"
+                                );
+                                return RunnerOutcome::Failed { reason };
+                            }
+                            FailureAction::AutoBypass {
+                                policy_name,
+                                comment,
+                                thrash_guard_applies,
+                            } => {
+                                match self
+                                    .try_auto_bypass(
+                                        &ctx,
+                                        stage_id,
+                                        task_id,
+                                        &policy_name,
+                                        &comment,
+                                        thrash_guard_applies,
+                                    )
+                                    .await
+                                {
+                                    AutoBypassDecision::Thrash => {
+                                        tracing::warn!(
+                                            stage = stage.title,
+                                            policy = %policy_name,
+                                            failure_reason = %reason,
+                                            "auto-bypass thrashing guard fired at trio gate failure; halting job"
+                                        );
+                                        return RunnerOutcome::Failed {
+                                            reason: format!("auto-bypass thrashing: {reason}"),
+                                        };
+                                    }
+                                    AutoBypassDecision::Advanced => {
+                                        tracing::info!(
+                                            stage = stage.title,
+                                            policy = %policy_name,
+                                            failure_reason = %reason,
+                                            "auto-bypass: advancing past trio gate failure"
+                                        );
+                                        next_stage_prefix = Some(comment);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             publish(
@@ -2032,29 +2109,106 @@ async fn publish_trio(ctx: &RunnerContext, stage_id: StageId, task_id: TaskId) {
 /// Returns `false` only when the context was cancelled before the gate
 /// resolved; the caller is expected to surface that as a failure
 /// rather than emit a successful `StageCompleted`.
+/// Outcome of the wait-on-closing-trio loop.
+///
+/// `Resolved` lets the stage pass; everything else routes the stage
+/// through the auto-bypass-eligible failure path. The previous wait
+/// loop returned `bool` and silently spun forever on a failed trio
+/// row (the bug that stranded job `01KRX4ZPF...` for 90 minutes),
+/// so a dedicated enum is now the only way to keep the gate honest:
+/// callers must handle every variant explicitly.
+enum TrioGateWaitOutcome {
+    Resolved,
+    /// At least one trio row landed `Failed`. The `reason` is a
+    /// human-readable summary built from the per-rail failure_detail
+    /// (`"docs: write handover: Permission denied"` etc.) for the
+    /// stage's `failure_detail` and the auto-bypass card.
+    Failed {
+        reason: String,
+    },
+    /// The gate spun for `wait_max` without resolving. Treated as a
+    /// stage failure under `FailureClass::RunnerError`. A timeout
+    /// here means a trio resolver is wedged — the failure surfaces
+    /// the wait duration and which rails were still pending so the
+    /// operator has somewhere to start.
+    TimedOut {
+        reason: String,
+    },
+    /// Cancellation token fired. Caller emits the existing
+    /// "cancelled while waiting" failure; no auto-bypass routing.
+    Cancelled,
+}
+
+/// Maximum wall time the closing-trio gate may wait for the three
+/// rails to resolve. In healthy runs every resolver (claude handover
+/// write, verify_runner step, `git commit`) finishes in single-digit
+/// seconds; five minutes is a generous safety margin that still
+/// guarantees the operator sees a failure rather than an apparently
+/// "running" stage if a resolver wedges. Tuned per the analysis of
+/// job `01KRX4ZPF...` (the docs rail failed in ~400ms but the gate
+/// then polled silently for 88 minutes before the operator stopped
+/// it manually).
+const TRIO_GATE_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Cadence at which the runner emits `StageTrioGateWaiting` while
+/// the gate is `Pending`. Short enough that an operator who opens
+/// the job page mid-wait sees the heartbeat within a few seconds;
+/// long enough not to flood the event stream during long verify
+/// commands.
+const TRIO_GATE_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(10);
+
 async fn wait_for_trio_resolved(
     store: &SqliteStore,
     ctx: &RunnerContext,
     stage_id: StageId,
     task_id: TaskId,
-) -> bool {
+) -> TrioGateWaitOutcome {
     const POLL: std::time::Duration = std::time::Duration::from_millis(100);
-    let mut warned = false;
+    let started = std::time::Instant::now();
+    let mut last_heartbeat = std::time::Instant::now()
+        .checked_sub(TRIO_GATE_HEARTBEAT)
+        .unwrap_or_else(std::time::Instant::now);
     loop {
         if ctx.cancel.is_cancelled() {
             tracing::warn!(?stage_id, %task_id, "stage trio gate cancelled before resolution");
-            return false;
+            return TrioGateWaitOutcome::Cancelled;
         }
         match stage_trio_gate(store, task_id).await {
-            Ok(true) => return true,
-            Ok(false) => {
-                if !warned {
-                    tracing::info!(
-                        ?stage_id,
-                        %task_id,
-                        "stage trio gate waiting for checks/docs/git resolution"
+            Ok(crate::store::TrioGateOutcome::Resolved) => {
+                return TrioGateWaitOutcome::Resolved;
+            }
+            Ok(crate::store::TrioGateOutcome::Failed { failures }) => {
+                let reason = format_trio_failures(&failures);
+                tracing::warn!(?stage_id, %task_id, %reason, "stage trio gate: failed rails");
+                return TrioGateWaitOutcome::Failed { reason };
+            }
+            Ok(crate::store::TrioGateOutcome::Pending) => {
+                if started.elapsed() >= TRIO_GATE_MAX_WAIT {
+                    let waiting_on = trio_pending_kinds(store, task_id).await;
+                    let pending = format_pending_kinds(&waiting_on);
+                    let reason = format!(
+                        "trio gate timed out after {}s waiting on {pending}",
+                        TRIO_GATE_MAX_WAIT.as_secs()
                     );
-                    warned = true;
+                    tracing::error!(?stage_id, %task_id, %reason, "stage trio gate: timed out");
+                    return TrioGateWaitOutcome::TimedOut { reason };
+                }
+                if last_heartbeat.elapsed() >= TRIO_GATE_HEARTBEAT {
+                    let waiting_on = trio_pending_kinds(store, task_id).await;
+                    let elapsed_ms =
+                        i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+                    publish(
+                        ctx,
+                        stage_id,
+                        task_id,
+                        Event::StageTrioGateWaiting {
+                            stage_id,
+                            waiting_on,
+                            elapsed_ms,
+                        },
+                    )
+                    .await;
+                    last_heartbeat = std::time::Instant::now();
                 }
             }
             Err(err) => {
@@ -2065,6 +2219,71 @@ async fn wait_for_trio_resolved(
             _ = ctx.cancel.cancelled() => {}
             _ = tokio::time::sleep(POLL) => {}
         }
+    }
+}
+
+/// List the trio rails still in a non-terminal status. Used by the
+/// heartbeat event and the timeout reason. Returns the rails in
+/// `TodoKind::TRIO` order so UI sort is deterministic. A store-read
+/// error is logged and returns an empty slice; the heartbeat
+/// degrades to "waiting on (unknown)" rather than tearing the loop
+/// down.
+async fn trio_pending_kinds(store: &SqliteStore, task_id: TaskId) -> Vec<codeless_types::TodoKind> {
+    let todos = match store.list_todos_for_task(task_id).await {
+        Ok(t) => t,
+        Err(err) => {
+            tracing::warn!(?err, %task_id, "trio_pending_kinds: list_todos failed");
+            return Vec::new();
+        }
+    };
+    codeless_types::TodoKind::TRIO
+        .iter()
+        .copied()
+        .filter(|kind| {
+            todos
+                .iter()
+                .find(|t| t.kind == *kind)
+                .map(|t| {
+                    matches!(
+                        t.status,
+                        codeless_types::TodoStatus::Pending
+                            | codeless_types::TodoStatus::InProgress
+                    )
+                })
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
+fn format_trio_failures(failures: &[crate::store::TrioFailure]) -> String {
+    failures
+        .iter()
+        .map(|f| match f.reason.as_deref() {
+            Some(reason) => format!("{} rail failed: {reason}", kind_label(f.kind)),
+            None => format!("{} rail failed", kind_label(f.kind)),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn format_pending_kinds(kinds: &[codeless_types::TodoKind]) -> String {
+    if kinds.is_empty() {
+        return "(unknown)".to_string();
+    }
+    kinds
+        .iter()
+        .map(|k| kind_label(*k))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn kind_label(kind: codeless_types::TodoKind) -> &'static str {
+    match kind {
+        codeless_types::TodoKind::Checks => "checks",
+        codeless_types::TodoKind::Docs => "docs",
+        codeless_types::TodoKind::Git => "git",
+        codeless_types::TodoKind::Runner => "runner",
+        codeless_types::TodoKind::Planner => "planner",
     }
 }
 
@@ -3092,7 +3311,7 @@ stages:
         assert_eq!(trio.len(), 3, "three trio rows must be persisted");
         for t in &trio {
             store
-                .update_todo_status(t.id, TodoStatus::Done, now_ms())
+                .update_todo_status(t.id, TodoStatus::Done, now_ms(), None)
                 .await
                 .unwrap();
         }
@@ -3232,6 +3451,156 @@ stages:
             saw_passed,
             "StageCompleted{{ Passed }} must publish after skip_pending_trio_rows resolves the rails"
         );
+        recorder.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_trio_row_routes_stage_to_failed_with_detail() {
+        // Regression test for job `01KRX4ZPF...`: when a trio row
+        // (here `Docs`) lands `Failed`, the gate must publish
+        // `StageCompleted { Failed }` with the per-rail failure_detail
+        // surfaced into the stage's `failure_detail`. The previous
+        // boolean gate hung forever on the same input.
+        use crate::event_bus::SubscribeFilter;
+        use crate::rpc::InProcessRpc;
+        use crate::runner::{Runner, RunnerContext};
+        use codeless_types::{Event, JobStatus, TodoKind, TodoStatus, WorkspaceMode};
+        use futures_util::StreamExt;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let rpc = InProcessRpc::new().await.unwrap();
+        let bus = rpc.bus().clone();
+        let store = rpc.store().clone();
+
+        let recorder = crate::stage_recorder::spawn_stage_recorder(bus.clone(), store.clone())
+            .await
+            .unwrap();
+
+        let repo = codeless_types::Repo {
+            id: codeless_types::RepoId::new(),
+            name: "demo".into(),
+            clone_url: "file:///dev/null".into(),
+            default_branch: "main".into(),
+            local_path: "/tmp".into(),
+            git_auth: codeless_types::GitAuth::Token {
+                env_var: "X".into(),
+            },
+            concurrency_cap: None,
+            default_runner: Some("mock".into()),
+            created_at: now_ms(),
+            updated_at: now_ms(),
+        };
+        store.insert_repo(&repo).await.unwrap();
+        let job = codeless_types::Job {
+            id: codeless_types::JobId::new(),
+            repo_id: repo.id,
+            status: JobStatus::Running,
+            stop_reason: None,
+            template_yaml: None,
+            prompt: Some("p".into()),
+            runner: "mock".into(),
+            branch: "b".into(),
+            workspace_mode: WorkspaceMode::default(),
+            worktree_path: None,
+            cost_cap_cents: codeless_types::CostCents::ZERO,
+            wall_clock_cap_ms: 0,
+            model: None,
+            permission_mode: None,
+            effort: None,
+            system_prompt: None,
+            persona_id: None,
+            auto_bypass_policy: None,
+            pending_operator_comment: None,
+            precheck_override_once: false,
+            cost_cents: codeless_types::CostCents::ZERO,
+            started_at: None,
+            ended_at: None,
+            created_at: now_ms(),
+        };
+        store.insert_job(&job).await.unwrap();
+
+        let runner = TemplateRunner::new(template_with_stages(&["only"]))
+            .with_mock_runner()
+            .with_store(store.clone());
+
+        let ctx = RunnerContext {
+            job_id: job.id,
+            stage_id: None,
+            bus: Arc::clone(&bus),
+            worktree_path: None,
+            cancel: CancellationToken::new(),
+        };
+        let run_handle = tokio::spawn(async move { runner.run(ctx).await });
+
+        let mut sub = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+
+        let mut task_id: Option<TaskId> = None;
+        let mut trio_seen = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while trio_seen < 3 && std::time::Instant::now() < deadline {
+            if let Ok(Some(env)) =
+                tokio::time::timeout(std::time::Duration::from_millis(150), sub.next()).await
+            {
+                if let Event::TodoAdded { task_id: t, .. } = env.unwrap().event {
+                    task_id = Some(t);
+                    trio_seen += 1;
+                }
+            }
+        }
+        let task_id = task_id.expect("trio carries task_id");
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        // Resolve checks/git cleanly, fail docs with a reason. The
+        // gate must surface the reason in `failure_detail` rather than
+        // wait for docs to flip to `Done`.
+        let todos = store.list_todos_for_task(task_id).await.unwrap();
+        for t in todos.iter().filter(|t| t.kind.is_trio()) {
+            let (status, reason): (TodoStatus, Option<&str>) = match t.kind {
+                TodoKind::Docs => (TodoStatus::Failed, Some("write handover: disk full")),
+                _ => (TodoStatus::Done, None),
+            };
+            store
+                .update_todo_status(t.id, status, now_ms(), reason)
+                .await
+                .unwrap();
+        }
+
+        let mut saw_failed = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(env)) =
+                tokio::time::timeout(std::time::Duration::from_millis(150), sub.next()).await
+            {
+                if let Event::StageCompleted {
+                    status: StageStatus::Failed,
+                    failure_detail,
+                    ..
+                } = env.unwrap().event
+                {
+                    let detail = failure_detail.unwrap_or_default();
+                    assert!(
+                        detail.contains("docs"),
+                        "stage failure_detail must name the failed rail; got {detail:?}"
+                    );
+                    assert!(
+                        detail.contains("disk full"),
+                        "stage failure_detail must include the per-rail reason; got {detail:?}"
+                    );
+                    saw_failed = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            saw_failed,
+            "trio gate must emit StageCompleted{{ Failed }} on a failed trio rail"
+        );
+
+        let _ = run_handle.await;
         recorder.abort();
     }
 }

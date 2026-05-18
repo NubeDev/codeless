@@ -409,17 +409,17 @@ impl Runner for ClaudeRunnerAdapter {
                 emit_trio_started(&ctx, store, self.task_id, stage_id, TodoKind::Docs).await;
             }
             let write_result = write_handover(worktree, job_id, stage_id, &handover).await;
-            let trio_status = match &write_result {
+            let (trio_status, failure_detail) = match &write_result {
                 Ok(path) => {
                     tracing::info!(handover = %path.display(), "claude handover written");
-                    TodoStatus::Done
+                    (TodoStatus::Done, None)
                 }
                 Err(err) => {
                     tracing::warn!(
                         ?err,
                         "failed to write claude handover; next session will read no prior handover"
                     );
-                    TodoStatus::Failed
+                    (TodoStatus::Failed, Some(format!("write handover: {err}")))
                 }
             };
             if let Some(store) = self.store.as_deref() {
@@ -430,6 +430,7 @@ impl Runner for ClaudeRunnerAdapter {
                     stage_id,
                     TodoKind::Docs,
                     trio_status,
+                    failure_detail,
                 )
                 .await;
             }

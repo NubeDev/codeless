@@ -203,14 +203,26 @@ async fn handle_event(
                     created_at: env.created_at,
                     started_at: None,
                     ended_at: None,
+                    failure_detail: None,
                 })
                 .await?;
         }
         Event::TodoUpdated { todo_id, status } => {
-            update_todo(store, *todo_id, *status, env.created_at).await?;
+            update_todo(store, *todo_id, *status, env.created_at, None).await?;
         }
-        Event::TodoCompleted { todo_id, status } => {
-            update_todo(store, *todo_id, *status, env.created_at).await?;
+        Event::TodoCompleted {
+            todo_id,
+            status,
+            failure_detail,
+        } => {
+            update_todo(
+                store,
+                *todo_id,
+                *status,
+                env.created_at,
+                failure_detail.as_deref(),
+            )
+            .await?;
         }
         _ => {}
     }
@@ -293,8 +305,11 @@ async fn update_todo(
     todo_id: TodoId,
     status: TodoStatus,
     at: UnixMillis,
+    failure_detail: Option<&str>,
 ) -> sqlx::Result<()> {
-    let updated = store.update_todo_status(todo_id, status, at).await?;
+    let updated = store
+        .update_todo_status(todo_id, status, at, failure_detail)
+        .await?;
     if !updated {
         tracing::trace!(?todo_id, ?status, "todo status update missed unknown row");
     }
@@ -657,6 +672,7 @@ mod tests {
             Event::TodoCompleted {
                 todo_id,
                 status: TodoStatus::Done,
+                failure_detail: None,
             },
             UnixMillis(300),
         )

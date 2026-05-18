@@ -146,15 +146,20 @@ pub fn transition_task(from: TaskStatus, to: TaskStatus) -> Result<(), Transitio
 
 /// Closing-trio gate on `Running -> Passed`. The runtime injects three
 /// trio rows (`Checks`, `Docs`, `Git`) at stage entry; the stage cannot
-/// emit `Event::StageCompleted{ status: Passed }` until every one is
-/// `Done` or `Skipped`. Returning `false` keeps the stage open — the
-/// caller is expected to retry with delay rather than override the
-/// gate. The transition functions above are pure status guards;
-/// resolving the trio requires the persistent state machine (SQLite
-/// rows the recorder owns), so the gate lives here as the async
-/// counterpart to `transition_stage`.
-pub async fn stage_trio_gate(store: &SqliteStore, terminal_task_id: TaskId) -> sqlx::Result<bool> {
-    store.trio_resolved(terminal_task_id).await
+/// emit `Event::StageCompleted{ status: Passed }` until the trio
+/// resolves. `Resolved` releases the stage; `Pending` keeps it open
+/// (the caller retries with delay); `Failed { failures }` routes the
+/// stage through the auto-bypass-eligible failure path with the
+/// per-rail reason surfaced into the stage's `failure_detail`. The
+/// transition functions above are pure status guards; resolving the
+/// trio requires the persistent state machine (SQLite rows the
+/// recorder owns), so the gate lives here as the async counterpart
+/// to `transition_stage`.
+pub async fn stage_trio_gate(
+    store: &SqliteStore,
+    terminal_task_id: TaskId,
+) -> sqlx::Result<crate::store::TrioGateOutcome> {
+    store.trio_gate_outcome(terminal_task_id).await
 }
 
 pub fn is_terminal_job(s: JobStatus) -> bool {
@@ -294,7 +299,10 @@ mod tests {
         store.insert_task_minimal(&task).await.unwrap();
 
         // No trio rows yet — gate blocks.
-        assert!(!stage_trio_gate(&store, task.id).await.unwrap());
+        assert_eq!(
+            stage_trio_gate(&store, task.id).await.unwrap(),
+            crate::store::TrioGateOutcome::Pending
+        );
 
         let mk = |ord: u32, kind: TodoKind| Todo {
             id: TodoId::new(),
@@ -306,6 +314,7 @@ mod tests {
             created_at: UnixMillis(0),
             started_at: None,
             ended_at: None,
+            failure_detail: None,
         };
         let checks = mk(10, TodoKind::Checks);
         let docs = mk(11, TodoKind::Docs);
@@ -314,25 +323,34 @@ mod tests {
             store.insert_todo(t).await.unwrap();
         }
         // Rows exist but Pending — gate blocks.
-        assert!(!stage_trio_gate(&store, task.id).await.unwrap());
+        assert_eq!(
+            stage_trio_gate(&store, task.id).await.unwrap(),
+            crate::store::TrioGateOutcome::Pending
+        );
 
         store
-            .update_todo_status(checks.id, TodoStatus::Done, UnixMillis(1))
+            .update_todo_status(checks.id, TodoStatus::Done, UnixMillis(1), None)
             .await
             .unwrap();
         store
-            .update_todo_status(docs.id, TodoStatus::Done, UnixMillis(2))
+            .update_todo_status(docs.id, TodoStatus::Done, UnixMillis(2), None)
             .await
             .unwrap();
         // Two of three — gate blocks.
-        assert!(!stage_trio_gate(&store, task.id).await.unwrap());
+        assert_eq!(
+            stage_trio_gate(&store, task.id).await.unwrap(),
+            crate::store::TrioGateOutcome::Pending
+        );
 
         // `Skipped` counts as resolved (the no-diff git case).
         store
-            .update_todo_status(git.id, TodoStatus::Skipped, UnixMillis(3))
+            .update_todo_status(git.id, TodoStatus::Skipped, UnixMillis(3), None)
             .await
             .unwrap();
-        assert!(stage_trio_gate(&store, task.id).await.unwrap());
+        assert_eq!(
+            stage_trio_gate(&store, task.id).await.unwrap(),
+            crate::store::TrioGateOutcome::Resolved
+        );
     }
 
     #[test]

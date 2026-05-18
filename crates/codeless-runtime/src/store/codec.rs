@@ -326,6 +326,7 @@ pub(super) fn todo_from_row(row: SqliteRow) -> sqlx::Result<Todo> {
     let ordinal: i64 = row.try_get("ordinal")?;
     let started_at: Option<i64> = row.try_get("started_at")?;
     let ended_at: Option<i64> = row.try_get("ended_at")?;
+    let failure_detail: Option<String> = row.try_get("failure_detail")?;
     Ok(Todo {
         id: parse_id(&id)?,
         task_id: parse_id(&task_id)?,
@@ -336,6 +337,7 @@ pub(super) fn todo_from_row(row: SqliteRow) -> sqlx::Result<Todo> {
         created_at: UnixMillis(row.try_get("created_at")?),
         started_at: started_at.map(UnixMillis),
         ended_at: ended_at.map(UnixMillis),
+        failure_detail,
     })
 }
 

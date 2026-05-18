@@ -96,8 +96,10 @@ pub async fn emit_trio_started(
 /// Publish `TodoCompleted { status }` for the trio row of `kind` on
 /// `task_id`. The caller maps its terminal outcome onto the
 /// `TodoStatus` (`Done` for success, `Skipped` for the no-diff git
-/// case, `Failed` otherwise) — the gate treats `Done` and `Skipped`
-/// identically.
+/// case, `Failed` otherwise) — the closing-trio gate treats `Done`
+/// and `Skipped` as resolved, and routes `Failed` into the stage's
+/// auto-bypass-eligible failure path with `failure_detail` surfaced
+/// to the operator.
 pub async fn emit_trio_completed(
     ctx: &RunnerContext,
     store: &SqliteStore,
@@ -105,6 +107,7 @@ pub async fn emit_trio_completed(
     stage_id: StageId,
     kind: TodoKind,
     status: TodoStatus,
+    failure_detail: Option<String>,
 ) {
     let Some(todo_id) = find_trio_id(store, task_id, kind).await else {
         tracing::trace!(?kind, %task_id, "trio completed: row not present; skipping emit");
@@ -114,7 +117,11 @@ pub async fn emit_trio_completed(
         ctx,
         stage_id,
         task_id,
-        Event::TodoCompleted { todo_id, status },
+        Event::TodoCompleted {
+            todo_id,
+            status,
+            failure_detail,
+        },
     )
     .await;
 
@@ -184,12 +191,24 @@ pub async fn commit_stage_changes(
             source: std::io::Error::other(err.to_string()),
         }),
     };
-    let status = match &result {
-        Ok(true) => TodoStatus::Done,
-        Ok(false) => TodoStatus::Skipped,
-        Err(_) => TodoStatus::Failed,
+    let (status, failure_detail) = match &result {
+        Ok(true) => (TodoStatus::Done, None),
+        Ok(false) => (TodoStatus::Skipped, None),
+        Err(err) => (
+            TodoStatus::Failed,
+            Some(format!("git commit failed: {err}")),
+        ),
     };
-    emit_trio_completed(ctx, store, task_id, stage_id, TodoKind::Git, status).await;
+    emit_trio_completed(
+        ctx,
+        store,
+        task_id,
+        stage_id,
+        TodoKind::Git,
+        status,
+        failure_detail,
+    )
+    .await;
     result
 }
 
@@ -238,6 +257,7 @@ pub async fn skip_pending_trio_rows(
             Event::TodoCompleted {
                 todo_id: row.id,
                 status: TodoStatus::Skipped,
+                failure_detail: None,
             },
         )
         .await;
@@ -396,6 +416,7 @@ mod tests {
             created_at: UnixMillis(0),
             started_at: None,
             ended_at: None,
+            failure_detail: None,
         }
     }
 
@@ -457,6 +478,7 @@ mod tests {
             stage_id,
             TodoKind::Git,
             TodoStatus::Skipped,
+            None,
         )
         .await;
 
@@ -466,9 +488,14 @@ mod tests {
             .expect("stream open")
             .unwrap();
         match env.event {
-            Event::TodoCompleted { todo_id, status } => {
+            Event::TodoCompleted {
+                todo_id,
+                status,
+                failure_detail,
+            } => {
                 assert_eq!(todo_id, git.id);
                 assert_eq!(status, TodoStatus::Skipped);
+                assert!(failure_detail.is_none());
             }
             other => panic!("expected TodoCompleted, got {other:?}"),
         }
@@ -492,6 +519,7 @@ mod tests {
             stage_id,
             TodoKind::Docs,
             TodoStatus::Done,
+            None,
         )
         .await;
         let next = tokio::time::timeout(std::time::Duration::from_millis(30), sub.next()).await;
@@ -636,11 +664,11 @@ mod tests {
         // The recorder mirrors row status from the wire events; mirror
         // it here so the helper sees the same world.
         store
-            .update_todo_status(docs.id, TodoStatus::InProgress, UnixMillis(1))
+            .update_todo_status(docs.id, TodoStatus::InProgress, UnixMillis(1), None)
             .await
             .unwrap();
         store
-            .update_todo_status(git.id, TodoStatus::Done, UnixMillis(2))
+            .update_todo_status(git.id, TodoStatus::Done, UnixMillis(2), None)
             .await
             .unwrap();
         // Refresh local handles so the assert below matches what the
@@ -670,9 +698,14 @@ mod tests {
         // the InProgress and Done rows produce no event.
         assert_eq!(got.len(), 1, "expected one event, got {got:?}");
         match &got[0] {
-            Event::TodoCompleted { todo_id, status } => {
+            Event::TodoCompleted {
+                todo_id,
+                status,
+                failure_detail,
+            } => {
                 assert_eq!(*todo_id, checks.id);
                 assert_eq!(*status, TodoStatus::Skipped);
+                assert!(failure_detail.is_none());
             }
             other => panic!("expected TodoCompleted, got {other:?}"),
         }
