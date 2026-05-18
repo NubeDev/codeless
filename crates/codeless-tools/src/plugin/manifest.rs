@@ -41,9 +41,167 @@ pub struct PluginManifest {
     /// treated as builtin for backward compatibility with the
     /// pre-substrate-runtimes notes plugin.
     pub runtimes: Vec<PluginRuntime>,
+    /// `[contributes.*]` block. Today the only sub-table is `mcp`
+    /// (DOCS/plugins/PLUGIN-MCP.md), but the wrapper keeps the door
+    /// open for `contributes.ui`, `contributes.rest`, etc. without
+    /// reshaping the manifest a second time. Empty when the manifest
+    /// omits the block.
+    pub contributes: PluginContributes,
     /// Absolute path of the directory the manifest was loaded from.
     /// `None` when parsed from an in-memory string (test path).
     pub root: Option<PathBuf>,
+}
+
+/// `[contributes]` umbrella block. Only `mcp` is wired today; future
+/// contribution surfaces (UI Module-Federation exposes, REST proxy
+/// routes) will land alongside without breaking serialisation order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginContributes {
+    #[serde(default)]
+    pub mcp: Option<PluginMcp>,
+}
+
+/// `[contributes.mcp]` block per DOCS/plugins/PLUGIN-MCP.md.
+///
+/// Per OQ-MCP-1 (resolved 2026-05-18), v0.1 ships exactly two
+/// real dispatch kinds: `tool_call` and `rest_proxy`. The literal
+/// string `"mcp_forward"` parses successfully so a future plugin
+/// can declare it without a manifest-shape break, but the registry
+/// rejects it at load time -- the same `Failed-with-structured-reason`
+/// shape stage 13 lifted from `process` runtime kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcp {
+    /// Plugin-level off-switch (PLUGIN-MCP.md § Off-switch
+    /// hierarchy, layer "Plugin surface (manifest)"). Defaults to
+    /// `true` so a plugin that declares any MCP contribution at all
+    /// is opting in by construction; setting `false` keeps the
+    /// contributions visible to `codeless plugin info` while
+    /// hiding them from the MCP `tools/list` response. Operators
+    /// turn off *all* plugin MCP tools via the host-side
+    /// `mcp.plugin_tools_enabled` config flag (layer "Plugin
+    /// surface (host config)"); per-plugin opt-out lives here.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, rename = "tools")]
+    pub tools: Vec<PluginMcpTool>,
+    #[serde(default, rename = "resources")]
+    pub resources: Vec<PluginMcpResource>,
+    #[serde(default, rename = "prompts")]
+    pub prompts: Vec<PluginMcpPrompt>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PluginMcp {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }
+    }
+}
+
+/// One `[[contributes.mcp.tools]]` entry. Matches the doc example
+/// one-for-one. `description_md`, `input_schema`, and `output_schema`
+/// are paths to static files in the plugin bundle (Invariant 2 --
+/// PLUGIN-MCP.md § Descriptions are static files); they are not
+/// runtime-templated, ever. The path strings are stored verbatim and
+/// resolved against the plugin root at load time the same way
+/// `prompt_file` is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcpTool {
+    /// Stable local id of the tool inside the plugin. The MCP
+    /// server exposes the contribution as `<plugin_id>.<id>` so
+    /// collisions across plugins are impossible by construction.
+    pub id: String,
+    pub title: String,
+    pub description_md: PathBuf,
+    pub input_schema: PathBuf,
+    pub output_schema: PathBuf,
+    /// MCP tool annotation. Surfaced verbatim per OQ-MCP-3.
+    pub tier: McpTier,
+    pub dispatch: PluginMcpDispatch,
+}
+
+/// `tier` annotation for an MCP tool. Mirrors PLUGIN-MCP.md § Manifest
+/// (`read | write | destructive`). Strict-validated at parse time so a
+/// plugin author typoing `"writes"` fails at load, not at first
+/// approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTier {
+    Read,
+    Write,
+    Destructive,
+}
+
+/// `dispatch` discriminator. PLUGIN-MCP.md § Manifest enumerates the
+/// three v0.1 kinds; `mcp_forward` parses but the registry lands the
+/// plugin in `Failed` per OQ-MCP-1 until v0.2 ships the upstream
+/// session lifecycle.
+///
+/// Strict-validated via the parser's tag matcher: unknown kinds trip
+/// `Parse` (not a sibling variant), so plugin authors get an obvious
+/// "unknown variant" message rather than silent acceptance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PluginMcpDispatch {
+    /// MCP handler calls the plugin's registered codeless tool via
+    /// `ToolRegistry::get(tool_id)`. The default and simplest path
+    /// (PLUGIN-MCP.md § Manifest table).
+    ToolCall { tool_id: String },
+    /// MCP handler re-issues the call through the codeless REST
+    /// router (`/api/v1/...`). The parity check at load asserts the
+    /// path is one of the registered REST routes; an absent route
+    /// would otherwise turn a manifest typo into a runtime 404.
+    RestProxy { method: String, path: String },
+    /// PLUGIN-MCP.md OQ-MCP-1 / decision-locked item 2: declared
+    /// today, loaded as `Failed` with the stable structured reason
+    /// `mcp_forward not yet supported`. The variant carries no fields
+    /// so a manifest can declare the seam without committing to
+    /// upstream-session shape that v0.1 has not designed yet.
+    McpForward {},
+}
+
+/// One `[[contributes.mcp.resources]]` entry. v0.1 wires two backings
+/// (`plugin_table` and `rest_get`) per PLUGIN-MCP.md § Resources. The
+/// `node` rubix-side backing has no codeless counterpart. Strict-
+/// validated so a plugin can't accidentally declare a `node` resource
+/// and have it silently disappear.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcpResource {
+    pub uri_pattern: String,
+    pub backing: McpResourceBacking,
+    #[serde(default)]
+    pub table: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpResourceBacking {
+    PluginTable,
+    RestGet,
+}
+
+/// One `[[contributes.mcp.prompts]]` entry. Per PLUGIN-MCP.md
+/// § Prompts, `template` is a path to a markdown file in the plugin
+/// bundle; the MCP server reads it statically and never templates
+/// against runtime data (Invariant 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMcpPrompt {
+    pub id: String,
+    pub template: PathBuf,
 }
 
 /// One `[[runtimes]]` entry. The `capabilities` block is the
@@ -392,6 +550,40 @@ pub enum ManifestError {
          policy applies to `kind = \"process\"` only"
     )]
     RuntimePolicyNotApplicable(PluginRuntimeKind),
+    /// PLUGIN-MCP.md § Manifest: tool ids in `[[contributes.mcp.tools]]`
+    /// must be unique within the plugin. Two entries staking the same
+    /// `id` would otherwise be silently de-duplicated by the MCP
+    /// listing, which is the kind of "silent drop" the rest of the
+    /// substrate is designed to avoid.
+    #[error("contributes.mcp.tools[{0}]: duplicate id `{1}` in the plugin manifest")]
+    DuplicateMcpToolId(usize, String),
+    /// PLUGIN-MCP.md § Manifest: tool ids share the `[a-z_][a-z0-9_]*`
+    /// shape the rest of the substrate enforces -- the MCP server
+    /// exposes the contribution as `<plugin_id>.<id>`, and the
+    /// codeless-tools registry rule (substrate doc OQ-PS-4) is that
+    /// every id passes the same shape check.
+    #[error("contributes.mcp.tools[{index}].id `{id}` is invalid: {reason}")]
+    InvalidMcpToolId {
+        index: usize,
+        id: String,
+        reason: &'static str,
+    },
+    /// PLUGIN-MCP.md § Manifest table: `dispatch.kind = "rest_proxy"`
+    /// declares a `method` that must be uppercase HTTP. A typo
+    /// (`"get"`) would otherwise survive into the dispatcher.
+    #[error(
+        "contributes.mcp.tools[{0}]: dispatch.method `{1}` must be an uppercase HTTP method \
+         (GET, POST, PUT, PATCH, DELETE)"
+    )]
+    BadMcpDispatchMethod(usize, String),
+    /// PLUGIN-MCP.md § Resources: `backing = "plugin_table"` requires
+    /// a `table` field, and `backing = "rest_get"` requires a `path`.
+    #[error("contributes.mcp.resources[{index}]: backing `{backing:?}` requires field `{field}`")]
+    McpResourceFieldMissing {
+        index: usize,
+        backing: McpResourceBacking,
+        field: &'static str,
+    },
 }
 
 /// On-disk TOML shape. The public manifest layers parsed-and-validated
@@ -409,6 +601,8 @@ struct OnDisk {
     data: Option<DataDir>,
     #[serde(default, rename = "runtimes")]
     runtimes: Vec<PluginRuntime>,
+    #[serde(default)]
+    contributes: PluginContributes,
 }
 
 impl PluginManifest {
@@ -470,12 +664,17 @@ impl PluginManifest {
             }
         }
 
+        if let Some(mcp) = parsed.contributes.mcp.as_ref() {
+            validate_mcp_block(mcp)?;
+        }
+
         Ok(Self {
             plugin: parsed.plugin,
             personas: parsed.personas,
             migrations: parsed.migrations.unwrap_or_default(),
             data: parsed.data.unwrap_or_default(),
             runtimes: parsed.runtimes,
+            contributes: parsed.contributes,
             root,
         })
     }
@@ -706,6 +905,71 @@ pub struct ResolvedPluginRuntimePolicy {
     pub failure_threshold: Option<u32>,
     pub failure_window: Option<Duration>,
     pub failed_cooldown: Option<Duration>,
+}
+
+/// Strict-validate `[contributes.mcp]`. Tool ids match the same
+/// `[a-z_][a-z0-9_]*` shape every other id in the substrate uses;
+/// duplicates inside one plugin are rejected; `rest_proxy.method` must
+/// be uppercase HTTP. Cross-plugin parity (the `tool_id` is a
+/// registered tool, the `path` is a registered REST route) is the
+/// registry's job -- see `super::mcp::check_parity`. Splitting the
+/// concerns matches the manifest module's "no I/O" contract.
+fn validate_mcp_block(mcp: &PluginMcp) -> Result<(), ManifestError> {
+    let mut seen_ids = std::collections::HashSet::new();
+    for (idx, t) in mcp.tools.iter().enumerate() {
+        if let Err(reason) = validate_mcp_id(&t.id) {
+            return Err(ManifestError::InvalidMcpToolId {
+                index: idx,
+                id: t.id.clone(),
+                reason,
+            });
+        }
+        if !seen_ids.insert(t.id.clone()) {
+            return Err(ManifestError::DuplicateMcpToolId(idx, t.id.clone()));
+        }
+        if let PluginMcpDispatch::RestProxy { method, .. } = &t.dispatch {
+            if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+                return Err(ManifestError::BadMcpDispatchMethod(idx, method.clone()));
+            }
+        }
+    }
+    for (idx, r) in mcp.resources.iter().enumerate() {
+        match r.backing {
+            McpResourceBacking::PluginTable if r.table.is_none() => {
+                return Err(ManifestError::McpResourceFieldMissing {
+                    index: idx,
+                    backing: r.backing,
+                    field: "table",
+                });
+            }
+            McpResourceBacking::RestGet if r.path.is_none() => {
+                return Err(ManifestError::McpResourceFieldMissing {
+                    index: idx,
+                    backing: r.backing,
+                    field: "path",
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_mcp_id(id: &str) -> Result<(), &'static str> {
+    if id.is_empty() {
+        return Err("empty");
+    }
+    let mut chars = id.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return Err("must start with a lowercase ASCII letter or underscore");
+    }
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return Err("only lowercase ASCII letters, digits, and underscore");
+        }
+    }
+    Ok(())
 }
 
 fn validate_plugin_id(id: &str) -> Result<(), ManifestError> {

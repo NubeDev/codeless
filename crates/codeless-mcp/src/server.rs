@@ -11,6 +11,8 @@ use rmcp::ServiceExt;
 use tokio_util::sync::CancellationToken;
 use tracing::Span;
 
+use crate::audit::{AuditSink, NullAuditSink};
+use crate::contrib::McpContributionTable;
 use crate::handler::CodelessMcpHandler;
 use crate::personas::{EmptyPersonaSource, PersonaSource};
 
@@ -37,6 +39,18 @@ pub struct ServerContext {
     /// `use_for_jobs = 1` is the sole gate, but a missing catalogue
     /// behaves the same as "no personas qualify").
     pub personas: Arc<dyn PersonaSource>,
+    /// Plugin MCP contributions (PLUGIN-MCP.md § Manifest). The host
+    /// builds this once at boot from `PluginRegistry` after the
+    /// parity check (`codeless_tools::plugin::check_mcp_parity`)
+    /// has cleared each plugin. Defaults to empty so a server
+    /// without any plugins behaves identically to the pre-stage-14
+    /// surface.
+    pub contributions: McpContributionTable,
+    /// Audit sink invoked once per `tools/call` (PLUGIN-MCP.md
+    /// § Audit). Defaults to `NullAuditSink` so the production
+    /// stdio binary doesn't grow a buffer until an aggregator is
+    /// wired; tests substitute `InMemoryAuditSink`.
+    pub audit: Arc<dyn AuditSink>,
 }
 
 impl ServerContext {
@@ -48,7 +62,19 @@ impl ServerContext {
             allowlist: AllowlistFile::new(),
             cancel: CancellationToken::new(),
             personas: Arc::new(EmptyPersonaSource),
+            contributions: McpContributionTable::default(),
+            audit: Arc::new(NullAuditSink),
         }
+    }
+
+    pub fn with_contributions(mut self, contributions: McpContributionTable) -> Self {
+        self.contributions = contributions;
+        self
+    }
+
+    pub fn with_audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
+        self.audit = audit;
+        self
     }
 
     pub fn with_network(mut self, mode: NetworkMode, allowlist: AllowlistFile) -> Self {

@@ -12,15 +12,20 @@
 //!   point.
 
 pub mod manifest;
+pub mod mcp;
 pub mod migrations;
 pub mod model_family;
 pub mod registry;
 pub mod substrate;
 
 pub use manifest::{
-    DataDir, ManifestError, MigrationsDir, PluginCapabilities, PluginFailedCooldown,
-    PluginManifest, PluginMetadata, PluginPersona, PluginRuntime, PluginRuntimeKind,
-    PluginRuntimePolicy, ResolvedPluginRuntimePolicy,
+    DataDir, ManifestError, McpResourceBacking, McpTier, MigrationsDir, PluginCapabilities,
+    PluginContributes, PluginFailedCooldown, PluginManifest, PluginMcp, PluginMcpDispatch,
+    PluginMcpPrompt, PluginMcpResource, PluginMcpTool, PluginMetadata, PluginPersona,
+    PluginRuntime, PluginRuntimeKind, PluginRuntimePolicy, ResolvedPluginRuntimePolicy,
+};
+pub use mcp::{
+    check_parity as check_mcp_parity, mcp_listing_id, McpParityCheckInputs, McpParityError,
 };
 pub use migrations::{
     check_sql as check_migration_sql, load_migrations_dir, MigrationCheckError, PluginMigration,
