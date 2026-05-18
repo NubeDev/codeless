@@ -37,6 +37,14 @@ pub enum FailureClass {
     /// carries the runner's reason string (typically the last
     /// non-empty line of its stderr / transcript tail).
     RunnerError,
+    /// Host-environment failure (SQLite disk-full, IOERR, CANTOPEN,
+    /// CORRUPT, READONLY) that the auto-bypass policy must never
+    /// silently retry: a fresh subprocess on the same host with the
+    /// same disk will hit the same wall, burn tokens, and bury the
+    /// original cause under identical noise. Surfacing this as a
+    /// distinct class is the operator-visible contract that infra
+    /// failures halt the job and demand human intervention.
+    InfrastructureError,
     /// REVIEW model emitted `PASS` but the scope-patch validator
     /// rejected the proposed patch (parse failure, predicate
     /// missing on a tightening patch, etc.). The verdict on the

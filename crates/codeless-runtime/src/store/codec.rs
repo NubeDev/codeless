@@ -238,6 +238,7 @@ pub(super) fn failure_class_label(c: codeless_types::FailureClass) -> &'static s
     match c {
         PreCheckFailed => "pre-check-failed",
         RunnerError => "runner-error",
+        InfrastructureError => "infrastructure-error",
         ReviewPatchInvalid => "review-patch-invalid",
         ReviewFail => "review-fail",
         ReviewUnparseable => "review-unparseable",
@@ -250,6 +251,7 @@ pub(super) fn parse_failure_class(s: &str) -> Option<codeless_types::FailureClas
     match s {
         "pre-check-failed" => Some(PreCheckFailed),
         "runner-error" => Some(RunnerError),
+        "infrastructure-error" => Some(InfrastructureError),
         "review-patch-invalid" => Some(ReviewPatchInvalid),
         "review-fail" => Some(ReviewFail),
         "review-unparseable" => Some(ReviewUnparseable),
