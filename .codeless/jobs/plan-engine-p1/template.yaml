@@ -1,0 +1,18 @@
+name: plan-engine-p1
+goal: |
+  Land Phase P1 of the Plan engine described in DOCS/JOB-WORKFLOW.md
+  "Job chaining" section: a reusable, in-memory Plan library that
+  chains Jobs by subscribing to the runtime's terminal Job events,
+  exposed as `codeless.plan.*` tools, and wired so a fired
+  `codeless-tools::schedule::Schedule` Action can call
+  `PlanEngine::start_run(plan_id)`. No SQLite persistence, no UI —
+  prove the boundary between the existing scheduler, the runtime
+  event bus, and a new `plan` module before committing to schema.
+stages:
+  - survey existing surfaces — read DOCS/JOB-WORKFLOW.md "Job chaining" section end-to-end, the codeless-tools schedule + email modules to mirror the layout, the runtime event bus and its terminal Job event variants, and codeless-bot-core::outbound's EventSource pattern; write findings into handover.md so later stages do not re-derive them
+  - REVIEW the survey — confirm naming (`Plan`, `PlanStep`, `PlanRun`, `PlanRunStep`, never `Workflow*`), the transition vocabulary (`on_success`, `on_failure`, `stop`), and that P1 stays in-memory before any code lands
+  - introduce the pure-data layer in codeless-tools/src/plan/spec.rs — `PlanSpec`, `PlanStep`, `Transition`, with serde + validation that step ids are unique and every transition target exists or is `stop`; unit tests cover the happy path, missing target, duplicate id, and the linear chain example from JOB-WORKFLOW.md
+  - introduce the engine layer in codeless-tools/src/plan/engine.rs — `PlanEngine` with an injected `JobSpawner` trait and a subscription to terminal Job events; one PlanRun = one state machine that on each terminal event looks up the current step's transition and either spawns the next Job or marks the run done; tests use a mock `JobSpawner` and a hand-driven event stream
+  - REVIEW the engine boundary — confirm `JobSpawner` is the only host coupling, the engine takes no tokio runtime handle it does not need, and the schedule -> plan composition is a one-liner per the doc's claim
+  - expose `codeless.plan.create`, `codeless.plan.start`, `codeless.plan.list`, `codeless.plan.cancel` tools in codeless-tools, following the same shape as the existing schedule tool wrappers; wire codeless-runtime so the engine is constructed once at boot, subscribes to the event bus, and the schedule Action variant gains a `StartPlanRun { plan_id }` (or equivalent dispatch path) that calls into it
+  - documentation pass — update DOCS/JOB-WORKFLOW.md's (P1) checklist with the actual module paths landed, note the in-memory limit and restart-loses-runs caveat, and link the new tool surface from the relevant tool index
