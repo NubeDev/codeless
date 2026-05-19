@@ -240,3 +240,71 @@ needs (B)'s migration to be in flight so it can write `run_id`.
 No source diff. `cargo` checks not run (no code touched). Per
 `WORKFLOW.md` closing trio for a read-only stage: handover + session
 doc committed only.
+
+## Stage 2 — design lock  `[x]`
+
+Stage 2 ("design bundle layout and manifest.json schema_version 1
+against DOCS/SCOPE-JOB-EXPORT.md; lock the secrets denylist and
+per-entry size caps") is paper-only and can land independently of
+the (B) precondition that gates implementation stages 4–7.
+
+### Re-verification of the (B) blocker
+
+Re-grepped this stage: `crates/codeless-runtime/migrations/` still
+has no `runs` migration; `jobs` still owns the per-attempt columns;
+no `handover_md` on `jobs`. Stage 1's halt stands; the design below
+targets the post-(B) world per `DOCS/SCOPE-JOB-EXPORT.md`.
+
+### Deliverable
+
+[`.codeless/jobs/job-export/BUNDLE-DESIGN.md`](../../.codeless/jobs/job-export/BUNDLE-DESIGN.md)
+— the frozen design lock that stage 3 REVIEW reads and stages 4–7
+build against. Covers in ten sections:
+
+1. Bundle file shape (gzipped tar, `.codeless-job`, UTF-8,
+   deterministic ordering, mtime-zeroed gzip header).
+2. Directory layout — every allowed path, every rejected entry
+   shape, ordinal-dir zero-padding, top-level dir stripping.
+3. `manifest.json` schema_version 1 — every key typed, required,
+   `deny_unknown_fields`, the importer's first read.
+4. Per-Run `run.json` field set (with `worktree_path_source`
+   rename so destination can't accidentally reuse it) and the
+   five JSONL streams' sort orders + drop rules (`lease_holder`
+   etc. dropped on export).
+5. Secrets denylist (case-insensitive substring regex set:
+   `token`, `secret`, `api[_-]?key`, `pass(word|wd)`,
+   `private[_-]?key`, `credential`, `bearer`, `auth[_-]?header`).
+   Confirmed: zero current columns match.
+6. Size caps — 200 MiB per bundle, 10 MiB per entry, plus per-kind
+   sub-caps (64 KiB manifest / README, 1 MiB template / handover /
+   note / run.json / JSONL line, 1024 runs/bundle, 500k
+   events/run); constants live in `limits.rs`; importer enforces
+   streaming.
+7. Open question resolutions — OQ-1 through OQ-5 from the scope
+   doc plus OQ-D (event payload scanning: out for E1) and OQ-E
+   (`scheduled_pause_points`: out for E1).
+8. Refuse-to-export preconditions (non-terminal Run, empty repo
+   URL, output path outside workspace `fs_root_canonical`, any cap
+   exceeded).
+9. README cover note outline.
+10. What stages 3–7 inherit + what's deliberately not locked
+    (tar/gzip lib choice, exact error variant names).
+
+### Locked open questions, one-liner each
+
+- OQ-2 (size caps): values per §5 of the design doc.
+- OQ-3 (output path): jailed under workspace `fs_root_canonical`
+  via canonicalised prefix check.
+- OQ-4 (events.cursor monotonicity): confirmed by SQLite
+  AUTOINCREMENT; (B) re-keys `job_id → run_id` only.
+- OQ-5 (handover lands on `jobs.handover_md`): confirmed; first
+  new Run snapshots like any other.
+- OQ-D (payload scanning): out for E1; README warns.
+- OQ-E (`scheduled_pause_points`): out for E1; logged for E2.
+
+### Verify
+
+No source diff. New file:
+`.codeless/jobs/job-export/BUNDLE-DESIGN.md`. `cargo` checks not
+run (no code touched). Commit: handover + session doc + design doc
+only.
