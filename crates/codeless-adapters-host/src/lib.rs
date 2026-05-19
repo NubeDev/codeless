@@ -31,8 +31,8 @@ pub use editor::{invoke_editor, pick_editor, EditorError};
 pub use fs::{FsError, HostFs};
 pub use git_changed::{changed_files, GitChangedError};
 pub use git_commit::{
-    commit_all_changes, commit_paths, find_patch_resolution, git_revert, head_sha, GitCommitError,
-    PriorPatchResolution,
+    commit_all_changes, commit_paths, find_patch_resolution, git_revert, head_sha,
+    push_current_branch, GitCommitError, PriorPatchResolution,
 };
 pub use git_diff::{diff_against, DiffFile, GitDiffError};
 #[cfg(feature = "keyring")]

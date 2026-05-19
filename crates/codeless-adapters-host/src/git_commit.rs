@@ -271,6 +271,44 @@ pub fn commit_all_changes(repo: &Path, subject: &str) -> Result<bool, GitCommitE
     Ok(true)
 }
 
+/// Push the current branch to `origin`, setting the upstream the first
+/// time. Used by the per-stage commit step so the operator can see
+/// stage progress on the remote without polling the worktree by hand
+/// — without this, the `Git` trio rail's "commit + push" contract was
+/// commit-only and stages were invisible on GitHub until manual
+/// intervention.
+///
+/// Implementation: `git push -u origin HEAD`. `HEAD` rather than a
+/// named branch keeps the call site oblivious to the worktree's branch
+/// name (which is already encoded in the worktree checkout). `-u` is
+/// idempotent: it sets `branch.<name>.remote` and `.merge` the first
+/// time, and is a no-op once the upstream is configured.
+///
+/// Auth: the worktree shares the source repo's remote and credential
+/// configuration, so whatever `git push` does in the developer's
+/// terminal is what happens here. There is no token-injection step;
+/// credential helpers, SSH keys, and `GIT_ASKPASS` all work as the
+/// user already has them set up.
+pub fn push_current_branch(repo: &Path) -> Result<(), GitCommitError> {
+    let push = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["push", "-u", "origin", "HEAD"])
+        .output()
+        .map_err(|e| GitCommitError::Io {
+            op: "push",
+            source: e,
+        })?;
+    if !push.status.success() {
+        return Err(GitCommitError::GitFailed {
+            op: "push",
+            status: push.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&push.stderr).into_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// Revert a previously-produced commit by SHA, producing a new
 /// `Revert "<original subject>"` commit on the current branch. Used by
 /// the UI patch-inbox's 10-second undo toast: when the operator clicks
@@ -373,6 +411,70 @@ mod tests {
             log.lines()
                 .any(|l| l.starts_with("Revert \"add hello.md\"")),
             "log: {log}"
+        );
+    }
+
+    #[test]
+    fn push_current_branch_lands_a_commit_on_origin() {
+        // A local bare repo plays the role of `origin`. Real
+        // deployments push to GitHub; this test only proves the shell-
+        // out semantics — that the commit reaches the configured
+        // upstream and that the first push sets `branch.*.remote`.
+        let origin = TempDir::new().unwrap();
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(origin.path())
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "init --bare: {out:?}");
+
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let add_remote = Command::new("git")
+            .arg("-C")
+            .arg(tmp.path())
+            .args(["remote", "add", "origin"])
+            .arg(origin.path())
+            .output()
+            .unwrap();
+        assert!(add_remote.status.success(), "remote add: {add_remote:?}");
+
+        let p = tmp.path().join("hello.md");
+        fs::write(&p, "hi").unwrap();
+        commit_paths(tmp.path(), "add hello.md", std::slice::from_ref(&p)).unwrap();
+
+        push_current_branch(tmp.path()).unwrap();
+
+        let log = Command::new("git")
+            .arg("-C")
+            .arg(origin.path())
+            .args(["log", "--pretty=%s", "main"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            log.lines().any(|l| l == "add hello.md"),
+            "origin log missing commit: {log}"
+        );
+
+        // Second push with no new commits is a no-op success — proves
+        // the `-u` upstream-set is idempotent and that an "everything
+        // up-to-date" exit is not flagged as failure.
+        push_current_branch(tmp.path()).unwrap();
+    }
+
+    #[test]
+    fn push_current_branch_returns_error_when_no_remote() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let p = tmp.path().join("hello.md");
+        fs::write(&p, "hi").unwrap();
+        commit_paths(tmp.path(), "add hello.md", std::slice::from_ref(&p)).unwrap();
+        let err = push_current_branch(tmp.path()).unwrap_err();
+        assert!(
+            matches!(err, GitCommitError::GitFailed { op: "push", .. }),
+            "expected GitFailed{{op:\"push\"}}, got {err:?}"
         );
     }
 

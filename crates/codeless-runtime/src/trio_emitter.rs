@@ -149,17 +149,24 @@ pub async fn emit_trio_completed(
     }
 }
 
-/// Per-stage commit seam. Wraps
+/// Per-stage commit-and-push seam. Wraps
 /// `codeless_adapters_host::commit_all_changes` (which does
-/// `git add -A` + `git commit`, respecting `.gitignore`) and emits
-/// the `Git` trio updates around it: `InProgress` before the commit,
-/// then `Done` (commit produced), `Skipped` (no diff after staging —
-/// the workflow's no-op case documented in `todos.rs`), or `Failed`
-/// (git surfaced an error). Returns the underlying commit outcome
+/// `git add -A` + `git commit`, respecting `.gitignore`) followed by
+/// `push_current_branch` (`git push -u origin HEAD`) and emits the
+/// `Git` trio updates around the pair: `InProgress` before the commit,
+/// then `Done` (commit produced and pushed), `Skipped` (no diff after
+/// staging — nothing to commit, nothing to push), or `Failed` (commit
+/// or push surfaced an error). Returns the underlying commit outcome
 /// so the caller can keep going on `Ok(false)` and bail on `Err`.
-/// The shell-out is synchronous (process spawn lives in
+/// The shell-outs are synchronous (process spawn lives in
 /// `codeless-adapters-host` per R1); the offload through
 /// `spawn_blocking` keeps the reactor unblocked on a slow worktree.
+///
+/// Why push lives here, not at a later teardown: the `Git` rail's
+/// label promises "commit + push" and the operator's mental model is
+/// per-stage visibility on the remote. Deferring the push to job
+/// completion would leave intermediate stages invisible on GitHub,
+/// which is the exact bug this seam was rewritten to fix.
 ///
 /// Why `commit_all_changes` and not `commit_paths`: the runner does
 /// not track which files the agent touched this stage, so it asks
@@ -178,10 +185,20 @@ pub async fn commit_stage_changes(
     subject: &str,
 ) -> Result<bool, codeless_adapters_host::GitCommitError> {
     emit_trio_started(ctx, store, task_id, stage_id, TodoKind::Git).await;
-    let repo = repo.to_path_buf();
+    let repo_buf = repo.to_path_buf();
     let subject = subject.to_string();
+    // The trio row's contract is "commit + push": after a successful
+    // commit the worktree branch is pushed to `origin` so the operator
+    // sees stage progress on GitHub. A push failure flips the rail to
+    // `Failed` with the git stderr in `failure_detail` rather than
+    // pretending the stage's git work is done — silent push omission
+    // is exactly the failure mode this seam exists to surface.
     let join = tokio::task::spawn_blocking(move || {
-        codeless_adapters_host::commit_all_changes(&repo, &subject)
+        let made = codeless_adapters_host::commit_all_changes(&repo_buf, &subject)?;
+        if made {
+            codeless_adapters_host::push_current_branch(&repo_buf)?;
+        }
+        Ok::<bool, codeless_adapters_host::GitCommitError>(made)
     })
     .await;
     let result = match join {
@@ -194,6 +211,10 @@ pub async fn commit_stage_changes(
     let (status, failure_detail) = match &result {
         Ok(true) => (TodoStatus::Done, None),
         Ok(false) => (TodoStatus::Skipped, None),
+        Err(codeless_adapters_host::GitCommitError::GitFailed { op: "push", .. }) => (
+            TodoStatus::Failed,
+            Some(format!("{}", result.as_ref().err().unwrap())),
+        ),
         Err(err) => (
             TodoStatus::Failed,
             Some(format!("git commit failed: {err}")),
@@ -543,10 +564,35 @@ mod tests {
         }
     }
 
+    /// Attach a local bare repo as `origin` for `dir`, so the per-
+    /// stage commit-and-push seam has somewhere to push during tests
+    /// without going off-host. Returns the bare repo's TempDir so the
+    /// caller keeps it alive across the push.
+    fn attach_origin(dir: &std::path::Path) -> tempfile::TempDir {
+        let origin = tempfile::TempDir::new().unwrap();
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(origin.path())
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "init --bare: {out:?}");
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["remote", "add", "origin"])
+            .arg(origin.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "remote add: {out:?}");
+        origin
+    }
+
     #[tokio::test]
     async fn commit_stage_changes_emits_done_when_commit_produced() {
         let tmp = tempfile::TempDir::new().unwrap();
         init_git_repo(tmp.path());
+        let _origin = attach_origin(tmp.path());
         let p = tmp.path().join("hello.md");
         tokio::fs::write(&p, "hi").await.unwrap();
 
@@ -642,6 +688,58 @@ mod tests {
             e,
             Event::TodoCompleted {
                 status: TodoStatus::Skipped,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn commit_stage_changes_emits_failed_when_push_fails() {
+        // A repo with a commit but no `origin` remote — the commit
+        // step succeeds, the push step fails, and the trio rail must
+        // surface Failed with the push stderr rather than Done.
+        // Pre-fix this returned Done because no push was attempted at
+        // all, which is the regression this test pins.
+        let tmp = tempfile::TempDir::new().unwrap();
+        init_git_repo(tmp.path());
+        let p = tmp.path().join("hello.md");
+        tokio::fs::write(&p, "hi").await.unwrap();
+
+        let (store, task_id, stage_id) = seed_store_with_task().await;
+        let git = trio_row(task_id, 12, TodoKind::Git);
+        store.insert_todo(&git).await.unwrap();
+        let bus = fresh_bus().await;
+        let mut sub = bus
+            .subscribe_since(SubscribeFilter::All, None)
+            .await
+            .unwrap();
+        let ctx = ctx_with(Arc::clone(&bus));
+
+        let _ = p;
+        let err = commit_stage_changes(&ctx, &store, task_id, stage_id, tmp.path(), "add")
+            .await
+            .expect_err("push without an origin remote must error");
+        assert!(
+            matches!(
+                err,
+                codeless_adapters_host::GitCommitError::GitFailed { op: "push", .. }
+            ),
+            "expected GitFailed{{op:\"push\"}}, got {err:?}"
+        );
+
+        let mut got: Vec<Event> = Vec::new();
+        while let Some(Ok(EventEnvelope { event, .. })) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), sub.next())
+                .await
+                .ok()
+                .flatten()
+        {
+            got.push(event);
+        }
+        assert!(got.iter().any(|e| matches!(
+            e,
+            Event::TodoCompleted {
+                status: TodoStatus::Failed,
                 ..
             }
         )));
