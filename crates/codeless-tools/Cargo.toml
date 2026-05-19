@@ -19,8 +19,14 @@ ego-tree = "0.10"
 flate2 = "1"
 futures-util = { workspace = true }
 hex = "0.4"
-octocrab = { version = "0.43", default-features = false, features = ["default-client", "rustls", "rustls-ring"] }
+# `ignore` powers the `fs.search` tool's traversal: gitignore-aware,
+# globset-backed (re-exported), pure-Rust. Stays in `codeless-tools`
+# because R1 forbids spawning `rg`; the walker is the in-process
+# substitute.
+ignore = "0.4"
+octocrab ={ version = "0.43", default-features = false, features = ["default-client", "rustls", "rustls-ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "gzip", "brotli", "deflate", "stream"] }
+regex = "1"
 scraper = "0.22"
 serde = { workspace = true }
 serde_json = { workspace = true }

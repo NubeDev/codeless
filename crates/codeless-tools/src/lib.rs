@@ -18,6 +18,7 @@ pub mod browser;
 mod ctx;
 pub mod email;
 mod error;
+pub mod fs;
 pub mod html_text;
 pub mod plan;
 pub mod plugin;
