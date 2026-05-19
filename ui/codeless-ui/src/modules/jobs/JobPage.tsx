@@ -412,10 +412,11 @@ export function PageHeader({
   refetchJob: () => void;
 }) {
   const rpc = useRpc();
-  const [busy, setBusy] = useState<"stop" | "rerun" | "delete" | "reset" | null>(
-    null,
-  );
+  const [busy, setBusy] = useState<
+    "stop" | "rerun" | "delete" | "reset" | "export" | null
+  >(null);
   const [err, setErr] = useState<string | null>(null);
+  const [exportInfo, setExportInfo] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isTerminal = TERMINAL_STATUSES.has(job.status);
@@ -469,6 +470,37 @@ export function PageHeader({
     try {
       await rpc.call("reset_job", { job_id: job.id });
       refetchJob();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Export bundle to a server-side path the user types in via a
+  // prompt. Browser shell relies on `fs_read_file` to stream the
+  // bytes afterwards; the Tauri shell will swap this for a native
+  // save dialog. The prompt keeps the surface clickable on every
+  // shell without blocking on Phase 5 IPC work.
+  const exportJob = async () => {
+    const defaultPath = `${job.id}.codeless-job`;
+    const path = window.prompt(
+      "Export bundle to server-side path:",
+      defaultPath,
+    );
+    if (path === null || path.trim() === "") return;
+    setBusy("export");
+    setErr(null);
+    setExportInfo(null);
+    try {
+      const res = await rpc.call("export_job", {
+        job_id: job.id,
+        output_path: path.trim(),
+        include_artifacts: false,
+      });
+      setExportInfo(
+        `exported ${res.run_count} run(s), ${res.event_count} event(s) to ${res.output_path}`,
+      );
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -564,6 +596,17 @@ export function PageHeader({
               edit
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2.5 text-xs"
+            onClick={() => void exportJob()}
+            disabled={busy !== null}
+            title="Export this Job (template, handover, runs) as a .codeless-job bundle"
+            data-testid="job-export-button"
+          >
+            {busy === "export" ? "exporting…" : "export"}
+          </Button>
           {canDelete && !confirmDelete && (
             <Button
               size="sm"
@@ -627,12 +670,77 @@ export function PageHeader({
           {err}
         </div>
       )}
+      {exportInfo && (
+        <div
+          className="border-border/50 border-t px-4 py-1 text-xs text-emerald-600 dark:text-emerald-400"
+          data-testid="job-export-info"
+        >
+          {exportInfo}
+        </div>
+      )}
+      <ImportedWarningsBanner />
       <EditJobDialog
         job={job}
         open={editOpen}
         onOpenChange={setEditOpen}
         onSaved={refetchJob}
       />
+    </div>
+  );
+}
+
+// Dismissible banner that surfaces `ImportWarning[]` propagated by
+// `ImportJobDialog` via the URL hash (`#imported-warnings=...`). The
+// hash carries the data because the import handler navigates with
+// `location.assign` — once on the Job page, JobPage owns the
+// dismissal so a reload re-reads the same warnings until the user
+// clears them.
+function ImportedWarningsBanner() {
+  const [warnings, setWarnings] = useState<string[] | null>(() => {
+    if (typeof window === "undefined") return null;
+    const hash = window.location.hash;
+    const m = /#imported-warnings=([^&]+)/.exec(hash);
+    if (!m) return null;
+    try {
+      const parsed = JSON.parse(decodeURIComponent(m[1]));
+      return Array.isArray(parsed)
+        ? parsed.map((s) => String(s)).filter((s) => s.length > 0)
+        : null;
+    } catch {
+      return null;
+    }
+  });
+  if (!warnings || warnings.length === 0) return null;
+  return (
+    <div
+      className="border-border/50 border-t bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-300"
+      data-testid="imported-warnings-banner"
+    >
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">Imported with warnings</div>
+          <ul className="list-disc pl-4">
+            {warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground"
+          onClick={() => {
+            if (typeof window !== "undefined") {
+              const url = new URL(window.location.href);
+              url.hash = "";
+              window.history.replaceState(null, "", url.toString());
+            }
+            setWarnings(null);
+          }}
+          aria-label="Dismiss warnings"
+        >
+          ×
+        </button>
+      </div>
     </div>
   );
 }

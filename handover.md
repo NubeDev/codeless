@@ -1,154 +1,82 @@
-# assistant-fs-tools — stage 6 → done
+# job-export — stage 10 `[!]` halted on (B) + stage-4/5/6 chain
 
-Stage 6 landed the write filesystem tools (`fs.write`, `fs.edit`),
-the mode-aware `WriteDispatcher` seam they delegate through, and
-the registration helper the stage-7 runtime wiring will call to
-gate writes on the per-thread mode.
+Stage 10 ("add imported-from chip on imported Jobs plus read-only
+manifest viewer; verify `[run]` on an imported Job creates ordinal
+max+1 against destination HEAD") halted before any code landed. The
+full stage 10 record — re-verification, why no chip / viewer / test
+can land, and the file-by-file plan for re-fire — is in
+[`DOCS/sessions/2026-05-19-job-export.md`](DOCS/sessions/2026-05-19-job-export.md)
+under "Stage 10 — imported-from chip + manifest viewer + ordinal
+verification `[!]` halted on same chain".
 
-## What landed
+## Why halted (the short version)
 
-### Codeless-tools — Tool surface
+Stage 10 builds against four absent foundations. Re-verified this
+session:
 
-- `codeless-tools/src/fs/dispatch.rs` defines `WriteDispatcher`,
-  `WorkspaceWrite`, `JobScopeWrite`, and the `classify_target`
-  helper that splits a workspace-relative path into a regular
-  workspace target or a `.codeless/jobs/<segment>/<tail>` target.
-  The classifier rejects bare-directory targets
-  (`.codeless/jobs/foo`) so a directory write never routes through
-  `jobs.updateScope` by accident.
-- `fs_write.rs` and `fs_edit.rs` resolve the path through the
-  existing `Sandbox` (extended with `resolve_for_create` so brand-
-  new files can be created without `canonicalize` failing on a
-  missing target), classify it, and hand the mutation off to the
-  dispatcher. `fs.edit` reads the file once, applies an exact-
-  string replace in memory (refusing 0-match and multi-match cases
-  with typed errors), and surfaces the post-replace body as the
-  card's `after` payload per D7 — the dispatcher never sees the
-  `(old, new)` tuple.
-- `register_assistant_thread_write_tools` in `fs/mod.rs` registers
-  the two tools on a `ToolRegistry`. The helper is mode-blind by
-  design: the caller resolves `assistant_threads.mode` and only
-  invokes this helper for `approve-edits` and `bypass`. `read-only`
-  threads never see the helper run, so the tools are not in the
-  registry at all (D8). A stale client calling `fs.write` on a
-  read-only thread receives an "unknown tool" surface from the
-  registry, which is the defence-in-depth the SCOPE asks for.
+1. **JOB-WORKFLOW (B) not merged.** `ls
+   crates/codeless-runtime/migrations/ | grep -i run` returns only
+   `0002_job_runner_overrides.sql`. No `runs` table, so the "next
+   `[run]` writes `ordinal = MAX(ordinal) + 1`" assertion has
+   nothing to assert against.
+2. **No `job_export` runtime module.** `ls
+   crates/codeless-runtime/src/job_export` → no such directory.
+   Stages 4 (walker + serializer), 5 (importer), 6 (RPCs), 7
+   (round-trip tests) never produced source.
+3. **No `imported_from` field anywhere.** `grep -rn
+   "imported_from\|importedFrom" crates/codeless-runtime/migrations
+   crates/codeless-rpc/src crates/codeless-types/src` → zero. The
+   chip + viewer have no data source on the destination Job row.
+4. **Stages 8–9 already shipped UI that the server can't answer.**
+   `ImportJobDialog.tsx` and the `export_job` / `import_job` /
+   `inspect_job_bundle` TS RPC declarations exist; the matching
+   server methods do not. The loop is already carrying one R4
+   half-finished-implementation violation forward; stage 10 not
+   deepening it is the only consistent choice with stages 1, 4, 5,
+   6, 7.
 
-### Stage 6 tests
+## What lands when stage 10 is re-fired
 
-Lib-level (per-tool) and integration (registry-level) coverage:
+Re-fire only after (B) merges and stages 4 + 5 + 6 + 7 land real
+source. Single-commit deliverable:
 
-- `codeless-tools/tests/fs_tools.rs` — nine integration tests,
-  including the four stage-6 specifics:
-  - `read_only_thread_does_not_register_write_tools` pins D8: only
-    `fs.list`, `fs.read`, `fs.search` are visible on a read-only
-    thread; `fs.write` / `fs.edit` are absent.
-  - `approve_edits_mode_surfaces_write_through_dispatcher_with_before_diff`
-    pins the `approve-edits` shape: the `Tool::call` lands a
-    `WorkspaceWrite` on the dispatcher (carrying both `before` and
-    `after` so the action-card renderer can compute a diff via D7's
-    re-use of the existing diff component) and disk stays untouched.
-    The runtime's `ApproveEditsWriteDispatcher` (stage 7) will turn
-    this into an `AssistantActionCard` the user confirms via the
-    existing `confirm_assistant_action` dispatcher.
-  - `bypass_mode_writes_through_for_non_job_scope_path` pins
-    `bypass`: a `DiskBypassDispatcher` (the stand-in for the
-    runtime's BypassWriteDispatcher) writes the file through, and
-    the contents land on disk at the sandbox-canonicalised path.
-  - `job_scope_path_routes_through_jobs_update_scope_in_bypass` and
-    `_in_approve_edits` pin D3: a `.codeless/jobs/<name>/<tail>`
-    write always hits the dispatcher's `job_scope_write` method,
-    in either mode, and the file path itself is left untouched —
-    the dispatcher routes through `jobs.updateScope` so the
-    paused-job guard fires before any write.
-- `codeless-tools/src/fs/fs_write.rs` and `fs_edit.rs` add per-tool
-  unit tests covering happy path, sandbox rejection (absolute,
-  `..`), size cap (`fs.write`), 0-match / multi-match rejection
-  (`fs.edit`), binary-file rejection (`fs.edit`), and pre-rendering
-  of the post-replace `after` body into the dispatcher (`fs.edit`).
-- `codeless-tools/src/fs/dispatch.rs` unit tests pin the
-  classifier: leading `./` is folded, nested job-scope tails round-
-  trip, `.codeless/settings.json` is *not* mis-classified as
-  job-scope, bare-directory targets surface as `None`.
+1. Migration adding `jobs.imported_from_workspace_name`,
+   `imported_from_repo_url`, `imported_from_repo_commit`,
+   `imported_from_job_id`, `imported_at`, `imported_manifest_json`
+   (verbatim manifest bytes — chip + viewer read it without a
+   second RPC).
+2. `codeless-types::Job` gains those six fields; specta regen
+   updates `ui/codeless-ui/src/lib/rpc/generated/wire.ts`.
+3. `<ImportedFromChip />` + `<JobManifestViewerDialog />` under
+   `ui/codeless-ui/src/modules/jobs/`; shared
+   `<ManifestSummary />` extracted from `ImportJobDialog`'s
+   preview block (R3). `JobPage` renders the chip near the title;
+   click opens the viewer.
+4. `crates/codeless-runtime/tests/job_export_imported_run.rs`:
+   import a 3-Run fixture bundle, drive `start_job`, assert the
+   new `runs` row carries `ordinal = 4` and `(job_id, ordinal)`
+   uniqueness held, and that `events.run_id` for the new Run
+   points at the new row id (not at any imported Run's id).
+5. Closing trio: `cargo test --workspace` green, `cargo clippy
+   --workspace --all-targets -- -D warnings` green, `cargo fmt
+   --check` green; `pnpm --filter codeless-ui test` + `lint` green.
 
-### Sandbox extensions
+## State of the job
 
-- `Sandbox::resolve_for_create` resolves a path that may not yet
-  exist by walking the components left-to-right, canonicalising
-  each prefix that exists and refusing if it ever escapes the
-  canonical root. Symlinks in the *existing* part of the path are
-  caught the same way `Sandbox::resolve_existing` catches a leaf
-  symlink; the brand-new tail is structurally safe because the
-  syntactic guard already rejected `..` / absolute / prefix
-  components.
-- `Sandbox::check_relative_syntax` exposes the syntactic guard so
-  the write tools can reject absolute / `..` paths upstream of
-  `classify_target` (which would otherwise silently normalise
-  `/etc/passwd` into `etc/passwd`).
+Ten of ten stages have now fired against the same unresolved chain.
+Six halted clean (1, 4, 5, 6, 7, 10); stages 8 + 9 landed UI in
+advance of the server it calls. The job has exhausted its stage
+list with the foundation unmerged.
 
-## Decisions / call-outs for stage 7
+Operator should either:
 
-- **No new `AssistantAction` variant lands here.** The dispatcher
-  trait was sized so the runtime-side `ApproveEditsWriteDispatcher`
-  in stage 7 can either reuse the existing `EditScope` variant for
-  job-scope writes or introduce a new `FsWrite` variant for
-  workspace writes — that choice does not affect the Tool surface
-  this stage ships. The Tool hands the dispatcher a
-  `WorkspaceWrite { rel_path, abs, before, after }`; the dispatcher
-  decides how to persist the proposal.
-- **Bypass goes through the dispatcher, not directly through
-  `tokio::fs::write` inside the Tool.** Done this way so the
-  runtime's bypass impl can still publish a tool_message envelope,
-  write to the event bus, and apply the same job-scope routing in
-  one place. Tests use a `DiskBypassDispatcher` stand-in alongside
-  the `RecordingDispatcher` so the bypass shape is covered without
-  standing up the runtime.
-- **Job-scope check is at the Tool layer, not the dispatcher
-  layer.** SCOPE D3 says the check lives at the `fs.write` /
-  `fs.edit` *dispatch boundary*; that boundary is the Tool deciding
-  which dispatcher method to call. Putting the check inside each
-  dispatcher impl would risk drift between the approve-edits and
-  bypass paths.
-- **`fs.write`'s `before` is best-effort.** A pre-existing file is
-  read via `tokio::fs::read` for diff context (UTF-8 lossy); a
-  missing file surfaces as `None`. A `Failed` is only returned for
-  non-NotFound errors so the planner can still propose a write
-  against a typo'd parent directory.
+- **(a)** merge JOB-WORKFLOW (B), then re-fire stages 4 → 10 in a
+  fresh session in order; or
+- **(b)** revert stages 8 + 9's premature UI commits
+  (`86144a2`, `2de4369`) so the next iteration starts from a clean
+  base where every RPC the UI calls has a server impl.
 
-## What stage 7 still needs to land
-
-1. Concrete `WriteDispatcher` impls in `codeless-runtime`:
-   - `ApproveEditsWriteDispatcher` — inserts an
-     `AssistantActionCard` row (either reusing `EditScope` for
-     job-scope writes or introducing a new `FsWrite` variant for
-     workspace writes).
-   - `BypassWriteDispatcher` — calls the host fs adapter directly
-     for workspace writes and `update_job_scope` (or the wider
-     `write_job_file` after the paused-job guard) for job-scope.
-2. Wire `register_assistant_thread_write_tools` into the planner /
-   `agent_chat` registry construction path so the per-thread mode
-   is read on every dispatch and the tools come and go with the
-   row.
-3. The mode dropdown in `/assistant` (stage 7's UI deliverable),
-   bound to the existing `assistant.setThreadMode` RPC.
-
-## Verify
-
-- `cargo fmt --check` — clean.
-- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
-- `cargo test -p codeless-tools` — all suites green (45 fs:: lib
-  tests including the new write-tool + dispatcher + sandbox cases;
-  9 fs_tools integration tests including the four stage-6 mode +
-  job-scope assertions; pre-existing suites unaffected).
-- `cargo test -p codeless-runtime --lib rpc::assistant` — 65
-  pre-existing assistant tests green; no regression from this
-  stage (no runtime files were touched).
-
-## Worktree quirk (inherited from stage 3)
-
-The local `ai-runner/src/types.rs` was synced from the canonical
-copy under `/home/user/code/rust/codeless-workspace/ai-runner` and
-the sibling worktree's `workspace` pointer retargeted at this
-worktree. Both fixes are environment-only; neither lands in this
-worktree's git tree. The stage-7 session will inherit the same
-setup unless the worktree is rebuilt from scratch.
+Either way, gating loop firing on `[ -d
+crates/codeless-runtime/src/job_export ]` or on the (B)
+migrations grep would have saved six full sessions; consider it
+for the next chain of dependent stages.

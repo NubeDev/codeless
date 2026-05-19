@@ -831,6 +831,99 @@ export interface RpcMethodMap {
   // the host catches the "method not found" error and degrades to
   // the empty list — every slot site renders its fallback.
   list_plugins: { args: Record<string, never>; result: ListPluginsResult };
+
+  // Job export/import surface (DOCS/SCOPE-JOB-EXPORT.md). The bundle
+  // lives at a server-side path; UI streams the bytes via `fs_read_file`
+  // for browser-shell downloads. `inspect_job_bundle` returns the
+  // manifest without touching SQLite so the Import dialog can preview
+  // the bundle before the user commits.
+  export_job: { args: ExportJobArgs; result: ExportJobResult };
+  import_job: { args: ImportJobArgs; result: ImportJobResult };
+  inspect_job_bundle: {
+    args: InspectJobBundleArgs;
+    result: InspectJobBundleResult;
+  };
+}
+
+export interface ExportJobArgs {
+  job_id: JobId;
+  output_path: string;
+  include_artifacts: boolean;
+}
+
+export interface ExportJobResult {
+  output_path: string;
+  bytes_written: number;
+  run_count: number;
+  event_count: number;
+}
+
+// `Refuse` is the default; the destination workspace's existing Job
+// row wins and the importer surfaces the collision. `Suffix` renames
+// the incoming Job with a numeric suffix. `Replace` drops the
+// existing rows but leaves the on-disk worktree for inspection.
+export type ImportConflictPolicy = "Refuse" | "Suffix" | "Replace";
+
+export interface ImportJobArgs {
+  workspace_id: RepoId;
+  bundle_path: string;
+  rename_to: string | null;
+  on_conflict: ImportConflictPolicy;
+}
+
+// Non-fatal mismatches surfaced by the importer. The wire shape is
+// loose on purpose — the server's `ImportWarning` may grow new
+// variants and the UI banner renders whatever `message` it gets
+// without needing a typed discriminant for each kind.
+export interface ImportWarning {
+  kind: string;
+  message: string;
+}
+
+export interface ImportJobResult {
+  job_id: JobId;
+  imported_name: string;
+  run_count: number;
+  warnings: ImportWarning[];
+}
+
+export interface InspectJobBundleArgs {
+  bundle_path: string;
+}
+
+export interface JobBundleManifest {
+  schema_version: number;
+  exported_at: string;
+  exporter: {
+    codeless_version: string;
+    host_os: string;
+  };
+  source: {
+    workspace_name: string;
+    repo_url: string;
+    repo_commit: string;
+    job_name: string;
+    job_id: string;
+    run_count: number;
+  };
+  content: {
+    has_handover: boolean;
+    note_count: number;
+    total_events: number;
+    includes_artifacts: boolean;
+  };
+}
+
+// `local_warnings` describes mismatches the inspector can detect
+// without writing anything — e.g. the destination workspace's HEAD
+// SHA differs from `manifest.source.repo_commit`, or no workspace
+// is currently active. The dialog renders these as a banner above
+// the conflict-policy selector so the user sees the risk before
+// committing to the import.
+export interface InspectJobBundleResult {
+  manifest: JobBundleManifest;
+  bytes: number;
+  local_warnings: ImportWarning[];
 }
 
 export type {
