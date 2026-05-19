@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use codeless_adapters_host::{HostFs, SecretStore, WorktreeManager};
@@ -8,12 +9,92 @@ use codeless_runtime::{attached_workspaces, DefaultRunnerFactory, InProcessRpc};
 /// Errors that prevent the desktop shell from booting.
 #[derive(Debug, thiserror::Error)]
 pub enum BootError {
-    #[error("could not determine OS data directory")]
-    NoDataDir,
+    #[error("could not determine home directory")]
+    NoHomeDir,
     #[error("database: {0}")]
     Db(String),
     #[error("filesystem root: {0}")]
     FsRoot(String),
+}
+
+/// Paths the desktop shell writes to, derived from the home dir and
+/// the launch-time workspace. Secrets are user-global so the API key
+/// and Slack token survive across workspaces; everything else is keyed
+/// by the workspace slug so two desktop launches on different folders
+/// own disjoint state — disjoint SQLite file, disjoint worktrees,
+/// disjoint job queue, disjoint event bus.
+pub struct DataPaths {
+    pub workspace_root: PathBuf,
+    pub secrets_path: PathBuf,
+    pub db_path: PathBuf,
+    pub worktree_base: PathBuf,
+    pub assistant_root: PathBuf,
+}
+
+/// Resolve the on-disk layout under `~/.codeless/`:
+///
+/// ```text
+/// ~/.codeless/
+///     secrets.toml                  shared across workspaces
+///     workspaces/<slug>/
+///         codeless.sqlite
+///         worktrees/
+///         assistant/
+/// ```
+///
+/// `<slug>` is `<last-path-segment>-<8-hex>` where the hex is a hash
+/// of the canonical workspace path. Two different folders that share
+/// a last segment (`~/code/foo` vs `~/work/foo`) get distinct slugs;
+/// the same folder accessed through a symlink resolves to one slug.
+pub fn resolve_data_paths(workspace: &Path) -> Result<DataPaths, BootError> {
+    let home = dirs_home()?;
+    let codeless_dir = home.join(".codeless");
+    let secrets_path = codeless_dir.join("secrets.toml");
+
+    let canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let slug = workspace_slug(&canonical);
+    let ws_dir = codeless_dir.join("workspaces").join(&slug);
+
+    Ok(DataPaths {
+        workspace_root: canonical,
+        secrets_path,
+        db_path: ws_dir.join("codeless.sqlite"),
+        worktree_base: ws_dir.join("worktrees"),
+        assistant_root: ws_dir.join("assistant"),
+    })
+}
+
+/// Stable per-workspace directory name. The leading segment is the
+/// last path component so the directory is human-recognisable when a
+/// user opens `~/.codeless/workspaces/`; the trailing 8-hex hash of
+/// the canonical path disambiguates two folders that share a name.
+fn workspace_slug(canonical: &Path) -> String {
+    let leaf = canonical
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "root".to_owned());
+    let leaf_sanitised: String = leaf
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    let hash = hasher.finish();
+    format!("{leaf_sanitised}-{hash:08x}")
+}
+
+fn dirs_home() -> Result<PathBuf, BootError> {
+    directories::BaseDirs::new()
+        .map(|d| d.home_dir().to_path_buf())
+        .ok_or(BootError::NoHomeDir)
 }
 
 /// Result of `boot()`: the wired runtime plus the assembled
@@ -27,40 +108,42 @@ pub struct BootResult {
     pub runner_factory: Arc<DefaultRunnerFactory>,
 }
 
-/// Boot the in-process runtime for the desktop shell.
+/// Boot the in-process runtime for the desktop shell against a single
+/// workspace. Each launch of the desktop binary owns one workspace —
+/// the SQLite file, worktrees, and assistant attachments live under
+/// `~/.codeless/workspaces/<slug>/`. Two launches on different folders
+/// never see each other's jobs or events; two launches on the same
+/// folder open the same SQLite file (single-instance handling lives
+/// in `main.rs`, not here). Secrets are shared across workspaces.
 ///
-/// The desktop shell is single-user, same-host — it uses OS-standard
-/// data directories for the SQLite file, worktrees, secrets, and
-/// assistant attachments. The `HostFs` jail is seeded from the
-/// `attached_workspaces` table so every previously-attached workspace
-/// is reachable immediately after launch; without this rehydration the
-/// in-memory allowed-roots list would only contain the process cwd and
-/// every prior attach would `PermissionDenied` until the user re-ran
-/// the attach flow.
-pub async fn boot() -> Result<BootResult, BootError> {
-    let dirs = directories::ProjectDirs::from("dev", "codeless", "Codeless")
-        .ok_or(BootError::NoDataDir)?;
-    let data_dir = dirs.data_dir().to_path_buf();
-    std::fs::create_dir_all(&data_dir).ok();
+/// The `HostFs` jail is seeded with the workspace root and rehydrated
+/// from this workspace's own `attached_workspaces` table — that table
+/// is still used to track extra roots within this single-workspace
+/// process (e.g. a sibling repo a job needs read access to).
+pub async fn boot(workspace_root: PathBuf) -> Result<BootResult, BootError> {
+    let paths = resolve_data_paths(&workspace_root)?;
 
-    let db_path = data_dir.join("codeless.sqlite");
-    let worktree_base = data_dir.join("worktrees");
-    let assistant_root = data_dir.join("assistant");
-    let secrets_path = data_dir.join("secrets.toml");
-    let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(parent) = paths.secrets_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::create_dir_all(&paths.worktree_base).ok();
+    std::fs::create_dir_all(&paths.assistant_root).ok();
 
-    std::fs::create_dir_all(&worktree_base).ok();
-    std::fs::create_dir_all(&assistant_root).ok();
+    let workspace_root = paths.workspace_root.clone();
+    let db_path = paths.db_path;
+    let worktree_base = paths.worktree_base;
+    let assistant_root = paths.assistant_root;
+    let secrets_path = paths.secrets_path;
 
     let runtime = InProcessRpc::with_file(&db_path)
         .await
         .map_err(|e| BootError::Db(e.to_string()))?;
 
-    // Rehydrate the host adapter's allowed-roots list from the
-    // `attached_workspaces` table before publishing the runtime. The
-    // process cwd seeds an initial root so a first-run install (no
-    // attached rows yet) still has somewhere to read from; every
-    // canonical row found in the DB is added on top.
+    // The workspace root seeds the allowed-roots list; any extra roots
+    // tracked in this workspace's own `attached_workspaces` table layer
+    // on top. Per-workspace state means a fresh `~/.codeless/workspaces/<slug>/`
+    // SQLite starts with an empty extras list — the only guaranteed
+    // root is the one this binary was launched against.
     let host_fs = HostFs::new(&workspace_root)
         .map_err(|e| BootError::FsRoot(format!("{}: {e}", workspace_root.display())))?;
     match attached_workspaces::list_canonical_roots(runtime.pool()).await {
@@ -165,4 +248,30 @@ fn resolve_mcp_binary() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slug_is_deterministic_for_same_path() {
+        let p = PathBuf::from("/home/user/code/foo");
+        assert_eq!(workspace_slug(&p), workspace_slug(&p));
+    }
+
+    #[test]
+    fn slug_disambiguates_same_leaf_in_different_parents() {
+        let a = workspace_slug(&PathBuf::from("/home/user/code/foo"));
+        let b = workspace_slug(&PathBuf::from("/home/user/work/foo"));
+        assert!(a.starts_with("foo-"), "expected leaf prefix, got {a}");
+        assert!(b.starts_with("foo-"), "expected leaf prefix, got {b}");
+        assert_ne!(a, b, "same leaf in different parents must not collide");
+    }
+
+    #[test]
+    fn slug_sanitises_non_alphanumeric_leaf_chars() {
+        let s = workspace_slug(&PathBuf::from("/tmp/my project (v2)"));
+        assert!(s.starts_with("my-project--v2--"), "got {s}");
+    }
 }

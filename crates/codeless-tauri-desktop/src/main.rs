@@ -16,6 +16,7 @@ mod state;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::Manager;
@@ -23,21 +24,54 @@ use tokio::sync::oneshot;
 
 use codeless_rpc::ServerInfo;
 use codeless_runtime::{spawn_job_driver_loop, spawn_stage_recorder};
-use codeless_server::{AppState as RestAppState, serve_with_shutdown};
+use codeless_server::{serve_with_shutdown, AppState as RestAppState};
 
 use state::AppState;
 
+/// Resolve the workspace this launch is scoped to. The desktop binary
+/// owns exactly one workspace per launch (see `boot::boot`); a second
+/// launch on a different folder gets its own SQLite + worktrees +
+/// event bus under a different slug. Precedence:
+///   1. `--workspace <path>` argv flag
+///   2. `CODELESS_WORKSPACE` env var
+///   3. process cwd
+///
+/// The picker UI surface that would let the desktop start without a
+/// pre-selected workspace and then route the user into one is a
+/// follow-up; until it lands, cwd is the implicit default and matches
+/// how the binary is launched today.
+fn resolve_workspace_arg() -> PathBuf {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--workspace=") {
+            return PathBuf::from(value);
+        }
+        if arg == "--workspace" {
+            if let Some(value) = args.next() {
+                return PathBuf::from(value);
+            }
+        }
+    }
+    if let Ok(value) = std::env::var("CODELESS_WORKSPACE") {
+        if !value.is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 fn main() {
+    let workspace = resolve_workspace_arg();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
                 let boot::BootResult {
                     rpc,
                     server_info,
                     runner_factory,
-                } = boot::boot().await.expect("runtime boot failed");
+                } = boot::boot(workspace).await.expect("runtime boot failed");
 
                 let _stage_recorder = spawn_stage_recorder(rpc.bus().clone(), rpc.store().clone())
                     .await
@@ -59,8 +93,8 @@ fn main() {
                 let server_info_for_rest: ServerInfo = (*server_info).clone();
                 let rpc_for_rest: Arc<dyn codeless_rpc::RpcServer> = rpc.clone();
                 tauri::async_runtime::spawn(async move {
-                    let state = RestAppState::open(rpc_for_rest)
-                        .with_server_info(server_info_for_rest);
+                    let state =
+                        RestAppState::open(rpc_for_rest).with_server_info(server_info_for_rest);
                     let mut tx = Some(bound_tx);
                     let bind_addr = SocketAddr::from(([127, 0, 0, 1], 0));
                     if let Err(e) = serve_with_shutdown(bind_addr, state, move |addr| {

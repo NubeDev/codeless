@@ -880,3 +880,155 @@ Stage 1 of the registry plus the Gmail crate together replace every
   `validate_chat_adapter_secrets` returns the structured
   `MissingSecrets` / `ValidationFailed` error, not a generic
   `Conflict`.
+
+## TODO — multi-window desktop isolation
+
+Status: open. Owner: ap@nube-io.com. Raised: 2026-05-19.
+
+### Symptom
+
+Two `codeless-tauri-desktop` windows opened by the user appear to
+share state — the attached-workspaces list, the job list, and the
+event stream all look identical between windows, even after the user
+"attaches" what should be a different workspace in one of them. The
+user expects a VSCode-style model: open many windows, each one
+scoped to its own workspace, jobs and events visible only in the
+window that owns them.
+
+### Root cause
+
+`codeless-tauri-desktop` boots a fresh `InProcessRpc` (SQLite +
+event bus + driver loop + REST sidecar) per process. Two launches of
+the binary mean two processes, both opening the same on-disk SQLite
+file (one global path under `~/.local/share/codeless/` historically,
+or — after the 2026-05-19 per-workspace-slug patch in
+[`crates/codeless-tauri-desktop/src/boot.rs`](../crates/codeless-tauri-desktop/src/boot.rs)
+— the same `~/.codeless/workspaces/<slug>/codeless.sqlite` whenever
+both launches resolve to the same workspace slug). Two processes
+opening one SQLite file means:
+
+- Two driver loops racing one `jobs` queue.
+- Two stage recorders subscribing to one bus.
+- Two liveness sweeps stat'ing the same allowed-roots set.
+- One `attached_workspaces` table that both windows read, so
+  "attach workspace X in window B" is immediately visible in
+  window A — the windows are not isolated, they are sharing
+  state through SQLite.
+
+The per-workspace-slug patch fixes the *cross-workspace* case (two
+binaries launched against `~/code/foo` and `~/code/bar` get
+different DBs and no longer collide) but does not fix the
+*same-workspace-twice* case nor the case the user actually has,
+which is "I want two windows side by side, each one on a different
+workspace from my library, no cross-talk." That case fails because:
+
+1. The user's launch flow is "double-click the binary from the
+   `dist/` folder," which produces `cwd = .../dist/` on both
+   launches → same slug → same SQLite.
+2. The UI's "attach workspace" verb writes a row into the running
+   process's `attached_workspaces` table — it does not change which
+   workspace this *process* is scoped to. The UI's `activeRepoId`
+   state (per-tab in zustand) selects which attached workspace the
+   window is currently *viewing*, but jobs / events / queue are not
+   filtered by `activeRepoId` on the server side, so the second
+   window still sees everything the first one is doing.
+
+The mismatch is between the model the per-workspace-slug patch
+assumed ("one process = one workspace, `--workspace` at launch
+decides which") and the model the UI was built for ("one process,
+one DB, many attached workspaces, `activeRepoId` selects the view").
+The UI's model is the correct one for the product; the patch solved
+the wrong problem.
+
+### Proposal — direction of work
+
+Adopt the VSCode model:
+
+1. **Single-instance lock** on the desktop binary. A second launch
+   does not spawn a second runtime; it forwards its launch
+   arguments to the first instance via
+   [`tauri-plugin-single-instance`](https://v2.tauri.app/plugin/single-instance/),
+   which then opens a new Tauri window inside the running process.
+   One DB, one driver, one event bus — many windows.
+2. **Revert the per-workspace data-dir patch.** The
+   `~/.codeless/workspaces/<slug>/` layout from the 2026-05-19
+   change is not load-bearing under the single-instance model; one
+   shared `~/.codeless/codeless.sqlite` is enough. (The
+   `--workspace` CLI arg can stay as a way to tell a freshly-
+   focused window which workspace to open by default, but it stops
+   selecting a different DB.)
+3. **Server-side scoping by `repo_id`.** The UI's per-window
+   `activeRepoId` becomes an *RPC parameter*, not just a UI
+   filter. Job-list, stage-event subscriptions, and the worktree-
+   write surface all take `repo_id` and the runtime filters
+   server-side so window A literally cannot observe window B's
+   activity. This is a non-trivial RPC change — most read methods
+   today are workspace-agnostic — and is the bulk of the work.
+   Without it, single-instance just means "windows still share the
+   same firehose," which the user already finds confusing.
+4. **`attached_workspaces` keeps its current meaning** — it's the
+   user's library of known workspaces. Attach adds a row. Detach
+   removes one. Windows pick from this list via `activeRepoId`.
+5. **`worktrees/` stays global** under `~/.codeless/worktrees/`,
+   keyed by job ID (already the case). Multiple workspaces sharing
+   one worktree root is fine because job IDs are globally unique.
+
+Long-term this also subsumes the per-workspace data-dir idea: if a
+user later wants two *fully isolated* codeless installations (one
+for work, one for personal), the single-instance lock can be
+per-data-dir, controlled by a `CODELESS_HOME` env var defaulting to
+`~/.codeless`. Out of scope for this TODO; mentioned so the design
+does not foreclose it.
+
+### Migration
+
+- `~/.codeless/workspaces/<slug>/codeless.sqlite` artifacts created
+  by the 2026-05-19 patch are orphaned by this rollback. A boot
+  shim that finds them and merges `attached_workspaces` rows into
+  the global `~/.codeless/codeless.sqlite` would be a kindness but
+  is optional — the user can re-attach by hand. Decide based on
+  whether dogfood instances have meaningful state in those dirs by
+  the time this lands.
+- The historical `~/.local/share/codeless/codeless.sqlite` (used
+  before 2026-05-19) is also orphaned. Same call: merge or
+  document-and-discard.
+
+### Exit criteria
+
+- Two desktop windows open against two different attached
+  workspaces. Submitting a job in window A does *not* surface in
+  window B's job list or event stream.
+- Attaching a workspace in window A *does* surface in window B's
+  picker (it's a library-level change, not a window-level one).
+- Closing window A does not stop window B's jobs.
+- Closing the last window still keeps the runtime alive long
+  enough for any in-flight job to checkpoint (existing graceful-
+  shutdown semantics).
+- `tauri-plugin-single-instance` callback runs end-to-end on
+  Linux, macOS, and Windows targets in CI.
+
+### Open questions for peer review
+
+1. Is single-instance + server-side `repo_id` scoping the right
+   shape, or is there a simpler win we're missing? (E.g. a thin
+   "session" abstraction that filters events client-side without
+   server-side changes — quicker to ship, leaks data through
+   side channels.)
+2. Which existing RPCs need `repo_id` plumbed through? A full
+   audit lands in the implementing job; the question now is
+   whether the surface area is small enough that this is a
+   one-job change or large enough that it needs its own scope
+   doc.
+3. Is the orphaned-data migration worth writing, or is "user
+   re-attaches by hand" the correct trade-off given how new the
+   per-workspace-slug patch is?
+4. Does the single-instance model break anything Tauri does for
+   us today? (Window state persistence, deep-link handling, dock
+   icon behaviour — anything that assumes "one process per
+   window".)
+5. What happens to the embedded REST sidecar (`codeless-server`
+   bound on an ephemeral loopback port)? Under single-instance
+   there is one REST endpoint per *process*, not per window —
+   external tools targeting `ServerInfo.rest_url` will see the
+   union of all windows' state unless `repo_id` is a query
+   parameter on every REST route, mirroring the RPC change.
