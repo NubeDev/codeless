@@ -2041,7 +2041,11 @@ async fn classify_stage_failure(
     match job.auto_bypass_policy {
         Some(policy) => {
             let policy_name = policy.policy_name().to_string();
-            let comment = crate::auto_bypass_policy::policy_comment(&policy).to_string();
+            // Stage 8 will load the prior stage row and thread a
+            // `PriorFailure` here; stage 7 keeps the call shape
+            // identical to today by passing `None`, which the
+            // widened `policy_comment` reproduces byte-for-byte.
+            let comment = crate::auto_bypass_policy::policy_comment(&policy, None);
             let thrash_guard_applies = policy.thrash_guard_applies();
             FailureAction::AutoBypass {
                 policy_name,
