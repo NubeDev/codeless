@@ -925,6 +925,16 @@ export type FailureClass =
  */
 "runner-error" | 
 /**
+ *  Host-environment failure (SQLite disk-full, IOERR, CANTOPEN,
+ *  CORRUPT, READONLY) that the auto-bypass policy must never
+ *  silently retry: a fresh subprocess on the same host with the
+ *  same disk will hit the same wall, burn tokens, and bury the
+ *  original cause under identical noise. Surfacing this as a
+ *  distinct class is the operator-visible contract that infra
+ *  failures halt the job and demand human intervention.
+ */
+"infrastructure-error" | 
+/**
  *  REVIEW model emitted `PASS` but the scope-patch validator
  *  rejected the proposed patch (parse failure, predicate
  *  missing on a tightening patch, etc.). The verdict on the
@@ -1604,6 +1614,20 @@ export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash" |
  *  audit-logged opt-in, not a sticky flag.
  */
 "review-pre-check" | 
+/**
+ *  A host-side infrastructure failure (SQLite `SQLITE_FULL` /
+ *  `SQLITE_IOERR` / `SQLITE_CORRUPT` / `SQLITE_CANTOPEN` /
+ *  `SQLITE_READONLY`) terminated the stage. Distinct from
+ *  `RunnerCrash` because retrying the same SQL on the same disk
+ *  is guaranteed not to help — the operator has to fix the host
+ *  (free disk, repair the file, restore writability) before the
+ *  job can advance. The runtime's auto-bypass policy never
+ *  silently retries an infrastructure error; the UI labels this
+ *  halt as `Infrastructure failure` so the operator sees the
+ *  host condition rather than a generic crash chip. See
+ *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q1.
+ */
+"infrastructure" | 
 /**
  *  A pre-declared scope-level pause point (operator-authored in
  *  `template.yaml`) fired. Distinct from `User` so the chat and

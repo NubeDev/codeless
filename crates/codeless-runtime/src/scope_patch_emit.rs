@@ -349,7 +349,7 @@ async fn verify_loosen_evidence(
             path.display()
         )
     })?;
-    match verify_handover(&handover, changed_paths) {
+    match verify_handover(&handover, changed_paths, worktree) {
         DiffVerifyOutcome::Pass { .. } => Ok(()),
         DiffVerifyOutcome::NothingToVerify => Err(format!(
             "evidence stage `{evidence_stage_id}` handover names no path-shaped tokens; \
@@ -1128,6 +1128,13 @@ mod tests {
         let body = body_with(&block);
 
         // First: the cited path is NOT in the diff → Rejected.
+        // The diff DOES touch something under `crates/` so the
+        // tokenizer admits the evidence-bullet token via the diff-
+        // prefix branch (otherwise the new shape filter would drop
+        // the cited path before the diff-presence check ever runs and
+        // the rejection reason would be "names no path-shaped tokens"
+        // instead of the "absent from the worktree diff" outcome the
+        // rejection-path operator message depends on).
         let outcome = emit_from_handover(
             &bus,
             tmp.path(),
@@ -1135,7 +1142,7 @@ mod tests {
             StageId::new(),
             ReviewId::new(),
             &body,
-            &["some/other/file.rs".to_string()],
+            &["crates/codeless-predicates/src/probes/other.rs".to_string()],
         )
         .await;
         match outcome {

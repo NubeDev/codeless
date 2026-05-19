@@ -399,3 +399,40 @@ it.
   `supervisor_e2e::supervisor_rehydrates_deadline_after_restart`,
   `supervisor_e2e::ad_hoc_stop_aborts_on_user_wait`, and
   `slack_chat_e2e::cross_transport_forwards_with_receipt`.
+- **Auto-bypass hardening (branch `codeless/auto-bypass-hardening`).**
+  Four shipped pieces tighten the Surface F (auto-bypass) loop:
+  (1) `FailureClass::InfrastructureError` + the sqlx primary-code
+  mapper at every `RunnerOutcome::Failed` site classify
+  `SQLITE_FULL` / `CANTOPEN` / `IOERR` / `CORRUPT` / `READONLY` as
+  infra and halt the job through `classify_stage_failure`'s new
+  short-circuit (upstream of the policy match — a `Relentless` job
+  still halts on `SQLITE_FULL`), stamping
+  `StopReason::Infrastructure` on the job row so the UI labels the
+  halt panel `infrastructure failure`. (2) `SqlitePoolOptions::
+  after_connect` applies `journal_mode=WAL`, `synchronous=NORMAL`,
+  and `busy_timeout=5000` on every connection acquire, shrinking
+  the failure surface that produced the original disk-full; the
+  `:memory:` path skips only the `journal_mode` line. (3) The
+  diff-verify path tokenizer (`crates/codeless-runtime/src/
+  diff_verify.rs`) gates `looks_path_like` survivors against a
+  per-run diff-derived prefix allow-list with a worktree-resolve
+  fallback, so `tool.call`, `rest_proxy.path`,
+  `metadata_json.delivery.slack`, and absolute leaked paths drop
+  before the diff-presence check fires — `Precheck rule #1` in
+  `DOCS/JOB-WORKFLOW.md`. (4) `auto_bypass_policy::policy_comment`
+  threads the prior stage's `failure_class` + `failure_detail`
+  (truncated to 400 Unicode scalars + U+2026) into the next
+  stage's prompt as a fenced block under the canned policy
+  paragraph; the bypass-comment-build path loads the row at
+  bypass time so the model sees what tripped before. The UI
+  surface (`StagesOverview.stageGlyph()`) renders failed-and-
+  bypassed rows as `~` in muted-foreground with an
+  `auto-bypassed by <policy>: <failure_detail>` tooltip, distinct
+  from the `!` glyph that remains for hard halts;
+  `JobTimeline.tsx` adds a `stage-auto-bypassed` chip with the
+  same detail. Load-bearing tests:
+  `classify_halts_on_infra_error_even_under_relentless`,
+  `classify_auto_bypasses_runner_error_without_infra_classification`,
+  the four `diff_verify` false-positive units, the
+  `policy_comment` string-pins, and the vitest pair pinning
+  bypassed-vs-hard-fail rendering.

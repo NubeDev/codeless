@@ -238,6 +238,7 @@ pub(super) fn failure_class_label(c: codeless_types::FailureClass) -> &'static s
     match c {
         PreCheckFailed => "pre-check-failed",
         RunnerError => "runner-error",
+        InfrastructureError => "infrastructure-error",
         ReviewPatchInvalid => "review-patch-invalid",
         ReviewFail => "review-fail",
         ReviewUnparseable => "review-unparseable",
@@ -250,6 +251,7 @@ pub(super) fn parse_failure_class(s: &str) -> Option<codeless_types::FailureClas
     match s {
         "pre-check-failed" => Some(PreCheckFailed),
         "runner-error" => Some(RunnerError),
+        "infrastructure-error" => Some(InfrastructureError),
         "review-patch-invalid" => Some(ReviewPatchInvalid),
         "review-fail" => Some(ReviewFail),
         "review-unparseable" => Some(ReviewUnparseable),
@@ -395,6 +397,7 @@ pub(super) fn stop_reason_label(s: StopReason) -> String {
         StopReason::RunnerCrash => "runner-crash".into(),
         StopReason::AutoBypassThrashing => "auto-bypass-thrashing".into(),
         StopReason::ReviewPreCheck => "review-pre-check".into(),
+        StopReason::Infrastructure => "infrastructure".into(),
         // The scoped variant carries a `PausePointId`, so the
         // SQLite column gets a colon-prefixed form that the parser
         // splits on. The unit-variant shape is unchanged for the
@@ -476,6 +479,7 @@ fn parse_stop_reason(s: &str) -> sqlx::Result<StopReason> {
         "runner-crash" => StopReason::RunnerCrash,
         "auto-bypass-thrashing" => StopReason::AutoBypassThrashing,
         "review-pre-check" => StopReason::ReviewPreCheck,
+        "infrastructure" => StopReason::Infrastructure,
         other => {
             return Err(sqlx::Error::Decode(
                 format!("unknown stop reason: {other}").into(),

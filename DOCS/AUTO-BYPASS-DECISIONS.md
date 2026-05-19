@@ -349,6 +349,78 @@ other than two opens a new Q in this file and bumps the const in
 `crates/codeless-runtime/src/thrashing_guard.rs`; they do not flip
 this decision.
 
+## Q8 — Infrastructure failures vs the auto-bypass branch
+
+**Decision: a new `FailureClass::InfrastructureError` variant short-
+circuits to halt **before** the policy match runs. Caps and infra
+share the same Halt branch; the policy is never consulted for either.**
+
+The shipped `auto-bypass-policy` job classified every `RunnerOutcome::
+Failed` from a runner subprocess as `FailureClass::RunnerError`,
+which the policy treats as "retryable, fire the canned-comment
+prompt and advance." Two real jobs (`01KRX4ZPF10J3QZ35R5GK8336X`,
+`01KRXH0RYTT6EYGF435WPQS70Q`) completed only because a
+`SQLITE_FULL` (sqlx primary code `13`) was bypassed under that
+rule. A disk-full / corrupted-DB / IOERR / unreadable-file failure
+is not a model-correctable error; retrying the same stage against
+the same broken host wastes tokens and noises up the audit trail
+without ever converging.
+
+**Error-code set.** The sqlx → `FailureClass` mapper at every
+`RunnerOutcome::Failed` site classifies these primary `code()`
+values as `InfrastructureError`:
+
+| sqlx primary code | name      | why it is infra              |
+| ----------------- | --------- | ---------------------------- |
+| `8`               | `READONLY`| host fs / mount is read-only |
+| `10`              | `IOERR`   | I/O syscall failed           |
+| `11`              | `CORRUPT` | DB file invariant broken     |
+| `13`              | `FULL`    | disk or DB page-count cap    |
+| `14`              | `CANTOPEN`| DB file unreachable          |
+
+The mapper reads the **primary** code only; extended codes (e.g.
+`IOERR_WRITE`, `CORRUPT_VTAB`) collapse to their primary parent.
+Code `26` (`NOTADB`) is deliberately **not** in the set — it
+indicates a logic bug (the runtime opened the wrong file as a DB)
+rather than a host failure, and the right response is a crash with
+a stack trace, not a halt with a "infrastructure failure" UI label.
+
+**Layering — why caps and infra share the Halt branch.**
+`classify_stage_failure` evaluates, in order:
+
+```text
+1. cancel-token tripped       -> Halt (no policy)
+2. store unavailable          -> Halt (no policy)
+3. row failed to load         -> Halt (no policy)
+4. stop_reason.is_some()      -> Halt (caps already won — Q2)
+5. failure_class == Infra     -> Halt (Q8 — this entry)
+6. job.auto_bypass_policy?    -> Bypass with the matched policy
+7. otherwise                  -> Halt (no policy)
+```
+
+Steps 4 and 5 are the same posture from two directions: the
+operator's caps (Q2) and the host's invariants (Q8) both override
+the policy unconditionally. They are the floor the policy cannot
+drop below. The Q2 rejection rule applies to Q8 verbatim — a
+future PR that adds a "let policy retry infra errors" knob is
+rejected unless it overrides Q8 in this file *and* renames the
+knob so the operator cannot mistake retry-on-failure for
+retry-on-disk-full. A bypassed infra error leaves no record of the
+host condition that triggered it, the same way a bypassed cap
+leaves no record of the limit.
+
+**Stop-reason stamp.** The Halt branch writes
+`StopReason::Infrastructure` on the job row before terminating, so
+the UI surface labels the halt panel `infrastructure failure`
+rather than falling back to the driver's generic `RunnerCrash`
+default. The stamp is warn-only (mirrors `record_thrash_halt`); a
+lost stamp degrades the label, not the halt.
+
+**Cross-link.** `Relentless` (Q7) opts out of the thrashing guard
+but does **not** opt out of Q8. An infra error halts a Relentless
+job. The two are unrelated controls: Q7 disables a heuristic loop
+guard, Q8 enforces a hardware-and-fs-invariant floor.
+
 ## What is explicitly not decided here
 
 - **Slack integration.** Out of scope for this job per

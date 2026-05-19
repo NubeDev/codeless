@@ -788,7 +788,13 @@ impl Runner for TemplateRunner {
                                         %reason,
                                         "diff-verify pre-check failed; review stage auto-failed without invoking model"
                                     );
-                                    match classify_stage_failure(self.store.as_deref(), &ctx).await
+                                    match classify_stage_failure(
+                                        self.store.as_deref(),
+                                        &ctx,
+                                        Some(FailureClass::PreCheckFailed),
+                                        Some(&failure_reason),
+                                    )
+                                    .await
                                     {
                                         FailureAction::Halt => {
                                             // Stamp the wire-level stop
@@ -1041,6 +1047,7 @@ impl Runner for TemplateRunner {
                 match outcome {
                     RunnerOutcome::Completed => {}
                     RunnerOutcome::Failed { reason } => {
+                        let failure_class = classify_runner_failure_reason(&reason);
                         publish(
                             &ctx,
                             stage_id,
@@ -1048,12 +1055,19 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
-                                failure_class: Some(FailureClass::RunnerError),
+                                failure_class: Some(failure_class),
                                 failure_detail: Some(truncate_failure_detail(&reason)),
                             },
                         )
                         .await;
-                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                        match classify_stage_failure(
+                            self.store.as_deref(),
+                            &ctx,
+                            Some(failure_class),
+                            Some(&reason),
+                        )
+                        .await
+                        {
                             FailureAction::Halt => {
                                 tracing::warn!(
                                     stage = stage.title,
@@ -1233,7 +1247,14 @@ impl Runner for TemplateRunner {
                                     %reason,
                                     "review gate failed at patch parse/validation"
                                 );
-                                match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                                match classify_stage_failure(
+                                    self.store.as_deref(),
+                                    &ctx,
+                                    Some(FailureClass::ReviewPatchInvalid),
+                                    Some(&failure_reason),
+                                )
+                                .await
+                                {
                                     FailureAction::Halt => {
                                         return RunnerOutcome::Failed {
                                             reason: failure_reason,
@@ -1315,7 +1336,14 @@ impl Runner for TemplateRunner {
                             %reason,
                             "review gate failed; aborting template run"
                         );
-                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                        match classify_stage_failure(
+                            self.store.as_deref(),
+                            &ctx,
+                            Some(FailureClass::ReviewFail),
+                            Some(&failure_reason),
+                        )
+                        .await
+                        {
                             FailureAction::Halt => {
                                 return RunnerOutcome::Failed {
                                     reason: failure_reason,
@@ -1394,7 +1422,14 @@ impl Runner for TemplateRunner {
                         )
                         .await;
                         tracing::warn!(stage = stage.title, %reason, "review gate aborted run");
-                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                        match classify_stage_failure(
+                            self.store.as_deref(),
+                            &ctx,
+                            Some(FailureClass::ReviewUnparseable),
+                            Some(&reason),
+                        )
+                        .await
+                        {
                             FailureAction::Halt => {
                                 return RunnerOutcome::Failed { reason };
                             }
@@ -1491,7 +1526,7 @@ impl Runner for TemplateRunner {
                                 Event::StageCompleted {
                                     stage_id,
                                     status: StageStatus::Failed,
-                                    failure_class: Some(FailureClass::RunnerError),
+                                    failure_class: Some(classify_runner_failure_reason(&reason)),
                                     failure_detail: Some(truncate_failure_detail(&reason)),
                                 },
                             )
@@ -1569,6 +1604,7 @@ impl Runner for TemplateRunner {
                         // advances instead of stranding the operator
                         // with an "apparently running" stage that
                         // will never close on its own.
+                        let failure_class = classify_runner_failure_reason(&reason);
                         publish(
                             &ctx,
                             stage_id,
@@ -1576,12 +1612,19 @@ impl Runner for TemplateRunner {
                             Event::StageCompleted {
                                 stage_id,
                                 status: StageStatus::Failed,
-                                failure_class: Some(FailureClass::RunnerError),
+                                failure_class: Some(failure_class),
                                 failure_detail: Some(truncate_failure_detail(&reason)),
                             },
                         )
                         .await;
-                        match classify_stage_failure(self.store.as_deref(), &ctx).await {
+                        match classify_stage_failure(
+                            self.store.as_deref(),
+                            &ctx,
+                            Some(failure_class),
+                            Some(&reason),
+                        )
+                        .await
+                        {
                             FailureAction::Halt => {
                                 tracing::warn!(
                                     stage = stage.title,
@@ -1816,7 +1859,7 @@ async fn run_diff_verify_precheck(
         }
     };
 
-    match verify_handover(&handover, &diff_paths) {
+    match verify_handover(&handover, &diff_paths, worktree) {
         DiffVerifyOutcome::Pass { verified } => {
             tracing::info!(
                 count = verified.len(),
@@ -1953,7 +1996,25 @@ enum AutoBypassDecision {
 /// the policy. A store-less runner (test harness) cannot read the
 /// policy column, so it falls through to `Halt` — auto-bypass is a
 /// production feature, not a unit-test default.
-async fn classify_stage_failure(store: Option<&SqliteStore>, ctx: &RunnerContext) -> FailureAction {
+///
+/// `failure_class` is the classification the call site computed for
+/// the just-published `StageCompleted{Failed}` envelope. When it is
+/// `FailureClass::InfrastructureError` the classifier short-circuits
+/// to `Halt` regardless of the row's `auto_bypass_policy`, mirroring
+/// the `stop_reason.is_some()` short-circuit below: retrying the
+/// same SQL on the same disk after `SQLITE_FULL` / `SQLITE_IOERR` /
+/// `SQLITE_CORRUPT` / `SQLITE_CANTOPEN` / `SQLITE_READONLY` is
+/// guaranteed not to help, so auto-bypass must never silently
+/// advance past a host-side failure. The infra branch additionally
+/// stamps `StopReason::Infrastructure` on the job row so the UI
+/// renders the halt as an infrastructure failure instead of a
+/// generic crash chip.
+async fn classify_stage_failure(
+    store: Option<&SqliteStore>,
+    ctx: &RunnerContext,
+    failure_class: Option<FailureClass>,
+    failure_detail: Option<&str>,
+) -> FailureAction {
     if ctx.cancel.is_cancelled() {
         return FailureAction::Halt;
     }
@@ -1974,10 +2035,36 @@ async fn classify_stage_failure(store: Option<&SqliteStore>, ctx: &RunnerContext
     if job.stop_reason.is_some() {
         return FailureAction::Halt;
     }
+    // Infrastructure failures (host disk / fs / file invariants) are
+    // not retryable: the same SQL on the same disk will fail the
+    // same way, so the policy must halt instead of advancing.
+    // Stamp `StopReason::Infrastructure` before returning so the UI
+    // labels the halt structurally rather than falling back to the
+    // driver's `RunnerCrash` default.
+    if failure_class == Some(FailureClass::InfrastructureError) {
+        record_infrastructure_halt(Some(store), ctx).await;
+        return FailureAction::Halt;
+    }
     match job.auto_bypass_policy {
         Some(policy) => {
             let policy_name = policy.policy_name().to_string();
-            let comment = crate::auto_bypass_policy::policy_comment(&policy).to_string();
+            // Thread the just-failed stage's `failure_class` +
+            // `failure_detail` into `policy_comment` so the next
+            // stage's prompt names the concrete reason auto-bypass
+            // fired. The two values are the same ones the call site
+            // just stamped onto the `StageCompleted{Failed}`
+            // envelope and that the StageRecorder will persist onto
+            // the stages row; passing them in-memory avoids racing
+            // the recorder's async writeback on the row that has
+            // just been emitted. `None` falls through to the bare
+            // canned paragraph — Q4's "no prior failure on record"
+            // contract — and the widened `policy_comment` reproduces
+            // the pre-stage-7 wire shape byte-for-byte.
+            let prior = failure_class.map(|class| crate::auto_bypass_policy::PriorFailure {
+                class,
+                detail: failure_detail.unwrap_or("").to_string(),
+            });
+            let comment = crate::auto_bypass_policy::policy_comment(&policy, prior.as_ref());
             let thrash_guard_applies = policy.thrash_guard_applies();
             FailureAction::AutoBypass {
                 policy_name,
@@ -1986,6 +2073,39 @@ async fn classify_stage_failure(store: Option<&SqliteStore>, ctx: &RunnerContext
             }
         }
         None => FailureAction::Halt,
+    }
+}
+
+/// Stamp `stop_reason = Infrastructure` on the job row when an
+/// infrastructure-class failure halts the stage. Mirrors
+/// `record_thrash_halt`: `RunnerOutcome::Failed` flowing back to the
+/// driver translates to `JobStatus::Failed` without setting a stop
+/// reason on its own, and the UI reads `stop_reason` to label the
+/// halt panel. Failures here are warn-only — losing the stamp
+/// degrades the halt label to a generic crash chip but does not
+/// silently let the policy retry past the infra failure (the
+/// classifier still returned `Halt`).
+async fn record_infrastructure_halt(store: Option<&SqliteStore>, ctx: &RunnerContext) {
+    let Some(store) = store else {
+        return;
+    };
+    let mut job = match store.get_job(ctx.job_id).await {
+        Ok(Some(j)) => j,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "infrastructure-halt: get_job failed; halt missing stop_reason"
+            );
+            return;
+        }
+    };
+    job.stop_reason = Some(codeless_types::StopReason::Infrastructure);
+    if let Err(err) = store.update_job(&job).await {
+        tracing::warn!(
+            ?err,
+            "infrastructure-halt: update_job failed; halt missing stop_reason"
+        );
     }
 }
 
@@ -2048,6 +2168,54 @@ async fn emit_auto_bypass(
         },
     )
     .await;
+}
+
+/// Map a stage's terminal failure-`reason` string onto a
+/// `FailureClass`. SQLite infrastructure errors (`SQLITE_FULL`,
+/// `SQLITE_IOERR`, `SQLITE_CORRUPT`, `SQLITE_CANTOPEN`,
+/// `SQLITE_READONLY` — see `DOCS/AUTO-BYPASS-DECISIONS.md` Q1) must
+/// route to `InfrastructureError` so the policy halts instead of
+/// auto-bypassing a host-side failure that retrying the same SQL on
+/// the same disk cannot survive. The signal we have at the
+/// `RunnerError` emit sites is the formatted `reason: String`; sqlx's
+/// `SqliteError` Display surfaces the extended result code as
+/// `(code: NNN) message`, and the primary code is the low byte of
+/// the extended code. Everything else stays `RunnerError`.
+pub(crate) fn classify_runner_failure_reason(reason: &str) -> FailureClass {
+    if let Some(code) = extract_sqlite_extended_code(reason) {
+        return classify_sqlite_extended_code(code);
+    }
+    FailureClass::RunnerError
+}
+
+/// Pull the integer that follows the literal `(code: ` prefix that
+/// sqlx-sqlite's `SqliteError` Display emits. Returns `None` for any
+/// reason string that does not carry the marker, which is the
+/// overwhelmingly common case — the helper is intentionally narrow so
+/// a future runner panic that happens to contain the substring in
+/// prose does not accidentally re-classify as infra.
+fn extract_sqlite_extended_code(reason: &str) -> Option<i32> {
+    const MARKER: &str = "(code: ";
+    let start = reason.find(MARKER)?;
+    let tail = &reason[start + MARKER.len()..];
+    let end = tail.find(')')?;
+    tail[..end].trim().parse::<i32>().ok()
+}
+
+/// Decide on the **primary** SQLite result code (low byte of the
+/// extended code). The infra set is locked in
+/// `DOCS/AUTO-BYPASS-DECISIONS.md` Q1; expanding it is a SCOPE-level
+/// change, not a one-line tweak here.
+fn classify_sqlite_extended_code(extended: i32) -> FailureClass {
+    match extended & 0xff {
+        // SQLITE_READONLY (8), SQLITE_IOERR (10), SQLITE_CORRUPT (11),
+        // SQLITE_FULL (13), SQLITE_CANTOPEN (14). Extended siblings
+        // (e.g. SQLITE_IOERR_FSTAT = 1546, primary 10) collapse onto
+        // the primary code by the mask above and are intentionally
+        // covered.
+        8 | 10 | 11 | 13 | 14 => FailureClass::InfrastructureError,
+        _ => FailureClass::RunnerError,
+    }
 }
 
 /// Short summary string for `failure_detail`. Trims to ~200 chars on
@@ -2336,6 +2504,140 @@ mod tests {
         JobTemplate::parse_yaml(&yaml).expect("template fixture parses")
     }
 
+    /// Pin every locked-in infra primary code from
+    /// `DOCS/AUTO-BYPASS-DECISIONS.md` Q1 to `InfrastructureError`,
+    /// every exclusion-list code to `RunnerError`, and a couple of
+    /// real-world extended-code observations to confirm the
+    /// primary-code mask is applied (and not bypassed by a future
+    /// "match the exact integer" refactor).
+    #[test]
+    fn classify_runner_failure_reason_maps_sqlite_codes() {
+        // Primary-code infra set: SQLITE_READONLY, SQLITE_IOERR,
+        // SQLITE_CORRUPT, SQLITE_FULL, SQLITE_CANTOPEN.
+        for code in [8, 10, 11, 13, 14] {
+            let reason = format!("(code: {code}) host disk failure");
+            assert_eq!(
+                classify_runner_failure_reason(&reason),
+                FailureClass::InfrastructureError,
+                "primary code {code} must classify as InfrastructureError",
+            );
+        }
+
+        // Extended siblings collapse onto the same primary code:
+        //   1546 = SQLITE_IOERR_FSTAT     -> primary 10
+        //   2826 = SQLITE_IOERR_READ      -> primary 10
+        //   1034 = SQLITE_READONLY_RECOVERY -> primary 8
+        //    779 = SQLITE_CORRUPT_VTAB    -> primary 11
+        //   3850 = SQLITE_CANTOPEN_DIRTYWAL -> primary 14
+        for code in [1546, 2826, 1034, 779, 3850] {
+            let reason = format!("(code: {code}) extended-code surface");
+            assert_eq!(
+                classify_runner_failure_reason(&reason),
+                FailureClass::InfrastructureError,
+                "extended code {code} must classify by its primary byte",
+            );
+        }
+
+        // Explicit exclusion list — runner-side bugs that auto-bypass
+        // is correct to retry against, plus SQLITE_NOTADB which the
+        // SCOPE decision keeps in RunnerError on purpose.
+        for code in [1, 5, 6, 19, 20, 21, 25, 26] {
+            let reason = format!("(code: {code}) runner-side fault");
+            assert_eq!(
+                classify_runner_failure_reason(&reason),
+                FailureClass::RunnerError,
+                "primary code {code} must stay RunnerError",
+            );
+        }
+
+        // Non-sqlx reasons keep the default classification so the
+        // helper can be applied unconditionally at every emit site.
+        assert_eq!(
+            classify_runner_failure_reason("verify step 2 failed (exit 1)"),
+            FailureClass::RunnerError,
+        );
+        assert_eq!(
+            classify_runner_failure_reason("auto-bypass thrashing: trio docs failed"),
+            FailureClass::RunnerError,
+        );
+
+        // A token shaped like the marker but not parseable as an
+        // integer must not flip the classification. Guards against a
+        // future log line that happens to contain the literal
+        // "(code: " prose.
+        assert_eq!(
+            classify_runner_failure_reason("(code: not-a-number) sneaky"),
+            FailureClass::RunnerError,
+        );
+    }
+
+    /// Confirm the classifier also works against a real sqlx
+    /// `Error::Database` formatted through Display — this is the
+    /// surface the runner adapters actually emit when a store call
+    /// fails inside `adapter.run` and the reason is `format!("{e}")`.
+    /// Uses a tiny inline `DatabaseError` impl so the test does not
+    /// have to provoke a live SQLITE_FULL on the filesystem.
+    #[test]
+    fn classify_runner_failure_reason_matches_sqlx_display() {
+        use sqlx::error::{DatabaseError, ErrorKind};
+        use std::borrow::Cow;
+        use std::error::Error as StdError;
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct FakeSqliteError {
+            code: i32,
+        }
+
+        impl fmt::Display for FakeSqliteError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                // Mirror sqlx-sqlite's Display verbatim: this is the
+                // string the runner adapters end up wrapping in their
+                // RunnerOutcome::Failed reason.
+                write!(f, "(code: {}) database or disk is full", self.code)
+            }
+        }
+
+        impl StdError for FakeSqliteError {}
+
+        impl DatabaseError for FakeSqliteError {
+            fn message(&self) -> &str {
+                "database or disk is full"
+            }
+            fn code(&self) -> Option<Cow<'_, str>> {
+                Some(format!("{}", self.code).into())
+            }
+            fn as_error(&self) -> &(dyn StdError + Send + Sync + 'static) {
+                self
+            }
+            fn as_error_mut(&mut self) -> &mut (dyn StdError + Send + Sync + 'static) {
+                self
+            }
+            fn into_error(self: Box<Self>) -> Box<dyn StdError + Send + Sync + 'static> {
+                self
+            }
+            fn kind(&self) -> ErrorKind {
+                ErrorKind::Other
+            }
+        }
+
+        let err = sqlx::Error::Database(Box::new(FakeSqliteError { code: 13 }));
+        let reason = format!("{err}");
+        assert_eq!(
+            classify_runner_failure_reason(&reason),
+            FailureClass::InfrastructureError,
+            "sqlx Display of SQLITE_FULL must round-trip through the reason mapper",
+        );
+
+        let err = sqlx::Error::Database(Box::new(FakeSqliteError { code: 19 }));
+        let reason = format!("{err}");
+        assert_eq!(
+            classify_runner_failure_reason(&reason),
+            FailureClass::RunnerError,
+            "SQLITE_CONSTRAINT must stay RunnerError",
+        );
+    }
+
     #[test]
     fn stage_prompt_includes_goal_and_position() {
         let r = TemplateRunner::new(template_with_stages(&["one", "two"]));
@@ -2464,7 +2766,14 @@ mod tests {
     async fn classify_halts_when_no_policy_set() {
         let (store, job_id) = seed_store_with_policy(None, None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
+        {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
         }
@@ -2475,7 +2784,14 @@ mod tests {
         let (store, job_id) =
             seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Quick), None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
+        {
             FailureAction::AutoBypass {
                 policy_name,
                 comment,
@@ -2503,7 +2819,14 @@ mod tests {
         let (store, job_id) =
             seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Relentless), None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
+        {
             FailureAction::AutoBypass {
                 policy_name,
                 thrash_guard_applies,
@@ -2526,7 +2849,14 @@ mod tests {
         )
         .await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
+        {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
         }
@@ -2541,9 +2871,137 @@ mod tests {
         let mut ctx = test_runner_context(job_id).await;
         ctx.cancel = CancellationToken::new();
         ctx.cancel.cancel();
-        match classify_stage_failure(Some(store.as_ref()), &ctx).await {
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
+        {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
+        }
+    }
+
+    /// Stage 4 contract (a): an infrastructure-class failure halts
+    /// the stage even under `Relentless`, the policy preset that
+    /// otherwise opts out of every halt guard. The job row's
+    /// `stop_reason` flips to `Infrastructure` so the UI can label
+    /// the halt as a host failure rather than a generic crash.
+    #[tokio::test]
+    async fn classify_halts_on_infra_error_even_under_relentless() {
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Relentless), None).await;
+        let ctx = test_runner_context(job_id).await;
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::InfrastructureError),
+            None,
+        )
+        .await
+        {
+            FailureAction::Halt => {}
+            other => panic!("expected Halt for infra error, got {other:?}"),
+        }
+        let job = store.get_job(job_id).await.unwrap().expect("job row");
+        assert_eq!(
+            job.stop_reason,
+            Some(codeless_types::StopReason::Infrastructure),
+            "infra halt must stamp stop_reason for the UI label"
+        );
+    }
+
+    /// Stage 4 contract (b): a non-infra `RunnerError` continues to
+    /// auto-bypass under a policy, and the job row's `stop_reason`
+    /// stays `None` so the next stage can advance. The new infra
+    /// short-circuit must not regress the bypass path.
+    #[tokio::test]
+    async fn classify_auto_bypasses_runner_error_without_infra_classification() {
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Quick), None).await;
+        let ctx = test_runner_context(job_id).await;
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
+        {
+            FailureAction::AutoBypass { policy_name, .. } => {
+                assert_eq!(policy_name, "Quick");
+            }
+            other => panic!("expected AutoBypass for runner error, got {other:?}"),
+        }
+        let job = store.get_job(job_id).await.unwrap().expect("job row");
+        assert!(
+            job.stop_reason.is_none(),
+            "non-infra runner error must not stamp stop_reason"
+        );
+    }
+
+    /// Stage 8 contract: when classify_stage_failure decides
+    /// `AutoBypass`, the returned `comment` (which the runner threads
+    /// into the next stage's prompt as `next_stage_prefix`) must
+    /// carry the just-failed stage's `failure_class` + `failure_detail`
+    /// in the Q4-pinned fenced block. The classifier is the single
+    /// site where the failed-stage classification flows into
+    /// `policy_comment`, so pinning the threading here is the
+    /// integration-shaped guard: the same call shape every runtime
+    /// emit site uses, exercised against a real store + a synthetic
+    /// detail, asserting the wire form of the threaded block.
+    #[tokio::test]
+    async fn classify_threads_failure_class_and_detail_into_bypass_comment() {
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Quick), None).await;
+        let ctx = test_runner_context(job_id).await;
+        let detail = "diff touches src/foo.rs but Done lists src/bar.rs";
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::PreCheckFailed),
+            Some(detail),
+        )
+        .await
+        {
+            FailureAction::AutoBypass {
+                policy_name,
+                comment,
+                ..
+            } => {
+                assert_eq!(policy_name, "Quick");
+                assert!(
+                    comment.starts_with(crate::auto_bypass_policy::QUICK),
+                    "bypass comment must lead with the canned policy paragraph: {comment}"
+                );
+                let want_block = format!(
+                    "\n\n```\nPrevious-stage failure: pre-check-failed\nDetail: {detail}\n```"
+                );
+                assert!(
+                    comment.ends_with(&want_block),
+                    "bypass comment must end with the Q4 fenced block, got: {comment}"
+                );
+            }
+            other => panic!("expected AutoBypass with threaded block, got {other:?}"),
+        }
+    }
+
+    /// Stage 8 contract (b): `None` failure_class — the no-prior-
+    /// failure path — falls through to the bare canned paragraph
+    /// byte-for-byte, so the existing string-pin contracts elsewhere
+    /// in the runtime still hold after the signature widened.
+    #[tokio::test]
+    async fn classify_emits_bare_policy_text_when_failure_class_none() {
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Cheap), None).await;
+        let ctx = test_runner_context(job_id).await;
+        match classify_stage_failure(Some(store.as_ref()), &ctx, None, None).await {
+            FailureAction::AutoBypass { comment, .. } => {
+                assert_eq!(comment, crate::auto_bypass_policy::CHEAP);
+            }
+            other => panic!("expected AutoBypass for runner error, got {other:?}"),
         }
     }
 
@@ -2883,7 +3341,14 @@ stages:
     #[tokio::test]
     async fn precheck_fails_when_handover_claims_a_path_no_commit_touched() {
         use codeless_types::{Handover, JobId};
-        let tmp = seed_worktree_with(&["a/b.rs"]);
+        // The diff has to touch *something* under `unrelated/` so the
+        // diff-prefix derivation admits `unrelated/notes.md` as a
+        // path-shaped claim; without that the new tokenizer would
+        // drop the token before it ever reaches the diff-presence
+        // check. The point of the test is that a path-shaped claim
+        // missing from the diff still gets flagged, not that the
+        // tokenizer is permissive about unknown prefixes.
+        let tmp = seed_worktree_with(&["a/b.rs", "unrelated/other.md"]);
         let job_id = JobId::new();
         let prev = StageId::new();
         let h = Handover {
