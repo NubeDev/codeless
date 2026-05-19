@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::str::FromStr;
 
 use codeless_rpc::{EventStream, RpcError};
-use codeless_types::{Event, EventCursor, EventEnvelope, JobId, StageId, TaskId, UnixMillis};
+use codeless_types::{
+    Event, EventCursor, EventEnvelope, JobId, RepoId, StageId, TaskId, UnixMillis,
+};
 use futures_core::Stream;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -116,8 +119,22 @@ impl EventBus {
     ) -> sqlx::Result<EventStream> {
         let rx = self.sender.subscribe();
 
+        // Workspace-scoped filters need to know which repo each
+        // `JobId` belongs to so the fan-out can route an envelope
+        // whose payload does not carry `repo_id` (the green half of
+        // `DOCS/EVENT-PUBLISH-AUDIT.md`). Snapshot the mapping once
+        // here and keep it fresh by observing `JobQueued` events in
+        // the live tail — that variant carries `repo_id` on the wire
+        // and fires before any other event for a newly-submitted job.
+        let job_repos = match filter {
+            SubscribeFilter::Repo(_) | SubscribeFilter::Library => {
+                load_job_repo_map(&self.pool).await?
+            }
+            SubscribeFilter::All | SubscribeFilter::Job(_) => HashMap::new(),
+        };
+
         let replay = match since {
-            Some(c) => self.fetch_replay(filter, c).await?,
+            Some(c) => self.fetch_replay(filter, c, &job_repos).await?,
             None => Vec::new(),
         };
         let max_seen = replay
@@ -127,8 +144,16 @@ impl EventBus {
             .unwrap_or(0);
 
         let replay_stream = tokio_stream::iter(replay.into_iter().map(Ok::<_, RpcError>));
+        let mut job_repos = job_repos;
         let live = BroadcastStream::new(rx).filter_map(move |item| match item {
-            Ok(env) if env.cursor.0 > max_seen && filter.matches(&env) => Some(Ok(env)),
+            Ok(env) if env.cursor.0 > max_seen => {
+                refresh_job_repo_map(&mut job_repos, &env);
+                if filter.matches(&env, &job_repos) {
+                    Some(Ok(env))
+                } else {
+                    None
+                }
+            }
             Ok(_) => None,
             Err(e) => Some(Err(RpcError::Internal(format!("event lag: {e}")))),
         });
@@ -171,6 +196,7 @@ impl EventBus {
         &self,
         filter: SubscribeFilter,
         since: EventCursor,
+        job_repos: &HashMap<JobId, RepoId>,
     ) -> sqlx::Result<Vec<EventEnvelope>> {
         let rows = sqlx::query(
             "SELECT cursor, job_id, stage_id, task_id, type, payload, created_at \
@@ -182,7 +208,7 @@ impl EventBus {
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             let env = envelope_from_row(row)?;
-            if filter.matches(&env) {
+            if filter.matches(&env, job_repos) {
                 out.push(env);
             }
         }
@@ -190,21 +216,100 @@ impl EventBus {
     }
 }
 
+/// Snapshot every `(job_id, repo_id)` pair currently in the `jobs`
+/// table. Cheap on launch (single indexed SELECT) and only paid by the
+/// workspace-scoped filters; the per-job and global filters skip this
+/// path entirely.
+async fn load_job_repo_map(pool: &SqlitePool) -> sqlx::Result<HashMap<JobId, RepoId>> {
+    let rows = sqlx::query("SELECT id, repo_id FROM jobs")
+        .fetch_all(pool)
+        .await?;
+    let mut out = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let job_id: String = row.try_get("id")?;
+        let repo_id: String = row.try_get("repo_id")?;
+        let job_id = JobId::from_str(&job_id)
+            .map_err(|e| sqlx::Error::Decode(format!("job_id: {e}").into()))?;
+        let repo_id = RepoId::from_str(&repo_id)
+            .map_err(|e| sqlx::Error::Decode(format!("repo_id: {e}").into()))?;
+        out.insert(job_id, repo_id);
+    }
+    Ok(out)
+}
+
+/// Keep the live-tail's `job -> repo` cache fresh. `JobQueued` is the
+/// one variant that carries `repo_id` on the wire and is always
+/// published before any other event for a freshly-submitted job, so
+/// folding it into the map here means a `Repo` subscription opened
+/// before the job existed still routes the job's downstream events
+/// without another DB hit.
+fn refresh_job_repo_map(map: &mut HashMap<JobId, RepoId>, env: &EventEnvelope) {
+    if let Event::JobQueued { job_id, repo_id } = &env.event {
+        map.insert(*job_id, *repo_id);
+    }
+}
+
 /// Server-side counterpart to `codeless_rpc::EventFilter`. The wire
 /// filter lives in `codeless-rpc` (iOS/Android-safe); this is the
-/// runtime's local match closure.
+/// runtime's local match closure. Repo / Library matching consults a
+/// `job -> repo` map (snapshot of the `jobs` table at subscribe time,
+/// updated live from `JobQueued`) so the closure stays sync —
+/// per-event SQL would serialise the live tail.
 #[derive(Debug, Clone, Copy)]
 pub enum SubscribeFilter {
     All,
     Job(JobId),
+    Repo(RepoId),
+    Library,
 }
 
 impl SubscribeFilter {
-    pub(crate) fn matches(&self, env: &EventEnvelope) -> bool {
+    pub(crate) fn matches(&self, env: &EventEnvelope, job_repos: &HashMap<JobId, RepoId>) -> bool {
         match self {
             Self::All => true,
             Self::Job(target) => env.job_id == Some(*target),
+            Self::Repo(target) => {
+                if let Some(repo) = payload_repo_id(&env.event) {
+                    return repo == *target;
+                }
+                env.job_id.and_then(|jid| job_repos.get(&jid)).copied() == Some(*target)
+            }
+            Self::Library => {
+                // Library = "no owning repo". Library-payload variants
+                // (RepoAdded etc., JobQueued) advertise their repo on
+                // the wire and are therefore *not* library; everything
+                // else with an envelope `job_id` that does not
+                // resolve through `jobs` (assistant + unbound-chat
+                // synthetic ids) is. An envelope with no ids at all
+                // and no payload repo is also library — see the
+                // workspace-liveness publishes that pre-date the
+                // workspace-scoping wire change.
+                if payload_repo_id(&env.event).is_some() {
+                    return false;
+                }
+                match env.job_id {
+                    None => true,
+                    Some(jid) => !job_repos.contains_key(&jid),
+                }
+            }
         }
+    }
+}
+
+/// Pull `repo_id` out of the `Event` payload when the variant carries
+/// one. Centralising the match here means the fan-out filter and any
+/// later "tag this envelope with its repo" path share one inventory
+/// — adding a new repo-tagged variant only needs to be reflected
+/// here, not in two places.
+fn payload_repo_id(event: &Event) -> Option<RepoId> {
+    match event {
+        Event::RepoAdded { repo_id }
+        | Event::RepoRemoved { repo_id }
+        | Event::RepoUpdated { repo_id }
+        | Event::WorkspaceUnhealthy { repo_id, .. }
+        | Event::WorkspaceRecovered { repo_id, .. }
+        | Event::JobQueued { repo_id, .. } => Some(*repo_id),
+        _ => None,
     }
 }
 

@@ -406,7 +406,9 @@ export interface GcWorktreesResult {
 
 export type EventFilter =
   | { scope: "all" }
-  | { scope: "job"; job_id: JobId };
+  | { scope: "job"; job_id: JobId }
+  | { scope: "repo"; repo_id: RepoId }
+  | { scope: "library" };
 
 export type Since = EventCursor | null;
 

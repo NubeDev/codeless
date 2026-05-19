@@ -416,6 +416,8 @@ impl RpcServer for InProcessRpc {
         let local = match filter {
             EventFilter::All => SubscribeFilter::All,
             EventFilter::Job { job_id } => SubscribeFilter::Job(job_id),
+            EventFilter::Repo { repo_id } => SubscribeFilter::Repo(repo_id),
+            EventFilter::Library => SubscribeFilter::Library,
         };
         self.bus.subscribe_since(local, since).await.map_err(db_err)
     }

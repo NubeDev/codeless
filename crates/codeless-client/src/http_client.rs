@@ -597,6 +597,11 @@ fn build_subscribe_url(cfg: &HttpRpcClientConfig, filter: &EventFilter, since: S
             url.push_str("scope=job&job_id=");
             url.push_str(&job_id.to_string());
         }
+        EventFilter::Repo { repo_id } => {
+            url.push_str("scope=repo&repo_id=");
+            url.push_str(&repo_id.to_string());
+        }
+        EventFilter::Library => url.push_str("scope=library"),
     }
     if let Some(cursor) = since {
         url.push_str("&since=");

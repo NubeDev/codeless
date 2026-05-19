@@ -1331,12 +1331,43 @@ export type EventEnvelope = {
  *  purpose — per-stage / per-task filtering happens client-side from
  *  the same event stream so the server doesn't need to multiplex N
  *  fine-grained channels.
+ * 
+ *  The workspace-scoped surfaces (file explorer, jobs list, live event
+ *  stream) drive a `Repo { repo_id }` subscription so two browser tabs
+ *  pointed at two attached workspaces never cross-talk. `Library`
+ *  covers the cross-workspace rails — assistant threads, the
+ *  workspaces sidebar — that read events with no owning repo (see
+ *  `DOCS/EVENT-PUBLISH-AUDIT.md` for the per-call-site classification).
  */
 export type EventFilter = 
-// Every event the runtime emits — used by the global event log view.
+/**
+ *  Every event the runtime emits. Retained only for the global
+ *  event log view (and the operator-side `codeless tail`); new
+ *  clients drive `Repo { repo_id }` or `Library` so the wire stays
+ *  workspace-scoped end-to-end. Treat as deprecated for any
+ *  per-tab subscription.
+ */
 { scope: "all" } | 
 // Only events tagged with this job (and its stages and tasks).
-{ scope: "job"; "job-id": JobId };
+{ scope: "job"; "job-id": JobId } | 
+/**
+ *  Every event whose envelope (or payload) resolves to this repo.
+ *  At fan-out the runtime joins `events.job_id` against
+ *  `jobs.repo_id`, and additionally matches library-payload
+ *  events whose `Event` body carries an explicit `repo_id`
+ *  (`RepoAdded`, `RepoRemoved`, `RepoUpdated`,
+ *  `WorkspaceUnhealthy`, `WorkspaceRecovered`, `JobQueued`).
+ */
+{ scope: "repo"; "repo-id": RepoId } | 
+/**
+ *  Events with no owning repo — library-scope payloads plus the
+ *  assistant / unbound-chat surfaces whose envelope `job_id` is a
+ *  synthetic id that does not resolve through `jobs`. The
+ *  cross-workspace rails (assistant rail, workspaces sidebar)
+ *  subscribe here so they see touches no matter which workspace
+ *  is in the foreground.
+ */
+{ scope: "library" };
 
 /**
  *  Why a stage row ended `Failed`. Persisted on `stages.failure_class`
@@ -2687,6 +2718,20 @@ export type StopReason = "user" | "cost-cap" | "wall-clock" | "runner-crash" |
  *  audit-logged opt-in, not a sticky flag.
  */
 "review-pre-check" | 
+/**
+ *  A host-side infrastructure failure (SQLite `SQLITE_FULL` /
+ *  `SQLITE_IOERR` / `SQLITE_CORRUPT` / `SQLITE_CANTOPEN` /
+ *  `SQLITE_READONLY`) terminated the stage. Distinct from
+ *  `RunnerCrash` because retrying the same SQL on the same disk
+ *  is guaranteed not to help — the operator has to fix the host
+ *  (free disk, repair the file, restore writability) before the
+ *  job can advance. The runtime's auto-bypass policy never
+ *  silently retries an infrastructure error; the UI labels this
+ *  halt as `Infrastructure failure` so the operator sees the
+ *  host condition rather than a generic crash chip. See
+ *  `DOCS/AUTO-BYPASS-DECISIONS.md` Q1.
+ */
+"infrastructure" | 
 /**
  *  A pre-declared scope-level pause point (operator-authored in
  *  `template.yaml`) fired. Distinct from `User` so the chat and
