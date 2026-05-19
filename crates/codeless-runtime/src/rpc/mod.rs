@@ -37,6 +37,7 @@ use crate::migrations::MIGRATOR;
 use crate::store::SqliteStore;
 use crate::time::now_ms;
 
+pub(crate) mod adapters;
 pub(crate) mod assistant;
 pub(crate) mod assistant_planner;
 pub(crate) mod attachment;
@@ -48,6 +49,7 @@ pub(crate) mod job_files;
 pub(crate) mod jobs;
 pub(crate) mod personas;
 pub(crate) mod repos;
+pub(crate) mod restart;
 pub(crate) mod reviews;
 pub(crate) mod scope_patches;
 pub(crate) mod workspaces;
@@ -94,6 +96,34 @@ pub struct InProcessRpc {
     /// `upload_assistant_attachment` returns `Internal` so the UI
     /// surfaces a typed error rather than a panic.
     pub(crate) assistant_data_dir: Option<std::path::PathBuf>,
+    /// Process-lifetime state for the adapter-registry RPCs: which
+    /// `(kind, instance_id)` pairs have passed
+    /// `validate_chat_adapter_secrets`, and the per-bucket sliding
+    /// window that enforces the 5/s limit. Defaults to an empty
+    /// validated set on construction so the first
+    /// `set_chat_adapter_enabled(true)` after boot refuses with
+    /// `MissingSecrets` until a validate call lands — the
+    /// load-bearing UX contract documented in
+    /// `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry".
+    pub(crate) validation: Arc<adapters::ValidationState>,
+    /// Pluggable upstream probe that powers
+    /// `validate_chat_adapter_secrets`. `None` matches a runtime
+    /// built without `with_validation_probe` and surfaces as
+    /// `RpcError::Internal` on a validate call — never a panic.
+    /// The CLI installs an HTTP-backed probe at boot; tests install
+    /// `StaticValidationProbe`.
+    pub(crate) validation_probe: Option<Arc<dyn adapters::ValidationProbe>>,
+    /// Execution context for `restart_server` — picked by whoever
+    /// constructs the runtime (CLI under `--respawn-on-exit`, Tauri
+    /// shell brokering the sidecar, bare `codeless serve`). Defaults
+    /// to `Bare` so a unit-test runtime cannot accidentally arm a
+    /// shutdown by calling `restart_server`. See
+    /// `crate::rpc::restart` for the contract.
+    pub(crate) restart_context: restart::RestartContext,
+    /// Cross-task handle the CLI selects on alongside SIGINT to spot a
+    /// successful `restart_server` call. Cloning is cheap (Arc inside);
+    /// the CLI reads `desired_exit_code()` after the listener drains.
+    pub(crate) restart_trigger: restart::RestartTrigger,
 }
 
 /// One entry in the chat-cancel registry. `job_id` is the
@@ -175,6 +205,10 @@ impl InProcessRpc {
             agent_chat_cwd: None,
             chat_cancels: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             assistant_data_dir: None,
+            validation: Arc::new(adapters::ValidationState::new()),
+            validation_probe: None,
+            restart_context: restart::RestartContext::Bare,
+            restart_trigger: restart::RestartTrigger::new(),
         })
     }
 
@@ -215,6 +249,37 @@ impl InProcessRpc {
     pub fn with_assistant_data_dir(mut self, root: std::path::PathBuf) -> Self {
         self.assistant_data_dir = Some(root);
         self
+    }
+
+    /// Install the upstream probe powering `validate_chat_adapter_secrets`.
+    /// Without this, validate calls return `Internal` so the failure
+    /// is a typed wiring error rather than a panic; with it, calls go
+    /// through the 5s timeout and the per-bucket rate limit defined
+    /// in `rpc::adapters`. Tests pass `StaticValidationProbe` so the
+    /// round-trip exercise does not touch the network.
+    pub fn with_validation_probe(mut self, probe: Arc<dyn adapters::ValidationProbe>) -> Self {
+        self.validation_probe = Some(probe);
+        self
+    }
+
+    /// Declare the execution context for `restart_server`. The CLI
+    /// passes `SupervisedCli` when it detects a re-execing parent
+    /// (systemd `INVOCATION_ID`, the `--respawn-on-exit` watcher, or
+    /// `init-session.sh`'s `CODELESS_SUPERVISED=1`), `TauriDesktop`
+    /// when the desktop shell brokers the sidecar, and `Bare` for
+    /// the in-terminal default — see
+    /// `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry" for the
+    /// three-context contract this verb is shaped against.
+    pub fn with_restart_context(mut self, ctx: restart::RestartContext) -> Self {
+        self.restart_context = ctx;
+        self
+    }
+
+    /// Cross-task handle the host (CLI / desktop sidecar) selects on
+    /// alongside SIGINT. Cloning is cheap — the inner `Notify` +
+    /// state mutex are `Arc`-backed.
+    pub fn restart_trigger(&self) -> restart::RestartTrigger {
+        self.restart_trigger.clone()
     }
 
     pub fn store(&self) -> &Arc<SqliteStore> {
@@ -457,6 +522,39 @@ impl RpcServer for InProcessRpc {
         args: codeless_rpc::ValidateWorkspacePathArgs,
     ) -> RpcResult<codeless_rpc::ValidateWorkspacePathResult> {
         workspaces::validate_workspace_path(self, args).await
+    }
+
+    async fn list_chat_adapters(&self) -> RpcResult<codeless_rpc::ListChatAdaptersResult> {
+        adapters::list_chat_adapters(self).await
+    }
+
+    async fn set_chat_adapter_enabled(
+        &self,
+        args: codeless_rpc::SetChatAdapterEnabledArgs,
+    ) -> RpcResult<()> {
+        adapters::set_chat_adapter_enabled(self, args).await
+    }
+
+    async fn validate_chat_adapter_secrets(
+        &self,
+        args: codeless_rpc::ValidateChatAdapterSecretsArgs,
+    ) -> RpcResult<codeless_rpc::ValidateChatAdapterSecretsResult> {
+        adapters::validate_chat_adapter_secrets(self, args).await
+    }
+
+    async fn list_runners(&self) -> RpcResult<codeless_rpc::ListRunnersResult> {
+        adapters::list_runners(self).await
+    }
+
+    async fn set_runner_enabled(&self, args: codeless_rpc::SetRunnerEnabledArgs) -> RpcResult<()> {
+        adapters::set_runner_enabled(self, args).await
+    }
+
+    async fn restart_server(
+        &self,
+        args: codeless_rpc::RestartServerArgs,
+    ) -> RpcResult<codeless_rpc::RestartServerResult> {
+        restart::restart_server(self, args).await
     }
 
     async fn list_assistant_threads(

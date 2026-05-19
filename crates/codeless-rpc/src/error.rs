@@ -1,4 +1,4 @@
-use codeless_types::WorkspaceError;
+use codeless_types::{AdapterError, WorkspaceError};
 use thiserror::Error;
 
 /// Errors returned by every `RpcServer` method. Variants are wire-stable:
@@ -28,6 +28,15 @@ pub enum RpcError {
     /// `WORKSPACE-ATTACH.md` §"Error model".
     #[error("workspace: {0:?}")]
     Workspace(WorkspaceError),
+
+    /// Structured adapter-registry failure (`MissingSecrets`,
+    /// `ValidationFailed`, `RestartUnsupervised`,
+    /// `RestartHasRunningJobs`, `Conflict`, `NotConfigured`). The UI
+    /// branches on the variant to drive the Settings → Adapters page
+    /// and the restart confirm modal. See `DOCS/WORKSPACE-ATTACH.md`
+    /// §"TODO — adapter registry".
+    #[error("adapter: {0:?}")]
+    Adapter(AdapterError),
 
     /// Anything the runtime can't express more specifically. Transports
     /// surface this as a generic 500. Avoid in new code — add a variant.

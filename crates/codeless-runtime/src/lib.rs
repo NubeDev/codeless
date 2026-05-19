@@ -5,6 +5,7 @@
 //! mobile shell; mobile reaches the runtime over the network via
 //! `codeless-client`.
 
+pub mod adapter_registry;
 pub mod anthropic_runner;
 pub mod attached_workspaces;
 pub mod auto_bypass_failure_card;
@@ -54,7 +55,7 @@ pub use claude_runner::{parse_permission_mode, ClaudeRunnerAdapter};
 pub use codex_runner::CodexRunnerAdapter;
 pub use copilot_runner::CopilotRunnerAdapter;
 pub use default_runner_factory::{
-    compose_system_prompt, demo_mock_script, DefaultRunnerFactory,
+    compose_system_prompt, demo_mock_script, DefaultRunnerFactory, RunnerConfig,
 };
 pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};
@@ -70,6 +71,10 @@ pub use notifier::{
 };
 pub use plan_subscribe::spawn_plan_engine_subscriber;
 pub use queue_config::QueueConfig;
+pub use rpc::adapters::{
+    required_secret_keys, StaticValidationProbe, ValidationProbe, VALIDATE_TIMEOUT,
+};
+pub use rpc::restart::{RestartContext, RestartTrigger, EX_TEMPFAIL, RESUMABLE_WINDOW};
 pub use rpc::InProcessRpc;
 pub use rpc::{ChatCancelEntry, ChatCancels};
 pub use runner::{Runner, RunnerContext, RunnerOutcome};

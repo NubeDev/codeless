@@ -477,9 +477,12 @@ fn is_retryable(err: &RpcError) -> bool {
         // Running, already terminal). Retrying re-races the same
         // wall, so this is non-retryable by design.
         RpcError::Conflict(_) => false,
-        // NotFound / InvalidArgument / Workspace are config or
-        // shape errors. Retry is futile.
-        RpcError::NotFound(_) | RpcError::InvalidArgument(_) | RpcError::Workspace(_) => false,
+        // NotFound / InvalidArgument / Workspace / Adapter are config
+        // or shape errors. Retry is futile.
+        RpcError::NotFound(_)
+        | RpcError::InvalidArgument(_)
+        | RpcError::Workspace(_)
+        | RpcError::Adapter(_) => false,
     }
 }
 
@@ -494,6 +497,7 @@ fn error_kind_label(err: &RpcError) -> &'static str {
         RpcError::NotFound(_) => "not-found",
         RpcError::InvalidArgument(_) => "invalid-argument",
         RpcError::Workspace(_) => "workspace",
+        RpcError::Adapter(_) => "adapter",
     }
 }
 

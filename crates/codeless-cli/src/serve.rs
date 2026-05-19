@@ -8,23 +8,27 @@
 //! or XDG default) backs `core_bearer_token`. Single-tenant per
 //! SCOPE.md R5: one token for browser + future mobile clients.
 
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
-use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
 use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerFeatureFlags, ServerInfo};
+#[cfg(test)]
+use codeless_runtime::compose_system_prompt;
 use codeless_runtime::{
     spawn_job_driver_loop, spawn_notifier, spawn_plan_engine_subscriber, spawn_stage_recorder,
-    DefaultRunnerFactory, InProcessRpc, WebhookConfig, WebhookNotifier,
+    DefaultRunnerFactory, InProcessRpc, RunnerConfig, WebhookConfig, WebhookNotifier,
 };
 use codeless_server::{
-    load_bearer_token, serve_with_shutdown, AppState, AuthMode, TokenLoadError, TOKEN_SECRET_KEY,
+    load_bearer_token, serve_with_extra_shutdown, AppState, AuthMode, TokenLoadError,
+    TOKEN_SECRET_KEY,
 };
 use codeless_tools::plan::{LogJobSpawner, PlanEngine};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::Arc;
 
+use crate::chat_adapter_registry::ChatAdapterRegistry;
 use crate::rpc_open;
 
 #[derive(Debug, Args)]
@@ -149,6 +153,20 @@ pub struct ServeArgs {
     /// The file is overwritten on each boot and deleted on shutdown.
     #[arg(long, env = "CODELESS_PORT_FILE")]
     pub port_file: Option<PathBuf>,
+
+    /// Run the inner `codeless serve` under a self-watcher parent
+    /// that re-execs the child whenever it exits with sentinel code
+    /// 75 (`EX_TEMPFAIL`). Off by default — supervised launchers
+    /// (`init-session.sh`, systemd) and the Tauri sidecar already
+    /// broker re-exec, and stacking two supervisors is the footgun.
+    /// Pass this when the operator wants the in-terminal
+    /// `codeless serve` to honour `restart_server` without external
+    /// tooling. The watcher exits cleanly when the child exits with
+    /// any non-`EX_TEMPFAIL` status. See
+    /// `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry" for the
+    /// three-context contract.
+    #[arg(long)]
+    pub respawn_on_exit: bool,
 }
 
 pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
@@ -157,10 +175,49 @@ pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Re
         return Ok(ExitCode::SUCCESS);
     }
 
+    // `--respawn-on-exit` and the supervised child path are mutually
+    // exclusive: when the watcher is asked to start a child it strips
+    // the flag and exports `CODELESS_SUPERVISED=1`. If we already see
+    // that marker we run the inner server normally so the parent
+    // (this very binary, one stack frame up) observes the exit code
+    // and decides whether to re-exec us.
+    if args.respawn_on_exit && !codeless_adapters_host::respawn::is_supervised() {
+        let child_argv = current_child_argv()?;
+        eprintln!(
+            "codeless-server: --respawn-on-exit watcher running ({} child args)",
+            child_argv.len()
+        );
+        let code = codeless_adapters_host::respawn::supervise(&child_argv)
+            .map_err(|e| anyhow!("respawn watcher: {e}"))?;
+        return Ok(if code == 0 {
+            ExitCode::SUCCESS
+        } else {
+            // ExitCode::from takes u8; clamp out-of-range codes so we
+            // never silently lose a non-zero failure under the
+            // 8-bit-truncation rule the OS would apply anyway.
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        });
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     rt.block_on(run_server(args, secrets_path, db))
+}
+
+/// Reconstruct the argv the watcher hands to the child. The watcher
+/// strips `--respawn-on-exit` (so the child does not re-enter the
+/// watcher path) and otherwise copies the operator-supplied flags
+/// verbatim. `current_exe()` is resolved by the respawn helper.
+fn current_child_argv() -> Result<Vec<String>> {
+    let mut argv: Vec<String> = std::env::args().collect();
+    // Drop argv[0] — the watcher re-derives the executable from
+    // `current_exe()` so a renamed binary still finds itself.
+    if !argv.is_empty() {
+        argv.remove(0);
+    }
+    argv.retain(|a| a != "--respawn-on-exit");
+    Ok(argv)
 }
 
 fn init_token(path: &Path, force: bool) -> Result<()> {
@@ -218,6 +275,91 @@ async fn run_server(
     };
 
     let mut runtime = rpc_open::open(db.as_deref()).await?;
+    // Pick the `restart_server` execution context. Supervised wins
+    // when either the `--respawn-on-exit` watcher exported its env
+    // marker or systemd booted us with `INVOCATION_ID`; otherwise the
+    // process is bare and `restart_server` returns the
+    // `RestartUnsupervised` hint. Tauri desktop sets its own marker
+    // when it spawns the sidecar; the variable name is symmetric
+    // with the supervised one so the matching block stays a glance.
+    let restart_ctx = if codeless_adapters_host::respawn::is_supervised()
+        || std::env::var("INVOCATION_ID").is_ok_and(|v| !v.is_empty())
+    {
+        codeless_runtime::RestartContext::SupervisedCli
+    } else if std::env::var("CODELESS_TAURI_SIDECAR").is_ok_and(|v| !v.is_empty()) {
+        codeless_runtime::RestartContext::TauriDesktop
+    } else {
+        codeless_runtime::RestartContext::Bare
+    };
+    runtime = runtime.with_restart_context(restart_ctx);
+    eprintln!(
+        "codeless-server: restart context = {:?} (respawn watcher: {})",
+        restart_ctx,
+        codeless_adapters_host::respawn::is_supervised(),
+    );
+
+    // Adapter registry boot wiring (see DOCS/WORKSPACE-ATTACH.md "TODO
+    // — adapter registry"). Each `--enable-*` flag upserts a single
+    // row keyed on `(kind, "default")` for chat adapters or `runner_id`
+    // for runners, exactly the way `--fs-root` upserts
+    // `attached_workspaces`. After the upserts run we read the table
+    // back: the rows are now the source of truth, so a boot with no
+    // flags still picks up the set the UI last persisted, and a flag
+    // re-passed on top wins over whatever was stored.
+    if args.enable_slack {
+        if let Err(e) = codeless_runtime::adapter_registry::upsert_chat_adapter(
+            runtime.pool(),
+            "slack",
+            codeless_runtime::adapter_registry::DEFAULT_INSTANCE_ID,
+            true,
+        )
+        .await
+        {
+            eprintln!("codeless-server: chat_adapters upsert for slack failed: {e}");
+        }
+    }
+    if args.enable_telegram {
+        if let Err(e) = codeless_runtime::adapter_registry::upsert_chat_adapter(
+            runtime.pool(),
+            "telegram",
+            codeless_runtime::adapter_registry::DEFAULT_INSTANCE_ID,
+            true,
+        )
+        .await
+        {
+            eprintln!("codeless-server: chat_adapters upsert for telegram failed: {e}");
+        }
+    }
+    for (id, enabled) in [
+        ("claude", args.enable_claude),
+        ("anthropic", args.enable_anthropic),
+        ("codex", args.enable_codex),
+        ("copilot", args.enable_copilot),
+    ] {
+        if !enabled {
+            continue;
+        }
+        if let Err(e) =
+            codeless_runtime::adapter_registry::upsert_runner(runtime.pool(), id, true).await
+        {
+            eprintln!("codeless-server: runner_config upsert for {id} failed: {e}");
+        }
+    }
+    let effective = codeless_runtime::adapter_registry::load_effective(runtime.pool())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "codeless-server: adapter registry read failed, falling back to CLI flags: {e}"
+            );
+            codeless_runtime::adapter_registry::EffectiveAdapterRegistry {
+                slack_enabled: args.enable_slack,
+                telegram_enabled: args.enable_telegram,
+                claude_enabled: args.enable_claude,
+                anthropic_enabled: args.enable_anthropic,
+                codex_enabled: args.enable_codex,
+                copilot_enabled: args.enable_copilot,
+            }
+        });
     // Resolve the effective worktree root up front so the HostFs
     // adapter can grant read access to per-job `runs/*/handover.md`
     // and notes through the same `fs_*` surface. Without this, the
@@ -325,10 +467,10 @@ async fn run_server(
     }
     let rpc: Arc<InProcessRpc> = Arc::new(runtime);
     let rpc_dyn: Arc<dyn RpcServer> = rpc.clone();
-    if args.enable_claude {
+    if effective.claude_enabled {
         scrub_caller_session_env();
     }
-    let claude_status = if args.enable_claude {
+    let claude_status = if effective.claude_enabled {
         let status = codeless_adapters_host::probe_claude().await;
         match &status {
             None => eprintln!(
@@ -354,6 +496,7 @@ async fn run_server(
     };
     let server_info = Arc::new(build_server_info(
         &args,
+        &effective,
         worktree_root_effective.clone(),
         claude_status,
         available_cli_runners,
@@ -459,16 +602,16 @@ async fn run_server(
         // assume mock jobs would run, when in fact a `runner: mock`
         // submit returns None from the factory.
         let mut enabled: Vec<&str> = Vec::new();
-        if args.enable_claude {
+        if effective.claude_enabled {
             enabled.push("claude");
         }
-        if args.enable_anthropic {
+        if effective.anthropic_enabled {
             enabled.push("anthropic");
         }
-        if args.enable_codex {
+        if effective.codex_enabled {
             enabled.push("codex");
         }
-        if args.enable_copilot {
+        if effective.copilot_enabled {
             enabled.push("copilot");
         }
         if enabled.is_empty() {
@@ -486,10 +629,7 @@ async fn run_server(
         let anthropic_api_key = store.get("anthropic_api_key").map(str::to_owned);
         let claude_system_prompt = store.get("claude_system_prompt").map(str::to_owned);
         let factory = Arc::new(DefaultRunnerFactory {
-            enable_claude: args.enable_claude,
-            enable_anthropic: args.enable_anthropic,
-            enable_codex: args.enable_codex,
-            enable_copilot: args.enable_copilot,
+            config: RunnerConfig::from_effective(&effective),
             anthropic_api_key,
             claude_system_prompt,
             store: rpc.store().clone(),
@@ -502,81 +642,47 @@ async fn run_server(
         )
     };
 
-    // Slack adapter is opt-in via `--enable-slack`. Missing tokens
-    // produce a warning rather than a hard failure so the rest of the
-    // server still boots — the bot is additive to the runtime and the
-    // operator should be able to land Slack later by setting two
-    // secrets and restarting. The handle stays alive in this scope so
-    // the spawned task is not dropped before `serve_with_shutdown`
-    // returns; process exit is the teardown path.
-    let _slack = if args.enable_slack {
-        match codeless_slack::SlackConfig::from_secrets(&store) {
-            Ok(cfg) => {
-                eprintln!(
-                    "codeless-server: slack adapter enabled (channel={})",
-                    cfg.channel_id.as_deref().unwrap_or("unset"),
-                );
-                // The dispatcher reaches the in-process runtime via
-                // the same `RpcServer` handle the HTTP transport
-                // serves; commands typed in Slack hit the exact same
-                // code path as the web UI. Cloning is cheap (the
-                // handle is an `Arc<dyn RpcServer>`).
-                Some(codeless_slack::SlackBot::spawn(cfg, state.rpc.clone()))
-            }
-            Err(err) => {
-                eprintln!("codeless-server: --enable-slack ignored: {err}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Telegram adapter is opt-in via `--enable-telegram`. Mirrors
-    // the Slack arm above: a missing token logs a warning and the
-    // rest of the server still boots, and the handle stays in scope
-    // so the spawned long-poll task is not dropped before
-    // `serve_with_shutdown` returns.
-    let _telegram = if args.enable_telegram {
-        match codeless_telegram::TelegramConfig::from_secrets(&store) {
-            Ok(cfg) => {
-                eprintln!(
-                    "codeless-server: telegram adapter enabled (chat={})",
-                    cfg.chat_id.as_deref().unwrap_or("unset"),
-                );
-                match codeless_telegram::TelegramBot::spawn(cfg, state.rpc.clone()) {
-                    Ok(bot) => Some(bot),
-                    Err(err) => {
-                        eprintln!(
-                            "codeless-server: --enable-telegram ignored: api init failed: {err}"
-                        );
-                        None
-                    }
-                }
-            }
-            Err(err) => {
-                eprintln!("codeless-server: --enable-telegram ignored: {err}");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // Boot every enabled chat adapter as one unit. The registry walks
+    // the closed `(slack, telegram)` set the effective registry holds
+    // today; missing secrets and per-adapter init failures stay
+    // warnings (the bots are additive, never load-bearing). The handle
+    // stays in scope so the spawned long-poll / Socket Mode tasks are
+    // not dropped before `serve_with_shutdown` returns; process exit
+    // is the teardown path.
+    let _chat_adapters = ChatAdapterRegistry::spawn(&effective, &store, state.rpc.clone());
 
     let port_file = args.port_file.clone();
-    serve_with_shutdown(args.bind, state, |addr| {
-        eprintln!("codeless-server listening on http://{addr}");
-        if let Some(ref path) = port_file {
-            if let Err(e) = std::fs::write(path, addr.to_string()) {
-                eprintln!("warning: failed to write port file {}: {e}", path.display());
+    // Drain the listener on either Ctrl-C *or* a successful
+    // `restart_server` call (the trigger is fired from inside the RPC
+    // handler). After the listener returns we read the desired exit
+    // code: `Some(75)` means "supervisor, please re-exec me",
+    // `Some(0)` is the Tauri sidecar path, `None` is a clean
+    // operator-driven shutdown.
+    let restart_trigger = rpc.restart_trigger();
+    let restart_wait = restart_trigger.clone();
+    serve_with_extra_shutdown(
+        args.bind,
+        state,
+        |addr| {
+            eprintln!("codeless-server listening on http://{addr}");
+            if let Some(ref path) = port_file {
+                if let Err(e) = std::fs::write(path, addr.to_string()) {
+                    eprintln!("warning: failed to write port file {}: {e}", path.display());
+                }
             }
-        }
-    })
+        },
+        async move { restart_wait.wait().await },
+    )
     .await
     .map_err(|e| anyhow!("serve: {e}"))?;
 
     if let Some(ref path) = port_file {
         let _ = std::fs::remove_file(path);
+    }
+
+    if let Some(code) = restart_trigger.desired_exit_code() {
+        eprintln!("codeless-server: restart_server requested exit code {code}");
+        return Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)));
     }
 
     Ok(ExitCode::SUCCESS)
@@ -605,13 +711,16 @@ fn effective_worktree_root(args: &ServeArgs) -> Option<PathBuf> {
 /// the default.
 fn build_server_info(
     args: &ServeArgs,
+    effective: &codeless_runtime::adapter_registry::EffectiveAdapterRegistry,
     worktree_root: Option<PathBuf>,
     claude: Option<ClaudeStatus>,
     available_cli_runners: Vec<String>,
 ) -> ServerInfo {
     let mut runners = Vec::new();
-    let real_runner_enabled =
-        args.enable_claude || args.enable_anthropic || args.enable_codex || args.enable_copilot;
+    let real_runner_enabled = effective.claude_enabled
+        || effective.anthropic_enabled
+        || effective.codex_enabled
+        || effective.copilot_enabled;
     // `mock` is only published when no real runner is enabled. When
     // the operator passes `--enable-claude` or `--enable-anthropic`
     // they have signalled that real coding work is what they want; a
@@ -625,27 +734,27 @@ fn build_server_info(
             default: true,
         });
     }
-    if args.enable_claude {
+    if effective.claude_enabled {
         runners.push(RunnerInfo {
             id: "claude".to_owned(),
             default: true,
         });
     }
-    if args.enable_anthropic {
+    if effective.anthropic_enabled {
         runners.push(RunnerInfo {
             id: "anthropic".to_owned(),
-            // `claude` wins the default when both flags are passed; the
+            // `claude` wins the default when both are enabled; the
             // anthropic REST runner is the secondary path.
-            default: !args.enable_claude,
+            default: !effective.claude_enabled,
         });
     }
-    if args.enable_codex {
+    if effective.codex_enabled {
         runners.push(RunnerInfo {
             id: "codex".to_owned(),
             default: false,
         });
     }
-    if args.enable_copilot {
+    if effective.copilot_enabled {
         runners.push(RunnerInfo {
             id: "copilot".to_owned(),
             default: false,
@@ -741,7 +850,6 @@ fn resolve_mcp_binary() -> Option<String> {
     tracing::warn!("codeless-mcp binary not found; jobs will not have access to codeless tools");
     None
 }
-
 
 /// Set up the `tracing-subscriber` for the running server. Reads
 /// `RUST_LOG` for the env-filter directive (defaults to

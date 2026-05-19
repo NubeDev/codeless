@@ -82,7 +82,7 @@ without restart) is also a separate, later job per the doc.
     TOML cleanly on platforms where Secret Service isn't running.
   The TOML file stays the source of truth for CI / fixtures
   (`--secrets-file <path>`).
-- `restart_server` RPC with three branches:
+- [x] `restart_server` RPC with three branches (stage 7):
   - **Supervised CLI** (`init-session.sh`, systemd): exit 75
     `EX_TEMPFAIL`; the wrapper / unit file re-execs.
   - **Tauri desktop**: returns success; the desktop shell kills its
@@ -101,19 +101,23 @@ without restart) is also a separate, later job per the doc.
   before Apply (modal work is in the UI follow-up job, not here —
   but the partition must be correct so the modal has truthful
   inputs).
-- Lifting the Slack / Telegram adapter spawn and the
+- [x] Lifting the Slack / Telegram adapter spawn and the
   `DefaultRunnerFactory` config out of `serve.rs` into a boot-time
   `ChatAdapterRegistry` and `RunnerConfig`, both driven by the new
   tables. No behavioural change beyond the source of truth; existing
   adapter and runner code is not refactored.
+  _Landed: `crates/codeless-cli/src/chat_adapter_registry.rs` +
+  `RunnerConfig` / `DefaultRunnerFactory.config` in
+  `crates/codeless-runtime/src/default_runner_factory.rs`._
 - Exit tests (from WORKSPACE-ATTACH.md §"Exit tests"):
-  1. Write-then-fsync-then-restart ordering: a unit test that
+  1. [x] Write-then-fsync-then-restart ordering: a unit test that
      crashes the process between secrets-write and the restart
      signal proves the on-disk state is durable.
-  2. `restart_server` partition: a job with a recent checkpoint is
+  2. [x] `restart_server` partition: a job with a recent checkpoint is
      reported `resumable` and resumes; a job mid-PTY-stream is
      reported `killed` and the kill is logged.
-  3. `set_chat_adapter_enabled(true)` without a prior successful
+     _Landed: `crates/codeless-runtime/tests/restart_server_partition.rs`._
+  3. [x] `set_chat_adapter_enabled(true)` without a prior successful
      `validate_chat_adapter_secrets` returns the structured
      `MissingSecrets` / `ValidationFailed` error.
 
@@ -185,9 +189,12 @@ without restart) is also a separate, later job per the doc.
    Slack `auth.test` round-trip against a test fixture, and the
    subsequent `set_chat_adapter_enabled(true)` is accepted. With no
    prior validate call, the same `set_*` returns `MissingSecrets`.
-6. `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry" gets its
-   stage 1 checkboxes ticked and is annotated with a one-line
-   "Landed in `codeless/adapter-registry`" pointer.
+6. [x] `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry" gets its
+   stage 1 checkboxes 1–5 ticked (step 6 — Settings UI — stays the
+   follow-up job's box to tick); the stage-2 paragraph names this
+   job as the seam-provider, and the Gmail paragraph is reworded
+   from "separate milestone" to "separate follow-up job". Done at
+   stage 9.
 
 ## Open questions (resolve in stage 1, before any code)
 

@@ -99,6 +99,18 @@ pub(crate) fn router(state: AppState) -> Router {
             "/rpc/validate_workspace_path",
             post(validate_workspace_path),
         )
+        .route("/rpc/list_chat_adapters", post(list_chat_adapters))
+        .route(
+            "/rpc/set_chat_adapter_enabled",
+            post(set_chat_adapter_enabled),
+        )
+        .route(
+            "/rpc/validate_chat_adapter_secrets",
+            post(validate_chat_adapter_secrets),
+        )
+        .route("/rpc/list_runners", post(list_runners))
+        .route("/rpc/set_runner_enabled", post(set_runner_enabled))
+        .route("/rpc/restart_server", post(restart_server))
         .route("/rpc/list_assistant_threads", post(list_assistant_threads))
         .route(
             "/rpc/create_assistant_thread",
@@ -245,6 +257,16 @@ fn map_err(err: RpcError) -> (StatusCode, String) {
             StatusCode::CONFLICT,
             serde_json::to_string(&payload)
                 .expect("WorkspaceError always serialises (derive Serialize)"),
+        ),
+        // `Adapter(AdapterError)` rides the same 409 channel as
+        // `Workspace`: structural conflicts the client must resolve
+        // (re-validate secrets, force a restart, …) rather than
+        // generic server failures. The JSON body carries the typed
+        // variant so the UI branches without string-matching.
+        RpcError::Adapter(payload) => (
+            StatusCode::CONFLICT,
+            serde_json::to_string(&payload)
+                .expect("AdapterError always serialises (derive Serialize)"),
         ),
         RpcError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
     }
@@ -658,6 +680,66 @@ async fn validate_workspace_path(
         .await
         .map(Json)
         .map_err(map_err)
+}
+
+async fn list_chat_adapters(
+    State(st): State<AppState>,
+    _body: Option<Json<Value>>,
+) -> HandlerResult<codeless_rpc::ListChatAdaptersResult> {
+    st.rpc.list_chat_adapters().await.map(Json).map_err(map_err)
+}
+
+async fn set_chat_adapter_enabled(
+    State(st): State<AppState>,
+    Json(args): Json<codeless_rpc::SetChatAdapterEnabledArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .set_chat_adapter_enabled(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn validate_chat_adapter_secrets(
+    State(st): State<AppState>,
+    Json(args): Json<codeless_rpc::ValidateChatAdapterSecretsArgs>,
+) -> HandlerResult<codeless_rpc::ValidateChatAdapterSecretsResult> {
+    st.rpc
+        .validate_chat_adapter_secrets(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_runners(
+    State(st): State<AppState>,
+    _body: Option<Json<Value>>,
+) -> HandlerResult<codeless_rpc::ListRunnersResult> {
+    st.rpc.list_runners().await.map(Json).map_err(map_err)
+}
+
+async fn set_runner_enabled(
+    State(st): State<AppState>,
+    Json(args): Json<codeless_rpc::SetRunnerEnabledArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .set_runner_enabled(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn restart_server(
+    State(st): State<AppState>,
+    args: Option<Json<codeless_rpc::RestartServerArgs>>,
+) -> HandlerResult<codeless_rpc::RestartServerResult> {
+    // `args` is optional so callers that send no body (the common
+    // "restart now" UI button, force defaulted to false) do not get a
+    // 415. Specta-derived RestartServerArgs has only `force: bool`
+    // with `#[serde(default)]`, so the empty default is the right
+    // identity here.
+    let args = args.map(|Json(a)| a).unwrap_or_default();
+    st.rpc.restart_server(args).await.map(Json).map_err(map_err)
 }
 
 async fn list_assistant_threads(

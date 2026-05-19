@@ -14,8 +14,11 @@ pub mod server;
 pub mod subscribe;
 
 pub use codeless_types::{
-    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, DetachPolicy,
-    DetachWorkspaceArgs, ListWorkspacesResult, Persona, ValidateWorkspacePathArgs,
+    AdapterError, AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, ChatAdapterKind,
+    ChatAdapterRow, ChatAdapterSecretProblem, DetachPolicy, DetachWorkspaceArgs,
+    ListChatAdaptersResult, ListRunnersResult, ListWorkspacesResult, Persona, RestartServerArgs,
+    RestartServerResult, RunnerRow, SetChatAdapterEnabledArgs, SetRunnerEnabledArgs,
+    ValidateChatAdapterSecretsArgs, ValidateChatAdapterSecretsResult, ValidateWorkspacePathArgs,
     ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
 };
 pub use error::{RpcError, RpcResult};

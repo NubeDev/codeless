@@ -1,119 +1,102 @@
-# plugin-substrate-runtimes — stage 5 → stage 6
+# adapter-registry — stage 9 (REVIEW gate) → done
 
-Stage 5 landed: the `codeless-plugin-notes` plugin is now ported onto
-`codeless-plugin-sdk` and compiles as both flavours from one source.
-The substrate e2e test
-`plugin_substrate_e2e::notes_plugin_loads_and_seeds_persona_addressable_by_thread`
-is parameterised over both flavours; both green.
+Stage 9 reviewed the full diff from stages 3–8 against the rulebook's
+Layer-1 invariants. Gate verdict: **PASS**. The server-side milestones
+are complete; Gmail adapter and stage 2 (hot-reload) are flagged as
+separate follow-up jobs in `DOCS/WORKSPACE-ATTACH.md`.
 
-## What landed in stage 5
--
-- `crates/codeless-plugin-notes/src/lib.rs` rewritten on top of the
-  SDK's `ToolBehavior` trait. `NotesAppend` now carries typed
-  `NotesAppendArgs` / `NotesAppendOutput` driven by schemars. The PS7
-  attachment marker (`{"$ref": "codeless://attachment"}`) is emitted
-  by a schemars `schema_with` hook so the schema reaches
-  `/properties/attachment/$ref` directly (no `allOf` wrapper).
-- Builtin bridge: a generic `BuiltinBridge<T: ToolBehavior>` inside
-  the notes crate adapts `ToolBehavior` to `codeless_tools::Tool`,
-  preserving the existing `pub fn register(sink: &mut PluginToolSink)`
-  entry point. Lives in the plugin (not in `codeless-tools`) so the
-  SDK -> host dep direction stays one-way.
-- WASM flavour: `Cargo.toml` declares `crate-type = ["lib", "cdylib"]`
-  plus mutually-exclusive `builtin` / `wasm` features. The
-  `#[cfg(all(target_arch = "wasm32", feature = "wasm"))]` `wasm_guest`
-  module invokes `wit_bindgen::generate!` against
-  `crates/codeless-tool-wit/wit/tool.wit`, implements `Guest::describe`
-  / `Guest::call` (via `pollster::block_on`), and `export!`s
-  `NotesComponent`. Crate-level `unsafe_code = "deny"` exception
-  mirrors `codeless-tool-wit`; module carries `#[allow(unsafe_code)]`.
-- `wasmtime` bumped 23 -> 30 in `codeless-plugin-host-wasm`. LLVM 19
-  (rustc >= 1.85) emits overlong LEB128 encodings of memory index 0
-  that wasmparser 0.212 rejects with "zero byte expected"; wasmtime 27+
-  accepts them. Only API delta was the `IoView` supertrait split in
-  wasmtime-wasi 30 — fixed by splitting the `WasiView` impl.
-- Parameterised e2e test
-  (`crates/codeless-runtime/tests/plugin_substrate_e2e.rs`):
-  - Builtin row: existing logic; additionally asserts the PS7 marker
-    via the host `ToolRegistry`'s `output_schema()`.
-  - Wasm row: a `OnceLock`-cached helper builds the notes plugin via
-    `cargo build --target wasm32-unknown-unknown --no-default-features
-    --features wasm --release` into a sibling `target-wasm/` directory
-    (so the in-flight host `cargo test` lock is undisturbed), then
-    composes the core module into a WASI-p2 component using
-    `wit_component::ComponentEncoder` (pinned at 0.212). The encoded
-    component is loaded via `WasmPlugin::load`; `describe()` is
-    asserted to return one manifest with id `notes.append`, tier
-    `write`, and the PS7 marker.
-  - `CODELESS_NOTES_WASM` env var lets CI point at a pre-built artefact.
+## What the gate looked at
 
-### Notable deviation from the stage description
+- **R1 — crate dependency direction.** New `process::Command`
+  call sites added in this job: exactly one, in
+  `crates/codeless-adapters-host/src/respawn.rs::supervise`. The
+  runtime's `restart_server` RPC fires a `tokio::sync::Notify`
+  (`RestartTrigger`) — no process spawn from `codeless-runtime`. The
+  CLI's `--respawn-on-exit` path calls into `codeless_adapters_host::
+  respawn::supervise` rather than spawning inline. `codeless-types` /
+  `codeless-rpc` / `codeless-client` gain no host-only dependencies.
+- **R2 — single transport.** All six new RPCs
+  (`list_chat_adapters`, `set_chat_adapter_enabled`,
+  `validate_chat_adapter_secrets`, `list_runners`,
+  `set_runner_enabled`, `restart_server`) are routed in
+  `crates/codeless-server/src/routes.rs` inside `rpc_routes` and
+  live behind the same `bearer_layer` as every other RPC. No new
+  transport channel; SSE event surface is untouched.
+- **R4 / R5 — trust boundary, SQLite source of truth.** Migration
+  `0027_adapter_registry.sql` adds `chat_adapters((kind,
+  instance_id) PK, enabled, configured_at)` and
+  `runner_config(runner_id PK, enabled)`. `--enable-*` flags upsert
+  these rows; boot reads from the tables via
+  `RunnerConfig::from_effective(&EffectiveAdapterRegistry)` +
+  `ChatAdapterRegistry::spawn`. Single bearer gates every new RPC;
+  `MissingSecrets` is the structured refusal, not a generic Conflict.
+  Validate-cache is in-memory (process lifetime) by design — the
+  table is the source of truth, the cache is only a "did the
+  operator prove these creds during this boot" gate.
+- **Wire formats untouched.** `crates/codeless-types/tests/wire.ts.snap`
+  diff is additive-only: `AdapterError`, `ChatAdapterRow`,
+  `RunnerRow`, `ListChatAdaptersResult`, `ListRunnersResult`,
+  `SetChatAdapterEnabledArgs`, `SetRunnerEnabledArgs`,
+  `ValidateChatAdapterSecretsArgs/Result`,
+  `ChatAdapterSecretProblem`, `RestartServerArgs/Result`,
+  `ChatAdapterKind`. Zero removals; every pre-existing TypeScript
+  binding is byte-identical.
 
-The stage description says "WASM via `cargo build --target wasm32-
-wasip2`". The wasm32-wasip2 target ships rustc-bundled WASI preview
-1-to-preview 2 adapter glue that produces a component-model encoding
-wasmtime 30 still rejects (the embedded adapter module triggers an
-offset error). The notes plugin's `world plugin { export tool; }`
-has no WASI imports, so the e2e test builds via
-`wasm32-unknown-unknown` and componentises with `wit-component` —
-the resulting artefact loads cleanly. Stage 15 should reconcile
-`PLUGIN-WASM.md`.
+## New RPC methods (server-side)
 
-### Validations run
+1. `list_chat_adapters() -> ListChatAdaptersResult`
+2. `set_chat_adapter_enabled(SetChatAdapterEnabledArgs) -> ()` —
+   refuses with `AdapterError::MissingSecrets` until a successful
+   `validate_chat_adapter_secrets` for the same `(kind, instance_id)`
+   lands in this boot's cache.
+3. `validate_chat_adapter_secrets(args) -> ValidateChatAdapterSecretsResult`
+   — 5s hard timeout, per-`(kind, instance_id)` 5/s sliding-window
+   rate limit. Probe is pluggable (`StaticValidationProbe` for tests,
+   HTTP-backed probe at boot for the CLI).
+4. `list_runners() -> ListRunnersResult`
+5. `set_runner_enabled(SetRunnerEnabledArgs) -> ()`
+6. `restart_server(RestartServerArgs) -> RestartServerResult` —
+   three branches keyed on `RestartContext::{SupervisedCli,
+   TauriDesktop, Bare}`; partitions running jobs into
+   resumable / killed and refuses with `RestartHasRunningJobs`
+   unless `force: true`.
 
-- `cargo build -p codeless-plugin-notes` (builtin, default features)
-- `cargo build -p codeless-plugin-notes --target wasm32-unknown-unknown
-  --no-default-features --features wasm --release`
-- `cargo test -p codeless-plugin-notes` — 4 unit + 1 smoke
-- `cargo test -p codeless-runtime --test plugin_substrate_e2e` —
-  7 tests including the two flavour rows
-- `cargo test --workspace --lib --tests --exclude codeless-server` — all green
-- `cargo clippy -p codeless-plugin-notes -p codeless-plugin-host-wasm
-  -p codeless-plugin-sdk -p codeless-runtime --all-targets -- -D warnings`
-- `cargo fmt --check`
+## What is intentionally deferred
 
-## What stage 6 owns
+- **Settings → Adapters UI.** The closed set of RPCs above is the
+  surface the follow-up UI job sits on. No `ui/codeless-ui/` files
+  changed in this job (R3, off-limits per WORKFLOW.md).
+- **Gmail adapter (`codeless-gmail`).** The `ChatAdapterKind` enum
+  deliberately omits `Gmail`; the variant lands paired with the new
+  crate, its OAuth PKCE host wiring, and the
+  `users.history.list` long-poll. `DOCS/WORKSPACE-ATTACH.md` reworded
+  to call this a "separate follow-up job" (was "separate milestone").
+- **Stage 2 (hot-reload without restart).** `ChatAdapterRegistry`
+  and `RunnerConfig` are the seams a future
+  `Arc<ArcSwap<RunnerConfig>>` / per-adapter graceful-shutdown
+  story will swap behind; until a documented trigger fires
+  (>5 restart-initiated kills/week, mobile lifecycle requirement,
+  or a recurring "rotate without dropping" user ask), restart-on-
+  apply is the supported path. `DOCS/WORKSPACE-ATTACH.md` now points
+  the stage-2 paragraph at this job's seams.
 
-`PLUGIN-WASM.md § Capability sandbox`. Default-deny capability set,
-`[runtimes.capabilities]` manifest parsing, attachments R/W via the
-host-implemented `codeless:attachments/store` WIT interface,
-`plugin_wasm_e2e::wasm_plugin_cannot_open_host_file` +
-`plugin_wasm_e2e::wasm_plugin_attachment_round_trip` green.
+## Validation snapshot
 
-## Pointers for stage 6
+Trusted from stage 8's handover (re-running the full workspace test
+matrix is not part of the REVIEW gate's contract):
 
-- `crates/codeless-plugin-host-wasm/src/runtime.rs` is the
-  `WasiCtxBuilder` site — today builds the deny-everything ctx. Stage
-  6 grants the capability set the plugin's `[runtimes.capabilities]`
-  block lists.
-- `crates/codeless-tools/src/plugin/manifest.rs` is the
-  `plugin.toml` parser. Stage 6 extends it with
-  `[[runtimes]] [runtimes.capabilities]`. (Stage 13 lands the rest of
-  `[[runtimes]]` parsing; stage 6 only needs the capabilities subset
-  for its tests.)
-- `crates/codeless-tool-wit/wit/tool.wit` is the load-bearing ABI.
-  Adding `codeless:attachments/store@0.1.0` is an ABI change; bump
-  the WIT, regenerate `crates/codeless-tool-wit/src/bindings.rs`,
-  carry the rationale in the head comment.
-- The wasm e2e tests will need a fixture plugin (intentionally
-  file-opener). Mirror the `target-wasm/` pattern the stage-5 test
-  uses for build caching.
+- `cargo build --workspace` — green.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt --check` — clean.
+- `cargo test --workspace --no-fail-fast -- --test-threads=4` — green.
+- R1 grep — no new `tokio::process` / `std::process::Command`
+  outside `codeless-adapters-host`. The only addition is
+  `codeless-adapters-host::respawn::supervise`.
 
-## Open questions
+## Sentinel
 
-- The "build via wasm32-wasip2" claim in `PLUGIN-WASM.md § Acceptance`
-  is aspirational; the e2e test uses wasm32-unknown-unknown +
-  wit-component. Stage 15 (or earlier) needs a doc reconciliation.
-- Whether to keep wit-bindgen pinned at 0.20 or bump now that wasmtime
-  is at 30 — the M-WASM-B gate should decide.
-
-## Out-of-scope reminders carried forward
-
-- Estimator plugin and substrate items 2 + 4 stay out of scope.
-- `NotesAppend::call` runtime-table writer remains deferred.
-- Process runtime is manifest-seam only in stage 13.
-- `mcp_forward` is parse-and-fail (stage 14).
-- Mobile shell wiring of plugin UI is out of scope.
-- The committed `crates/codeless-tool-wit/src/bindings.rs` is never
-  regenerated by `build.rs`; always via the documented `wit-bindgen
-  rust …` command.
+PASS: R1/R2/R4/R5 invariants hold across the stage 3–8 diff —
+process spawning stays in `codeless-adapters-host`, every new RPC
+rides the bearer-gated HTTP+SSE transport, the new SQLite tables
+are the source of truth with the cache as a session-lifetime gate,
+and `wire.ts.snap` is additive-only.

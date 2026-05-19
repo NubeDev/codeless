@@ -155,13 +155,33 @@ pub async fn serve_with_shutdown<F>(
 where
     F: FnOnce(std::net::SocketAddr),
 {
+    serve_with_extra_shutdown(addr, state, on_bound, std::future::pending::<()>()).await
+}
+
+/// Like `serve_with_shutdown` but accepts an extra shutdown future the
+/// caller wires up — typically the runtime's `RestartTrigger` so a
+/// successful `restart_server` RPC drains the listener without going
+/// through Ctrl-C. Either future resolving wins; the other is dropped.
+pub async fn serve_with_extra_shutdown<F, S>(
+    addr: std::net::SocketAddr,
+    state: AppState,
+    on_bound: F,
+    extra: S,
+) -> std::io::Result<()>
+where
+    F: FnOnce(std::net::SocketAddr),
+    S: std::future::Future<Output = ()> + Send + 'static,
+{
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     on_bound(local);
     let app = build_router(state);
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = extra => {}
+            }
         })
         .await
 }
