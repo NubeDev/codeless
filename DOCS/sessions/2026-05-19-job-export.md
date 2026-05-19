@@ -822,3 +822,105 @@ the halt-commit shape of stages 1, 4, and 5.
 - Stages 7 (round-trip tests), 8 (REVIEW), and 9–10 (UI) are all
   transitively blocked on the same chain. Until (B) and stages 4 +
   5 land, this job has zero forward motion.
+
+## Stage 7 — round-trip property test + tar-safety units  `[!]` halted on same chain
+
+Stage 7 is "add round-trip property test (export then import into
+scratch workspace, assert row body equality and ordering) and
+tar-safety unit tests."
+
+### Re-verification
+
+- `ls crates/codeless-runtime/src/job_export` → does not exist.
+- `ls crates/codeless-runtime/migrations/ | grep -i run` → returns
+  only `0002_job_runner_overrides.sql`. No `runs` table migration.
+- `grep -rl "ExportJob\|ImportJob\|InspectJobBundle"
+  crates/codeless-rpc/src` → zero matches.
+
+The world has not moved since the stage 6 halt at `8b90389`. The
+four preceding halts (stages 1, 4, 5, 6) all stopped on the same
+unresolved JOB-WORKFLOW (B) precondition plus the missing
+stage-4/5/6 source chain.
+
+### Why this stage cannot land
+
+Stage 7 writes tests against four things that do not exist:
+
+1. **`export_job` runtime fn** — would be the input to the
+   round-trip property test (export from fixture workspace, get
+   bytes). Stage 4 was supposed to produce it; no
+   `walker.rs` / `serializer.rs` / `manifest.rs` /
+   `tar_writer.rs` on disk.
+2. **`import_job` runtime fn** — would consume the bundle into a
+   scratch SQLite + worktree. Stage 5 was supposed to produce it;
+   no `importer.rs` on disk.
+3. **`tar_safety` module** — the unit-under-test for the
+   tar-safety units (absolute path / `..` segment / symlink /
+   off-layout entry / oversize entry rejections). No
+   `tar_safety.rs` on disk.
+4. **Wire types in `codeless-rpc`** — the property test's
+   pre/post comparison reads row bodies via the same shape the
+   importer writes; without `ExportJobResult` /
+   `ImportJobResult`, the assertion surface is undefined.
+
+Beyond the missing modules, the row-body equality assertion the
+stage calls for compares `runs` and `events.run_id` rows on both
+sides of the round trip. Without (B), neither side has a `runs`
+table; the assertion has no column set to compare. Writing the
+test against the pre-(B) `jobs` shape produces a test that the
+post-(B) world deletes and re-authors — the same trap repo
+`CLAUDE.md` R4 forbids.
+
+Per `WORKFLOW.md` §"Precondition check" and repo `CLAUDE.md` R4
+("no half-finished implementations" — and no half-finished tests
+either), halt with `[!]`. No source files were edited.
+
+### What lands when stage 7 is re-fired
+
+Re-fire happens only after (B) merges and stages 4 + 5 + 6 land
+real source. At that point the stage adds, in one commit:
+
+1. `crates/codeless-runtime/tests/job_export_roundtrip.rs` — a
+   `proptest!` block that generates a fixture Job + 1–4 Runs with
+   varying Stage / Task / Todo / Event / Review counts, calls
+   `export_job` to a `tempfile::TempDir`, opens a fresh in-memory
+   SQLite + scratch `WorkspaceId`, calls `import_job`, then
+   asserts row-body equality on the immutable columns of every
+   exported table plus ordering on `(run.ordinal, stage.ordinal,
+   task.ordinal, todo.ordinal)` and `events.cursor` (re-keyed on
+   destination but ordered identically to source). Drop the
+   runtime-state columns the serializer skips
+   (`tasks.lease_holder`, `tasks.lease_expires_at`).
+2. Unit tests beside `crates/codeless-runtime/src/job_export/tar_safety.rs`
+   — one rejection test per guard listed in
+   `.codeless/jobs/job-export/SCOPE.md` §"Importer guards":
+   absolute path (`/etc/passwd`), `..` segment, symlink entry,
+   entry outside the `manifest.json` / `template.yaml` /
+   `handover.md` / `notes/` / `runs/NNNN/` layout, per-entry size
+   cap exceeded, total uncompressed size cap exceeded. Each test
+   constructs a minimal tar in-memory via `tar::Builder`, feeds it
+   through the safety check, and asserts the exact
+   `ImportError::TarSafety { kind, path }` variant.
+3. Closing trio: `cargo test --workspace` green, `cargo clippy
+   --workspace --all-targets -- -D warnings` green, `cargo fmt
+   --check` green. Commit via `./bin/mani --config mani.yaml run
+   commit/push --projects codeless` from the workspace root.
+
+### Verify
+
+No source diff this stage. `cargo` checks not run (no code
+touched). Commit: session doc update + handover only, matching
+the halt-commit shape of stages 1, 4, 5, and 6.
+
+### Open questions specific to this halt
+
+- Five consecutive stages (1, 4, 5, 6, 7) have now halted on the
+  same chain. The loop's "burn a session per stage" cost is now
+  fixed overhead until the operator gates firing on `[ -d
+  crates/codeless-runtime/src/job_export ]` or on the (B)
+  migrations grep. Reiterating from prior halts; the cost
+  compounds.
+- Stage 8 (mid-job REVIEW) is the next gate. Firing it against
+  the current tree gives the user nothing to review — no
+  manifest output, no test transcript, no tar-safety results —
+  and will itself halt.
