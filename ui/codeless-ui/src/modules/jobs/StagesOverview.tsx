@@ -95,6 +95,18 @@ interface StageData {
   // mutates it, because the bypass timestamp is written by the
   // recorder and replayed via `list_stages`.
   bypassed: boolean;
+  // Stable `AutoBypassPolicy::policy_name()` value that fired the
+  // bypass — one of the five preset labels or the literal `"Custom"`.
+  // Sourced from the `stage-auto-bypassed` event when the bypass
+  // happens live, or from the rollup's `bypassed_reason` on cold
+  // open. `null` when the row is failed-but-not-bypassed or when the
+  // operator (not a policy) clicked the bypass button.
+  bypassedPolicy: string | null;
+  // Short human-readable reason the stage ended `failed`. Mirrors
+  // the persisted `stages.failure_detail` and is composed under the
+  // bypass tooltip so the recovered-past row still names the rail
+  // that failed without a second RPC.
+  failureDetail: string | null;
 }
 
 // ------------------------------------------------------------------ helpers
@@ -121,13 +133,29 @@ interface Glyph {
   label: string;
 }
 
-function stageGlyph(status: StageStatus): Glyph {
+// `bypassed` is the forward-advance flag set by an operator (or auto-
+// bypass policy) on a failed row — the audit trail keeps the status
+// as `failed` so the original outcome is recoverable, but the row is
+// "we already moved past this". Render that distinctly from a hard
+// halt so an at-a-glance scan of the job overview shows recovery
+// happening: `~` in muted-foreground for bypassed-after-failure vs
+// `!` in destructive for a real halt. The two glyphs share zero
+// visual language deliberately — the user must not confuse "the
+// runtime auto-recovered" with "the runtime stopped and is waiting".
+export function stageGlyph(status: StageStatus, bypassed = false): Glyph {
   switch (status) {
     case "passed":
       return { char: "✓", tone: "text-emerald-600 dark:text-emerald-400", label: "passed" };
     case "running":
       return { char: "●", tone: "text-blue-500", label: "running" };
     case "failed":
+      if (bypassed) {
+        return {
+          char: "~",
+          tone: "text-muted-foreground",
+          label: "bypassed after failure",
+        };
+      }
       return { char: "!", tone: "text-destructive", label: "failed" };
     case "pending":
       return { char: "○", tone: "text-muted-foreground", label: "queued" };
@@ -273,6 +301,8 @@ export function applyEvent(state: StagesState, env: EventEnvelope): StagesState 
         // it on a `stage-started` rebuild would silently downgrade
         // the row to "halted" until the next `list_stages` refresh.
         bypassed: existing?.bypassed ?? false,
+        bypassedPolicy: existing?.bypassedPolicy ?? null,
+        failureDetail: existing?.failureDetail ?? null,
       };
       const nextStages = new Map(state.stages);
       nextStages.set(sid, updated);
@@ -286,13 +316,42 @@ export function applyEvent(state: StagesState, env: EventEnvelope): StagesState 
       if (!stageId) return state;
       const existing = state.stages.get(stageId);
       if (!existing) return state;
+      // `failure_detail` is only carried on the wire when the stage
+      // ended `failed`; preserve any prior value (a `list_stages`
+      // seed) on a `passed` transition so a re-render doesn't blank
+      // the audit trail.
+      const nextFailureDetail =
+        e.status === "passed"
+          ? existing.failureDetail
+          : (e.failure_detail ?? existing.failureDetail ?? null);
       const updated: StageData = {
         ...existing,
         status: e.status === "passed" ? "passed" : "failed",
         endedAt: env.created_at,
+        failureDetail: nextFailureDetail,
       };
       const nextStages = new Map(state.stages);
       nextStages.set(stageId, updated);
+      return { ...state, stages: nextStages };
+    }
+
+    case "stage-auto-bypassed": {
+      // Forward-advance from an auto-bypass policy hit. The recorder
+      // wrote `stages.bypassed_at` in the same commit, so on cold
+      // open the rollup will re-seed `bypassed`; here we additionally
+      // capture `policy_name` so the tooltip can name *which* preset
+      // fired without a second RPC.
+      const sid = stageId ?? e.stage_id;
+      if (!sid) return state;
+      const existing = state.stages.get(sid);
+      if (!existing) return state;
+      const updated: StageData = {
+        ...existing,
+        bypassed: true,
+        bypassedPolicy: e.policy_name,
+      };
+      const nextStages = new Map(state.stages);
+      nextStages.set(sid, updated);
       return { ...state, stages: nextStages };
     }
 
@@ -676,6 +735,14 @@ function mergeRollup(state: StagesState, rollup: StageRollup): StagesState {
     // not when, and the timestamp itself stays on the wire row for
     // the gate panel + audit log surfaces.
     bypassed: s.bypassed_at != null,
+    // Prefer the event-sourced policy name when the live stream
+    // already populated it (it's the canonical
+    // `AutoBypassPolicy::policy_name()` value); fall back to the
+    // rollup's free-text `bypassed_reason` so a cold-open after the
+    // bypass still has *something* to render in the tooltip.
+    bypassedPolicy:
+      existing?.bypassedPolicy ?? s.bypassed_reason ?? null,
+    failureDetail: s.failure_detail ?? existing?.failureDetail ?? null,
   };
   const nextStages = new Map(state.stages);
   nextStages.set(s.id, merged);
@@ -980,11 +1047,25 @@ function StageRow({
   jobId: JobId;
   onOpenStageTab?: (stageId: string, stageName: string) => void;
 }) {
-  const glyph = stageGlyph(stage.status);
+  const glyph = stageGlyph(stage.status, stage.bypassed);
   const hasChildren = stage.children.length > 0;
 
   const title =
     stage.name ?? `Stage ${stage.ordinal !== null ? stage.ordinal + 1 : "?"}`;
+
+  // Tooltip surfaces the bypass-after-failure context inline on the
+  // stage row so an operator scanning the overview sees *why* the
+  // runtime advanced past a failed stage. Shape mirrors the run-log
+  // line: `auto-bypassed by <policy>: <failure_detail>`. Falls back
+  // to a shorter form when either side is missing — a bypass with no
+  // detail still renders, just without the colon-suffix.
+  let titleTooltip: string | undefined;
+  if (stage.bypassed && stage.status === "failed") {
+    const policy = stage.bypassedPolicy ?? "policy";
+    titleTooltip = stage.failureDetail
+      ? `auto-bypassed by ${policy}: ${stage.failureDetail}`
+      : `auto-bypassed by ${policy}`;
+  }
 
   let duration: string | null = null;
   if (stage.startedAt !== null) {
@@ -1028,7 +1109,13 @@ function StageRow({
         >
           {glyph.char}
         </span>
-        <span className="font-medium">{title}</span>
+        <span
+          className="font-medium"
+          title={titleTooltip}
+          data-bypassed={stage.bypassed ? "true" : undefined}
+        >
+          {title}
+        </span>
         <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]">
           {stage.id.slice(0, 8)}
         </span>

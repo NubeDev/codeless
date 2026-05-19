@@ -32,6 +32,7 @@ import {
   applyEvent,
   effectiveTaskStatus,
   emptyStagesState,
+  stageGlyph,
   StagesOverview,
   type TaskRow,
   type TodoRow,
@@ -404,6 +405,141 @@ describe("StagesOverview render — todo rows", () => {
     expect(screen.getAllByText("checks")).toHaveLength(2);
     expect(screen.getAllByText("docs")).toHaveLength(2);
     expect(screen.getAllByText("git")).toHaveLength(2);
+  });
+});
+
+// A failed-and-bypassed stage row reads as "the runtime recovered,
+// keep watching" rather than "the runtime halted and is waiting".
+// The two states share the same persisted `status: failed` so the
+// audit trail is preserved; the divergence is purely render-side:
+// `~` in muted-foreground (bypassed) vs `!` in destructive (halt).
+// The stage title carries a tooltip naming the policy + the
+// rail-level reason so the operator sees recovery happening at a
+// glance instead of clicking through to the run log.
+describe("StagesOverview render — bypassed-after-failure", () => {
+  afterEach(() => cleanup());
+
+  it("returns the muted `~` glyph only for failed + bypassed", () => {
+    expect(stageGlyph("failed", false)).toMatchObject({
+      char: "!",
+      tone: "text-destructive",
+    });
+    expect(stageGlyph("failed", true)).toMatchObject({
+      char: "~",
+      tone: "text-muted-foreground",
+      label: "bypassed after failure",
+    });
+    // The flag is ignored on non-failed rows — a passed/running row
+    // with a stale `bypassed=true` (e.g. mid-rebuild) must not flip
+    // its glyph; the failure column is what `bypassed` qualifies.
+    expect(stageGlyph("passed", true).char).toBe("✓");
+    expect(stageGlyph("running", true).char).toBe("●");
+    expect(stageGlyph("pending", true).char).toBe("○");
+  });
+
+  it("renders the bypass tooltip from `stage-auto-bypassed` + `stage-completed`", async () => {
+    let s = emptyStagesState();
+    s = applyEvent(
+      s,
+      env({ type: "stage-started", stage_id: STAGE, job_id: JOB, name: "auth", ordinal: 0 }),
+    );
+    s = applyEvent(
+      s,
+      env({
+        type: "stage-completed",
+        stage_id: STAGE,
+        status: "failed",
+        failure_class: "pre-check-failed",
+        failure_detail: "scope-patch path drift: src/auth/mod.rs",
+      }),
+    );
+    s = applyEvent(
+      s,
+      env({
+        type: "stage-auto-bypassed",
+        stage_id: STAGE,
+        policy_name: "Quick",
+        comment_used: "ignored — UI reads policy_name only",
+        applied_at: 1_700_000_001_000,
+      }),
+    );
+
+    const stage = s.stages.get(STAGE)!;
+    expect(stage.status).toBe("failed");
+    expect(stage.bypassed).toBe(true);
+    expect(stage.bypassedPolicy).toBe("Quick");
+    expect(stage.failureDetail).toBe("scope-patch path drift: src/auth/mod.rs");
+
+    // The reducer feeds the render path; pin the rendered tooltip
+    // shape so a future refactor that splits the tooltip composer
+    // out can't silently drop either side of the colon.
+    const client = new MockRpcClient();
+    render(
+      <RpcProvider client={client}>
+        <StagesOverview jobId={JOB} />
+      </RpcProvider>,
+    );
+    const emit = (
+      ev: Event,
+      stageId: string | null = STAGE,
+      taskId: string | null = TASK,
+    ) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).emit(ev, JOB, stageId, taskId);
+    };
+    emit({ type: "stage-started", stage_id: STAGE, job_id: JOB, name: "auth", ordinal: 0 });
+    emit({
+      type: "stage-completed",
+      stage_id: STAGE,
+      status: "failed",
+      failure_class: "pre-check-failed",
+      failure_detail: "scope-patch path drift: src/auth/mod.rs",
+    });
+    emit({
+      type: "stage-auto-bypassed",
+      stage_id: STAGE,
+      policy_name: "Quick",
+      comment_used: "ignored",
+      applied_at: 1_700_000_001_000,
+    });
+
+    const title = await screen.findByText("auth");
+    expect(title.getAttribute("data-bypassed")).toBe("true");
+    expect(title.getAttribute("title")).toBe(
+      "auto-bypassed by Quick: scope-patch path drift: src/auth/mod.rs",
+    );
+    // Glyph aria-label flips to the bypass copy so screen readers
+    // also hear "recovered" instead of "halted".
+    expect(screen.getByLabelText("bypassed after failure")).toBeTruthy();
+  });
+
+  it("falls back to a policy-less tooltip when failure_detail is absent", () => {
+    let s = emptyStagesState();
+    s = applyEvent(
+      s,
+      env({ type: "stage-started", stage_id: STAGE, job_id: JOB, name: "auth", ordinal: 0 }),
+    );
+    s = applyEvent(
+      s,
+      env({
+        type: "stage-completed",
+        stage_id: STAGE,
+        status: "failed",
+      }),
+    );
+    s = applyEvent(
+      s,
+      env({
+        type: "stage-auto-bypassed",
+        stage_id: STAGE,
+        policy_name: "Relentless",
+        comment_used: "",
+        applied_at: 1_700_000_002_000,
+      }),
+    );
+    const stage = s.stages.get(STAGE)!;
+    expect(stage.failureDetail).toBeNull();
+    expect(stage.bypassedPolicy).toBe("Relentless");
   });
 });
 

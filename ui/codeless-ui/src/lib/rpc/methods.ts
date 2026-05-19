@@ -188,6 +188,25 @@ export interface StageRollup {
     started_at: number | null;
     ended_at: number | null;
     session_id: string | null;
+    // Forward-advance signal: when set together with `status: failed`,
+    // an operator (or auto-bypass policy) advanced past the failure
+    // instead of halting. The UI uses this to switch the failed glyph
+    // from `!`-in-destructive to `~`-in-muted so a bypassed-after-
+    // failure row reads as "recovered, keep watching" not "halted".
+    bypassed_at?: number | null;
+    // Operator (or policy) free-text reason for the bypass; rendered
+    // in the stage tooltip so the audit trail names *why* the bypass
+    // happened without a second RPC.
+    bypassed_reason?: string | null;
+    // Coarse machine-readable classification of *why* this stage
+    // ended `failed`. Paired with `failure_detail` on the stage
+    // tooltip so the operator sees both the bucket and the verbatim
+    // reason string.
+    failure_class?: string | null;
+    // Short human-readable failure description (one line, ~200 chars).
+    // Surfaced under the bypassed tooltip so the recovered-past row
+    // still carries the reason the rail failed.
+    failure_detail?: string | null;
   };
   cost_cents: number;
   task_count: number;
