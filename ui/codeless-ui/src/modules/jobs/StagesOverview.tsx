@@ -85,6 +85,16 @@ interface StageData {
   endedAt: number | null;
   costCents: number;
   children: ChildRow[];
+  // True when the persisted `stages.bypassed_at` column is set —
+  // i.e. the operator (or an auto-bypass policy) advanced past a
+  // `Failed` row instead of halting. The status column stays
+  // `failed` so the audit trail keeps the original outcome; this
+  // flag is the forward-advance signal a later render path uses to
+  // pick the `~` "bypassed-after-failure" glyph and surface the
+  // bypass reason in a tooltip. Only the rollup seeds it — no event
+  // mutates it, because the bypass timestamp is written by the
+  // recorder and replayed via `list_stages`.
+  bypassed: boolean;
 }
 
 // ------------------------------------------------------------------ helpers
@@ -258,6 +268,11 @@ export function applyEvent(state: StagesState, env: EventEnvelope): StagesState 
         endedAt: existing?.endedAt ?? null,
         costCents: existing?.costCents ?? 0,
         children: existing?.children ?? [],
+        // Preserve a bypass flag set by an earlier rollup seed; the
+        // event stream never carries the bypass timestamp, so losing
+        // it on a `stage-started` rebuild would silently downgrade
+        // the row to "halted" until the next `list_stages` refresh.
+        bypassed: existing?.bypassed ?? false,
       };
       const nextStages = new Map(state.stages);
       nextStages.set(sid, updated);
@@ -654,6 +669,13 @@ function mergeRollup(state: StagesState, rollup: StageRollup): StagesState {
     endedAt: s.ended_at ?? existing?.endedAt ?? null,
     costCents: rollup.cost_cents,
     children: existing?.children ?? [],
+    // `stages.bypassed_at` is the forward-advance signal; the column
+    // is `None` for the common case and `Some(_)` once an operator
+    // bypass (or auto-bypass policy) ran. Reduce to a boolean here
+    // — downstream renderers only care that the row was bypassed,
+    // not when, and the timestamp itself stays on the wire row for
+    // the gate panel + audit log surfaces.
+    bypassed: s.bypassed_at != null,
   };
   const nextStages = new Map(state.stages);
   nextStages.set(s.id, merged);
