@@ -15,59 +15,21 @@ export interface PathPicker {
   pickDirectory(opts?: { startPath?: string }): Promise<string | null>;
 }
 
-// Detect whether the browser exposes the File System Access API's
-// directory picker. Chromium-family browsers do; Firefox and Safari
-// do not. The injector falls back to a typed-input prompt in that
-// case so the UI component above it never has to branch.
-function hasShowDirectoryPicker(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof (window as unknown as { showDirectoryPicker?: unknown })
-      .showDirectoryPicker === "function"
-  );
-}
-
-// `showDirectoryPicker()` does not surface the underlying OS path —
-// it returns a sandboxed handle. The user is supplying a path they
-// already know (they have to, since the server stores the absolute
-// path); the handle's `name` is the directory basename and acts as
-// a hint pre-filled into the typed-input fallback. The caller is
-// still responsible for shipping the full path to the validator.
+// The File System Access API's `showDirectoryPicker()` is deliberately
+// not used here. It returns a sandboxed handle whose only path-shaped
+// field is `handle.name` — the directory basename, never the absolute
+// OS path. Round-tripping that as `/${basename}` faked an absolute
+// path the server then rejected (e.g. picking `/home/me/code/rubix`
+// landed in the prompt as `/rubix`). The honest browser-shell flow is
+// a single typed prompt, paired with the dialog's live
+// `validate_workspace_path` feedback on the surrounding input. The
+// caller is still responsible for shipping the full path to the
+// validator before anything attaches.
 export const browserPathPicker: PathPicker = {
   async pickDirectory({ startPath } = {}) {
-    const initial = startPath ?? "";
-    if (hasShowDirectoryPicker()) {
-      try {
-        const showPicker = (
-          window as unknown as {
-            showDirectoryPicker: (opts?: {
-              mode?: "read" | "readwrite";
-            }) => Promise<{ name: string }>;
-          }
-        ).showDirectoryPicker;
-        const handle = await showPicker({ mode: "read" });
-        const hint = handle.name;
-        const typed = window.prompt(
-          "Enter the absolute path to this directory on the server:",
-          initial || (hint ? `/${hint}` : ""),
-        );
-        return typed?.trim() ? typed.trim() : null;
-      } catch (e) {
-        // User cancelled the native picker — surface as cancel, not
-        // as a thrown error, so callers can treat the typed-input
-        // fallback and the native picker identically.
-        if (
-          e instanceof DOMException &&
-          (e.name === "AbortError" || e.name === "NotAllowedError")
-        ) {
-          return null;
-        }
-        // Any other failure falls through to the typed-input path.
-      }
-    }
     const typed = window.prompt(
       "Enter the absolute path to the workspace directory:",
-      initial,
+      startPath ?? "",
     );
     return typed?.trim() ? typed.trim() : null;
   },
