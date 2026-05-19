@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { AttachWorkspaceDialog } from "@/modules/workspaces/AttachWorkspaceDialog";
 import { DetachWorkspaceDialog } from "@/modules/workspaces/DetachWorkspaceDialog";
 import { EmptyWorkspacesState } from "@/modules/workspaces/EmptyWorkspacesState";
+import { ImportJobDialog } from "@/modules/workspaces/ImportJobDialog";
 import { useWorkspacesStore } from "@/modules/workspaces/store";
 import { useWorkspacesSync } from "@/modules/workspaces/useWorkspacesSync";
 
@@ -29,9 +30,13 @@ export function WorkspacesSection() {
   const setActive = useWorkspacesStore((s) => s.setActive);
 
   const [attachOpen, setAttachOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [detachTarget, setDetachTarget] = useState<AttachedWorkspace | null>(
     null,
   );
+
+  const activeWorkspace =
+    workspaces.find((w) => w.repo_id === activeRepoId) ?? null;
 
   const showEmpty =
     status === "ready" && workspaces.length === 0;
@@ -44,13 +49,29 @@ export function WorkspacesSection() {
           title="Workspaces"
           description="Attach a directory on disk to let the editor and the runner reach it. Detach to take it out of the editor's view."
         />
-        <Button
-          type="button"
-          onClick={() => setAttachOpen(true)}
-          data-testid="workspaces-attach-button"
-        >
-          + Attach
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setImportOpen(true)}
+            disabled={activeRepoId === null}
+            data-testid="workspaces-import-job-button"
+            title={
+              activeRepoId === null
+                ? "Activate a workspace to import a Job"
+                : "Import a .codeless-job bundle into the active workspace"
+            }
+          >
+            Import Job…
+          </Button>
+          <Button
+            type="button"
+            onClick={() => setAttachOpen(true)}
+            data-testid="workspaces-attach-button"
+          >
+            + Attach
+          </Button>
+        </div>
       </div>
 
       {error ? (
@@ -80,6 +101,24 @@ export function WorkspacesSection() {
       <AttachWorkspaceDialog
         open={attachOpen}
         onOpenChange={setAttachOpen}
+      />
+      <ImportJobDialog
+        workspaceId={activeWorkspace?.repo_id ?? null}
+        workspaceName={activeWorkspace?.repo_name ?? null}
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={(result) => {
+          // Navigate to the new Job. Warnings ride along in the URL
+          // hash so JobPage can read them on mount and render the
+          // dismissible banner per §"UI / Imported-Job badge".
+          const hash =
+            result.warnings.length > 0
+              ? `#imported-warnings=${encodeURIComponent(
+                  JSON.stringify(result.warnings.map((w) => w.message)),
+                )}`
+              : "";
+          window.location.assign(`/jobs/${result.job_id}${hash}`);
+        }}
       />
       <DetachWorkspaceDialog
         workspace={detachTarget}
