@@ -11,6 +11,7 @@ For the architectural background see:
 - [`DOCS/JOB-MODEL.md`](../../DOCS/JOB-MODEL.md) — three-fields template (name + goal + stages).
 - [`DOCS/JOB-DIR.md`](../../DOCS/JOB-DIR.md) — directory layout and prompt assembly order.
 - [`DOCS/JOB-WORKFLOW.md`](../../DOCS/JOB-WORKFLOW.md) — iterate loop + per-run notes.
+- [`DOCS/WORKSPACE-ATTACH.md`](../../DOCS/WORKSPACE-ATTACH.md) — workspace model; a job runs against a named attached workspace.
 - [`DOCS/HACKLINE-DEV.md`](../../DOCS/HACKLINE-DEV.md) — full SubmitJobArgs reference.
 
 This doc is the **how-to**, not the why.
@@ -18,6 +19,8 @@ This doc is the **how-to**, not the why.
 ## TL;DR
 
 ```
+You pick:         workspace name (e.g. "codeless", "starter", "dev-pulse")
+                  — one of your attached workspaces; see WORKSPACE-ATTACH.md
 You write:        SCOPE.md   ← what + why + constraints
 Agent works out:  template.yaml (name, goal, stages)
                   WORKFLOW.md   (how to drive the work)
@@ -25,6 +28,13 @@ You add:          curl POST /rpc/submit_job  → status: "draft"
                   curl POST /rpc/write_job_file × N  (overlay docs)
 You start (later): UI "start" button, or POST /rpc/start_job
 ```
+
+The workspace name is the human-readable handle (the `repo_name` field
+in `list_workspaces`); the server resolves it to the underlying
+`repo_id` (a ULID) when it submits. If you have only one workspace
+attached, the name is whatever you typed when you attached it (or
+whatever `--fs-root` resolved to at boot — `codeless` for the default
+demo). With several attached, picking is mandatory.
 
 The job lives at:
 
@@ -204,11 +214,25 @@ content via `write_job_file` after submit returns.
 > your source tree's master. See Hard rule 1 below.
 
 ```sh
-# 0. find the repo id
-REPO_ID=$(curl -s -X POST http://127.0.0.1:7777/rpc/list_repos \
+# 0. pick the workspace by name — resolve to a repo_id.
+#    Pass `WORKSPACE_NAME` explicitly so this script keeps working
+#    when you have more than one workspace attached. The name is the
+#    `repo_name` field surfaced by `list_workspaces`; see
+#    DOCS/WORKSPACE-ATTACH.md for the attach lifecycle.
+WORKSPACE_NAME="${WORKSPACE_NAME:-codeless}"
+REPO_ID=$(curl -s -X POST http://127.0.0.1:7777/rpc/list_workspaces \
   -H 'content-type: application/json' -d '{}' \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["repos"][0]["id"])')
-echo "REPO_ID=$REPO_ID"
+  | python3 -c "
+import sys, json
+target = '$WORKSPACE_NAME'
+ws = json.load(sys.stdin)['workspaces']
+match = [w for w in ws if w['repo_name'] == target]
+if not match:
+    names = ', '.join(w['repo_name'] for w in ws) or '(none attached)'
+    sys.exit(f'workspace {target!r} not attached. Attached: {names}')
+print(match[0]['repo_id'])
+")
+echo "REPO_ID=$REPO_ID  (workspace=$WORKSPACE_NAME)"
 
 # 1. write the template to a tmp file (or pipe; either works)
 cat >/tmp/job-template.yaml <<'YAML'
@@ -332,13 +356,26 @@ under `SubmitJobArgs`.
   `"workspace_mode": "in-repo"` (use `worktree` anyway).
 - **Job stays in `draft` forever** — that's the whole point of
   `start_immediately: false`. Hit start in the UI or call `start_job`.
+- **`workspace 'foo' not attached`** — the name in `WORKSPACE_NAME`
+  is not in `list_workspaces`. Either you typed the wrong name (it
+  is the `repo_name` field exactly, case-sensitive) or you have not
+  attached that workspace yet — open the Workspaces page and click
+  **Attach**, or call `attach_workspace` per
+  [`DOCS/WORKSPACE-ATTACH.md`](../../DOCS/WORKSPACE-ATTACH.md). The
+  bare `--fs-root` boot path auto-attaches one workspace; anything
+  beyond that is explicit.
 - **Server says repo doesn't exist after wipe** — DB is the source of
   truth; if you `reset` `~/.codeless/`, the on-disk job dir survives
-  but you must re-`add-repo` and re-submit. Use the recovery flow in
+  but you must re-attach the workspace (or re-`add-repo` + attach if
+  the repo row is also gone) and re-submit. Use the recovery flow in
   [`GETTING-STARTED.md`](./GETTING-STARTED.md).
-- **Editor can't read scope file** — `--fs-root` must include the
-  repo. Set `CODELESS_FS_ROOT` and restart via
-  `./setup/init-session.sh start --bg`.
+- **Editor can't read scope file** — the workspace covering the repo
+  must be attached so `fs.*` is allowed under that root. Attach via
+  the Workspaces page or `attach_workspace`; the legacy `--fs-root`
+  flag still works as a bootstrap convenience and resolves to an
+  auto-attached workspace on boot (see
+  [`DOCS/WORKSPACE-ATTACH.md`](../../DOCS/WORKSPACE-ATTACH.md)
+  §"Migration / backwards compat").
 
 ## Worked example — the assistant job
 
