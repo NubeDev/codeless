@@ -12,20 +12,22 @@ use codeless_rpc::{
     GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs, JobDiffArgs,
     JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListChatBindingsForJobArgs, ListChatBindingsForJobResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
-    ListPersonasResult, ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult,
-    ListReviewsArgs, ListReviewsResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
+    ListChatAdaptersResult, ListChatBindingsForJobArgs, ListChatBindingsForJobResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs,
+    ListJobsResult, ListPersonasArgs, ListPersonasResult, ListProposedPatchesArgs,
+    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    ListRunnersResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
     OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, RpcResult, RpcServer,
-    ScopePatchActionResult, SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    ScopePatchActionResult, SetChatAdapterEnabledArgs, SetJobPolicyArgs, SetRunnerEnabledArgs,
+    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
+    SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UpsertPersonaArgs, ValidateChatAdapterSecretsArgs, ValidateChatAdapterSecretsResult,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review};
 use futures_util::StreamExt;
@@ -404,6 +406,29 @@ impl RpcServer for HttpRpcClient {
         args: ValidateWorkspacePathArgs,
     ) -> RpcResult<ValidateWorkspacePathResult> {
         self.call("validate_workspace_path", &args).await
+    }
+
+    async fn list_chat_adapters(&self) -> RpcResult<ListChatAdaptersResult> {
+        self.call("list_chat_adapters", &EmptyArgs {}).await
+    }
+
+    async fn set_chat_adapter_enabled(&self, args: SetChatAdapterEnabledArgs) -> RpcResult<()> {
+        self.call_void("set_chat_adapter_enabled", &args).await
+    }
+
+    async fn validate_chat_adapter_secrets(
+        &self,
+        args: ValidateChatAdapterSecretsArgs,
+    ) -> RpcResult<ValidateChatAdapterSecretsResult> {
+        self.call("validate_chat_adapter_secrets", &args).await
+    }
+
+    async fn list_runners(&self) -> RpcResult<ListRunnersResult> {
+        self.call("list_runners", &EmptyArgs {}).await
+    }
+
+    async fn set_runner_enabled(&self, args: SetRunnerEnabledArgs) -> RpcResult<()> {
+        self.call_void("set_runner_enabled", &args).await
     }
 
     async fn list_assistant_threads(

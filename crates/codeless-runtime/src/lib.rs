@@ -54,9 +54,7 @@ pub use anthropic_runner::AnthropicRunnerAdapter;
 pub use claude_runner::{parse_permission_mode, ClaudeRunnerAdapter};
 pub use codex_runner::CodexRunnerAdapter;
 pub use copilot_runner::CopilotRunnerAdapter;
-pub use default_runner_factory::{
-    compose_system_prompt, demo_mock_script, DefaultRunnerFactory,
-};
+pub use default_runner_factory::{compose_system_prompt, demo_mock_script, DefaultRunnerFactory};
 pub use driver::drive_job;
 pub use event_bus::{EventBus, SubscribeFilter};
 pub use heartbeat::spawn_heartbeat;
@@ -71,6 +69,9 @@ pub use notifier::{
 };
 pub use plan_subscribe::spawn_plan_engine_subscriber;
 pub use queue_config::QueueConfig;
+pub use rpc::adapters::{
+    required_secret_keys, StaticValidationProbe, ValidationProbe, VALIDATE_TIMEOUT,
+};
 pub use rpc::InProcessRpc;
 pub use rpc::{ChatCancelEntry, ChatCancels};
 pub use runner::{Runner, RunnerContext, RunnerOutcome};

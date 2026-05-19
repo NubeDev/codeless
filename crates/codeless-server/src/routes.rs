@@ -99,6 +99,17 @@ pub(crate) fn router(state: AppState) -> Router {
             "/rpc/validate_workspace_path",
             post(validate_workspace_path),
         )
+        .route("/rpc/list_chat_adapters", post(list_chat_adapters))
+        .route(
+            "/rpc/set_chat_adapter_enabled",
+            post(set_chat_adapter_enabled),
+        )
+        .route(
+            "/rpc/validate_chat_adapter_secrets",
+            post(validate_chat_adapter_secrets),
+        )
+        .route("/rpc/list_runners", post(list_runners))
+        .route("/rpc/set_runner_enabled", post(set_runner_enabled))
         .route("/rpc/list_assistant_threads", post(list_assistant_threads))
         .route(
             "/rpc/create_assistant_thread",
@@ -667,6 +678,53 @@ async fn validate_workspace_path(
         .validate_workspace_path(args)
         .await
         .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_chat_adapters(
+    State(st): State<AppState>,
+    _body: Option<Json<Value>>,
+) -> HandlerResult<codeless_rpc::ListChatAdaptersResult> {
+    st.rpc.list_chat_adapters().await.map(Json).map_err(map_err)
+}
+
+async fn set_chat_adapter_enabled(
+    State(st): State<AppState>,
+    Json(args): Json<codeless_rpc::SetChatAdapterEnabledArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .set_chat_adapter_enabled(args)
+        .await
+        .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn validate_chat_adapter_secrets(
+    State(st): State<AppState>,
+    Json(args): Json<codeless_rpc::ValidateChatAdapterSecretsArgs>,
+) -> HandlerResult<codeless_rpc::ValidateChatAdapterSecretsResult> {
+    st.rpc
+        .validate_chat_adapter_secrets(args)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn list_runners(
+    State(st): State<AppState>,
+    _body: Option<Json<Value>>,
+) -> HandlerResult<codeless_rpc::ListRunnersResult> {
+    st.rpc.list_runners().await.map(Json).map_err(map_err)
+}
+
+async fn set_runner_enabled(
+    State(st): State<AppState>,
+    Json(args): Json<codeless_rpc::SetRunnerEnabledArgs>,
+) -> HandlerResult<Value> {
+    st.rpc
+        .set_runner_enabled(args)
+        .await
+        .map(|()| Json(Value::Null))
         .map_err(map_err)
 }
 

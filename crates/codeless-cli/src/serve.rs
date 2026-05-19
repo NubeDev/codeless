@@ -8,10 +8,6 @@
 //! or XDG default) backs `core_bearer_token`. Single-tenant per
 //! SCOPE.md R5: one token for browser + future mobile clients.
 
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
-use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
@@ -20,10 +16,16 @@ use codeless_runtime::{
     spawn_job_driver_loop, spawn_notifier, spawn_plan_engine_subscriber, spawn_stage_recorder,
     DefaultRunnerFactory, InProcessRpc, WebhookConfig, WebhookNotifier,
 };
+#[cfg(test)]
+use codeless_runtime::compose_system_prompt;
 use codeless_server::{
     load_bearer_token, serve_with_shutdown, AppState, AuthMode, TokenLoadError, TOKEN_SECRET_KEY,
 };
 use codeless_tools::plan::{LogJobSpawner, PlanEngine};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::Arc;
 
 use crate::rpc_open;
 
@@ -269,7 +271,9 @@ async fn run_server(
     let effective = codeless_runtime::adapter_registry::load_effective(runtime.pool())
         .await
         .unwrap_or_else(|e| {
-            eprintln!("codeless-server: adapter registry read failed, falling back to CLI flags: {e}");
+            eprintln!(
+                "codeless-server: adapter registry read failed, falling back to CLI flags: {e}"
+            );
             codeless_runtime::adapter_registry::EffectiveAdapterRegistry {
                 slack_enabled: args.enable_slack,
                 telegram_enabled: args.enable_telegram,
@@ -800,7 +804,6 @@ fn resolve_mcp_binary() -> Option<String> {
     tracing::warn!("codeless-mcp binary not found; jobs will not have access to codeless tools");
     None
 }
-
 
 /// Set up the `tracing-subscriber` for the running server. Reads
 /// `RUST_LOG` for the env-filter directive (defaults to

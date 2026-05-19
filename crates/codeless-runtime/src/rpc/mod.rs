@@ -37,6 +37,7 @@ use crate::migrations::MIGRATOR;
 use crate::store::SqliteStore;
 use crate::time::now_ms;
 
+pub(crate) mod adapters;
 pub(crate) mod assistant;
 pub(crate) mod assistant_planner;
 pub(crate) mod attachment;
@@ -94,6 +95,23 @@ pub struct InProcessRpc {
     /// `upload_assistant_attachment` returns `Internal` so the UI
     /// surfaces a typed error rather than a panic.
     pub(crate) assistant_data_dir: Option<std::path::PathBuf>,
+    /// Process-lifetime state for the adapter-registry RPCs: which
+    /// `(kind, instance_id)` pairs have passed
+    /// `validate_chat_adapter_secrets`, and the per-bucket sliding
+    /// window that enforces the 5/s limit. Defaults to an empty
+    /// validated set on construction so the first
+    /// `set_chat_adapter_enabled(true)` after boot refuses with
+    /// `MissingSecrets` until a validate call lands — the
+    /// load-bearing UX contract documented in
+    /// `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry".
+    pub(crate) validation: Arc<adapters::ValidationState>,
+    /// Pluggable upstream probe that powers
+    /// `validate_chat_adapter_secrets`. `None` matches a runtime
+    /// built without `with_validation_probe` and surfaces as
+    /// `RpcError::Internal` on a validate call — never a panic.
+    /// The CLI installs an HTTP-backed probe at boot; tests install
+    /// `StaticValidationProbe`.
+    pub(crate) validation_probe: Option<Arc<dyn adapters::ValidationProbe>>,
 }
 
 /// One entry in the chat-cancel registry. `job_id` is the
@@ -179,6 +197,8 @@ impl InProcessRpc {
             agent_chat_cwd: None,
             chat_cancels: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             assistant_data_dir: None,
+            validation: Arc::new(adapters::ValidationState::new()),
+            validation_probe: None,
         })
     }
 
@@ -218,6 +238,17 @@ impl InProcessRpc {
     /// return `Internal`; threads still create and delete.
     pub fn with_assistant_data_dir(mut self, root: std::path::PathBuf) -> Self {
         self.assistant_data_dir = Some(root);
+        self
+    }
+
+    /// Install the upstream probe powering `validate_chat_adapter_secrets`.
+    /// Without this, validate calls return `Internal` so the failure
+    /// is a typed wiring error rather than a panic; with it, calls go
+    /// through the 5s timeout and the per-bucket rate limit defined
+    /// in `rpc::adapters`. Tests pass `StaticValidationProbe` so the
+    /// round-trip exercise does not touch the network.
+    pub fn with_validation_probe(mut self, probe: Arc<dyn adapters::ValidationProbe>) -> Self {
+        self.validation_probe = Some(probe);
         self
     }
 
@@ -461,6 +492,32 @@ impl RpcServer for InProcessRpc {
         args: codeless_rpc::ValidateWorkspacePathArgs,
     ) -> RpcResult<codeless_rpc::ValidateWorkspacePathResult> {
         workspaces::validate_workspace_path(self, args).await
+    }
+
+    async fn list_chat_adapters(&self) -> RpcResult<codeless_rpc::ListChatAdaptersResult> {
+        adapters::list_chat_adapters(self).await
+    }
+
+    async fn set_chat_adapter_enabled(
+        &self,
+        args: codeless_rpc::SetChatAdapterEnabledArgs,
+    ) -> RpcResult<()> {
+        adapters::set_chat_adapter_enabled(self, args).await
+    }
+
+    async fn validate_chat_adapter_secrets(
+        &self,
+        args: codeless_rpc::ValidateChatAdapterSecretsArgs,
+    ) -> RpcResult<codeless_rpc::ValidateChatAdapterSecretsResult> {
+        adapters::validate_chat_adapter_secrets(self, args).await
+    }
+
+    async fn list_runners(&self) -> RpcResult<codeless_rpc::ListRunnersResult> {
+        adapters::list_runners(self).await
+    }
+
+    async fn set_runner_enabled(&self, args: codeless_rpc::SetRunnerEnabledArgs) -> RpcResult<()> {
+        adapters::set_runner_enabled(self, args).await
     }
 
     async fn list_assistant_threads(

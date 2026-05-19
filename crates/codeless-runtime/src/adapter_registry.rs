@@ -57,11 +57,7 @@ pub async fn upsert_chat_adapter(
 
 /// Upsert a single runner row. Same idempotency contract as
 /// `upsert_chat_adapter`: the caller's `enabled` value wins.
-pub async fn upsert_runner(
-    pool: &SqlitePool,
-    runner_id: &str,
-    enabled: bool,
-) -> sqlx::Result<()> {
+pub async fn upsert_runner(pool: &SqlitePool, runner_id: &str, enabled: bool) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO runner_config (runner_id, enabled) VALUES (?, ?) \
          ON CONFLICT(runner_id) DO UPDATE SET enabled = excluded.enabled",
@@ -93,12 +89,14 @@ pub async fn list_chat_adapters(pool: &SqlitePool) -> sqlx::Result<Vec<ChatAdapt
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(kind, instance_id, enabled, configured_at_ms)| ChatAdapterRow {
-            kind,
-            instance_id,
-            enabled: enabled != 0,
-            configured_at_ms,
-        })
+        .map(
+            |(kind, instance_id, enabled, configured_at_ms)| ChatAdapterRow {
+                kind,
+                instance_id,
+                enabled: enabled != 0,
+                configured_at_ms,
+            },
+        )
         .collect())
 }
 

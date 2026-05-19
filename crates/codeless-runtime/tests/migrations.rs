@@ -271,15 +271,14 @@ async fn adapter_registry_tables_match_workspace_attach_todo() {
     // Composite PK on `(kind, instance_id)` is what lets the registry
     // grow Slack-personal + Slack-work later without a schema change;
     // the migration's contract is that both columns sit in the PK.
-    let pk: Vec<String> = sqlx::query(
-        "SELECT name FROM pragma_table_info('chat_adapters') WHERE pk > 0 ORDER BY pk",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("chat_adapters pk")
-    .into_iter()
-    .map(|r| r.get::<String, _>("name"))
-    .collect();
+    let pk: Vec<String> =
+        sqlx::query("SELECT name FROM pragma_table_info('chat_adapters') WHERE pk > 0 ORDER BY pk")
+            .fetch_all(&pool)
+            .await
+            .expect("chat_adapters pk")
+            .into_iter()
+            .map(|r| r.get::<String, _>("name"))
+            .collect();
     assert_eq!(
         pk,
         vec!["kind".to_string(), "instance_id".to_string()],
@@ -303,11 +302,10 @@ async fn adapter_registry_tables_match_workspace_attach_todo() {
         .await
         .unwrap();
     assert_eq!(count, 1, "chat_adapters upsert must be in-place");
-    let enabled: i64 =
-        sqlx::query_scalar("SELECT enabled FROM chat_adapters WHERE kind = 'slack'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let enabled: i64 = sqlx::query_scalar("SELECT enabled FROM chat_adapters WHERE kind = 'slack'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(enabled, 0, "second upsert flipped enabled to false");
 
     upsert_runner(&pool, "claude", true)

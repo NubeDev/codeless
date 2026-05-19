@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use codeless_types::{
     AttachWorkspaceArgs, AttachWorkspaceResult, ChatBinding, ChatMessage, DetachWorkspaceArgs, Job,
-    ListWorkspacesResult, Persona, Repo, Review, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult,
+    ListChatAdaptersResult, ListRunnersResult, ListWorkspacesResult, Persona, Repo, Review,
+    SetChatAdapterEnabledArgs, SetRunnerEnabledArgs, ValidateChatAdapterSecretsArgs,
+    ValidateChatAdapterSecretsResult, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
 };
 
 use crate::error::RpcResult;
@@ -363,6 +364,55 @@ pub trait RpcServer: Send + Sync + 'static {
         &self,
         args: ValidateWorkspacePathArgs,
     ) -> RpcResult<ValidateWorkspacePathResult>;
+
+    /// Snapshot every chat-adapter row, ordered by `(kind, instance_id)`
+    /// so the Settings → Adapters page renders deterministically. Empty
+    /// list before any boot upsert or UI write has landed.
+    async fn list_chat_adapters(&self) -> RpcResult<ListChatAdaptersResult>;
+
+    /// Flip the `enabled` bit on one chat-adapter row. Enabling
+    /// (`enabled = true`) refuses with `AdapterError::MissingSecrets`
+    /// when the required secret keys are absent from the
+    /// `SecretStore`, and with `AdapterError::ValidationFailed` when
+    /// no prior successful `validate_chat_adapter_secrets` for the
+    /// same `(kind, instance_id)` is cached for this server process.
+    /// Disabling (`enabled = false`) skips both checks so a broken
+    /// adapter can always be turned off. The change is persisted
+    /// immediately and arms the row for the next `restart_server`;
+    /// stage 2 (hot-reload) is explicitly deferred per
+    /// `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry".
+    async fn set_chat_adapter_enabled(&self, args: SetChatAdapterEnabledArgs) -> RpcResult<()>;
+
+    /// Dry-run secret check for one chat-adapter instance. The runtime
+    /// hits the upstream identity endpoint (Slack `auth.test`, Telegram
+    /// `getMe`) under a 5s hard timeout and a 5/s per-`(kind,
+    /// instance_id)` token bucket. A successful result is cached
+    /// in-process for the lifetime of the server so the matching
+    /// `set_chat_adapter_enabled(true)` is accepted; a restart clears
+    /// the cache and forces re-validation. Result variants are
+    /// observations the UI renders inline — RPC-level errors
+    /// (`Internal`, `NotConfigured`) only fire on shape / wiring
+    /// failures, never on a credential rejection.
+    async fn validate_chat_adapter_secrets(
+        &self,
+        args: ValidateChatAdapterSecretsArgs,
+    ) -> RpcResult<ValidateChatAdapterSecretsResult>;
+
+    /// Snapshot every runner-config row, ordered by `runner_id`. Same
+    /// "empty before any boot upsert" contract as
+    /// `list_chat_adapters`. The result is the source of truth for the
+    /// effective enabled set — the boot-time `--enable-claude` /
+    /// `--enable-anthropic` flags upsert these rows before the
+    /// `RunnerConfig` is built.
+    async fn list_runners(&self) -> RpcResult<ListRunnersResult>;
+
+    /// Flip the `enabled` bit on one runner row. No validation step
+    /// (runners are local binaries, not credentialed services); the
+    /// change is persisted immediately and arms the row for the next
+    /// `restart_server`. Unknown `runner_id` values are accepted —
+    /// a future runner crate registers itself the same way without a
+    /// schema change.
+    async fn set_runner_enabled(&self, args: SetRunnerEnabledArgs) -> RpcResult<()>;
 
     /// List every assistant thread on this host, newest-touched first.
     /// Unfiltered by design — see `AssistantThread`: threads are not
