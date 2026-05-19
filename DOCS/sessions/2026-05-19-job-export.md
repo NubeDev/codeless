@@ -308,3 +308,125 @@ No source diff. New file:
 `.codeless/jobs/job-export/BUNDLE-DESIGN.md`. `cargo` checks not
 run (no code touched). Commit: handover + session doc + design doc
 only.
+
+## Stage 4 — walker + serializer  `[!]` halted on (B)
+
+Stage 4 is "implement codeless-runtime job_export walker plus
+serializer that emits manifest, JSONL streams, and the gzipped tar
+to a server-side path."
+
+This is the first **implementation** stage. Per the job's own
+[`WORKFLOW.md`](../../.codeless/jobs/job-export/WORKFLOW.md#precondition-check-stage-1)
+and stage 1's halt finding, implementation stages 4–7 cannot land
+until JOB-WORKFLOW (B) — the Job/Run split — is merged. The bundle
+layout (`runs/NNNN/run.json` with `template_snapshot` /
+`handover_snapshot`, per-Run JSONL streams keyed by an immutable
+`runs.id`, `events.run_id` re-key) is built directly on the schema
+(B) ships.
+
+### Re-verification this stage
+
+Repeated the stage-1 grep:
+
+```
+$ ls crates/codeless-runtime/migrations/
+0001…0028 (no 0018), no migration adds a `runs` table.
+
+$ grep -li "CREATE TABLE.*runs\b\|template_snapshot\|handover_snapshot\|handover_md" \
+    crates/codeless-runtime/migrations/*.sql
+(no matches)
+```
+
+`jobs` still owns `template_yaml`, `runner`, `branch`,
+`worktree_path`, `cost_cap_cents`, `wall_clock_cap_ms`, `cost_cents`,
+`started_at`, `ended_at`. There is no `runs` table, no
+`runs.template_snapshot`, no `runs.handover_snapshot`, no
+`jobs.handover_md`, no `events.run_id`. The state of the world has
+not changed since stage 1.
+
+### Why this stage cannot scaffold around (B)
+
+Three concrete reasons, each enough on its own:
+
+1. **`runs/NNNN/run.json` has no source row.** The locked schema
+   (BUNDLE-DESIGN §3 "Per-Run `run.json` shape") requires `id`,
+   `ordinal`, `template_snapshot`, `handover_snapshot`,
+   `resumed_from_stage`, `created_at` — none of which exist on the
+   current `jobs` row. Synthesising one Run row per Job at export
+   time would mean inventing `template_snapshot` and
+   `handover_snapshot` content that the post-(B) world will not
+   produce the same way (it snapshots at Run-start; we have no
+   Run-start). The importer in a post-(B) world would then have to
+   distinguish "real (B)-era bundles" from "stage-4 scaffolded
+   bundles" — the exact translation layer `WORKFLOW.md` forbids.
+
+2. **`events.jsonl` cannot key by Run.** Today `events.job_id` is
+   nullable; under (B) it becomes `events.run_id`. The bundle's
+   per-Run `events.jsonl` stream is "every event for this Run." Pre-(B)
+   the runtime has no `run_id` to filter on, so the stream would
+   collapse to "every event for this Job" inside the first (and
+   only) run directory — which is a different shape than the locked
+   design. Stage 5's importer is built to read the locked shape.
+
+3. **WORKFLOW.md explicit rule.** Quoting it verbatim: *"Do not try
+   to scaffold around it; the bundle layout depends on immutable
+   Run rows."* This is the contract the user wrote when they
+   scaffolded this job; stage 4 must honour it.
+
+R4 in the repo `CLAUDE.md` ("no half-finished implementations […]
+mark it `[!]` in the active session doc and halt") makes the call
+unambiguous: halt with `[!]`, do not commit a partial implementation
+with a TODO. No `job_export/` module is created this stage.
+
+### What stage 4 will do once (B) lands
+
+For the next agent that picks this up after (B) merges:
+
+1. Re-survey the post-(B) schema: confirm the `runs` table column
+   set matches `DOCS/JOB-WORKFLOW.md` §(B); confirm
+   `events.run_id` re-key; confirm `jobs.handover_md` exists.
+2. Create `crates/codeless-runtime/src/job_export/` with one file
+   per concept per R3:
+   - `mod.rs` — re-exports + the `export_job` entrypoint signature
+     matching the wire type in `codeless-rpc`.
+   - `limits.rs` — every `pub const` from BUNDLE-DESIGN §5 with a
+     `#[cfg(test)]` override hook.
+   - `denylist.rs` — the case-insensitive substring regex set from
+     BUNDLE-DESIGN §4, plus a `column_allowed(name: &str) -> bool`
+     helper used by every JSONL serializer.
+   - `manifest.rs` — the `Manifest`, `Exporter`, `Source`,
+     `Content` structs (serde + `deny_unknown_fields` on the import
+     side; emit-order locked per BUNDLE-DESIGN §3).
+   - `walker.rs` — the SQLite walk: one query per table, ordered by
+     the keys BUNDLE-DESIGN §3 locks (`stages.ordinal`,
+     `(stage_ordinal, task_ordinal)`, `(task_id, ordinal)`,
+     `events.cursor`, `(reviews.requested_at, id)`). Streams rows
+     out as iterators; never collects whole tables in memory.
+   - `serializer.rs` — wraps the walker iterators into the
+     `manifest.json`, `template.yaml`, `handover.md`, `notes/*.md`,
+     `runs/NNNN/run.json`, and five JSONL files. Owns the
+     `worktree_path` → `worktree_path_source` rename and the
+     `lease_holder` / `lease_expires_at` drop.
+   - `tar_writer.rs` — gzipped tar emit with mtime-zeroed gzip
+     header and deterministic entry order per BUNDLE-DESIGN §1.
+     Enforces `MAX_BUNDLE_BYTES` and `MAX_ENTRY_BYTES` as it writes
+     (refuses to finalize once exceeded — does not write a truncated
+     bundle).
+   - Each file ships unit tests in the same commit per R5. Tests use
+     tiny `#[cfg(test)]` cap overrides from `limits.rs`.
+3. Wire the OQ-3 jail check on `output_path` at the entrypoint:
+   canonicalise, prefix-check against the workspace's
+   `fs_root_canonical`, refuse with
+   `OutputPathOutsideWorkspace { fs_root, output_path }`.
+4. Wire the refuse-to-export preconditions from BUNDLE-DESIGN §7:
+   non-terminal Run, empty `repos.url`, output path jail, cap
+   exceed.
+5. `cargo test --workspace` green, `cargo clippy --workspace
+   --all-targets -- -D warnings` green, `cargo fmt --check` green.
+6. Hand over to stage 5 (importer).
+
+### Verify
+
+No source diff. `cargo` checks not run (no code touched). Commit:
+session doc update + handover only, mirroring stage 1's halt commit
+shape.
