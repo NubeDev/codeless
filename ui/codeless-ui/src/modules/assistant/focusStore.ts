@@ -1,17 +1,26 @@
 import { create } from "zustand";
 
-// Persistence key for the last-used thread id. localStorage is enough
-// for the single-tenant trust boundary (R5): the bearer-token client
-// already knows it is the sole user; the server-side "pinned thread"
-// row is a future revision. If the stored id no longer resolves on
-// the server (deleted thread), the footer transparently clears it on
-// the next refresh.
-const STORAGE_KEY = "codeless.assistant.currentThreadId";
+// Per-tab persistence for the last-used thread id. The "focused
+// thread" is a projection of which thread *this tab* is currently
+// viewing — two browser tabs against the same Codeless server view
+// two different workspaces and so own independent focus pointers.
+// `sessionStorage` keeps the value across reloads of the same tab
+// (so a `?workspace=…` deep-link refresh rehydrates the right
+// thread) while keeping the value isolated from any other tab on
+// the same origin. The server-side "pinned thread" row is a future
+// revision; if the stored id no longer resolves on the server
+// (deleted thread), the footer transparently clears it on the next
+// refresh.
+//
+// Key version bumped from `codeless.assistant.currentThreadId` (old
+// localStorage) to `.v2` so an upgrade does not silently re-import
+// the cross-tab-leaking value the old key holds.
+const STORAGE_KEY = "codeless.assistant.currentThreadId.v2";
 
 function readStored(): string | null {
   if (typeof window === "undefined") return null;
   try {
-    return window.localStorage.getItem(STORAGE_KEY);
+    return window.sessionStorage.getItem(STORAGE_KEY);
   } catch {
     return null;
   }
@@ -20,11 +29,12 @@ function readStored(): string | null {
 function writeStored(value: string | null): void {
   if (typeof window === "undefined") return;
   try {
-    if (value === null) window.localStorage.removeItem(STORAGE_KEY);
-    else window.localStorage.setItem(STORAGE_KEY, value);
+    if (value === null) window.sessionStorage.removeItem(STORAGE_KEY);
+    else window.sessionStorage.setItem(STORAGE_KEY, value);
   } catch {
-    // localStorage can throw on quota / disabled storage; the footer
-    // keeps working with in-memory state, just without persistence.
+    // sessionStorage can throw on quota / disabled storage; the
+    // footer keeps working with in-memory state, just without
+    // refresh-persistence.
   }
 }
 

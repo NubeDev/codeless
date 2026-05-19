@@ -411,8 +411,33 @@ async fn fs_round_trip_through_router() {
         InProcessRpc::new()
             .await
             .expect("rpc init")
-            .with_fs(Arc::new(HostFs::new(tmp.path()).unwrap())),
+            .with_fs(Arc::new(HostFs::empty())),
     );
+    // Mint a repo + attached workspace so `fs.*` calls can route
+    // through `repo_id`. The `fs.*` surface is jail-per-repo now;
+    // tests that route over the router exercise that path the same
+    // way the browser tabs do.
+    let repo = rpc
+        .add_repo(codeless_rpc::AddRepoArgs {
+            name: format!("fs-route-{}", codeless_types::RepoId::new()),
+            clone_url: format!("file://{}", tmp.path().display()),
+            default_branch: "main".into(),
+            local_path: tmp.path().to_string_lossy().into_owned(),
+            git_auth: codeless_types::GitAuth::Token {
+                env_var: "GITHUB_TOKEN".into(),
+            },
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .unwrap();
+    rpc.attach_workspace(codeless_rpc::AttachWorkspaceArgs {
+        repo_id: repo.id,
+        fs_root_override: None,
+    })
+    .await
+    .unwrap();
+    let repo_id = repo.id.to_string();
     let state = AppState::new(rpc, TOKEN);
     let app = build_router(state);
 
@@ -420,7 +445,7 @@ async fn fs_round_trip_through_router() {
         .clone()
         .oneshot(post(
             "/rpc/fs_write_file",
-            json!({ "path": "hello.txt", "content": "world" }),
+            json!({ "repo_id": repo_id, "path": "hello.txt", "content": "world" }),
             Some(TOKEN),
         ))
         .await
@@ -431,7 +456,7 @@ async fn fs_round_trip_through_router() {
         .clone()
         .oneshot(post(
             "/rpc/fs_read_file",
-            json!({ "path": "hello.txt" }),
+            json!({ "repo_id": repo_id, "path": "hello.txt" }),
             Some(TOKEN),
         ))
         .await
@@ -443,7 +468,7 @@ async fn fs_round_trip_through_router() {
     let escape = app
         .oneshot(post(
             "/rpc/fs_read_file",
-            json!({ "path": "../etc/passwd" }),
+            json!({ "repo_id": repo_id, "path": "../etc/passwd" }),
             Some(TOKEN),
         ))
         .await
@@ -457,7 +482,7 @@ async fn fs_without_root_returns_internal() {
     let resp = app
         .oneshot(post(
             "/rpc/fs_read_dir",
-            json!({ "path": "." }),
+            json!({ "repo_id": codeless_types::RepoId::new().to_string(), "path": "." }),
             Some(TOKEN),
         ))
         .await

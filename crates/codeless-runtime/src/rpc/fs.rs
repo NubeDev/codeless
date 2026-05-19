@@ -1,18 +1,49 @@
+use std::path::PathBuf;
+
 use codeless_adapters_host::FsError;
 use codeless_rpc::{
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    RpcError, RpcResult,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, RpcError, RpcResult,
 };
+use codeless_types::RepoId;
 
 use super::InProcessRpc;
+
+/// Resolve `repo_id` to the attached workspace's `fs_root_canonical`.
+/// Returns `NotFound` for an unknown or detached `repo_id` so the UI
+/// can render a clear "workspace not attached" rather than a generic
+/// `Internal` error. The host adapter is consulted as a
+/// defence-in-depth check — the DB row is the source of truth, but if
+/// the adapter's allow-list does not include this root the workspace
+/// is considered detached even when the row still exists.
+pub(crate) async fn fs_root_for_repo(rpc: &InProcessRpc, repo_id: RepoId) -> RpcResult<PathBuf> {
+    let row: Option<String> =
+        sqlx::query_scalar("SELECT fs_root_canonical FROM attached_workspaces WHERE repo_id = ?")
+            .bind(repo_id.to_string())
+            .fetch_optional(rpc.pool())
+            .await
+            .map_err(super::db_err)?;
+    let canonical =
+        row.ok_or_else(|| RpcError::NotFound(format!("workspace not attached: {repo_id}")))?;
+    let path = PathBuf::from(&canonical);
+    if let Some(fs) = rpc.fs.as_ref() {
+        if !fs.root_is_registered(&path) {
+            return Err(RpcError::NotFound(format!(
+                "workspace not attached: {repo_id}"
+            )));
+        }
+    }
+    Ok(path)
+}
 
 pub(super) async fn fs_read_dir(
     rpc: &InProcessRpc,
     args: FsReadDirArgs,
 ) -> RpcResult<FsReadDirResult> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    let entries = fs.read_dir(&args.path).await.map_err(fs_err)?;
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
+    let entries = fs.read_dir_in(&jail, &args.path).await.map_err(fs_err)?;
     Ok(FsReadDirResult { entries })
 }
 
@@ -21,13 +52,15 @@ pub(super) async fn fs_read_file(
     args: FsReadFileArgs,
 ) -> RpcResult<FsReadFileResult> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    let content = fs.read_file(&args.path).await.map_err(fs_err)?;
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
+    let content = fs.read_file_in(&jail, &args.path).await.map_err(fs_err)?;
     Ok(FsReadFileResult { content })
 }
 
 pub(super) async fn fs_write_file(rpc: &InProcessRpc, args: FsWriteFileArgs) -> RpcResult<()> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    fs.write_file(&args.path, &args.content)
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
+    fs.write_file_in(&jail, &args.path, &args.content)
         .await
         .map_err(fs_err)?;
     Ok(())
@@ -35,7 +68,8 @@ pub(super) async fn fs_write_file(rpc: &InProcessRpc, args: FsWriteFileArgs) -> 
 
 pub(super) async fn fs_stat(rpc: &InProcessRpc, args: FsStatArgs) -> RpcResult<FsStatResult> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    let entry = fs.stat(&args.path).await.map_err(fs_err)?;
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
+    let entry = fs.stat_in(&jail, &args.path).await.map_err(fs_err)?;
     Ok(match entry {
         Some((kind, size, mtime)) => FsStatResult {
             kind: Some(kind),
@@ -50,43 +84,49 @@ pub(super) async fn fs_stat(rpc: &InProcessRpc, args: FsStatArgs) -> RpcResult<F
     })
 }
 
-pub(super) async fn fs_cwd(rpc: &InProcessRpc) -> RpcResult<FsCwdResult> {
-    let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    // No attached workspace = no meaningful cwd. The UI's empty state
-    // branches on this; mapping to `Internal` would render as a vague
-    // crash so a typed `NotFound` is the cleaner shape.
-    let root = fs
-        .root()
-        .ok_or_else(|| RpcError::NotFound("no workspace attached".to_owned()))?;
+pub(super) async fn fs_cwd(rpc: &InProcessRpc, args: FsCwdArgs) -> RpcResult<FsCwdResult> {
+    // The adapter is consulted only for the registration check inside
+    // `fs_root_for_repo`; `fs_cwd` itself just echoes the DB-resolved
+    // canonical path. The early `fs_not_configured` mirrors the rest
+    // of the surface so a runtime built without `with_fs` returns
+    // `Internal` from every `fs_*` method.
+    let _ = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
     Ok(FsCwdResult {
-        path: root.to_string_lossy().into_owned(),
+        path: jail.to_string_lossy().into_owned(),
     })
 }
 
 pub(super) async fn fs_create_file(rpc: &InProcessRpc, args: FsCreateFileArgs) -> RpcResult<()> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    fs.create_file(&args.path, args.content.as_deref(), args.overwrite)
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
+    fs.create_file_in(&jail, &args.path, args.content.as_deref(), args.overwrite)
         .await
         .map_err(fs_err)
 }
 
 pub(super) async fn fs_create_dir(rpc: &InProcessRpc, args: FsCreateDirArgs) -> RpcResult<()> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    fs.create_dir(&args.path, args.recursive)
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
+    fs.create_dir_in(&jail, &args.path, args.recursive)
         .await
         .map_err(fs_err)
 }
 
 pub(super) async fn fs_move(rpc: &InProcessRpc, args: FsMoveArgs) -> RpcResult<()> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    fs.rename(&args.from, &args.to, args.overwrite)
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
+    fs.rename_in(&jail, &args.from, &args.to, args.overwrite)
         .await
         .map_err(fs_err)
 }
 
 pub(super) async fn fs_delete(rpc: &InProcessRpc, args: FsDeleteArgs) -> RpcResult<()> {
     let fs = rpc.fs.as_ref().ok_or_else(fs_not_configured)?;
-    fs.delete(&args.path, args.recursive).await.map_err(fs_err)
+    let jail = fs_root_for_repo(rpc, args.repo_id).await?;
+    fs.delete_in(&jail, &args.path, args.recursive)
+        .await
+        .map_err(fs_err)
 }
 
 fn fs_not_configured() -> RpcError {

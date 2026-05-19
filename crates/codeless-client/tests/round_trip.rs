@@ -12,8 +12,9 @@ use std::sync::Arc;
 use codeless_adapters_host::HostFs;
 use codeless_client::{HttpRpcClient, HttpRpcClientConfig};
 use codeless_rpc::{
-    AddRepoArgs, EventFilter, FsReadDirArgs, FsReadFileArgs, FsStatArgs, FsWriteFileArgs,
-    ListJobsArgs, ListReviewsArgs, RpcError, RpcServer, StopJobArgs, SubmitJobArgs,
+    AddRepoArgs, AttachWorkspaceArgs, EventFilter, FsReadDirArgs, FsReadFileArgs, FsStatArgs,
+    FsWriteFileArgs, ListJobsArgs, ListReviewsArgs, RpcError, RpcServer, StopJobArgs,
+    SubmitJobArgs,
 };
 use codeless_runtime::InProcessRpc;
 use codeless_server::{build_router, AppState};
@@ -301,15 +302,39 @@ async fn base_url_with_trailing_slash_rejected() {
     assert!(r.is_err());
 }
 
+async fn attach_fs_workspace(rpc: &InProcessRpc, root: &std::path::Path) -> RepoId {
+    let name = format!("fs-{}", RepoId::new());
+    let repo = rpc
+        .add_repo(AddRepoArgs {
+            name,
+            clone_url: format!("file://{}", root.display()),
+            default_branch: "main".into(),
+            local_path: root.to_string_lossy().into_owned(),
+            git_auth: token_auth(),
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .expect("add_repo");
+    rpc.attach_workspace(AttachWorkspaceArgs {
+        repo_id: repo.id,
+        fs_root_override: None,
+    })
+    .await
+    .expect("attach_workspace");
+    repo.id
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fs_round_trip_through_http_client() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_owned();
-    let (client, _server) =
-        spawn_server_with(move |r| r.with_fs(Arc::new(HostFs::new(&root).unwrap()))).await;
+    let (client, rpc) = spawn_server_with(move |r| r.with_fs(Arc::new(HostFs::empty()))).await;
+    let repo_id = attach_fs_workspace(&rpc, &root).await;
 
     client
         .fs_write_file(FsWriteFileArgs {
+            repo_id,
             path: "doc.md".into(),
             content: "hello".into(),
         })
@@ -318,6 +343,7 @@ async fn fs_round_trip_through_http_client() {
 
     let read = client
         .fs_read_file(FsReadFileArgs {
+            repo_id,
             path: "doc.md".into(),
         })
         .await
@@ -325,7 +351,10 @@ async fn fs_round_trip_through_http_client() {
     assert_eq!(read.content, "hello");
 
     let dir = client
-        .fs_read_dir(FsReadDirArgs { path: ".".into() })
+        .fs_read_dir(FsReadDirArgs {
+            repo_id,
+            path: ".".into(),
+        })
         .await
         .expect("read_dir");
     let names: Vec<_> = dir.entries.iter().map(|e| e.name.as_str()).collect();
@@ -333,6 +362,7 @@ async fn fs_round_trip_through_http_client() {
 
     let stat = client
         .fs_stat(FsStatArgs {
+            repo_id,
             path: "doc.md".into(),
         })
         .await
@@ -345,11 +375,12 @@ async fn fs_round_trip_through_http_client() {
 async fn fs_traversal_surfaces_as_invalid_argument() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_owned();
-    let (client, _server) =
-        spawn_server_with(move |r| r.with_fs(Arc::new(HostFs::new(&root).unwrap()))).await;
+    let (client, rpc) = spawn_server_with(move |r| r.with_fs(Arc::new(HostFs::empty()))).await;
+    let repo_id = attach_fs_workspace(&rpc, &root).await;
 
     let err = client
         .fs_read_file(FsReadFileArgs {
+            repo_id,
             path: "../etc/passwd".into(),
         })
         .await
@@ -364,7 +395,10 @@ async fn fs_traversal_surfaces_as_invalid_argument() {
 async fn fs_without_root_surfaces_as_internal() {
     let (client, _server) = spawn_server().await;
     let err = client
-        .fs_read_dir(FsReadDirArgs { path: ".".into() })
+        .fs_read_dir(FsReadDirArgs {
+            repo_id: RepoId::new(),
+            path: ".".into(),
+        })
         .await
         .unwrap_err();
     assert!(

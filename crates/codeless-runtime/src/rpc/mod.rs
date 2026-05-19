@@ -9,23 +9,23 @@ use codeless_rpc::{
     CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
     DeleteJobFileArgs, DeletePersonaArgs, DraftJobFromConversationArgs, EventFilter, EventStream,
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
-    GcWorktreesArgs, GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult, GetJobArgs,
-    GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs, ListAssistantMessagesArgs,
-    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    ListChatBindingsForJobArgs, ListChatBindingsForJobResult, ListJobFilesArgs, ListJobFilesResult,
-    ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListPersonasArgs,
-    ListPersonasResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
-    ListScheduledPausePointsArgs, ListScheduledPausePointsResult, ListStagesArgs, ListStagesResult,
-    OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
-    ReadJobFileResult, RemoveRepoArgs, RerunJobArgs, ResetJobArgs, ResumeJobArgs, RpcError,
-    RpcResult, RpcServer, SetJobPolicyArgs, Since, StartJobArgs, StopActiveArgs, StopActiveResult,
-    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult,
+    GetJobArgs, GetPersonaArgs, JobDiffArgs, JobDiffResult, JobReportArgs,
+    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
+    ListAssistantThreadsResult, ListChatBindingsForJobArgs, ListChatBindingsForJobResult,
+    ListJobFilesArgs, ListJobFilesResult, ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs,
+    ListJobsResult, ListPersonasArgs, ListPersonasResult, ListReposResult, ListReviewsArgs,
+    ListReviewsResult, ListScheduledPausePointsArgs, ListScheduledPausePointsResult,
+    ListStagesArgs, ListStagesResult, OverridePreCheckAndResumeArgs, PauseJobArgs,
+    PostJobMessageArgs, ReadJobFileArgs, ReadJobFileResult, RemoveRepoArgs, RerunJobArgs,
+    ResetJobArgs, ResumeJobArgs, RpcError, RpcResult, RpcServer, SetJobPolicyArgs, Since,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateChatMessageDeliveryArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{
     AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review, TaskId,
@@ -302,6 +302,20 @@ impl InProcessRpc {
     pub fn chat_cancels(&self) -> &ChatCancels {
         &self.chat_cancels
     }
+
+    /// Resolve a `repo_id` to the canonical filesystem root of its
+    /// currently-attached workspace. Future RPCs that need a per-
+    /// workspace jail root (worktree managers, attachment uploads,
+    /// per-repo scratch directories) reach for this rather than
+    /// re-deriving the lookup. Returns `NotFound` for an unknown or
+    /// detached `repo_id` so callers can surface a typed "workspace
+    /// not attached" error rather than a generic `Internal`.
+    pub async fn fs_root_for_repo(
+        &self,
+        repo_id: codeless_types::RepoId,
+    ) -> RpcResult<std::path::PathBuf> {
+        fs::fs_root_for_repo(self, repo_id).await
+    }
 }
 
 pub(super) fn db_err(e: sqlx::Error) -> RpcError {
@@ -416,6 +430,8 @@ impl RpcServer for InProcessRpc {
         let local = match filter {
             EventFilter::All => SubscribeFilter::All,
             EventFilter::Job { job_id } => SubscribeFilter::Job(job_id),
+            EventFilter::Repo { repo_id } => SubscribeFilter::Repo(repo_id),
+            EventFilter::Library => SubscribeFilter::Library,
         };
         self.bus.subscribe_since(local, since).await.map_err(db_err)
     }
@@ -436,8 +452,8 @@ impl RpcServer for InProcessRpc {
         fs::fs_stat(self, args).await
     }
 
-    async fn fs_cwd(&self) -> RpcResult<FsCwdResult> {
-        fs::fs_cwd(self).await
+    async fn fs_cwd(&self, args: FsCwdArgs) -> RpcResult<FsCwdResult> {
+        fs::fs_cwd(self, args).await
     }
 
     async fn fs_create_file(&self, args: FsCreateFileArgs) -> RpcResult<()> {

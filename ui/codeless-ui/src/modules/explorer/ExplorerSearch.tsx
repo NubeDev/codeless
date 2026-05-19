@@ -9,6 +9,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
 
 import { useRpc } from "@/lib/rpc/provider";
+import type { RepoId } from "@/lib/rpc/wire";
 import {
   forwardRef,
   useEffect,
@@ -27,9 +28,10 @@ type SearchHit = {
 
 type Props = {
   rootPath: string;
+  repoId: RepoId | null;
   onOpenFile: (path: string) => void;
-  open: boolean;
   onRequestClose: () => void;
+  open: boolean;
   onActiveChange?: (active: boolean) => void;
 };
 
@@ -40,6 +42,7 @@ export type ExplorerSearchHandle = {
 
 export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function ExplorerSearch({
   rootPath,
+  repoId,
   onOpenFile,
   open,
   onRequestClose,
@@ -71,7 +74,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
 
   useEffect(() => {
     const q = query.trim();
-    if (!q) {
+    if (!q || !repoId) {
       setResults([]);
       setSearching(false);
       return;
@@ -81,6 +84,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
     const handle = setTimeout(async () => {
       try {
         const { hits } = await rpc.call("fs_glob", {
+          repo_id: repoId,
           root: rootPath,
           pattern: `**${q}**`,
           max_results: 200,
@@ -115,7 +119,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
       alive = false;
       clearTimeout(handle);
     };
-  }, [query, rootPath, rpc]);
+  }, [query, rootPath, repoId, rpc]);
 
   useImperativeHandle(
     ref,

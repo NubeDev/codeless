@@ -14,7 +14,7 @@ use crate::methods::{
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs,
     ConfirmAssistantActionArgs, ConfirmAssistantActionResult, CreateAssistantThreadArgs,
     DeleteAssistantThreadArgs, DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs,
-    DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs,
+    DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdArgs,
     FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs,
@@ -214,10 +214,11 @@ pub trait RpcServer: Send + Sync + 'static {
     async fn fs_stat(&self, args: FsStatArgs) -> RpcResult<FsStatResult>;
 
     /// Report the absolute server root the `fs_*` methods are scoped
-    /// under. Returns `Internal` when no filesystem adapter is
-    /// configured — same shape as the other `fs_*` methods when the
-    /// runtime was built without `with_fs`.
-    async fn fs_cwd(&self) -> RpcResult<FsCwdResult>;
+    /// under for `args.repo_id`. Returns `Internal` when no filesystem
+    /// adapter is configured — same shape as the other `fs_*` methods
+    /// when the runtime was built without `with_fs`. Returns a typed
+    /// `NotFound` when the `repo_id` is unknown or no longer attached.
+    async fn fs_cwd(&self, args: FsCwdArgs) -> RpcResult<FsCwdResult>;
 
     /// Create a file. Empty content when `content` is null. Rejects
     /// with `Conflict` when `overwrite` is false and the path exists.

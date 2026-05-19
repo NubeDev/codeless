@@ -1,9 +1,14 @@
 // Bridges the `useWorkspacesStore` mirror to the runtime: one
 // `list_workspaces` call on mount to hydrate, then a subscription to
-// the `all`-scope event stream that funnels `workspace-attached` /
+// the `library`-scope event stream that funnels `workspace-attached` /
 // `workspace-detached` (and the existing `workspace-unhealthy` /
 // `workspace-recovered` pair surfaced by `codeless-runtime
-// ::workspace_liveness`) into the store's incremental reducers.
+// ::workspace_liveness`) into the store's incremental reducers. The
+// `library` scope (vs the legacy `all`) is the picker's parallel
+// channel: it sees only workspace-lifecycle events and never the
+// jobs/stages firehose, so two browser tabs viewing two different
+// workspaces both keep their picker live without leaking job events
+// across the boundary.
 //
 // Subscribing here rather than inside the store keeps zustand free of
 // React + transport coupling; the store is a plain reducer the
@@ -66,7 +71,7 @@ export function useWorkspacesSync(): void {
       });
   }, [rpc]);
 
-  useEventStream({ scope: "all" }, (env: EventEnvelope) => {
+  useEventStream({ scope: "library" }, (env: EventEnvelope) => {
     reconcileFromEvent(env.event as MaybeWorkspaceEvent);
   });
 }

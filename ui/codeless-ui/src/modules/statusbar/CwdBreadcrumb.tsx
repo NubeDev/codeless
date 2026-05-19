@@ -23,6 +23,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useState } from "react";
 
 import { useRpc } from "@/lib/rpc/provider";
+import { useWorkspacesStore } from "@/modules/workspaces/store";
 import { segmentsFromCwd } from "./lib/pathUtils";
 
 type Props = {
@@ -179,14 +180,22 @@ function CurrentSegmentDropdown({
   onCd: (p: string) => void;
 }) {
   const rpc = useRpc();
+  const activeRepoId = useWorkspacesStore((s) => s.activeRepoId);
   const [open, setOpen] = useState(false);
   const [children, setChildren] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
+    if (!activeRepoId) {
+      setChildren([]);
+      return;
+    }
     try {
-      const { entries } = await rpc.call("fs_read_dir", { path });
+      const { entries } = await rpc.call("fs_read_dir", {
+        repo_id: activeRepoId,
+        path,
+      });
       setChildren(
         entries.filter((e) => e.kind === "dir").map((e) => e.name).sort(),
       );
@@ -194,7 +203,7 @@ function CurrentSegmentDropdown({
       setError(String(e));
       setChildren([]);
     }
-  }, [path, rpc]);
+  }, [path, rpc, activeRepoId]);
 
   useEffect(() => {
     if (open) load();

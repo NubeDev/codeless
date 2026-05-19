@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useRpc } from "@/lib/rpc/provider";
 import type { RpcClient } from "@/lib/rpc/client";
+import type { RepoId } from "@/lib/rpc/wire";
 
 export type DirEntry = {
   name: string;
@@ -39,8 +40,12 @@ type Options = {
   onPathDeleted?: (path: string) => void;
 };
 
-async function listDir(rpc: RpcClient, path: string): Promise<DirEntry[]> {
-  const { entries } = await rpc.call("fs_read_dir", { path });
+async function listDir(
+  rpc: RpcClient,
+  repoId: RepoId,
+  path: string,
+): Promise<DirEntry[]> {
+  const { entries } = await rpc.call("fs_read_dir", { repo_id: repoId, path });
   return entries.map((e) => ({
     name: e.name,
     kind: e.kind,
@@ -49,7 +54,18 @@ async function listDir(rpc: RpcClient, path: string): Promise<DirEntry[]> {
   }));
 }
 
-export function useFileTree(rootPath: string | null, options?: Options) {
+// `repoId` is the active workspace's id. Every `fs.*` call is jailed
+// server-side to that workspace, so changing it (the user switching
+// workspaces in the picker) invalidates the cached tree state. The
+// effect that mirrors `rootPath` already clears `nodes`/`expanded`
+// when the root changes; threading `repoId` into the deps means a
+// pure-workspace switch (root stays at `null` momentarily, then
+// becomes the new fs_root) also clears the old workspace's children.
+export function useFileTree(
+  rootPath: string | null,
+  repoId: RepoId | null,
+  options?: Options,
+) {
   const rpc = useRpc();
   const [nodes, setNodes] = useState<TreeState>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -60,9 +76,10 @@ export function useFileTree(rootPath: string | null, options?: Options) {
 
   const fetchChildren = useCallback(
     async (path: string) => {
+      if (!repoId) return;
       setNodes((s) => ({ ...s, [path]: { status: "loading" } }));
       try {
-        const entries = await listDir(rpc, path);
+        const entries = await listDir(rpc, repoId, path);
         setNodes((s) => ({ ...s, [path]: { status: "loaded", entries } }));
       } catch (e) {
         setNodes((s) => ({
@@ -71,11 +88,11 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         }));
       }
     },
-    [rpc],
+    [rpc, repoId],
   );
 
   useEffect(() => {
-    if (!rootPath) {
+    if (!rootPath || !repoId) {
       setNodes({});
       setExpanded(new Set());
       setPendingCreate(null);
@@ -87,7 +104,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
     setExpanded(new Set());
     setNodes({});
     void fetchChildren(rootPath);
-  }, [rootPath, fetchChildren]);
+  }, [rootPath, repoId, fetchChildren]);
 
   const toggle = useCallback(
     (path: string) => {
@@ -161,11 +178,20 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         return;
       }
       const path = joinPath(pendingCreate.parentPath, trimmed);
+      if (!repoId) {
+        setPendingCreate(null);
+        return;
+      }
       try {
         if (pendingCreate.kind === "dir") {
-          await rpc.call("fs_create_dir", { path, recursive: false });
+          await rpc.call("fs_create_dir", {
+            repo_id: repoId,
+            path,
+            recursive: false,
+          });
         } else {
           await rpc.call("fs_create_file", {
+            repo_id: repoId,
             path,
             content: null,
             overwrite: false,
@@ -178,7 +204,7 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         setPendingCreate(null);
       }
     },
-    [pendingCreate, fetchChildren, rpc],
+    [pendingCreate, fetchChildren, rpc, repoId],
   );
 
   const beginRename = useCallback((path: string) => {
@@ -199,8 +225,13 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         return;
       }
       const to = joinPath(parent, trimmed);
+      if (!repoId) {
+        setRenaming(null);
+        return;
+      }
       try {
         await rpc.call("fs_move", {
+          repo_id: repoId,
           from: renaming,
           to,
           overwrite: false,
@@ -213,20 +244,21 @@ export function useFileTree(rootPath: string | null, options?: Options) {
         setRenaming(null);
       }
     },
-    [renaming, fetchChildren, options, rpc],
+    [renaming, fetchChildren, options, rpc, repoId],
   );
 
   const deletePath = useCallback(
     async (path: string) => {
+      if (!repoId) return;
       try {
-        await rpc.call("fs_delete", { path, recursive: true });
+        await rpc.call("fs_delete", { repo_id: repoId, path, recursive: true });
         options?.onPathDeleted?.(path);
         await fetchChildren(dirname(path));
       } catch (e) {
         console.error("fs_delete failed:", e);
       }
     },
-    [fetchChildren, options, rpc],
+    [fetchChildren, options, rpc, repoId],
   );
 
   return {

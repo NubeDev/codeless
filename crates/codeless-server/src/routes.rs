@@ -12,7 +12,7 @@ use codeless_rpc::{
     CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
     DeleteJobArgs, DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs,
-    DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs,
+    DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdArgs,
     FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
     FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
     GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs,
@@ -502,9 +502,9 @@ async fn fs_stat(
 
 async fn fs_cwd(
     State(st): State<AppState>,
-    _body: Option<Json<Value>>,
+    Json(args): Json<FsCwdArgs>,
 ) -> HandlerResult<FsCwdResult> {
-    st.rpc.fs_cwd().await.map(Json).map_err(map_err)
+    st.rpc.fs_cwd(args).await.map(Json).map_err(map_err)
 }
 
 async fn fs_create_file(

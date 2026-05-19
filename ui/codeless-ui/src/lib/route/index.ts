@@ -71,16 +71,44 @@ export function useRoute(): Route {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
+// Query params the router preserves automatically across navigation
+// when the caller does not supply them in `path`. The workspace
+// deep-link (BROWSER-LAUNCHER.md §"Deep-link is router-managed") is
+// the canonical example: tab changes via `navigate('/jobs/123')`
+// must not strip `?workspace=<repo_id>` from the URL, otherwise
+// browser-back lands on the wrong workspace after a tab switch.
+const PRESERVED_QUERY_PARAMS = ["workspace"] as const;
+
+function mergePreservedParams(path: string): string {
+  if (typeof window === "undefined") return path;
+  const [pathPart, queryPart = ""] = path.split("?", 2);
+  const target = new URLSearchParams(queryPart);
+  const current = new URLSearchParams(window.location.search);
+  let changed = false;
+  for (const key of PRESERVED_QUERY_PARAMS) {
+    if (target.has(key)) continue;
+    const v = current.get(key);
+    if (v) {
+      target.set(key, v);
+      changed = true;
+    }
+  }
+  if (!changed && !queryPart) return path;
+  const search = target.toString();
+  return search ? `${pathPart}?${search}` : pathPart;
+}
+
 /// Push a new path into history and tell subscribers. No-op when the
 /// target equals the current pathname so repeated calls do not flood
 /// the history stack.
 export function navigate(path: string, opts: { replace?: boolean } = {}): void {
   if (typeof window === "undefined") return;
-  if (path === window.location.pathname + window.location.search) return;
+  const merged = mergePreservedParams(path);
+  if (merged === window.location.pathname + window.location.search) return;
   if (opts.replace) {
-    window.history.replaceState(null, "", path);
+    window.history.replaceState(null, "", merged);
   } else {
-    window.history.pushState(null, "", path);
+    window.history.pushState(null, "", merged);
   }
   notify();
 }

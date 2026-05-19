@@ -130,7 +130,24 @@ function titleFromUrl(url: string): string {
   }
 }
 
-const JOBS_TABS_LS_KEY = "codeless-open-job-tabs-v3";
+// Per-tab key. Two browser tabs on the same origin view different
+// workspaces (`?workspace=<repo_id>` deep-link), so the set of open
+// jobs / job-detail / patches tabs must not leak across them — that
+// would surface workspace A's job-detail tab inside workspace B's
+// tab bar. `sessionStorage` survives a refresh of the same tab while
+// staying isolated from other tabs. Key version bumped from the old
+// localStorage name (`codeless-open-job-tabs-v3`) so an upgrade does
+// not pull a leaking cross-tab snapshot into the new layout.
+const JOBS_TABS_STORAGE_KEY = "codeless-open-job-tabs.v4";
+
+function tabsStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
 
 interface PersistedTab {
   kind: "jobs" | "job-detail" | "patches";
@@ -139,9 +156,10 @@ interface PersistedTab {
 }
 
 function readPersistedTabs(): PersistedTab[] {
-  if (typeof window === "undefined") return [];
+  const storage = tabsStorage();
+  if (!storage) return [];
   try {
-    const raw = window.localStorage.getItem(JOBS_TABS_LS_KEY);
+    const raw = storage.getItem(JOBS_TABS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -159,7 +177,8 @@ function readPersistedTabs(): PersistedTab[] {
 }
 
 function writePersistedTabs(tabs: Tab[]): void {
-  if (typeof window === "undefined") return;
+  const storage = tabsStorage();
+  if (!storage) return;
   const persisted: PersistedTab[] = [];
   for (const t of tabs) {
     if (t.kind === "jobs") {
@@ -171,7 +190,7 @@ function writePersistedTabs(tabs: Tab[]): void {
     }
   }
   try {
-    window.localStorage.setItem(JOBS_TABS_LS_KEY, JSON.stringify(persisted));
+    storage.setItem(JOBS_TABS_STORAGE_KEY, JSON.stringify(persisted));
   } catch {
     // Quota or disabled — best effort.
   }
@@ -257,9 +276,10 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   }
   const [tabs, setTabsRaw] = useState<Tab[]>(initialState.current.tabs);
 
-  // Every mutation goes through this wrapper so localStorage stays in
-  // lock-step with the in-memory tab list. No effects, no closures —
-  // the persisted snapshot is computed from the value React just stored.
+  // Every mutation goes through this wrapper so sessionStorage stays
+  // in lock-step with the in-memory tab list. No effects, no closures
+  // — the persisted snapshot is computed from the value React just
+  // stored.
   const setTabs: typeof setTabsRaw = useCallback((updater) => {
     setTabsRaw((curr) => {
       const next = typeof updater === "function" ? updater(curr) : updater;

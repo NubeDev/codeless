@@ -27,19 +27,20 @@ use codeless_rpc::methods::{
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, ChatAttachmentRef,
     ChatContext, ClaudeStatus, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
-    EditScopePatchArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
-    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetChatBindingArgs,
-    GetChatBindingResult, GetJobArgs, JobDiffArgs, JobDiffFile, JobDiffResult,
-    ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
-    ListAssistantThreadsResult, ListChatBindingsForJobArgs, ListChatBindingsForJobResult,
-    ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs, ListJobsResult,
-    ListProposedPatchesArgs, ListProposedPatchesResult, ListReposResult, ListReviewsArgs,
-    ListReviewsResult, PostJobMessageArgs, ProposedPatchListEntry, RejectScopePatchArgs,
-    RemoveRepoArgs, ResetJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo,
-    ScopePatchActionResult, ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateChatMessageDeliveryArgs, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UserPromptSnippet,
+    EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdArgs, FsCwdResult, FsDeleteArgs,
+    FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs,
+    FsStatResult, FsWriteFileArgs, GetChatBindingArgs, GetChatBindingResult, GetJobArgs,
+    JobDiffArgs, JobDiffFile, JobDiffResult, ListAssistantMessagesArgs,
+    ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
+    ListChatBindingsForJobArgs, ListChatBindingsForJobResult, ListJobMessagesArgs,
+    ListJobMessagesResult, ListJobsArgs, ListJobsResult, ListProposedPatchesArgs,
+    ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
+    PostJobMessageArgs, ProposedPatchListEntry, RejectScopePatchArgs, RemoveRepoArgs, ResetJobArgs,
+    RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo, ScopePatchActionResult,
+    ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs, StopActiveArgs,
+    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::pause_point::{
@@ -127,7 +128,12 @@ fn collect() -> TypeCollection {
         .register_mut::<FsWriteFileArgs>()
         .register_mut::<FsStatArgs>()
         .register_mut::<FsStatResult>()
+        .register_mut::<FsCwdArgs>()
         .register_mut::<FsCwdResult>()
+        .register_mut::<FsCreateFileArgs>()
+        .register_mut::<FsCreateDirArgs>()
+        .register_mut::<FsMoveArgs>()
+        .register_mut::<FsDeleteArgs>()
         .register_mut::<RunnerInfo>()
         .register_mut::<ClaudeStatus>()
         .register_mut::<ServerInfo>()

@@ -111,6 +111,7 @@ export class HttpSseClient implements RpcClient {
     const u = new URL(`${this.cfg.baseUrl}/events`);
     u.searchParams.set("scope", filter.scope);
     if (filter.scope === "job") u.searchParams.set("job_id", filter.job_id);
+    if (filter.scope === "repo") u.searchParams.set("repo_id", filter.repo_id);
     if (since != null) u.searchParams.set("since", String(since));
     if (this.cfg.token) u.searchParams.set("token", this.cfg.token);
     return u.toString();

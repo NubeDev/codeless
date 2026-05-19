@@ -6,7 +6,7 @@ use axum::{
     response::sse::{Event as SseEvent, KeepAlive, Sse},
 };
 use codeless_rpc::{EventFilter, Since};
-use codeless_types::{EventCursor, JobId};
+use codeless_types::{EventCursor, JobId, RepoId};
 use futures_util::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use std::time::Duration;
@@ -26,6 +26,7 @@ use crate::{auth::constant_time_eq, AppState, AuthMode};
 pub(crate) struct EventsQuery {
     pub scope: String,
     pub job_id: Option<JobId>,
+    pub repo_id: Option<RepoId>,
     pub since: Option<i64>,
     pub token: Option<String>,
 }
@@ -50,6 +51,14 @@ pub(crate) async fn events_handler(
                 .ok_or((StatusCode::BAD_REQUEST, "job scope requires job_id".into()))?;
             EventFilter::Job { job_id }
         }
+        "repo" => {
+            let repo_id = q.repo_id.ok_or((
+                StatusCode::BAD_REQUEST,
+                "repo scope requires repo_id".into(),
+            ))?;
+            EventFilter::Repo { repo_id }
+        }
+        "library" => EventFilter::Library,
         other => {
             return Err((StatusCode::BAD_REQUEST, format!("unknown scope: {other}")));
         }

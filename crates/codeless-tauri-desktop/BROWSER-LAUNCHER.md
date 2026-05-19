@@ -744,15 +744,19 @@ done is "many repos at once" working.
    bug regardless of the launcher.
 
    *Project A.*
-4. `[ ]` **Tab-local storage contract.** Land the §UI changes
+4. `[~]` **Tab-local storage contract.** Land the §UI changes
    "hard rule" with the ESLint/CI grep. Move existing
    `localStorage` tab-scoped state to `sessionStorage` or
    in-memory zustand. Library state goes through `RpcClient`.
    **Blocks dogfood** — `localStorage` leakage reintroduces
    the cross-talk symptom at the browser layer.
 
-   *Project A.*
-5. `[ ]` **`EventFilter` sum-type + `subscribe` scoping.**
+   *Project A.* Partial: the audit and the tab-level moves
+   landed under [`../../DOCS/STORAGE-AUDIT.md`](../../DOCS/STORAGE-AUDIT.md)
+   (assistant focus thread, open job tabs → `sessionStorage`).
+   The ESLint/CI grep that prevents future regressions is
+   still open.
+5. `[x]` **`EventFilter` sum-type + `subscribe` scoping.**
    Collapse `EventFilter` to `enum { Repo(RepoId), Library }`
    per §RPC additions. Server-side filter at fan-out. UI
    passes `EventFilter::Repo(activeRepoId)` on every
@@ -760,11 +764,15 @@ done is "many repos at once" working.
    `TauriIpcClient` updated to the same wire.
 
    *Project A.*
-6. `[ ]` **`list_jobs` + other read RPCs.** Tighten semantics
+6. `[x]` **`list_jobs` + other read RPCs.** Tighten semantics
    per §RPC additions. Audit table from §"Other RPCs touched"
    lands here.
 
-   *Project A.*
+   *Project A.* `fs_cwd`, `fs_read_dir`, `fs_read_file`,
+   `fs_write_file` thread `repo_id`; the server resolves it
+   to the attached workspace's `fs_root` via the shared
+   `fs_root_for_repo` helper; calls with an unknown or
+   detached `repo_id` are rejected.
 
    ---
 
@@ -803,7 +811,7 @@ done is "many repos at once" working.
    drain semantics".
 
    *Project B.*
-10. `[ ]` **UI shell-detection flip + deep-link router.**
+10. `[~]` **UI shell-detection flip + deep-link router.**
     Default `RpcClient` impl becomes `HttpSseClient` when not
     in a Tauri webview. Read `?workspace=<repo_id>` from
     `window.location.search` **pre-hydration**;
@@ -811,7 +819,12 @@ done is "many repos at once" working.
     URL in sync. Fragment-token bootstrap (read on first load,
     move to `sessionStorage`, clear from URL).
 
-    *Project B + C.*
+    *Project B + C.* Partial: the workspace-scoping job
+    landed the deep-link router (`?workspace=<repo_id>`
+    read pre-hydration, `history.replaceState` on every
+    `setActive`). The shell-detection flip and the
+    fragment-token bootstrap are still open and arrive with
+    M7 + M9, where they belong.
 11. `[ ]` **Linux exit test.** Two Firefox tabs against two
     different workspaces; submit a job in each; assert tab A's
     event stream does not contain tab B's `JobStarted` /

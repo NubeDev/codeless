@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useRpc } from "@/lib/rpc/provider";
+import { useWorkspacesStore } from "@/modules/workspaces/store";
 
 export type DocumentState =
   | { status: "loading" }
@@ -16,6 +17,7 @@ type Options = {
 
 export function useDocument({ path, onDirtyChange }: Options) {
   const rpc = useRpc();
+  const activeRepoId = useWorkspacesStore((s) => s.activeRepoId);
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
   const [reloadCounter, setReloadCounter] = useState(0);
@@ -40,8 +42,13 @@ export function useDocument({ path, onDirtyChange }: Options) {
     setDoc({ status: "loading" });
     setDirty(false);
 
+    if (!activeRepoId) {
+      setDoc({ status: "error", message: "no active workspace" });
+      return () => {};
+    }
+
     rpc
-      .call("fs_read_file", { path, byte_limit: null })
+      .call("fs_read_file", { repo_id: activeRepoId, path })
       .then((res) => {
         if (cancelled) return;
         // The wire result is `{ content }` — binary and over-limit
@@ -66,7 +73,7 @@ export function useDocument({ path, onDirtyChange }: Options) {
     return () => {
       cancelled = true;
     };
-  }, [path, reloadCounter, rpc]);
+  }, [path, reloadCounter, rpc, activeRepoId]);
 
   // Refetches from the source of truth. Silently no-ops if the local
   // buffer is dirty so a background event cannot clobber unsaved
@@ -84,18 +91,16 @@ export function useDocument({ path, onDirtyChange }: Options) {
 
   const save = useCallback(async () => {
     if (!dirty) return;
+    if (!activeRepoId) throw new Error("no active workspace");
     const content = bufferRef.current;
-    // `create_parents` is not on the Rust `FsWriteFileArgs`; serde
-    // ignores it. The mock client still reads it, so leaving it here
-    // keeps both transports working until the mock catches up.
     await rpc.call("fs_write_file", {
+      repo_id: activeRepoId,
       path,
       content,
-      create_parents: false,
     });
     savedRef.current = content;
     setDirty(false);
-  }, [path, dirty, rpc]);
+  }, [path, dirty, rpc, activeRepoId]);
 
   return { doc, dirty, onChange, save, reload };
 }
