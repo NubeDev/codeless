@@ -104,6 +104,31 @@ What is **not** built yet:
   converted (currently both are in `UI-PORT-AUDIT.md`'s
   "Blocked on Rust" bucket).
 
+### Workspace scoping on the wire
+
+Every `subscribe` and every `fs.*` call now carries a `repo_id`
+(or the explicit `Library` scope, for the workspace picker and
+other library-level surfaces). The server filters events at the
+fan-out layer and resolves `repo_id` to the attached workspace's
+`fs_root` for filesystem calls; an unknown or detached `repo_id`
+is rejected, not silently coerced to the global root. The UI
+holds `activeRepoId` per browser tab (mirrored into the URL via
+`?workspace=<repo_id>` and `history.replaceState`), opens a
+parallel `Library`-scope subscription for the picker, and
+rehydrates the file explorer when `activeRepoId` changes. Two
+browser tabs against two attached workspaces see only their own
+jobs, files, and event streams; a refresh lands on the same
+workspace.
+
+The wire contract for the filter is fixed at:
+
+```text
+EventFilter ::= Repo { repo_id } | Library | All  // All is deprecated
+```
+
+See [`../crates/codeless-tauri-desktop/BROWSER-LAUNCHER.md`](../crates/codeless-tauri-desktop/BROWSER-LAUNCHER.md)
+§"RPC additions" for the authoritative shape.
+
 ## Capability adapters (`src/lib/shell/`)
 
 Behaviour differences between shells live behind capability
