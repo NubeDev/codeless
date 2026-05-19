@@ -61,6 +61,72 @@ impl Sandbox {
     pub async fn canonical_root(&self) -> Result<PathBuf, ToolError> {
         canonical_root(&self.root).await
     }
+
+    /// Resolve `rel` to an absolute path that may not yet exist. Used
+    /// by `fs.write` so a brand-new file can be created without the
+    /// canonicalising re-check failing on a missing target. The
+    /// deepest existing ancestor is canonicalised; the missing tail is
+    /// re-joined verbatim, then re-checked against the canonical root
+    /// the same way [`Self::resolve_existing`] does. A symlink-
+    /// pointing-outside-the-root tail still fails because the
+    /// canonical ancestor would already escape the root prefix; a
+    /// brand-new path under a directory that does not yet exist is
+    /// canonicalised at its deepest existing parent (typically the
+    /// workspace root itself) and the rest is structural — the same
+    /// guarantee `resolve_existing` gives, applied to non-existent
+    /// targets.
+    pub async fn resolve_for_create(&self, rel: &str) -> Result<PathBuf, ToolError> {
+        let parsed = check_relative(rel)?;
+        let root = canonical_root(&self.root).await?;
+        // Walk the components of `parsed` left-to-right, canonicalising
+        // each prefix that exists so a symlink in the middle of the
+        // path is caught the same way `resolve_existing` catches one
+        // at the leaf. Once a prefix stops existing the remaining
+        // components are pushed verbatim — they cannot escape because
+        // the syntactic guard already rejected `..` / absolute /
+        // prefix components.
+        let mut full = root.clone();
+        let mut still_canon = true;
+        for comp in parsed.components() {
+            match comp {
+                Component::CurDir => continue,
+                Component::Normal(n) => {
+                    full.push(n);
+                    if still_canon {
+                        match tokio::fs::canonicalize(&full).await {
+                            Ok(c) => {
+                                if !c.starts_with(&root) {
+                                    return Err(ToolError::denied(format!(
+                                        "path '{rel}' resolves outside the workspace root"
+                                    )));
+                                }
+                                full = c;
+                            }
+                            Err(_) => {
+                                still_canon = false;
+                            }
+                        }
+                    }
+                }
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                    return Err(ToolError::denied(format!(
+                        "path '{rel}' contains a non-relative component"
+                    )));
+                }
+            }
+        }
+        Ok(full)
+    }
+
+    /// Pure-syntactic relative-path validation. Surfaces the same
+    /// errors [`Self::resolve_existing`] and [`Self::resolve_for_create`]
+    /// would, but without touching the disk — used by `fs.write` /
+    /// `fs.edit` upstream of the job-scope classifier so an absolute
+    /// path is rejected before its `/etc/passwd`-shape gets normalised
+    /// into a workspace-relative spelling.
+    pub fn check_relative_syntax(&self, rel: &str) -> Result<(), ToolError> {
+        check_relative(rel).map(|_| ())
+    }
 }
 
 async fn canonical_root(root: &Path) -> Result<PathBuf, ToolError> {
