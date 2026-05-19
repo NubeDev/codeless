@@ -189,9 +189,12 @@ without restart) is also a separate, later job per the doc.
    Slack `auth.test` round-trip against a test fixture, and the
    subsequent `set_chat_adapter_enabled(true)` is accepted. With no
    prior validate call, the same `set_*` returns `MissingSecrets`.
-6. `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry" gets its
-   stage 1 checkboxes ticked and is annotated with a one-line
-   "Landed in `codeless/adapter-registry`" pointer.
+6. [x] `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry" gets its
+   stage 1 checkboxes 1–5 ticked (step 6 — Settings UI — stays the
+   follow-up job's box to tick); the stage-2 paragraph names this
+   job as the seam-provider, and the Gmail paragraph is reworded
+   from "separate milestone" to "separate follow-up job". Done at
+   stage 9.
 
 ## Open questions (resolve in stage 1, before any code)
 

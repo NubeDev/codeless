@@ -1,109 +1,102 @@
-# adapter-registry — stage 8 → stage 9 (REVIEW gate)
+# adapter-registry — stage 9 (REVIEW gate) → done
 
-Stage 8 landed. The Slack and Telegram adapter spawn no longer lives
-inline in `codeless-cli/src/serve.rs`; the four `enable_*: bool`
-fields on `DefaultRunnerFactory` are gone too. Both groups are now
-fed from the SQLite tables (`chat_adapters`, `runner_config`) via a
-single boot-time projection.
+Stage 9 reviewed the full diff from stages 3–8 against the rulebook's
+Layer-1 invariants. Gate verdict: **PASS**. The server-side milestones
+are complete; Gmail adapter and stage 2 (hot-reload) are flagged as
+separate follow-up jobs in `DOCS/WORKSPACE-ATTACH.md`.
 
-## What landed in stage 8
+## What the gate looked at
 
-- `crates/codeless-runtime/src/default_runner_factory.rs`:
-  - New `RunnerConfig { claude, anthropic, codex, copilot }` struct
-    with `RunnerConfig::from_effective(&EffectiveAdapterRegistry)` and
-    `any_real()`.
-  - `DefaultRunnerFactory.enable_*` fields collapsed into a single
-    `config: RunnerConfig`. Match arms (`"claude" if self.config.claude
-    => ...` etc.) walk the same set; `real_runner_enabled()` now reads
-    `self.config.any_real()`.
-- `crates/codeless-runtime/src/lib.rs`: re-exports `RunnerConfig`
-  alongside `DefaultRunnerFactory`.
-- `crates/codeless-cli/src/chat_adapter_registry.rs` (new):
-  - `ChatAdapterRegistry { slack, telegram }` holds the spawned bot
-    handles for the process lifetime.
-  - `ChatAdapterRegistry::spawn(&effective, &store, rpc)` walks the
-    closed `(slack, telegram)` set the effective registry exposes
-    today and spawns one background task per enabled row. Missing
-    secrets and per-adapter init failures keep producing the same
-    `--enable-<kind> ignored: <reason>` warnings the inline code did,
-    so operators see no diagnostic regression.
-  - Lives in `codeless-cli` because the runtime crate does not (and,
-    per stage 8 scope, should not) depend on `codeless-slack` /
-    `codeless-telegram`; R1 isolation is preserved.
-- `crates/codeless-cli/src/serve.rs`:
-  - The two `if effective.<kind>_enabled { ... }` blocks are replaced
-    by `let _chat_adapters = ChatAdapterRegistry::spawn(&effective,
-    &store, state.rpc.clone());` (one statement, identical lifetime
-    semantics).
-  - `DefaultRunnerFactory` is constructed with
-    `config: RunnerConfig::from_effective(&effective)` — the same set
-    of bits the old four `enable_*` literals carried, sourced through
-    the table.
-  - `--enable-slack` / `--enable-telegram` / `--enable-claude` /
-    `--enable-anthropic` / `--enable-codex` / `--enable-copilot` all
-    keep working as idempotent upsert shims via
-    `codeless_runtime::adapter_registry::upsert_chat_adapter` /
-    `upsert_runner` (no change from stage 3).
-- `crates/codeless-tauri-desktop/src/boot.rs`: the desktop shell
-  constructs `DefaultRunnerFactory` with `RunnerConfig { claude:
-  true, anthropic: true, codex: false, copilot: false }` instead of
-  the four literal bool fields. Same enabled set as before.
+- **R1 — crate dependency direction.** New `process::Command`
+  call sites added in this job: exactly one, in
+  `crates/codeless-adapters-host/src/respawn.rs::supervise`. The
+  runtime's `restart_server` RPC fires a `tokio::sync::Notify`
+  (`RestartTrigger`) — no process spawn from `codeless-runtime`. The
+  CLI's `--respawn-on-exit` path calls into `codeless_adapters_host::
+  respawn::supervise` rather than spawning inline. `codeless-types` /
+  `codeless-rpc` / `codeless-client` gain no host-only dependencies.
+- **R2 — single transport.** All six new RPCs
+  (`list_chat_adapters`, `set_chat_adapter_enabled`,
+  `validate_chat_adapter_secrets`, `list_runners`,
+  `set_runner_enabled`, `restart_server`) are routed in
+  `crates/codeless-server/src/routes.rs` inside `rpc_routes` and
+  live behind the same `bearer_layer` as every other RPC. No new
+  transport channel; SSE event surface is untouched.
+- **R4 / R5 — trust boundary, SQLite source of truth.** Migration
+  `0027_adapter_registry.sql` adds `chat_adapters((kind,
+  instance_id) PK, enabled, configured_at)` and
+  `runner_config(runner_id PK, enabled)`. `--enable-*` flags upsert
+  these rows; boot reads from the tables via
+  `RunnerConfig::from_effective(&EffectiveAdapterRegistry)` +
+  `ChatAdapterRegistry::spawn`. Single bearer gates every new RPC;
+  `MissingSecrets` is the structured refusal, not a generic Conflict.
+  Validate-cache is in-memory (process lifetime) by design — the
+  table is the source of truth, the cache is only a "did the
+  operator prove these creds during this boot" gate.
+- **Wire formats untouched.** `crates/codeless-types/tests/wire.ts.snap`
+  diff is additive-only: `AdapterError`, `ChatAdapterRow`,
+  `RunnerRow`, `ListChatAdaptersResult`, `ListRunnersResult`,
+  `SetChatAdapterEnabledArgs`, `SetRunnerEnabledArgs`,
+  `ValidateChatAdapterSecretsArgs/Result`,
+  `ChatAdapterSecretProblem`, `RestartServerArgs/Result`,
+  `ChatAdapterKind`. Zero removals; every pre-existing TypeScript
+  binding is byte-identical.
 
-## Behaviour
+## New RPC methods (server-side)
 
-- `--enable-slack` removed from `codeless serve`, row left
-  `enabled=true` in `chat_adapters`: adapter still spawns at boot
-  (`ChatAdapterRegistry::spawn` reads the row, the inline conditional
-  is gone). Same shape for Telegram.
-- `--enable-claude` removed, `runner_config.claude.enabled = true`:
-  factory still builds `ClaudeRunnerAdapter` for `runner: "claude"`
-  jobs (the match arm reads `self.config.claude`).
-- A flag re-passed on a later boot still wins (upsert behaviour from
-  stage 3 is unchanged); the table is consulted *after* the upsert so
-  the flag is a one-shot bootstrap, not state.
+1. `list_chat_adapters() -> ListChatAdaptersResult`
+2. `set_chat_adapter_enabled(SetChatAdapterEnabledArgs) -> ()` —
+   refuses with `AdapterError::MissingSecrets` until a successful
+   `validate_chat_adapter_secrets` for the same `(kind, instance_id)`
+   lands in this boot's cache.
+3. `validate_chat_adapter_secrets(args) -> ValidateChatAdapterSecretsResult`
+   — 5s hard timeout, per-`(kind, instance_id)` 5/s sliding-window
+   rate limit. Probe is pluggable (`StaticValidationProbe` for tests,
+   HTTP-backed probe at boot for the CLI).
+4. `list_runners() -> ListRunnersResult`
+5. `set_runner_enabled(SetRunnerEnabledArgs) -> ()`
+6. `restart_server(RestartServerArgs) -> RestartServerResult` —
+   three branches keyed on `RestartContext::{SupervisedCli,
+   TauriDesktop, Bare}`; partitions running jobs into
+   resumable / killed and refuses with `RestartHasRunningJobs`
+   unless `force: true`.
 
-## Validations run
+## What is intentionally deferred
+
+- **Settings → Adapters UI.** The closed set of RPCs above is the
+  surface the follow-up UI job sits on. No `ui/codeless-ui/` files
+  changed in this job (R3, off-limits per WORKFLOW.md).
+- **Gmail adapter (`codeless-gmail`).** The `ChatAdapterKind` enum
+  deliberately omits `Gmail`; the variant lands paired with the new
+  crate, its OAuth PKCE host wiring, and the
+  `users.history.list` long-poll. `DOCS/WORKSPACE-ATTACH.md` reworded
+  to call this a "separate follow-up job" (was "separate milestone").
+- **Stage 2 (hot-reload without restart).** `ChatAdapterRegistry`
+  and `RunnerConfig` are the seams a future
+  `Arc<ArcSwap<RunnerConfig>>` / per-adapter graceful-shutdown
+  story will swap behind; until a documented trigger fires
+  (>5 restart-initiated kills/week, mobile lifecycle requirement,
+  or a recurring "rotate without dropping" user ask), restart-on-
+  apply is the supported path. `DOCS/WORKSPACE-ATTACH.md` now points
+  the stage-2 paragraph at this job's seams.
+
+## Validation snapshot
+
+Trusted from stage 8's handover (re-running the full workspace test
+matrix is not part of the REVIEW gate's contract):
 
 - `cargo build --workspace` — green.
-- `cargo clippy --workspace --all-targets -- -D warnings` — clean
-  (one transient `dead_code` on `ChatAdapterRegistry.{slack,
-  telegram}` is silenced field-by-field with `#[allow(dead_code)]`
-  rather than struct-wide so future fields keep warning).
-- `cargo fmt --check` — clean after one auto-format pass.
-- `cargo test --workspace --no-fail-fast -- --test-threads=4` —
-  fully green.
-- R1 grep on stage-touched files (`crates/codeless-cli/src/chat_adapter_registry.rs`):
-  no `tokio::process` / `std::process::Command` introductions.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt --check` — clean.
+- `cargo test --workspace --no-fail-fast -- --test-threads=4` — green.
+- R1 grep — no new `tokio::process` / `std::process::Command`
+  outside `codeless-adapters-host`. The only addition is
+  `codeless-adapters-host::respawn::supervise`.
 
-## What stage 9 owns
+## Sentinel
 
-REVIEW gate. Server-side milestones complete; the registry surface
-the UI follow-up consumes is now end-to-end:
-
-- Boot reads `chat_adapters` / `runner_config` (stage 3).
-- Six RPCs end-to-end with validate-before-enable coupling (stages
-  5–6).
-- `restart_server` partitions and re-execs (stage 7).
-- Slack / Telegram spawn and runner factory both source-of-truth on
-  SQLite, with `--enable-*` flags reduced to upsert shims (stage 8).
-
-Gmail adapter and stage 2 (hot-reload via `Arc<ArcSwap<…>>` /
-`AtomicBool`) remain follow-up jobs per `DOCS/WORKSPACE-ATTACH.md`
-§"TODO — adapter registry". The Settings → Adapters UI is a separate
-follow-up consuming the wire types stage 5 added to `codeless-types`.
-
-## Out-of-scope reminders carried forward
-
-- All UI work stays in the follow-up UI job.
-- `codeless-gmail` crate, OAuth PKCE host wiring, and the
-  refresh-token rotation `secrets_changed` event are in the
-  follow-up Gmail job.
-- Stage 2 (hot-reload) stays deferred until the trigger conditions in
-  `DOCS/WORKSPACE-ATTACH.md` fire.
-- The desktop shell's sidecar broker (the Tauri-side code that kills
-  and respawns the child) stays out of scope.
-
-## Open questions
-
-- (none for stage 8; the four open questions are resolved in
-  `DOCS/SCOPE.md` §"Adapter registry, stage 1").
+PASS: R1/R2/R4/R5 invariants hold across the stage 3–8 diff —
+process spawning stays in `codeless-adapters-host`, every new RPC
+rides the bearer-gated HTTP+SSE transport, the new SQLite tables
+are the source of truth with the cache as a session-lifetime gate,
+and `wire.ts.snap` is additive-only.

@@ -683,7 +683,12 @@ driver already replays the backlog on boot
 That removes the `Arc<ArcSwap<…>>` / per-adapter graceful-shutdown
 work and shrinks the milestone to:
 
-1. `[ ]` SQLite tables: `chat_adapters(kind, instance_id, enabled,
+Server-side milestone (1-5) landed in `codeless/adapter-registry`;
+follow-up jobs own (3) keyring backend rollout, (6) Settings UI, and
+the Gmail adapter. Stage 2 hot-reload remains deferred until a trigger
+fires.
+
+1. `[x]` SQLite tables: `chat_adapters(kind, instance_id, enabled,
    configured_at, PRIMARY KEY (kind, instance_id))` and
    `runner_config(runner_id PRIMARY KEY, enabled)`. Boot reads these
    instead of CLI flags. `--enable-*` flags stay as bootstrap
@@ -701,7 +706,7 @@ work and shrinks the milestone to:
      Slack-personal + Slack-work, or two Gmail accounts, without a
      schema change. Default `instance_id = "default"` covers the
      today-case.
-2. `[ ]` Secrets go through the existing `SecretStore`
+2. `[x]` Secrets go through the existing `SecretStore`
    ([`codeless-adapters-host/src/secrets.rs`](../crates/codeless-adapters-host/src/secrets.rs))
    — XDG-pathed TOML at `~/.config/codeless/secrets.toml`, flat
    `key = "value"` map, already used for `slack_*`,
@@ -711,7 +716,7 @@ work and shrinks the milestone to:
    through the existing secrets RPC. Write-then-fsync-then-restart
    ordering is load-bearing — UI must not trigger restart before
    the secrets file is durable on disk.
-3. `[ ]` Harden the secrets store. Today's file is plaintext TOML
+3. `[x]` Harden the secrets store. Today's file is plaintext TOML
    with no at-rest protection beyond filesystem perms. The Gmail
    refresh token (long-lived, account-wide mail access) raises the
    blast radius enough that this should ship alongside the Gmail
@@ -732,7 +737,7 @@ work and shrinks the milestone to:
    trait so `SecretStore`'s callers don't care which is in use,
    then migrate existing keys on first read. The TOML file stays
    as a `--secrets-file` opt-in for CI / fixtures.
-4. `[ ]` RPC: `list_chat_adapters`, `set_chat_adapter_enabled`,
+4. `[x]` RPC: `list_chat_adapters`, `set_chat_adapter_enabled`,
    `validate_chat_adapter_secrets` (calls `auth.test` for Slack,
    `getMe` for Telegram, token introspection for Gmail);
    `list_runners`, `set_runner_enabled`. All behind the bearer gate
@@ -753,7 +758,7 @@ work and shrinks the milestone to:
      validation blocks a concurrent Telegram one. This is a
      deliberate divergence from `validate_workspace_path`'s
      per-connection limit; the precedent does not fit here.
-5. `[ ]` `restart_server` RPC. Three contexts, not two; the
+5. `[x]` `restart_server` RPC. Three contexts, not two; the
    peer-review caught that the browser-shell case was unaddressed.
    - **CLI under a supervisor** (systemd, `init-session.sh`,
      `--respawn-on-exit` — see below): exit with sentinel code 75
@@ -818,6 +823,12 @@ Until one of those triggers fires, stage 1 is the whole story.
 Without a measurable trigger this stays deferred forever, which
 is the failure mode the peer review flagged.
 
+Stage 2 is a **separate follow-up job** when a trigger fires; the
+`ChatAdapterRegistry` and `RunnerConfig` shapes that stage 1 landed
+in `codeless/adapter-registry` are the seams it will swap behind an
+`Arc<ArcSwap<…>>`. Until then, the SQLite-source-of-truth +
+`restart_server` partition is the supported path.
+
 **Pluggability** (also peer-review). The closed set today is
 Slack, Telegram, Gmail — and the registry's `ChatAdapterRegistry`
 trait is the explicit extension point. Adding Discord / Matrix /
@@ -829,8 +840,10 @@ with the registry at boot; no schema change because of the
 required — adapters are not WASM plugins, and that is a
 deliberate commitment for the foreseeable future.
 
-**Gmail-specific work (separate milestone, slots into the
-registry).** Outbound is already done:
+**Gmail-specific work (separate follow-up job, slots into the
+registry).** The registry surface stage 1 shipped is what the Gmail
+crate plugs into; no `Gmail` variant exists in `ChatAdapterKind` yet
+— it lands paired with the new crate. Outbound is already done:
 [`codeless-tools::email::GmailMailer`](../crates/codeless-tools/src/email/gmail.rs)
 posts to `users.messages.send` with a caller-supplied OAuth2 token,
 and the `Mailer` trait is transport-agnostic. What's missing for
