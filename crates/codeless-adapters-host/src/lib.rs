@@ -34,6 +34,8 @@ pub use git_commit::{
     PriorPatchResolution,
 };
 pub use git_diff::{diff_against, DiffFile, GitDiffError};
-pub use secrets::{SecretError, SecretStore};
+#[cfg(feature = "keyring")]
+pub use secrets::KeyringSecretBackend;
+pub use secrets::{SecretBackend, SecretError, SecretStore, TomlSecretBackend};
 pub use shell::{run_shell, ShellOutcome};
 pub use worktree::{OnDiskWorktree, WorktreeError, WorktreeHandle, WorktreeManager};

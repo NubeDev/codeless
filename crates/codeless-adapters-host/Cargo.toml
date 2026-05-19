@@ -21,6 +21,14 @@ thiserror = "1"
 tokio = { version = "1", features = ["sync", "fs", "io-util", "process", "time", "macros", "rt"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
+keyring = { version = "3", optional = true, default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "vendored"] }
+
+[features]
+default = []
+# Enable the OS-keychain `SecretBackend` (Secret Service on Linux,
+# Keychain on macOS, Credential Manager on Windows). Off by default;
+# the TOML backend stays the canonical path for CI / headless installs.
+keyring = ["dep:keyring"]
 
 [dev-dependencies]
 tempfile = "3"
