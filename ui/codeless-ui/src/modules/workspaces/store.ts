@@ -19,6 +19,42 @@ import type { AttachedWorkspace, RepoId } from "@/lib/rpc/wire";
 
 export type WorkspaceHydrationStatus = "idle" | "loading" | "ready" | "error";
 
+// Deep-link contract from BROWSER-LAUNCHER.md §"Deep-link is
+// router-managed": the URL search-param `?workspace=<repo_id>` is the
+// source of truth for the active workspace across refresh, share-link
+// open, and browser-back. The store reads it once on construction to
+// pre-populate `activeRepoId` before any component mounts, and writes
+// it back on every `activeRepoId` change via `history.replaceState`
+// so the URL never drifts from the picker's selection. We use
+// `replaceState` (not `pushState`) so workspace-switches do not flood
+// history with intermediate entries — only routing actions like
+// `navigate('/jobs/123')` create new history entries, and the
+// workspace param rides along on whatever path is current.
+const WORKSPACE_PARAM = "workspace";
+
+export function readWorkspaceParamFromUrl(): RepoId | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get(
+    WORKSPACE_PARAM,
+  );
+  return value && value.length > 0 ? (value as RepoId) : null;
+}
+
+export function writeWorkspaceParamToUrl(repoId: RepoId | null): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  const current = url.searchParams.get(WORKSPACE_PARAM);
+  const next = repoId ?? null;
+  if (current === (next ?? null)) return;
+  if (next === null) url.searchParams.delete(WORKSPACE_PARAM);
+  else url.searchParams.set(WORKSPACE_PARAM, next);
+  // `pathname + search + hash` keeps relative URLs stable inside the
+  // Tauri webview (custom scheme) where `url.toString()` would emit
+  // `tauri://localhost/...` and confuse downstream history readers.
+  const target = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", target);
+}
+
 interface WorkspacesState {
   workspaces: AttachedWorkspace[];
   activeRepoId: RepoId | null;
@@ -67,7 +103,13 @@ function pickFallbackActive(
 
 export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   workspaces: [],
-  activeRepoId: null,
+  // Seed from the URL so the workspace picker, file explorer, and
+  // event subscriptions all see the deep-linked workspace on their
+  // very first render. Until `setWorkspaces` confirms the id is in
+  // the attached list, callers should treat this as a hint — the
+  // reconciler below downgrades it to `null` if the workspace is not
+  // attached.
+  activeRepoId: readWorkspaceParamFromUrl(),
   status: "idle",
   error: null,
 
@@ -122,7 +164,29 @@ export const useWorkspacesStore = create<WorkspacesState>((set, get) => ({
   },
 }));
 
+// Mirror every `activeRepoId` change back into the URL. Driven off
+// the store subscription instead of inlined into each setter so the
+// reducers stay pure and every code path (setActive, setWorkspaces
+// hydrate, applyAttached on first attach, applyDetached fallback)
+// gets the same treatment without duplication. The write is a no-op
+// when the param already matches, so it cannot loop with a popstate
+// listener that pushes URL state back into the store.
+if (typeof window !== "undefined") {
+  let last = useWorkspacesStore.getState().activeRepoId;
+  writeWorkspaceParamToUrl(last);
+  useWorkspacesStore.subscribe((s) => {
+    if (s.activeRepoId !== last) {
+      last = s.activeRepoId;
+      writeWorkspaceParamToUrl(last);
+    }
+  });
+}
+
 // Pure-function variant exposed for tests + the subscription
 // reconciler: keeps the reducer logic testable without a React tree
 // and without re-implementing the same fallback rules in two places.
-export const __workspacesTestables = { pickFallbackActive };
+export const __workspacesTestables = {
+  pickFallbackActive,
+  readWorkspaceParamFromUrl,
+  writeWorkspaceParamToUrl,
+};

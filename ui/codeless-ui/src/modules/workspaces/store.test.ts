@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { AttachedWorkspace, RepoId } from "@/lib/rpc/wire";
 
-import { useWorkspacesStore } from "./store";
+import {
+  __workspacesTestables,
+  useWorkspacesStore,
+} from "./store";
 import { reconcileFromEvent } from "./useWorkspacesSync";
 
 const ws = (
@@ -18,6 +21,11 @@ const ws = (
 });
 
 beforeEach(() => {
+  // Reset both the in-memory store and the URL — the module-level
+  // subscribe wired into `useWorkspacesStore` writes the active
+  // workspace into `?workspace=` on every change, and tests that
+  // assert URL state need a clean slate.
+  window.history.replaceState(null, "", "/");
   useWorkspacesStore.setState({
     workspaces: [],
     activeRepoId: null,
@@ -89,6 +97,60 @@ describe("useWorkspacesStore", () => {
     useWorkspacesStore.getState().setWorkspaces([a]);
     useWorkspacesStore.getState().setActive("r-ghost" as RepoId);
     expect(useWorkspacesStore.getState().activeRepoId).toBe("r-a");
+  });
+});
+
+describe("workspace deep-link URL sync", () => {
+  it("readWorkspaceParamFromUrl returns the ?workspace= value when present", () => {
+    window.history.replaceState(null, "", "/jobs?workspace=r-x");
+    expect(__workspacesTestables.readWorkspaceParamFromUrl()).toBe("r-x");
+  });
+
+  it("readWorkspaceParamFromUrl returns null when the param is missing or empty", () => {
+    window.history.replaceState(null, "", "/jobs");
+    expect(__workspacesTestables.readWorkspaceParamFromUrl()).toBeNull();
+    window.history.replaceState(null, "", "/jobs?workspace=");
+    expect(__workspacesTestables.readWorkspaceParamFromUrl()).toBeNull();
+  });
+
+  it("setActive rewrites ?workspace= via history.replaceState without pushing history", () => {
+    const baseLength = window.history.length;
+    const a = ws("r-a", "alpha", 1_000);
+    const b = ws("r-b", "beta", 2_000);
+    useWorkspacesStore.getState().setWorkspaces([a, b]);
+    useWorkspacesStore.getState().setActive("r-a" as RepoId);
+    expect(window.location.search).toBe("?workspace=r-a");
+    useWorkspacesStore.getState().setActive("r-b" as RepoId);
+    expect(window.location.search).toBe("?workspace=r-b");
+    // replaceState never grows history.length; pushState would.
+    expect(window.history.length).toBe(baseLength);
+  });
+
+  it("setActive(null) strips the ?workspace= param so the URL matches a detached state", () => {
+    const a = ws("r-a", "alpha", 1_000);
+    useWorkspacesStore.getState().setWorkspaces([a]);
+    useWorkspacesStore.getState().setActive("r-a" as RepoId);
+    expect(window.location.search).toBe("?workspace=r-a");
+    useWorkspacesStore.getState().setActive(null);
+    expect(window.location.search).toBe("");
+  });
+
+  it("setActive preserves the rest of the path and search-params", () => {
+    window.history.replaceState(null, "", "/jobs/123?filter=reviews");
+    const a = ws("r-a", "alpha", 1_000);
+    useWorkspacesStore.getState().setWorkspaces([a]);
+    useWorkspacesStore.getState().setActive("r-a" as RepoId);
+    expect(window.location.pathname).toBe("/jobs/123");
+    const search = new URLSearchParams(window.location.search);
+    expect(search.get("filter")).toBe("reviews");
+    expect(search.get("workspace")).toBe("r-a");
+  });
+
+  it("writeWorkspaceParamToUrl is a no-op when the param already matches", () => {
+    window.history.replaceState(null, "", "/jobs?workspace=r-a");
+    const before = window.location.href;
+    __workspacesTestables.writeWorkspaceParamToUrl("r-a" as RepoId);
+    expect(window.location.href).toBe(before);
   });
 });
 
