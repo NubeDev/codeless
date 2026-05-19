@@ -89,25 +89,99 @@ behaviour.
 5. `BROWSER-LAUNCHER.md` §"Known issues" entry shows `Status: fixed
    in <commit-sha>` with the actual line ranges of the edits.
 
-## Open questions (resolve in stage 1, before any code)
+## Open questions (resolved in stage 1)
 
 1. **Is `worktree_root_effective` already in scope at the point of
-   the new `add_root` call in `serve.rs`?** The BROWSER-LAUNCHER doc
-   says yes (line ~413, with the `create_dir_all` for it just
-   above). Confirm against the current branch and record the exact
-   line number in the handover.
-2. **Where does the integration test live?** Pick the existing
-   harness in `codeless-cli` or `codeless-tauri-desktop` that
-   already boots a runtime against tmp dirs; do not create a new
-   harness file. Record the chosen path in the handover.
+   the new `add_root` call in `serve.rs`?** Yes — and the
+   `add_root` call has already landed on this branch.
+   `worktree_root_effective` is bound at
+   [`crates/codeless-cli/src/serve.rs:368`](../../../crates/codeless-cli/src/serve.rs#L368)
+   (via `effective_worktree_root(&args)`); the matching
+   `create_dir_all` + `host_fs.add_root(wt)` block is already
+   present at lines 413–422 of the same file, sitting between the
+   `attached_workspaces` rehydration loop (399–412) and the
+   `runtime.with_fs(Arc::new(host_fs))` wiring at line 429. *Why:*
+   the CLI half of the fix is in; the recon only confirms it is
+   not a regression target for stage 2 (it stays as-is, but the
+   regression test still covers it).
+2. **Where does the integration test live?** The chat-side reject
+   path is
+   [`crates/codeless-runtime/src/rpc/chat.rs`](../../../crates/codeless-runtime/src/rpc/chat.rs)
+   (`"agent_chat cwd is outside the configured fs roots"` at
+   line 76). The existing `HostFs` unit tests live in-file at
+   [`crates/codeless-adapters-host/src/fs.rs`](../../../crates/codeless-adapters-host/src/fs.rs)
+   from line 377 onward (`add_root_makes_outside_path_resolvable`
+   at 487, `add_root_canonicalises_so_duplicates_collapse` at 544
+   — `tempfile::tempdir` based, no DB). The `HostFs` regression
+   test belongs there. The boot-time end-to-end test for
+   `codeless-tauri-desktop::boot()` belongs in
+   [`crates/codeless-tauri-desktop/src/boot.rs`](../../../crates/codeless-tauri-desktop/src/boot.rs)'s
+   `#[cfg(test)] mod tests` (line 255+) which already runs
+   workspace-slug tests against `PathBuf`; that module gains the
+   "worktree base is in HostFs roots after boot" assertion. The
+   `codeless-cli serve` path has no per-test harness today
+   (`serve.rs` is one long function with no `#[cfg(test)]`
+   module); the `HostFs` unit test plus the desktop-boot test
+   together pin both halves without inventing a new harness.
+   *Why:* match the SCOPE constraint "do not invent a new
+   harness".
 3. **Does `HostFs::add_root` already handle the case where the
-   directory does not yet exist?** Read the function before the
-   stage 2 edit; if it requires the path to exist, ensure the
-   `create_dir_all` ordering is preserved. (The doc claims the
-   `create_dir_all` line "just above" already guarantees this.)
+   directory does not yet exist?** No — `add_root` calls
+   `canonicalise_root` at
+   [`crates/codeless-adapters-host/src/fs.rs:87`](../../../crates/codeless-adapters-host/src/fs.rs#L87),
+   which `std::fs::canonicalize`s the path and returns
+   `FsError::BadRoot` if it doesn't resolve or isn't a directory
+   (369–375). The CLI side already preserves the ordering
+   (`std::fs::create_dir_all(wt).ok()` at line 417 immediately
+   before `host_fs.add_root(wt)` at 418). For
+   `codeless-tauri-desktop`, `boot.rs` already runs
+   `std::fs::create_dir_all(&paths.worktree_base).ok()` at line
+   129 — long before the new `add_root` call would land between
+   lines 160 and 163. *Why:* the precondition is met in both
+   hosts without re-ordering anything in stage 2.
 
-Record the chosen answer plus a one-line *why* under each in this
-file during stage 1; no production code in stage 1.
+## Stage-1 reproduction notes
+
+- The reject string fires from
+  [`crates/codeless-runtime/src/rpc/chat.rs:76`](../../../crates/codeless-runtime/src/rpc/chat.rs#L76):
+  `RpcError::InvalidArgument("agent_chat cwd is outside the
+  configured fs roots: {p}")`. The chat-panel client passes the
+  job's worktree path as `args.cwd`; `HostFs::is_path_allowed`
+  rejects it unless the worktree root (or an ancestor) is in the
+  registered allowed-roots set.
+- **`codeless-cli serve` — already patched on this branch.** The
+  worktree-root `add_root` block lives at
+  [`crates/codeless-cli/src/serve.rs:413-422`](../../../crates/codeless-cli/src/serve.rs#L413-L422),
+  with `worktree_root_effective` bound at line 368. Stage 2 has
+  nothing to edit here, but the regression test must still cover
+  the contract so a future refactor cannot silently drop it.
+- **`codeless-tauri-desktop::boot()` — NOT patched.** No
+  `host_fs.add_root(&paths.worktree_base)` call exists between
+  the rehydration loop (ending
+  [`crates/codeless-tauri-desktop/src/boot.rs:160`](../../../crates/codeless-tauri-desktop/src/boot.rs#L160))
+  and the `runtime.with_fs(Arc::new(host_fs))` wiring at
+  [line 163](../../../crates/codeless-tauri-desktop/src/boot.rs#L163).
+  `paths.worktree_base` is in scope from line 134 and
+  `create_dir_all`'d at line 129; the insertion point is between
+  lines 160 and 162 (after the rehydration `match`, before the
+  fluent chain `let runtime = runtime.with_fs(...)...`). Surface
+  failures through `BootError::FsRoot(format!("{}: {e}",
+  paths.worktree_base.display()))` to match the surrounding
+  style at line 148.
+- **Reproduction not run live.** Stage 1 runs in an isolated
+  worktree without a booted server; the static evidence above
+  (chat.rs reject site + boot.rs missing registration) is the
+  reproduction. A live smoke (boot desktop shell, open chat
+  panel) is the stage-4 deliverable per SCOPE §Deliverables #4.
+- **Doc gap to address in stage 4.** SCOPE.md §References points
+  at `BROWSER-LAUNCHER.md` §"Known issues — Worktree root is not
+  in the fs jail", but that section does **not** exist in
+  [`crates/codeless-tauri-desktop/BROWSER-LAUNCHER.md`](../../../crates/codeless-tauri-desktop/BROWSER-LAUNCHER.md)
+  on this branch (grep returns zero hits in that file). Stage 4
+  must either add the section (and immediately flip it to
+  `Status: fixed in <sha>` with the actual line ranges), or
+  delete the SCOPE.md cross-reference. The deliverable in
+  SCOPE.md #5 assumes the section exists; the section does not.
 
 ## References
 
