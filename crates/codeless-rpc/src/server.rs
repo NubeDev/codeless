@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use codeless_types::{
     AttachWorkspaceArgs, AttachWorkspaceResult, ChatBinding, ChatMessage, DetachWorkspaceArgs, Job,
-    ListChatAdaptersResult, ListRunnersResult, ListWorkspacesResult, Persona, Repo, Review,
-    SetChatAdapterEnabledArgs, SetRunnerEnabledArgs, ValidateChatAdapterSecretsArgs,
-    ValidateChatAdapterSecretsResult, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    ListChatAdaptersResult, ListRunnersResult, ListWorkspacesResult, Persona, Repo,
+    RestartServerArgs, RestartServerResult, Review, SetChatAdapterEnabledArgs,
+    SetRunnerEnabledArgs, ValidateChatAdapterSecretsArgs, ValidateChatAdapterSecretsResult,
+    ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
 };
 
 use crate::error::RpcResult;
@@ -413,6 +414,31 @@ pub trait RpcServer: Send + Sync + 'static {
     /// a future runner crate registers itself the same way without a
     /// schema change.
     async fn set_runner_enabled(&self, args: SetRunnerEnabledArgs) -> RpcResult<()>;
+
+    /// Restart the server so the adapter / runner registry rows take
+    /// effect. Three execution contexts share this verb:
+    ///
+    /// - **Supervised CLI** (`init-session.sh`, systemd, or
+    ///   `--respawn-on-exit`): the runtime fires its shutdown signal
+    ///   so the parent observes a process exit with sentinel code 75
+    ///   `EX_TEMPFAIL` and re-execs the child.
+    /// - **Tauri desktop sidecar**: the desktop shell brokers the
+    ///   restart; the runtime returns success and emits the shutdown
+    ///   signal so the sidecar drops, then the shell respawns it.
+    /// - **Bare CLI without a supervisor**: refuses with
+    ///   `AdapterError::RestartUnsupervised { hint }` carrying a
+    ///   copy-pasteable manual restart command.
+    ///
+    /// Pre-condition: when `force = false` (the default), the runtime
+    /// enumerates every `Running` job, partitions them into
+    /// *resumable* (template-driven runner with a recent stage
+    /// transition) vs *killed* (PTY-bound runner or stale
+    /// checkpoint), and refuses with
+    /// `AdapterError::RestartHasRunningJobs { resumable, killed }`
+    /// unless the operator opts into `force = true`. The validate
+    /// cache is cleared by the restart; see
+    /// `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry".
+    async fn restart_server(&self, args: RestartServerArgs) -> RpcResult<RestartServerResult>;
 
     /// List every assistant thread on this host, newest-touched first.
     /// Unfiltered by design — see `AssistantThread`: threads are not

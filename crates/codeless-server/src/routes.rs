@@ -110,6 +110,7 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route("/rpc/list_runners", post(list_runners))
         .route("/rpc/set_runner_enabled", post(set_runner_enabled))
+        .route("/rpc/restart_server", post(restart_server))
         .route("/rpc/list_assistant_threads", post(list_assistant_threads))
         .route(
             "/rpc/create_assistant_thread",
@@ -726,6 +727,19 @@ async fn set_runner_enabled(
         .await
         .map(|()| Json(Value::Null))
         .map_err(map_err)
+}
+
+async fn restart_server(
+    State(st): State<AppState>,
+    args: Option<Json<codeless_rpc::RestartServerArgs>>,
+) -> HandlerResult<codeless_rpc::RestartServerResult> {
+    // `args` is optional so callers that send no body (the common
+    // "restart now" UI button, force defaulted to false) do not get a
+    // 415. Specta-derived RestartServerArgs has only `force: bool`
+    // with `#[serde(default)]`, so the empty default is the right
+    // identity here.
+    let args = args.map(|Json(a)| a).unwrap_or_default();
+    st.rpc.restart_server(args).await.map(Json).map_err(map_err)
 }
 
 async fn list_assistant_threads(

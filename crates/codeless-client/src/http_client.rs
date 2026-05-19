@@ -19,15 +19,16 @@ use codeless_rpc::{
     ListRunnersResult, ListStagesArgs, ListStagesResult, ListWorkspacesResult,
     OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
-    ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, RpcResult, RpcServer,
-    ScopePatchActionResult, SetChatAdapterEnabledArgs, SetJobPolicyArgs, SetRunnerEnabledArgs,
-    Since, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
-    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
-    UpsertPersonaArgs, ValidateChatAdapterSecretsArgs, ValidateChatAdapterSecretsResult,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs,
-    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
+    RestartServerArgs, RestartServerResult, ResumeJobArgs, RevertScopePatchArgs,
+    RevertScopePatchResult, RpcError, RpcResult, RpcServer, ScopePatchActionResult,
+    SetChatAdapterEnabledArgs, SetJobPolicyArgs, SetRunnerEnabledArgs, Since, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateChatMessageDeliveryArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
+    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
+    ValidateChatAdapterSecretsArgs, ValidateChatAdapterSecretsResult, ValidateWorkspacePathArgs,
+    ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
+    WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review};
 use futures_util::StreamExt;
@@ -429,6 +430,10 @@ impl RpcServer for HttpRpcClient {
 
     async fn set_runner_enabled(&self, args: SetRunnerEnabledArgs) -> RpcResult<()> {
         self.call_void("set_runner_enabled", &args).await
+    }
+
+    async fn restart_server(&self, args: RestartServerArgs) -> RpcResult<RestartServerResult> {
+        self.call("restart_server", &args).await
     }
 
     async fn list_assistant_threads(

@@ -82,7 +82,7 @@ without restart) is also a separate, later job per the doc.
     TOML cleanly on platforms where Secret Service isn't running.
   The TOML file stays the source of truth for CI / fixtures
   (`--secrets-file <path>`).
-- `restart_server` RPC with three branches:
+- [x] `restart_server` RPC with three branches (stage 7):
   - **Supervised CLI** (`init-session.sh`, systemd): exit 75
     `EX_TEMPFAIL`; the wrapper / unit file re-execs.
   - **Tauri desktop**: returns success; the desktop shell kills its
@@ -107,13 +107,14 @@ without restart) is also a separate, later job per the doc.
   tables. No behavioural change beyond the source of truth; existing
   adapter and runner code is not refactored.
 - Exit tests (from WORKSPACE-ATTACH.md §"Exit tests"):
-  1. Write-then-fsync-then-restart ordering: a unit test that
+  1. [x] Write-then-fsync-then-restart ordering: a unit test that
      crashes the process between secrets-write and the restart
      signal proves the on-disk state is durable.
-  2. `restart_server` partition: a job with a recent checkpoint is
+  2. [x] `restart_server` partition: a job with a recent checkpoint is
      reported `resumable` and resumes; a job mid-PTY-stream is
      reported `killed` and the kill is logged.
-  3. `set_chat_adapter_enabled(true)` without a prior successful
+     _Landed: `crates/codeless-runtime/tests/restart_server_partition.rs`._
+  3. [x] `set_chat_adapter_enabled(true)` without a prior successful
      `validate_chat_adapter_secrets` returns the structured
      `MissingSecrets` / `ValidationFailed` error.
 

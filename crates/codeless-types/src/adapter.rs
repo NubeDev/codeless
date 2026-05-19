@@ -117,7 +117,7 @@ pub enum ChatAdapterSecretProblem {
     Other { reason: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct RestartServerArgs {
     /// When `false` (default), the call refuses with
     /// `RestartHasRunningJobs` if any job is `Running`, returning the
@@ -132,7 +132,7 @@ pub struct RestartServerArgs {
 /// drops as the process exits. The struct exists so the RPC has a
 /// shape and so a future synchronous success path (Tauri desktop
 /// returning *before* sidecar respawn) has somewhere to land.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct RestartServerResult {}
 
 /// Structured failure modes for the six adapter-registry RPCs. Wire-

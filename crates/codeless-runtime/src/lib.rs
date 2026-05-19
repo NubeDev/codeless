@@ -72,6 +72,7 @@ pub use queue_config::QueueConfig;
 pub use rpc::adapters::{
     required_secret_keys, StaticValidationProbe, ValidationProbe, VALIDATE_TIMEOUT,
 };
+pub use rpc::restart::{RestartContext, RestartTrigger, EX_TEMPFAIL, RESUMABLE_WINDOW};
 pub use rpc::InProcessRpc;
 pub use rpc::{ChatCancelEntry, ChatCancels};
 pub use runner::{Runner, RunnerContext, RunnerOutcome};

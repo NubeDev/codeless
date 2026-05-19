@@ -14,6 +14,7 @@ pub mod git_changed;
 pub mod git_commit;
 pub mod git_diff;
 pub mod net;
+pub mod respawn;
 pub mod secrets;
 pub mod shell;
 pub mod worktree;

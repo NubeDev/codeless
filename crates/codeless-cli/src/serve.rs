@@ -12,14 +12,15 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use codeless_adapters_host::{SecretStore, WorktreeManager};
 use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerFeatureFlags, ServerInfo};
+#[cfg(test)]
+use codeless_runtime::compose_system_prompt;
 use codeless_runtime::{
     spawn_job_driver_loop, spawn_notifier, spawn_plan_engine_subscriber, spawn_stage_recorder,
     DefaultRunnerFactory, InProcessRpc, WebhookConfig, WebhookNotifier,
 };
-#[cfg(test)]
-use codeless_runtime::compose_system_prompt;
 use codeless_server::{
-    load_bearer_token, serve_with_shutdown, AppState, AuthMode, TokenLoadError, TOKEN_SECRET_KEY,
+    load_bearer_token, serve_with_extra_shutdown, AppState, AuthMode, TokenLoadError,
+    TOKEN_SECRET_KEY,
 };
 use codeless_tools::plan::{LogJobSpawner, PlanEngine};
 use std::net::SocketAddr;
@@ -151,6 +152,20 @@ pub struct ServeArgs {
     /// The file is overwritten on each boot and deleted on shutdown.
     #[arg(long, env = "CODELESS_PORT_FILE")]
     pub port_file: Option<PathBuf>,
+
+    /// Run the inner `codeless serve` under a self-watcher parent
+    /// that re-execs the child whenever it exits with sentinel code
+    /// 75 (`EX_TEMPFAIL`). Off by default — supervised launchers
+    /// (`init-session.sh`, systemd) and the Tauri sidecar already
+    /// broker re-exec, and stacking two supervisors is the footgun.
+    /// Pass this when the operator wants the in-terminal
+    /// `codeless serve` to honour `restart_server` without external
+    /// tooling. The watcher exits cleanly when the child exits with
+    /// any non-`EX_TEMPFAIL` status. See
+    /// `DOCS/WORKSPACE-ATTACH.md` §"TODO — adapter registry" for the
+    /// three-context contract.
+    #[arg(long)]
+    pub respawn_on_exit: bool,
 }
 
 pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Result<ExitCode> {
@@ -159,10 +174,49 @@ pub fn handle(args: ServeArgs, secrets_path: PathBuf, db: Option<PathBuf>) -> Re
         return Ok(ExitCode::SUCCESS);
     }
 
+    // `--respawn-on-exit` and the supervised child path are mutually
+    // exclusive: when the watcher is asked to start a child it strips
+    // the flag and exports `CODELESS_SUPERVISED=1`. If we already see
+    // that marker we run the inner server normally so the parent
+    // (this very binary, one stack frame up) observes the exit code
+    // and decides whether to re-exec us.
+    if args.respawn_on_exit && !codeless_adapters_host::respawn::is_supervised() {
+        let child_argv = current_child_argv()?;
+        eprintln!(
+            "codeless-server: --respawn-on-exit watcher running ({} child args)",
+            child_argv.len()
+        );
+        let code = codeless_adapters_host::respawn::supervise(&child_argv)
+            .map_err(|e| anyhow!("respawn watcher: {e}"))?;
+        return Ok(if code == 0 {
+            ExitCode::SUCCESS
+        } else {
+            // ExitCode::from takes u8; clamp out-of-range codes so we
+            // never silently lose a non-zero failure under the
+            // 8-bit-truncation rule the OS would apply anyway.
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        });
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     rt.block_on(run_server(args, secrets_path, db))
+}
+
+/// Reconstruct the argv the watcher hands to the child. The watcher
+/// strips `--respawn-on-exit` (so the child does not re-enter the
+/// watcher path) and otherwise copies the operator-supplied flags
+/// verbatim. `current_exe()` is resolved by the respawn helper.
+fn current_child_argv() -> Result<Vec<String>> {
+    let mut argv: Vec<String> = std::env::args().collect();
+    // Drop argv[0] — the watcher re-derives the executable from
+    // `current_exe()` so a renamed binary still finds itself.
+    if !argv.is_empty() {
+        argv.remove(0);
+    }
+    argv.retain(|a| a != "--respawn-on-exit");
+    Ok(argv)
 }
 
 fn init_token(path: &Path, force: bool) -> Result<()> {
@@ -220,6 +274,28 @@ async fn run_server(
     };
 
     let mut runtime = rpc_open::open(db.as_deref()).await?;
+    // Pick the `restart_server` execution context. Supervised wins
+    // when either the `--respawn-on-exit` watcher exported its env
+    // marker or systemd booted us with `INVOCATION_ID`; otherwise the
+    // process is bare and `restart_server` returns the
+    // `RestartUnsupervised` hint. Tauri desktop sets its own marker
+    // when it spawns the sidecar; the variable name is symmetric
+    // with the supervised one so the matching block stays a glance.
+    let restart_ctx = if codeless_adapters_host::respawn::is_supervised()
+        || std::env::var("INVOCATION_ID").is_ok_and(|v| !v.is_empty())
+    {
+        codeless_runtime::RestartContext::SupervisedCli
+    } else if std::env::var("CODELESS_TAURI_SIDECAR").is_ok_and(|v| !v.is_empty()) {
+        codeless_runtime::RestartContext::TauriDesktop
+    } else {
+        codeless_runtime::RestartContext::Bare
+    };
+    runtime = runtime.with_restart_context(restart_ctx);
+    eprintln!(
+        "codeless-server: restart context = {:?} (respawn watcher: {})",
+        restart_ctx,
+        codeless_adapters_host::respawn::is_supervised(),
+    );
 
     // Adapter registry boot wiring (see DOCS/WORKSPACE-ATTACH.md "TODO
     // — adapter registry"). Each `--enable-*` flag upserts a single
@@ -630,19 +706,37 @@ async fn run_server(
     };
 
     let port_file = args.port_file.clone();
-    serve_with_shutdown(args.bind, state, |addr| {
-        eprintln!("codeless-server listening on http://{addr}");
-        if let Some(ref path) = port_file {
-            if let Err(e) = std::fs::write(path, addr.to_string()) {
-                eprintln!("warning: failed to write port file {}: {e}", path.display());
+    // Drain the listener on either Ctrl-C *or* a successful
+    // `restart_server` call (the trigger is fired from inside the RPC
+    // handler). After the listener returns we read the desired exit
+    // code: `Some(75)` means "supervisor, please re-exec me",
+    // `Some(0)` is the Tauri sidecar path, `None` is a clean
+    // operator-driven shutdown.
+    let restart_trigger = rpc.restart_trigger();
+    let restart_wait = restart_trigger.clone();
+    serve_with_extra_shutdown(
+        args.bind,
+        state,
+        |addr| {
+            eprintln!("codeless-server listening on http://{addr}");
+            if let Some(ref path) = port_file {
+                if let Err(e) = std::fs::write(path, addr.to_string()) {
+                    eprintln!("warning: failed to write port file {}: {e}", path.display());
+                }
             }
-        }
-    })
+        },
+        async move { restart_wait.wait().await },
+    )
     .await
     .map_err(|e| anyhow!("serve: {e}"))?;
 
     if let Some(ref path) = port_file {
         let _ = std::fs::remove_file(path);
+    }
+
+    if let Some(code) = restart_trigger.desired_exit_code() {
+        eprintln!("codeless-server: restart_server requested exit code {code}");
+        return Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)));
     }
 
     Ok(ExitCode::SUCCESS)
