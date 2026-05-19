@@ -1,6 +1,7 @@
 use codeless_rpc::{
-    FsCreateDirArgs, FsCreateFileArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs,
-    FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs,
+    FsCreateDirArgs, FsCreateFileArgs, FsCwdArgs, FsCwdResult, FsDeleteArgs, FsMoveArgs,
+    FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult,
+    FsWriteFileArgs,
 };
 use tauri::State;
 
@@ -40,8 +41,8 @@ pub async fn rpc_fs_stat(
 }
 
 #[tauri::command]
-pub async fn rpc_fs_cwd(state: State<'_, AppState>) -> CommandResult<FsCwdResult> {
-    Ok(state.rpc.fs_cwd().await?)
+pub async fn rpc_fs_cwd(state: State<'_, AppState>, args: FsCwdArgs) -> CommandResult<FsCwdResult> {
+    Ok(state.rpc.fs_cwd(args).await?)
 }
 
 #[tauri::command]

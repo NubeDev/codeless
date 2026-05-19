@@ -6,11 +6,11 @@ use codeless_rpc::{
     CancelAssistantActionResult, CancelChatTaskArgs, CommentReviewArgs, ConfirmAssistantActionArgs,
     ConfirmAssistantActionResult, CreateAssistantThreadArgs, DeleteAssistantThreadArgs,
     DeleteJobFileArgs, DeletePersonaArgs, DetachWorkspaceArgs, DraftJobFromConversationArgs,
-    EditScopePatchArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdResult,
-    FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs, FsReadFileResult,
-    FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs, GcWorktreesResult,
-    GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs, JobDiffArgs,
-    JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
+    EditScopePatchArgs, EventFilter, EventStream, FsCreateDirArgs, FsCreateFileArgs, FsCwdArgs,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GcWorktreesArgs,
+    GcWorktreesResult, GetChatBindingArgs, GetChatBindingResult, GetJobArgs, GetPersonaArgs,
+    JobDiffArgs, JobDiffResult, JobReportArgs, JobReportResult, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
     ListChatAdaptersResult, ListChatBindingsForJobArgs, ListChatBindingsForJobResult,
     ListJobFilesArgs, ListJobFilesResult, ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs,
@@ -321,8 +321,8 @@ impl RpcServer for HttpRpcClient {
         self.call("fs_stat", &args).await
     }
 
-    async fn fs_cwd(&self) -> RpcResult<FsCwdResult> {
-        self.call("fs_cwd", &serde_json::json!({})).await
+    async fn fs_cwd(&self, args: FsCwdArgs) -> RpcResult<FsCwdResult> {
+        self.call("fs_cwd", &args).await
     }
 
     async fn fs_create_file(&self, args: FsCreateFileArgs) -> RpcResult<()> {

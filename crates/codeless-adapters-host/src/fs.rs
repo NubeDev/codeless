@@ -216,41 +216,172 @@ impl HostFs {
         }
     }
 
+    /// Whether `root` (already canonical from the caller's perspective)
+    /// matches one of this adapter's registered allowed roots. Used by
+    /// the runtime as a defence-in-depth check before dispatching one
+    /// of the `*_in` helpers: the DB is the source of truth for which
+    /// repo points at which path, but the host adapter is the trust
+    /// gate, so a path the DB knows but the adapter does not must be
+    /// refused rather than silently widening the jail.
+    pub fn root_is_registered(&self, root: &Path) -> bool {
+        let canon = std::fs::canonicalize(root).ok();
+        let roots = self.roots.read().expect("HostFs roots poisoned");
+        match canon {
+            Some(c) => roots.iter().any(|r| r == &c),
+            None => roots.iter().any(|r| r.as_path() == root),
+        }
+    }
+
+    /// Resolve `path` against a single jail root (rather than the full
+    /// allowed-roots set). The runtime's `fs.*` RPCs use this after
+    /// looking up `repo_id` in `attached_workspaces`: every call is
+    /// scoped to its own workspace so a stale tab pointing at repo A
+    /// cannot read repo B's files just because both happen to be in
+    /// the same adapter's allow-list. Same `ParentDir` refusal and
+    /// canonicalise-then-`starts_with` containment check as
+    /// [`Self::resolve`]; the only difference is the set being
+    /// checked.
+    fn resolve_in(&self, jail: &Path, path: &str) -> Result<PathBuf, FsError> {
+        let raw = Path::new(path);
+        for c in raw.components() {
+            match c {
+                Component::Normal(_) | Component::CurDir | Component::RootDir => {}
+                Component::Prefix(_) => {}
+                Component::ParentDir => return Err(FsError::Escape(path.to_owned())),
+            }
+        }
+        let joined = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            jail.join(raw)
+        };
+        match std::fs::canonicalize(&joined) {
+            Ok(canon) => {
+                if canon.starts_with(jail) {
+                    Ok(canon)
+                } else {
+                    Err(FsError::PermissionDenied(path.to_owned()))
+                }
+            }
+            Err(_) => {
+                let parent = joined
+                    .parent()
+                    .ok_or_else(|| FsError::PermissionDenied(path.to_owned()))?;
+                let parent_canon = std::fs::canonicalize(parent)
+                    .map_err(|_| FsError::PermissionDenied(path.to_owned()))?;
+                if !parent_canon.starts_with(jail) {
+                    return Err(FsError::PermissionDenied(path.to_owned()));
+                }
+                let tail = joined
+                    .file_name()
+                    .ok_or_else(|| FsError::PermissionDenied(path.to_owned()))?;
+                Ok(parent_canon.join(tail))
+            }
+        }
+    }
+
+    pub async fn read_dir_in(&self, jail: &Path, rel: &str) -> Result<Vec<FsEntry>, FsError> {
+        let abs = self.resolve_in(jail, rel)?;
+        read_dir_at(&abs).await
+    }
+
+    pub async fn read_file_in(&self, jail: &Path, rel: &str) -> Result<String, FsError> {
+        let abs = self.resolve_in(jail, rel)?;
+        let bytes = tokio::fs::read(&abs).await?;
+        String::from_utf8(bytes).map_err(|_| FsError::NotUtf8(rel.to_owned()))
+    }
+
+    pub async fn write_file_in(
+        &self,
+        jail: &Path,
+        rel: &str,
+        content: &str,
+    ) -> Result<(), FsError> {
+        let abs = self.resolve_in(jail, rel)?;
+        tokio::fs::write(&abs, content.as_bytes()).await?;
+        Ok(())
+    }
+
+    pub async fn stat_in(
+        &self,
+        jail: &Path,
+        rel: &str,
+    ) -> Result<Option<(FsEntryKind, Option<i64>, Option<UnixMillis>)>, FsError> {
+        let abs = self.resolve_in(jail, rel)?;
+        stat_at(&abs).await
+    }
+
+    pub async fn create_file_in(
+        &self,
+        jail: &Path,
+        rel: &str,
+        content: Option<&str>,
+        overwrite: bool,
+    ) -> Result<(), FsError> {
+        let abs = self.resolve_in(jail, rel)?;
+        if !overwrite && abs.exists() {
+            return Err(FsError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("file already exists: {}", abs.display()),
+            )));
+        }
+        let bytes = content.unwrap_or("").as_bytes();
+        tokio::fs::write(&abs, bytes).await?;
+        Ok(())
+    }
+
+    pub async fn create_dir_in(
+        &self,
+        jail: &Path,
+        rel: &str,
+        recursive: bool,
+    ) -> Result<(), FsError> {
+        let abs = self.resolve_in(jail, rel)?;
+        if recursive {
+            tokio::fs::create_dir_all(&abs).await?;
+        } else {
+            tokio::fs::create_dir(&abs).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn rename_in(
+        &self,
+        jail: &Path,
+        from: &str,
+        to: &str,
+        overwrite: bool,
+    ) -> Result<(), FsError> {
+        let abs_from = self.resolve_in(jail, from)?;
+        let abs_to = self.resolve_in(jail, to)?;
+        if !overwrite && abs_to.exists() {
+            return Err(FsError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("target already exists: {}", abs_to.display()),
+            )));
+        }
+        tokio::fs::rename(&abs_from, &abs_to).await?;
+        Ok(())
+    }
+
+    pub async fn delete_in(&self, jail: &Path, rel: &str, recursive: bool) -> Result<(), FsError> {
+        let abs = self.resolve_in(jail, rel)?;
+        let meta = tokio::fs::symlink_metadata(&abs).await?;
+        if meta.is_dir() {
+            if recursive {
+                tokio::fs::remove_dir_all(&abs).await?;
+            } else {
+                tokio::fs::remove_dir(&abs).await?;
+            }
+        } else {
+            tokio::fs::remove_file(&abs).await?;
+        }
+        Ok(())
+    }
+
     pub async fn read_dir(&self, rel: &str) -> Result<Vec<FsEntry>, FsError> {
         let abs = self.resolve(rel)?;
-        let mut iter = tokio::fs::read_dir(&abs).await?;
-        let mut out = Vec::new();
-        while let Some(entry) = iter.next_entry().await? {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let meta = entry.metadata().await?;
-            let kind = if meta.is_dir() {
-                FsEntryKind::Dir
-            } else if meta.file_type().is_symlink() {
-                FsEntryKind::Symlink
-            } else {
-                FsEntryKind::File
-            };
-            let size = if meta.is_file() {
-                Some(meta.len() as i64)
-            } else {
-                None
-            };
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| UnixMillis(d.as_millis() as i64));
-            out.push(FsEntry {
-                name,
-                kind,
-                size,
-                mtime,
-            });
-        }
-        // Deterministic order makes the explorer UI stable across
-        // platform-specific readdir ordering (ext4 vs APFS vs NTFS).
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(out)
+        read_dir_at(&abs).await
     }
 
     pub async fn read_file(&self, rel: &str) -> Result<String, FsError> {
@@ -273,29 +404,7 @@ impl HostFs {
         rel: &str,
     ) -> Result<Option<(FsEntryKind, Option<i64>, Option<UnixMillis>)>, FsError> {
         let abs = self.resolve(rel)?;
-        let meta = match tokio::fs::symlink_metadata(&abs).await {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        let kind = if meta.file_type().is_symlink() {
-            FsEntryKind::Symlink
-        } else if meta.is_dir() {
-            FsEntryKind::Dir
-        } else {
-            FsEntryKind::File
-        };
-        let size = if meta.is_file() {
-            Some(meta.len() as i64)
-        } else {
-            None
-        };
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| UnixMillis(d.as_millis() as i64));
-        Ok(Some((kind, size, mtime)))
+        stat_at(&abs).await
     }
 
     /// Create a file. When `content` is `None` the file is empty.
@@ -364,6 +473,70 @@ impl HostFs {
         }
         Ok(())
     }
+}
+
+async fn read_dir_at(abs: &Path) -> Result<Vec<FsEntry>, FsError> {
+    let mut iter = tokio::fs::read_dir(abs).await?;
+    let mut out = Vec::new();
+    while let Some(entry) = iter.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let meta = entry.metadata().await?;
+        let kind = if meta.is_dir() {
+            FsEntryKind::Dir
+        } else if meta.file_type().is_symlink() {
+            FsEntryKind::Symlink
+        } else {
+            FsEntryKind::File
+        };
+        let size = if meta.is_file() {
+            Some(meta.len() as i64)
+        } else {
+            None
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| UnixMillis(d.as_millis() as i64));
+        out.push(FsEntry {
+            name,
+            kind,
+            size,
+            mtime,
+        });
+    }
+    // Deterministic order makes the explorer UI stable across
+    // platform-specific readdir ordering (ext4 vs APFS vs NTFS).
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+async fn stat_at(
+    abs: &Path,
+) -> Result<Option<(FsEntryKind, Option<i64>, Option<UnixMillis>)>, FsError> {
+    let meta = match tokio::fs::symlink_metadata(abs).await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let kind = if meta.file_type().is_symlink() {
+        FsEntryKind::Symlink
+    } else if meta.is_dir() {
+        FsEntryKind::Dir
+    } else {
+        FsEntryKind::File
+    };
+    let size = if meta.is_file() {
+        Some(meta.len() as i64)
+    } else {
+        None
+    };
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| UnixMillis(d.as_millis() as i64));
+    Ok(Some((kind, size, mtime)))
 }
 
 fn canonicalise_root(raw: PathBuf) -> Result<PathBuf, FsError> {

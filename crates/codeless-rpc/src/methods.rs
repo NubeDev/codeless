@@ -471,13 +471,17 @@ pub struct StopReviewArgs {
     pub review_id: ReviewId,
 }
 
-/// Paths in every `fs_*` arg are interpreted relative to the
-/// configured server root. The host adapter rejects any path that
-/// escapes the root (`..` segments, absolute paths, symlinks pointing
-/// outside) before touching disk — the wire shape carries no notion
-/// of "outside root" because callers should never need to express it.
+/// Paths in every `fs_*` arg are interpreted relative to the attached
+/// workspace identified by `repo_id`. The runtime resolves `repo_id`
+/// to the workspace's `fs_root_canonical` via the
+/// `attached_workspaces` table and hands that to the host adapter as
+/// the jail root for the call. An unknown or detached `repo_id` is
+/// refused with a typed error before the adapter is consulted, so a
+/// stale browser tab cannot read or write into a workspace that was
+/// detached out from under it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsReadDirArgs {
+    pub repo_id: RepoId,
     pub path: String,
 }
 
@@ -488,6 +492,7 @@ pub struct FsReadDirResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsReadFileArgs {
+    pub repo_id: RepoId,
     pub path: String,
 }
 
@@ -502,12 +507,14 @@ pub struct FsReadFileResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsWriteFileArgs {
+    pub repo_id: RepoId,
     pub path: String,
     pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsStatArgs {
+    pub repo_id: RepoId,
     pub path: String,
 }
 
@@ -522,11 +529,20 @@ pub struct FsStatResult {
     pub mtime: Option<UnixMillis>,
 }
 
+/// Arguments for `fs_cwd`. Carries the `repo_id` of the workspace the
+/// UI wants the absolute root for; the runtime returns that
+/// workspace's `fs_root_canonical` so two browser tabs viewing two
+/// different workspaces each anchor their explorer at their own root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct FsCwdArgs {
+    pub repo_id: RepoId,
+}
+
 /// Result of `fs_cwd`. The path is the absolute server root the
-/// `fs_*` methods are scoped under. The UI uses this to populate the
-/// explorer when no terminal has yet set a working directory, so the
-/// first browser visit against a real server shows the workspace
-/// contents instead of an empty pane.
+/// `fs_*` methods are scoped under for `repo_id`. The UI uses this to
+/// populate the explorer when no terminal has yet set a working
+/// directory, so the first browser visit against a real server shows
+/// the workspace contents instead of an empty pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsCwdResult {
     pub path: String,
@@ -534,6 +550,7 @@ pub struct FsCwdResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsCreateFileArgs {
+    pub repo_id: RepoId,
     pub path: String,
     pub content: Option<String>,
     pub overwrite: bool,
@@ -541,12 +558,14 @@ pub struct FsCreateFileArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsCreateDirArgs {
+    pub repo_id: RepoId,
     pub path: String,
     pub recursive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsMoveArgs {
+    pub repo_id: RepoId,
     pub from: String,
     pub to: String,
     pub overwrite: bool,
@@ -554,6 +573,7 @@ pub struct FsMoveArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct FsDeleteArgs {
+    pub repo_id: RepoId,
     pub path: String,
     pub recursive: bool,
 }

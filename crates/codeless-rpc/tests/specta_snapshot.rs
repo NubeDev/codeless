@@ -16,9 +16,10 @@ use codeless_rpc::methods::{
     CancelAssistantActionArgs, CancelAssistantActionResult, CancelChatTaskArgs, ClaudeStatus,
     CommentReviewArgs, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
     CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DeleteJobFileArgs,
-    DraftJobFromConversationArgs, EditScopePatchArgs, FsCwdResult, FsReadDirArgs, FsReadDirResult,
-    FsReadFileArgs, FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs,
-    JobDiffArgs, JobDiffFile, JobDiffResult, JobFileEntry, ListAssistantMessagesArgs,
+    DraftJobFromConversationArgs, EditScopePatchArgs, FsCreateDirArgs, FsCreateFileArgs, FsCwdArgs,
+    FsCwdResult, FsDeleteArgs, FsMoveArgs, FsReadDirArgs, FsReadDirResult, FsReadFileArgs,
+    FsReadFileResult, FsStatArgs, FsStatResult, FsWriteFileArgs, GetJobArgs, JobDiffArgs,
+    JobDiffFile, JobDiffResult, JobFileEntry, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
     ListJobFilesArgs, ListJobFilesResult, ListJobMessagesArgs, ListJobMessagesResult, ListJobsArgs,
     ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
@@ -58,7 +59,12 @@ fn collect() -> TypeCollection {
         .register_mut::<FsWriteFileArgs>()
         .register_mut::<FsStatArgs>()
         .register_mut::<FsStatResult>()
+        .register_mut::<FsCwdArgs>()
         .register_mut::<FsCwdResult>()
+        .register_mut::<FsCreateFileArgs>()
+        .register_mut::<FsCreateDirArgs>()
+        .register_mut::<FsMoveArgs>()
+        .register_mut::<FsDeleteArgs>()
         .register_mut::<RunnerInfo>()
         .register_mut::<ClaudeStatus>()
         .register_mut::<ServerInfo>()

@@ -745,15 +745,44 @@ export type FailureClass =
  */
 "orphan-reap";
 
+export type FsCreateDirArgs = {
+	repo_id: RepoId,
+	path: string,
+	recursive: boolean,
+};
+
+export type FsCreateFileArgs = {
+	repo_id: RepoId,
+	path: string,
+	content: string | null,
+	overwrite: boolean,
+};
+
+/**
+ *  Arguments for `fs_cwd`. Carries the `repo_id` of the workspace the
+ *  UI wants the absolute root for; the runtime returns that
+ *  workspace's `fs_root_canonical` so two browser tabs viewing two
+ *  different workspaces each anchor their explorer at their own root.
+ */
+export type FsCwdArgs = {
+	repo_id: RepoId,
+};
+
 /**
  *  Result of `fs_cwd`. The path is the absolute server root the
- *  `fs_*` methods are scoped under. The UI uses this to populate the
- *  explorer when no terminal has yet set a working directory, so the
- *  first browser visit against a real server shows the workspace
- *  contents instead of an empty pane.
+ *  `fs_*` methods are scoped under for `repo_id`. The UI uses this to
+ *  populate the explorer when no terminal has yet set a working
+ *  directory, so the first browser visit against a real server shows
+ *  the workspace contents instead of an empty pane.
  */
 export type FsCwdResult = {
 	path: string,
+};
+
+export type FsDeleteArgs = {
+	repo_id: RepoId,
+	path: string,
+	recursive: boolean,
 };
 
 /**
@@ -778,14 +807,25 @@ export type FsEntry = {
  */
 export type FsEntryKind = "file" | "dir" | "symlink";
 
+export type FsMoveArgs = {
+	repo_id: RepoId,
+	from: string,
+	to: string,
+	overwrite: boolean,
+};
+
 /**
- *  Paths in every `fs_*` arg are interpreted relative to the
- *  configured server root. The host adapter rejects any path that
- *  escapes the root (`..` segments, absolute paths, symlinks pointing
- *  outside) before touching disk — the wire shape carries no notion
- *  of "outside root" because callers should never need to express it.
+ *  Paths in every `fs_*` arg are interpreted relative to the attached
+ *  workspace identified by `repo_id`. The runtime resolves `repo_id`
+ *  to the workspace's `fs_root_canonical` via the
+ *  `attached_workspaces` table and hands that to the host adapter as
+ *  the jail root for the call. An unknown or detached `repo_id` is
+ *  refused with a typed error before the adapter is consulted, so a
+ *  stale browser tab cannot read or write into a workspace that was
+ *  detached out from under it.
  */
 export type FsReadDirArgs = {
+	repo_id: RepoId,
 	path: string,
 };
 
@@ -794,6 +834,7 @@ export type FsReadDirResult = {
 };
 
 export type FsReadFileArgs = {
+	repo_id: RepoId,
 	path: string,
 };
 
@@ -808,6 +849,7 @@ export type FsReadFileResult = {
 };
 
 export type FsStatArgs = {
+	repo_id: RepoId,
 	path: string,
 };
 
@@ -824,6 +866,7 @@ export type FsStatResult = {
 };
 
 export type FsWriteFileArgs = {
+	repo_id: RepoId,
 	path: string,
 	content: string,
 };
