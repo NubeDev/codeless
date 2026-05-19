@@ -905,6 +905,90 @@ gated on Linux proof.
    and the runtime — same code either way, doesn't change the
    doc.
 
+## Known issues
+
+### Worktree root is not in the fs jail — chat panel fails for any job
+
+Status: open
+Discovered: 2026-05-19 (dogfood, browser tab against
+`codeless-cli serve` at `127.0.0.1:7777`)
+
+**Symptom.** Opening the per-job chat panel against a job whose
+worktree lives under `~/.codeless/worktrees/<job-id>` returns:
+
+```
+invalid_argument: agent_chat cwd is outside the configured fs roots:
+/home/user/.codeless/worktrees/job-01KRYQJVK0G60MEZVFQ6KW3Y1F
+```
+
+**Root cause.** The `agent_chat` RPC validates `args.cwd` against
+[`HostFs::is_path_allowed`](../codeless-adapters-host/src/fs.rs) and
+also tolerates paths under any registered repo's `local_path`. The
+chat panel passes the job's worktree path as `cwd`, but neither rule
+covers it:
+
+- the worktree root (`~/.codeless/worktrees/`) is **not** added to
+  `HostFs` allowed roots when the server boots, and
+- the worktree is not a registered repo's `local_path` — repos point
+  at the user's source tree, not the per-job worktree directories.
+
+The reject path in
+[`codeless-runtime/src/rpc/chat.rs:75-78`](../codeless-runtime/src/rpc/chat.rs)
+returns the error above.
+
+**Where it bites.**
+- `codeless-cli serve --worktree-root <X>`: `<X>` is never registered
+  with `HostFs`. The CLI's `serve.rs` already builds the worktree
+  manager from this value but does not call
+  `host_fs.add_root(worktree_root)`.
+- `codeless-tauri-desktop`: `boot.rs` derives
+  `paths.worktree_base = <ws_dir>/worktrees`, passes it to
+  `WorktreeManager::new`, and never adds it to `HostFs` either.
+
+Both hosts have the same gap. Same fix applies to both.
+
+**Fix.** Register the active worktree root with the `HostFs`
+allowed-roots list at boot, alongside the existing rehydration of
+`attached_workspaces` rows:
+
+```rust
+host_fs
+    .add_root(&worktree_base)
+    .map_err(|e| BootError::FsRoot(format!("{}: {e}", worktree_base.display())))?;
+```
+
+For `codeless-cli serve`, the equivalent edit lives in
+[`crates/codeless-cli/src/serve.rs`](../codeless-cli/src/serve.rs)
+next to the existing `attached_workspaces` rehydration block (line
+~413, after the `--fs-root` and rehydrate loop both run). The CLI
+already has `worktree_root_effective` resolved at that point — pass it
+to `host_fs.add_root` once it exists on disk (the existing
+`std::fs::create_dir_all(wt)` line just above guarantees that).
+
+For the desktop, the same edit goes in
+[`crates/codeless-tauri-desktop/src/boot.rs`](./src/boot.rs) inside
+`boot()` after the `attached_workspaces` rehydration loop, before the
+`runtime.with_fs(Arc::new(host_fs))` call. `paths.worktree_base` is
+in scope.
+
+**Why this is a real bug, not a config oversight.** The user never
+attaches the worktree root themselves — it is an internal directory
+owned by the runtime. Asking the user to `--fs-root
+~/.codeless/worktrees` or to attach it via the UI would be exposing
+an implementation detail. The runtime creates the directory, the
+runtime uses the directory, the runtime should register the
+directory.
+
+**Scope clarification.** This is **not** caused by the per-workspace
+data-dir patch (2026-05-19) or by the embedded-REST landing on
+2026-05-19 — the same bug exists on `codeless-cli serve` with no
+desktop involvement at all. The dogfood path that hits it (browser
+tab against `codeless-cli serve`) just happens to be the cleanest
+reproduction.
+
+**Owner.** Anyone landing the next batch of fs.* hardening. Two-line
+change in two crates; lands without milestone dependencies.
+
 ## References
 
 - WORKSPACE-ATTACH TODO that this doc supersedes:
