@@ -156,4 +156,122 @@ begins.
 
 ## Decisions
 
-(populated in stage 1)
+The job goal called out three load-bearing confirmations and the
+section above listed five smaller open questions. All eight are
+resolved below. Stage 3 onward treats this section as authoritative;
+re-opening a decision means amending it here in the same commit as
+the code change that motivates the reversal.
+
+### Top-level (from the job goal)
+
+- **D1 — Mode names: `read-only` / `approve-edits` / `bypass`.**
+  Confirmed as the bias. The three strings are the wire values
+  stored in the DB and accepted by `assistant.setThreadMode`; they
+  match Claude Code's `default` / `acceptEdits` / `bypassPermissions`
+  closely enough that users carrying that model arrive without
+  retraining. The naming table in "Permission-mode naming" above
+  documents the cross-tool mapping for the docs surface; the wire
+  vocabulary itself stays Codeless-native (we do not expose
+  upstream tool names). The constraint is **exactly three modes** —
+  no "plan" alias, no `acceptEdits` synonym, no client-side
+  remapping. A server-side enum (`AssistantThreadMode`) gates parsing
+  so a typo on the wire is a hard reject, not a silent fallback.
+
+- **D2 — Thread-mode storage: a `mode TEXT NOT NULL DEFAULT
+  'read-only'` column on `assistant_threads`.** Confirmed.
+  Single source of truth, per-thread, server-owned. A separate
+  table (`assistant_thread_modes`) was considered and rejected: it
+  buys nothing (1:1 with the parent row), forces a join on every
+  tool dispatch, and complicates the `setThreadMode` write path.
+  Existing rows backfill to `read-only` via the migration's
+  `DEFAULT`, which matches the goal of "safe by default". The
+  column accepts only the three D1 strings; enforcement is the
+  server-side enum, not a `CHECK` constraint (keeps the migration
+  reversible and sidesteps SQLite's `CHECK`-rewrite limits if D1
+  ever grows a fourth mode).
+
+- **D3 — `.codeless/jobs/<name>/` routes through `jobs.updateScope`
+  in every mode, including `bypass`.** Confirmed. The check lives
+  at the `fs.write` / `fs.edit` dispatch boundary in
+  `codeless-runtime`, not inside the `Tool` impl, so the routing
+  decision is made with the thread row, the workspace root, and
+  the resolved path all in hand. Detection: after the sandbox
+  resolves the target path, if the path lies under
+  `<workspace_root>/.codeless/jobs/<segment>/` (any depth), the
+  call short-circuits to `jobs.updateScope` with `(job_name =
+  <segment>, relative_path = <tail>, content = <new contents>)`
+  and the tool returns the `jobs.updateScope` outcome verbatim.
+  `bypass` does **not** opt out — the paused-job rule is a runtime
+  invariant, not a permission. `fs.edit` against an existing
+  job-scoped file reads the current content, applies the
+  exact-string replace in memory, and forwards the result to
+  `jobs.updateScope`; the edit primitive is preserved without
+  letting a second write path exist.
+
+### Open-question resolutions (from the §"Open questions" list)
+
+- **D4 (Q1) — Resolve symlinks before the sandbox check.** The
+  sandbox helper canonicalises the requested path (via
+  `tokio::fs::canonicalize` for existing paths, or canonicalises
+  the deepest existing ancestor and re-joins the tail for create
+  paths) and then re-applies the workspace-root prefix check
+  against the canonical form. Symlinks pointing outside the root
+  are rejected with the same error shape as a literal `..`
+  traversal. Cost is one `canonicalize` per tool call; the
+  alternative — trusting a prefix check on the raw input —
+  leaves an obvious escape via a checked-in symlink and is
+  rejected.
+
+- **D5 (Q2) — `fs.read` size cap: 5 MiB.** Files larger than the
+  cap return a typed `too_large { path, size, cap }` error with
+  the message "file exceeds 5 MiB cap; narrow the request (line
+  range or search instead)". No partial / streaming read; the
+  planner is meant to operate on diffs, not blobs. The cap is a
+  constant in `codeless-tools::fs` so a future override is a
+  single-file change.
+
+- **D6 (Q3) — `fs.search` result cap: 200 matches, truncated with
+  a flag.** The result shape carries `{ matches: Vec<Match>,
+  truncated: bool, total_seen: u32 }`. When `truncated` is true,
+  the planner sees the count and is expected to narrow (a tighter
+  glob, a more specific query). 200 matches at typical line
+  lengths fits inside the planner's context budget with room for
+  the conversation; raising the cap forces context-window
+  pressure on the assistant.
+
+- **D7 (Q4) — Action-card payload reuses the
+  `jobs.updateScope` diff card.** `fs.write` confirmation on an
+  `approve-edits` thread surfaces an `AssistantActionCard` whose
+  body is `{ path, before: Option<String>, after: String }`. The
+  existing diff-renderer component (F3, shared with
+  `jobs.updateScope`'s card) draws a unified diff; "new file"
+  when `before` is `None`. No new UI primitive. `fs.edit`
+  pre-renders the post-replace content into `after` so the card
+  shows the literal future state, not the `(old, new)` tuple.
+
+- **D8 (Q5) — `read-only` hides write tools from the registry.**
+  The planner's tool list is built per-call from the thread's
+  current mode. On `read-only`, `fs.write` / `fs.edit` are not
+  registered at all; the assistant never sees them, never
+  proposes them, and the user is not presented with an action it
+  cannot take. The cost — one extra column read on registry
+  construction — is paid once per tool-call boundary and is
+  cheaper than an action-card surface that would have to render
+  a "rejected" state. Server-side rejection still exists as
+  defence-in-depth: a stale client that *does* call `fs.write`
+  on a `read-only` thread receives the same typed error as
+  before (D1's enum gate), it just never gets a tool definition
+  to invoke.
+
+### Implications for later stages
+
+- Stage 3's migration writes `mode TEXT NOT NULL DEFAULT
+  'read-only'`. No `CHECK`; the enum guards parsing.
+- Stage 4's read-only tools (`fs.list`, `fs.read`, `fs.search`)
+  consume D4–D6: canonicalising sandbox, 5 MiB cap, 200-match cap.
+- Stage 6's `fs.write` / `fs.edit` consume D3 (job-scope routing)
+  and D7 (action-card payload shape). The job-scope routing test
+  must cover `bypass` explicitly — that is the regression D3
+  exists to prevent.
+- Stage 7's UI dropdown shows exactly the three D1 strings and
+  binds to the server enum.

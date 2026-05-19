@@ -84,7 +84,14 @@ async fn assistant_tables_match_stage_5_schema() {
     let pool = fresh_db().await;
     assert_eq!(
         columns(&pool, "assistant_threads").await,
-        vec!["id", "title", "persona_id", "created_at", "updated_at"],
+        vec![
+            "id",
+            "title",
+            "persona_id",
+            "created_at",
+            "updated_at",
+            "mode",
+        ],
     );
     assert_eq!(
         columns(&pool, "assistant_messages").await,
@@ -509,6 +516,39 @@ async fn assistant_threads_persona_id_carries_fk_to_personas() {
     .expect("table_info row for persona_id")
     .get("notnull");
     assert_eq!(notnull, 1, "assistant_threads.persona_id must be NOT NULL");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assistant_threads_mode_defaults_to_read_only() {
+    // Job `assistant-fs-tools` stage 3: the `mode` column lands NOT
+    // NULL with `'read-only'` as the column DEFAULT so an existing
+    // installation back-fills to the safest posture. A fresh schema
+    // inserts a row without explicit `mode` to assert the default
+    // applies the same way it would on the upgrade path.
+    let pool = fresh_db().await;
+    let notnull: i64 = sqlx::query(
+        "SELECT \"notnull\" FROM pragma_table_info('assistant_threads') WHERE name = 'mode'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("table_info row for mode")
+    .get("notnull");
+    assert_eq!(notnull, 1, "assistant_threads.mode must be NOT NULL");
+
+    sqlx::query(
+        "INSERT INTO assistant_threads (id, title, persona_id, created_at, updated_at) \
+         VALUES ('01HK0000000000000000000001', 'm', 'builtin:general', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert thread without mode");
+    let mode: String =
+        sqlx::query("SELECT mode FROM assistant_threads WHERE id = '01HK0000000000000000000001'")
+            .fetch_one(&pool)
+            .await
+            .expect("select mode")
+            .get("mode");
+    assert_eq!(mode, "read-only");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

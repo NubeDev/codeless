@@ -3,7 +3,8 @@ use codeless_rpc::{
     CancelAssistantActionResult, ConfirmAssistantActionArgs, ConfirmAssistantActionResult,
     CreateAssistantThreadArgs, DeleteAssistantThreadArgs, ListAssistantMessagesArgs,
     ListAssistantMessagesResult, ListAssistantThreadsArgs, ListAssistantThreadsResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
+    SetAssistantThreadModeArgs, SetAssistantThreadModeResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult,
 };
 use codeless_types::AssistantThread;
 use tauri::State;
@@ -33,6 +34,14 @@ pub async fn rpc_delete_assistant_thread(
     args: DeleteAssistantThreadArgs,
 ) -> CommandResult<()> {
     Ok(state.rpc.delete_assistant_thread(args).await?)
+}
+
+#[tauri::command]
+pub async fn rpc_set_assistant_thread_mode(
+    state: State<'_, AppState>,
+    args: SetAssistantThreadModeArgs,
+) -> CommandResult<SetAssistantThreadModeResult> {
+    Ok(state.rpc.set_assistant_thread_mode(args).await?)
 }
 
 #[tauri::command]

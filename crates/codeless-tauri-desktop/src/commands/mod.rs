@@ -57,6 +57,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         assistant::rpc_list_assistant_threads,
         assistant::rpc_create_assistant_thread,
         assistant::rpc_delete_assistant_thread,
+        assistant::rpc_set_assistant_thread_mode,
         assistant::rpc_upload_assistant_attachment,
         assistant::rpc_list_assistant_messages,
         assistant::rpc_append_assistant_message,

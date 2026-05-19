@@ -1,10 +1,10 @@
 use codeless_types::pause_point::PausePoint;
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantAttachment, AssistantMessage,
-    AssistantMessageId, AssistantThread, AssistantThreadId, AutoBypassPolicy, ChatBinding,
-    ChatMessage, ChatRole, ChatTransport, FsEntry, FsEntryKind, GitAuth, Job, JobId, MessageId,
-    Persona, ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ScopePatchId, Stage,
-    StageId, TaskId, UnixMillis, WorkspaceMode,
+    AssistantMessageId, AssistantThread, AssistantThreadId, AssistantThreadMode, AutoBypassPolicy,
+    ChatBinding, ChatMessage, ChatRole, ChatTransport, FsEntry, FsEntryKind, GitAuth, Job, JobId,
+    MessageId, Persona, ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus,
+    ScopePatchId, Stage, StageId, TaskId, UnixMillis, WorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1192,6 +1192,32 @@ pub struct CreateAssistantThreadArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct DeleteAssistantThreadArgs {
     pub thread_id: AssistantThreadId,
+}
+
+/// `assistant.setThreadMode` (job `assistant-fs-tools` stage 3).
+/// Flip a thread's filesystem-tool permission posture to one of the
+/// three `AssistantThreadMode` variants. The mode is consulted
+/// server-side on every tool dispatch (SCOPE.md "Constraints" — "UI
+/// hints, server enforces"), so a stale client cannot keep
+/// approve-edits / bypass behaviour after the operator dropped the
+/// thread back to read-only.
+///
+/// `NotFound` for an unknown thread id. `updated_at` is *not* bumped
+/// — switching permission posture is not a conversational event and
+/// must not re-sort the rail. The wire form for `mode` is one of
+/// `read-only` / `approve-edits` / `bypass`; a serde decode failure
+/// (typo, unknown variant) surfaces before the handler runs, so the
+/// SQLite column never sees an out-of-band string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct SetAssistantThreadModeArgs {
+    pub thread_id: AssistantThreadId,
+    pub mode: AssistantThreadMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct SetAssistantThreadModeResult {
+    pub thread_id: AssistantThreadId,
+    pub mode: AssistantThreadMode,
 }
 
 /// `assistant.uploadAttachment`. Drop a binary blob into a thread's

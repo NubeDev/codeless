@@ -4,6 +4,67 @@ use crate::id::{AssistantAttachmentId, AssistantMessageId, AssistantThreadId, Jo
 use crate::job::WorkspaceMode;
 use crate::time::UnixMillis;
 
+/// Filesystem-tool permission posture for one assistant thread (job
+/// `assistant-fs-tools`, SCOPE.md "Decisions" D1). Stored on
+/// `assistant_threads.mode` and consulted server-side every time the
+/// planner dispatches a tool call; a client cannot upgrade itself by
+/// reporting a different mode on the wire (SCOPE.md "Constraints" —
+/// "UI hints, server enforces"). The three variants map onto the
+/// well-known Claude Code / Copilot CLI / Codex vocabulary so a user
+/// carrying one mental model arrives without retraining.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AssistantThreadMode {
+    /// Read-only: write tools are not registered on the planner's
+    /// tool list at all (D8). A stale client that still attempts a
+    /// write call receives a typed reject server-side as
+    /// defence-in-depth.
+    #[default]
+    ReadOnly,
+    /// Approve-edits: each `fs.write` / `fs.edit` surfaces as an
+    /// `AssistantActionCard` and runs only after the user confirms
+    /// via the existing `confirm_assistant_action` dispatcher.
+    ApproveEdits,
+    /// Bypass: writes execute immediately, no action card. The
+    /// `.codeless/jobs/<name>/` route-through-`jobs.updateScope`
+    /// special case (D3) still applies in this mode — the
+    /// paused-job rule is a runtime invariant, not a permission.
+    Bypass,
+}
+
+impl AssistantThreadMode {
+    /// The three wire strings the SQLite column accepts and the RPC
+    /// returns. Centralised so the migration's `DEFAULT` literal,
+    /// the codec's parse helper, and the docs surface stay in sync.
+    pub const READ_ONLY: &'static str = "read-only";
+    pub const APPROVE_EDITS: &'static str = "approve-edits";
+    pub const BYPASS: &'static str = "bypass";
+
+    /// Wire-string form for the column. Pair with [`Self::from_wire`]
+    /// when decoding a row; the SQLite `TEXT` column never carries
+    /// the serde JSON quoting that `serde_json::to_string` adds.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            AssistantThreadMode::ReadOnly => Self::READ_ONLY,
+            AssistantThreadMode::ApproveEdits => Self::APPROVE_EDITS,
+            AssistantThreadMode::Bypass => Self::BYPASS,
+        }
+    }
+
+    /// Parse one of the three wire strings. Unknown variants reject
+    /// rather than silently falling back to `ReadOnly` — D1 calls
+    /// out the typo-reject explicitly so a corrupted row surfaces
+    /// loudly instead of looking conservative.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            Self::READ_ONLY => Some(AssistantThreadMode::ReadOnly),
+            Self::APPROVE_EDITS => Some(AssistantThreadMode::ApproveEdits),
+            Self::BYPASS => Some(AssistantThreadMode::Bypass),
+            _ => None,
+        }
+    }
+}
+
 /// One conversational thread on the `/assistant` surface — see
 /// `DOCS/ASSISTANT-SCOPE.md`. Threads outlive any single job/worktree
 /// and therefore have no foreign key onto `repos` or `jobs`; the
@@ -22,6 +83,12 @@ pub struct AssistantThread {
     /// `InvalidArgument` when the caller omits it -- there is no
     /// silent fallback.
     pub persona_id: String,
+    /// Filesystem-tool permission posture for this thread (job
+    /// `assistant-fs-tools`). Default `read-only`; the planner's
+    /// tool list and write-tool dispatch are gated on this column
+    /// server-side. Mutated through `assistant.setThreadMode`.
+    #[serde(default)]
+    pub mode: AssistantThreadMode,
     pub created_at: UnixMillis,
     pub updated_at: UnixMillis,
 }

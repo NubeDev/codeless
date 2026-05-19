@@ -1,19 +1,25 @@
 use std::str::FromStr;
 
 use codeless_types::{
-    AssistantAttachment, AssistantMessage, AssistantMessageRole, AssistantThread, AutoBypassPolicy,
-    CostCents, GitAuth, Job, JobStatus, Persona, Repo, Review, ReviewStatus, StageStatus,
-    StopReason, Task, TaskId, TaskStatus, Todo, TodoKind, TodoStatus, UnixMillis, WorkspaceMode,
+    AssistantAttachment, AssistantMessage, AssistantMessageRole, AssistantThread,
+    AssistantThreadMode, AutoBypassPolicy, CostCents, GitAuth, Job, JobStatus, Persona, Repo,
+    Review, ReviewStatus, StageStatus, StopReason, Task, TaskId, TaskStatus, Todo, TodoKind,
+    TodoStatus, UnixMillis, WorkspaceMode,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 
 pub(super) fn assistant_thread_from_row(row: SqliteRow) -> sqlx::Result<AssistantThread> {
     let id: String = row.try_get("id")?;
+    let mode_raw: String = row.try_get("mode")?;
+    let mode = AssistantThreadMode::from_wire(&mode_raw).ok_or_else(|| {
+        sqlx::Error::Decode(format!("unknown assistant thread mode: {mode_raw}").into())
+    })?;
     Ok(AssistantThread {
         id: parse_id(&id)?,
         title: row.try_get("title")?,
         persona_id: row.try_get("persona_id")?,
+        mode,
         created_at: UnixMillis(row.try_get("created_at")?),
         updated_at: UnixMillis(row.try_get("updated_at")?),
     })

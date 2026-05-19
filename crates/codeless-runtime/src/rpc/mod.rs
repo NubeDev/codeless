@@ -591,6 +591,13 @@ impl RpcServer for InProcessRpc {
         assistant::delete_assistant_thread(self, args).await
     }
 
+    async fn set_assistant_thread_mode(
+        &self,
+        args: codeless_rpc::SetAssistantThreadModeArgs,
+    ) -> RpcResult<codeless_rpc::SetAssistantThreadModeResult> {
+        assistant::set_assistant_thread_mode(self, args).await
+    }
+
     async fn upload_assistant_attachment(
         &self,
         args: UploadAssistantAttachmentArgs,

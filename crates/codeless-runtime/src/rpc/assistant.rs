@@ -4,14 +4,14 @@ use codeless_rpc::{
     CreateAssistantThreadArgs, DeleteAssistantThreadArgs, DraftJobFromConversationArgs, GetJobArgs,
     ListAssistantMessagesArgs, ListAssistantMessagesResult, ListAssistantThreadsArgs,
     ListAssistantThreadsResult, ListJobsArgs, PauseJobArgs, ReadJobFileArgs, RerunJobArgs,
-    ResumeJobArgs, RpcError, RpcResult, RpcServer, SetJobPolicyArgs, StartJobArgs, StopJobArgs,
-    UpdateJobArgs, UpdateJobScopeArgs, UploadAssistantAttachmentArgs,
-    UploadAssistantAttachmentResult,
+    ResumeJobArgs, RpcError, RpcResult, RpcServer, SetAssistantThreadModeArgs,
+    SetAssistantThreadModeResult, SetJobPolicyArgs, StartJobArgs, StopJobArgs, UpdateJobArgs,
+    UpdateJobScopeArgs, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
 };
 use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentId, AssistantMessage, AssistantMessageId, AssistantMessageRole,
-    AssistantThread, AssistantThreadId, Event, JobId, RepoId, WorkspaceMode,
+    AssistantThread, AssistantThreadId, AssistantThreadMode, Event, JobId, RepoId, WorkspaceMode,
 };
 
 use super::InProcessRpc;
@@ -104,6 +104,7 @@ pub(super) async fn create_assistant_thread(
         id: AssistantThreadId::new(),
         title,
         persona_id: persona_id.to_owned(),
+        mode: AssistantThreadMode::default(),
         created_at: now,
         updated_at: now,
     };
@@ -188,6 +189,35 @@ pub(super) async fn delete_assistant_thread(
     }
 
     Ok(())
+}
+
+/// Flip an assistant thread's `mode` column. The wire enum on
+/// `SetAssistantThreadModeArgs::mode` already rejects unknown strings
+/// before this handler runs, so the only failure modes here are
+/// `NotFound` (no such thread) or a SQL error. The handler intentionally
+/// re-reads the requested mode back into the result rather than echoing
+/// the args verbatim — the column is the source of truth (R4), and
+/// returning what landed makes the round-trip test trivial. No
+/// `updated_at` bump: a permission flip is not a chat event.
+pub(super) async fn set_assistant_thread_mode(
+    rpc: &InProcessRpc,
+    args: SetAssistantThreadModeArgs,
+) -> RpcResult<SetAssistantThreadModeResult> {
+    let updated = rpc
+        .store
+        .set_assistant_thread_mode(args.thread_id, args.mode)
+        .await
+        .map_err(super::db_err)?;
+    if !updated {
+        return Err(RpcError::NotFound(format!(
+            "assistant thread {}",
+            args.thread_id
+        )));
+    }
+    Ok(SetAssistantThreadModeResult {
+        thread_id: args.thread_id,
+        mode: args.mode,
+    })
 }
 
 pub(super) async fn upload_assistant_attachment(
@@ -1454,6 +1484,161 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::NotFound(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_defaults_mode_to_read_only() {
+        // Job `assistant-fs-tools` stage 3: a freshly-minted thread
+        // lands in the safest posture so a stale UI cannot upgrade
+        // itself by skipping the `setThreadMode` call.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(thread.mode, AssistantThreadMode::ReadOnly);
+        let again = rpc
+            .store
+            .get_assistant_thread(thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.mode, AssistantThreadMode::ReadOnly);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_thread_mode_round_trips_through_all_three_variants() {
+        // Job `assistant-fs-tools` stage 3 round-trip: flipping the
+        // server-owned posture through every D1 variant and reading
+        // the column back proves the SQL UPDATE landed and the codec
+        // decode path accepts each wire string. Storage is the source
+        // of truth (R4); the result is *not* trusted on its own --
+        // we re-read via `get_assistant_thread` after each flip.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(thread.mode, AssistantThreadMode::ReadOnly);
+
+        for mode in [
+            AssistantThreadMode::ApproveEdits,
+            AssistantThreadMode::Bypass,
+            AssistantThreadMode::ReadOnly,
+        ] {
+            let res = rpc
+                .set_assistant_thread_mode(SetAssistantThreadModeArgs {
+                    thread_id: thread.id,
+                    mode,
+                })
+                .await
+                .unwrap();
+            assert_eq!(res.thread_id, thread.id);
+            assert_eq!(res.mode, mode);
+
+            let stored = rpc
+                .store
+                .get_assistant_thread(thread.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                stored.mode, mode,
+                "stored mode disagrees with returned mode after flip",
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_thread_mode_unknown_thread_is_not_found() {
+        // Distinguishing NotFound from "mode unchanged" matters for
+        // the UI surface that lands in stage 7: a NotFound means the
+        // rail and the dropdown disagree and the rail wins.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let err = rpc
+            .set_assistant_thread_mode(SetAssistantThreadModeArgs {
+                thread_id: AssistantThreadId::new(),
+                mode: AssistantThreadMode::Bypass,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::NotFound(_)), "got {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_thread_mode_does_not_bump_updated_at() {
+        // A permission flip is not a conversational event -- bumping
+        // `updated_at` would re-sort the rail every time the user
+        // toggled the mode dropdown. The handler intentionally
+        // updates only the `mode` column.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
+            .await
+            .unwrap();
+        let before = thread.updated_at;
+        // Coarse `now_ms()` resolution: sleep past it so a bump (if
+        // one accidentally landed) would be observable instead of
+        // tying on the same millisecond.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        rpc.set_assistant_thread_mode(SetAssistantThreadModeArgs {
+            thread_id: thread.id,
+            mode: AssistantThreadMode::ApproveEdits,
+        })
+        .await
+        .unwrap();
+        let after = rpc
+            .store
+            .get_assistant_thread(thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.updated_at, before,
+            "mode flip must not bump updated_at"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_threads_surfaces_persisted_mode() {
+        // The rail rendering consumes `list_assistant_threads`; the
+        // dropdown in stage 7 reads from the same surface. Persisting
+        // a non-default mode and then listing must round-trip the new
+        // value, otherwise the dropdown shows a stale posture.
+        let (rpc, _data) = rpc_with_data_dir().await;
+        let thread = rpc
+            .create_assistant_thread(CreateAssistantThreadArgs {
+                title: None,
+                persona_id: "builtin:general".into(),
+            })
+            .await
+            .unwrap();
+        rpc.set_assistant_thread_mode(SetAssistantThreadModeArgs {
+            thread_id: thread.id,
+            mode: AssistantThreadMode::Bypass,
+        })
+        .await
+        .unwrap();
+
+        let list = rpc
+            .list_assistant_threads(ListAssistantThreadsArgs {})
+            .await
+            .unwrap();
+        let row = list
+            .threads
+            .iter()
+            .find(|t| t.id == thread.id)
+            .expect("thread present in list");
+        assert_eq!(row.mode, AssistantThreadMode::Bypass);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -37,10 +37,11 @@ use codeless_rpc::methods::{
     ListProposedPatchesResult, ListReposResult, ListReviewsArgs, ListReviewsResult,
     PostJobMessageArgs, ProposedPatchListEntry, RejectScopePatchArgs, RemoveRepoArgs, ResetJobArgs,
     RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo, ScopePatchActionResult,
-    ScopePatchResolution, ServerFeatureFlags, ServerInfo, StartJobArgs, StopActiveArgs,
-    StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UserPromptSnippet,
+    ScopePatchResolution, ServerFeatureFlags, ServerInfo, SetAssistantThreadModeArgs,
+    SetAssistantThreadModeResult, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
+    StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UserPromptSnippet,
 };
 use codeless_rpc::subscribe::EventFilter;
 use codeless_types::pause_point::{
@@ -50,14 +51,14 @@ use codeless_types::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
     AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId,
-    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, ChatBinding,
-    ChatMessage, ChatRole, ChatTransport, CostCents, DetachPolicy, DetachWorkspaceArgs, Event,
-    EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Handover, Job, JobId, JobStatus,
-    ListWorkspacesResult, MessageId, PreCheckOutcome, ProposedScopePatch, Repo, RepoId, Review,
-    ReviewId, ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind,
-    ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
-    UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError,
-    WorkspaceProblem,
+    AssistantThreadMode, AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace,
+    AttachmentRef, ChatBinding, ChatMessage, ChatRole, ChatTransport, CostCents, DetachPolicy,
+    DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth,
+    Handover, Job, JobId, JobStatus, ListWorkspacesResult, MessageId, PreCheckOutcome,
+    ProposedScopePatch, Repo, RepoId, Review, ReviewId, ReviewStatus, ReviewVerdict, ScopePatch,
+    ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage, StageId, StageStatus, StopReason, Task,
+    TaskId, TaskStatus, UnixMillis, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -169,6 +170,7 @@ fn collect() -> TypeCollection {
         .register_mut::<AssistantMessageId>()
         .register_mut::<AssistantAttachmentId>()
         .register_mut::<AssistantThread>()
+        .register_mut::<AssistantThreadMode>()
         .register_mut::<AssistantMessage>()
         .register_mut::<AssistantMessageRole>()
         .register_mut::<AssistantAttachment>()
@@ -176,6 +178,8 @@ fn collect() -> TypeCollection {
         .register_mut::<ListAssistantThreadsResult>()
         .register_mut::<CreateAssistantThreadArgs>()
         .register_mut::<DeleteAssistantThreadArgs>()
+        .register_mut::<SetAssistantThreadModeArgs>()
+        .register_mut::<SetAssistantThreadModeResult>()
         .register_mut::<UploadAssistantAttachmentArgs>()
         .register_mut::<UploadAssistantAttachmentResult>()
         .register_mut::<ListAssistantMessagesArgs>()

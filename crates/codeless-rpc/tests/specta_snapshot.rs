@@ -25,8 +25,9 @@ use codeless_rpc::methods::{
     ListJobsResult, ListReposResult, ListReviewsArgs, ListReviewsResult, ListStagesArgs,
     ListStagesResult, PostJobMessageArgs, ReadJobFileArgs, ReadJobFileResult, RejectScopePatchArgs,
     RemoveRepoArgs, RevertScopePatchArgs, RevertScopePatchResult, RunnerInfo,
-    ScopePatchActionResult, ScopePatchResolution, ServerFeatureFlags, ServerInfo, SetJobPolicyArgs,
-    StageRollup, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    ScopePatchActionResult, ScopePatchResolution, ServerFeatureFlags, ServerInfo,
+    SetAssistantThreadModeArgs, SetAssistantThreadModeResult, SetJobPolicyArgs, StageRollup,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
     UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
     UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, WriteHandoverArgs,
     WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
@@ -96,6 +97,8 @@ fn collect() -> TypeCollection {
         .register_mut::<ListAssistantThreadsResult>()
         .register_mut::<CreateAssistantThreadArgs>()
         .register_mut::<DeleteAssistantThreadArgs>()
+        .register_mut::<SetAssistantThreadModeArgs>()
+        .register_mut::<SetAssistantThreadModeResult>()
         .register_mut::<UploadAssistantAttachmentArgs>()
         .register_mut::<UploadAssistantAttachmentResult>()
         .register_mut::<ListAssistantMessagesArgs>()

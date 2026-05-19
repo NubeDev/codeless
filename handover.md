@@ -1,141 +1,154 @@
-# workspace-scoping — stage 6 → done
+# assistant-fs-tools — stage 6 → done
 
-Stage 6 plumbed `activeRepoId` through every UI `fs.*` call and
-flipped the workspace-picker's subscription to the new
-`{ scope: "library" }` channel. The file explorer now rehydrates
-when the active workspace changes because `useFileTree` keys on
-`repoId` and clears its cached nodes/expanded state when it flips.
+Stage 6 landed the write filesystem tools (`fs.write`, `fs.edit`),
+the mode-aware `WriteDispatcher` seam they delegate through, and
+the registration helper the stage-7 runtime wiring will call to
+gate writes on the per-thread mode.
 
-## Wire bindings tightened to the generated shapes
+## What landed
 
-`ui/codeless-ui/src/lib/rpc/methods.ts` no longer hand-mirrors the
-`fs.*` arg structs. The eight FS arg/result types that the server
-emits today (`FsCreateDirArgs`, `FsCreateFileArgs`, `FsCwdArgs`,
-`FsCwdResult`, `FsDeleteArgs`, `FsMoveArgs`, `FsReadDirArgs`,
-`FsReadDirResult`, `FsReadFileArgs`, `FsWriteFileArgs`) are now
-re-exported from `./wire` so the `repo_id: RepoId` field that landed
-in stage 4 is part of `RpcArgs<"fs_*">` and TypeScript refuses to let
-a call site forget it. `fs_cwd`'s `RpcMethodMap` entry switched from
-`Record<string, never>` to `FsCwdArgs`. `fs_search` and `fs_glob`
-remain hand-mirrored (they're mock-only — no server-side
-implementation) but they gained `repo_id` for parity so call sites
-don't have to branch on which transport they're targeting.
+### Codeless-tools — Tool surface
 
-Side effects of switching to the generated shapes:
+- `codeless-tools/src/fs/dispatch.rs` defines `WriteDispatcher`,
+  `WorkspaceWrite`, `JobScopeWrite`, and the `classify_target`
+  helper that splits a workspace-relative path into a regular
+  workspace target or a `.codeless/jobs/<segment>/<tail>` target.
+  The classifier rejects bare-directory targets
+  (`.codeless/jobs/foo`) so a directory write never routes through
+  `jobs.updateScope` by accident.
+- `fs_write.rs` and `fs_edit.rs` resolve the path through the
+  existing `Sandbox` (extended with `resolve_for_create` so brand-
+  new files can be created without `canonicalize` failing on a
+  missing target), classify it, and hand the mutation off to the
+  dispatcher. `fs.edit` reads the file once, applies an exact-
+  string replace in memory (refusing 0-match and multi-match cases
+  with typed errors), and surfaces the post-replace body as the
+  card's `after` payload per D7 — the dispatcher never sees the
+  `(old, new)` tuple.
+- `register_assistant_thread_write_tools` in `fs/mod.rs` registers
+  the two tools on a `ToolRegistry`. The helper is mode-blind by
+  design: the caller resolves `assistant_threads.mode` and only
+  invokes this helper for `approve-edits` and `bypass`. `read-only`
+  threads never see the helper run, so the tools are not in the
+  registry at all (D8). A stale client calling `fs.write` on a
+  read-only thread receives an "unknown tool" surface from the
+  registry, which is the defence-in-depth the SCOPE asks for.
 
-- `FsReadFileArgs` no longer carries `byte_limit`. Three call sites
-  (`HandoverPanel`, `useDocument`, `native.readFile`, the composer's
-  `attachFileByPath`) lost the `byte_limit: null` field; the mock
-  client now uses `MOCK_FS_READ_LIMIT_DEFAULT` unconditionally.
-- `FsWriteFileArgs` no longer carries `create_parents`. `useDocument`
-  and `native.writeFile` dropped the field; the mock no longer
-  auto-creates parent directories on write (matches server behaviour).
+### Stage 6 tests
 
-## Call-site updates
+Lib-level (per-tool) and integration (registry-level) coverage:
 
-Every `fs.*` invocation outside of tests/mocks now passes `repo_id`:
+- `codeless-tools/tests/fs_tools.rs` — nine integration tests,
+  including the four stage-6 specifics:
+  - `read_only_thread_does_not_register_write_tools` pins D8: only
+    `fs.list`, `fs.read`, `fs.search` are visible on a read-only
+    thread; `fs.write` / `fs.edit` are absent.
+  - `approve_edits_mode_surfaces_write_through_dispatcher_with_before_diff`
+    pins the `approve-edits` shape: the `Tool::call` lands a
+    `WorkspaceWrite` on the dispatcher (carrying both `before` and
+    `after` so the action-card renderer can compute a diff via D7's
+    re-use of the existing diff component) and disk stays untouched.
+    The runtime's `ApproveEditsWriteDispatcher` (stage 7) will turn
+    this into an `AssistantActionCard` the user confirms via the
+    existing `confirm_assistant_action` dispatcher.
+  - `bypass_mode_writes_through_for_non_job_scope_path` pins
+    `bypass`: a `DiskBypassDispatcher` (the stand-in for the
+    runtime's BypassWriteDispatcher) writes the file through, and
+    the contents land on disk at the sandbox-canonicalised path.
+  - `job_scope_path_routes_through_jobs_update_scope_in_bypass` and
+    `_in_approve_edits` pin D3: a `.codeless/jobs/<name>/<tail>`
+    write always hits the dispatcher's `job_scope_write` method,
+    in either mode, and the file path itself is left untouched —
+    the dispatcher routes through `jobs.updateScope` so the
+    paused-job guard fires before any write.
+- `codeless-tools/src/fs/fs_write.rs` and `fs_edit.rs` add per-tool
+  unit tests covering happy path, sandbox rejection (absolute,
+  `..`), size cap (`fs.write`), 0-match / multi-match rejection
+  (`fs.edit`), binary-file rejection (`fs.edit`), and pre-rendering
+  of the post-replace `after` body into the dispatcher (`fs.edit`).
+- `codeless-tools/src/fs/dispatch.rs` unit tests pin the
+  classifier: leading `./` is folded, nested job-scope tails round-
+  trip, `.codeless/settings.json` is *not* mis-classified as
+  job-scope, bare-directory targets surface as `None`.
 
-- `App.tsx` — `fs_cwd` bootstrap reads `useWorkspacesStore` for the
-  active id and only fires once a workspace is attached. The shell
-  `paths.homeDir()` still wins where the shell exposes one (desktop,
-  iOS, Android); browser/mobile-PWA hits the RPC fallback.
-- `useFileTree` — gained a required `repoId: RepoId | null` param.
-  When `null`, the tree refuses to fetch and renders empty. `repoId`
-  is in the deps of the bootstrap effect, so flipping it resets
-  `nodes`/`expanded`/`pendingCreate`/`renaming`. `FileExplorer` now
-  takes (and threads) the same prop; `App.tsx` passes
-  `activeRepoId` through.
-- `ExplorerSearch` — gained a `repoId` prop; debounced `fs_glob`
-  short-circuits when `repoId` is null.
-- `useDocument` — pulls `activeRepoId` from the store; `fs_read_file`
-  and `fs_write_file` both pass it. A missing workspace surfaces as
-  the editor's `error` state rather than throwing through React.
-- `NewEditorDialog` — pulls `activeRepoId`, refuses to create when
-  it's null.
-- `HandoverPanel`, `RunPane`'s `fs_stat` probe — read `repo_id` off
-  the `Job` row they already hold (`job.repo_id`). This is the
-  correct identity because the job's worktree was created against
-  that workspace; reading it via the active picker would silently
-  break when the user switches workspaces while a job page is open.
-- `CwdBreadcrumb::CurrentSegmentDropdown` — `fs_read_dir` pulls
-  `activeRepoId` from the store.
-- `native.ts` (ai-tools surface) — added `activeRepoIdOrThrow()` that
-  reads `useWorkspacesStore.getState().activeRepoId` at *call* time
-  (not configure time), so a workspace switch mid-tool-sequence
-  retargets the next call without re-binding the singleton. All
-  `fs.*` helpers (`readFile`, `writeFile`, `createFile`, `createDir`,
-  `readDir`, `grep`, `glob`) now thread it through.
-- The composer's `attachFileByPath` reads the store at call time too.
+### Sandbox extensions
 
-## Library-scope picker subscription
+- `Sandbox::resolve_for_create` resolves a path that may not yet
+  exist by walking the components left-to-right, canonicalising
+  each prefix that exists and refusing if it ever escapes the
+  canonical root. Symlinks in the *existing* part of the path are
+  caught the same way `Sandbox::resolve_existing` catches a leaf
+  symlink; the brand-new tail is structurally safe because the
+  syntactic guard already rejected `..` / absolute / prefix
+  components.
+- `Sandbox::check_relative_syntax` exposes the syntactic guard so
+  the write tools can reject absolute / `..` paths upstream of
+  `classify_target` (which would otherwise silently normalise
+  `/etc/passwd` into `etc/passwd`).
 
-`useWorkspacesSync` flipped from `{ scope: "all" }` to
-`{ scope: "library" }`. The `Library` variant landed in stage 3 — see
-[`crates/codeless-tauri-desktop/BROWSER-LAUNCHER.md`](../crates/codeless-tauri-desktop/BROWSER-LAUNCHER.md)
-§"RPC additions" for the contract. The picker now receives only
-workspace-lifecycle envelopes (`workspace-attached`,
-`workspace-detached`, `workspace-unhealthy`, `workspace-recovered`)
-and never the per-job firehose, so two browser tabs viewing two
-different workspaces can both keep their picker live without leaking
-job events.
+## Decisions / call-outs for stage 7
 
-The mock client's `subscribe` now switches on all four scope variants
-(`all` / `job` / `repo` / `library`). `library` filters to envelopes
-without a `job_id`, which is the closest the mock can come to the
-runtime's `repo-only` filter — mock envelopes don't yet carry
-`repo_id`, so the `repo` variant uses an `as unknown as { repo_id? }`
-peek; a future stage that emits real workspace-scoped events from the
-mock will tighten that. Two existing test doubles
-(`ChatMessageList.test.tsx`, `ChatTab.test.tsx`) also gained the
-narrower discriminant check so TypeScript narrows `filter.job_id`
-correctly on the `job` arm.
+- **No new `AssistantAction` variant lands here.** The dispatcher
+  trait was sized so the runtime-side `ApproveEditsWriteDispatcher`
+  in stage 7 can either reuse the existing `EditScope` variant for
+  job-scope writes or introduce a new `FsWrite` variant for
+  workspace writes — that choice does not affect the Tool surface
+  this stage ships. The Tool hands the dispatcher a
+  `WorkspaceWrite { rel_path, abs, before, after }`; the dispatcher
+  decides how to persist the proposal.
+- **Bypass goes through the dispatcher, not directly through
+  `tokio::fs::write` inside the Tool.** Done this way so the
+  runtime's bypass impl can still publish a tool_message envelope,
+  write to the event bus, and apply the same job-scope routing in
+  one place. Tests use a `DiskBypassDispatcher` stand-in alongside
+  the `RecordingDispatcher` so the bypass shape is covered without
+  standing up the runtime.
+- **Job-scope check is at the Tool layer, not the dispatcher
+  layer.** SCOPE D3 says the check lives at the `fs.write` /
+  `fs.edit` *dispatch boundary*; that boundary is the Tool deciding
+  which dispatcher method to call. Putting the check inside each
+  dispatcher impl would risk drift between the approve-edits and
+  bypass paths.
+- **`fs.write`'s `before` is best-effort.** A pre-existing file is
+  read via `tokio::fs::read` for diff context (UTF-8 lossy); a
+  missing file surfaces as `None`. A `Failed` is only returned for
+  non-NotFound errors so the planner can still propose a write
+  against a typo'd parent directory.
 
-## Other `{ scope: "all" }` callers stay as-is
+## What stage 7 still needs to land
 
-`JobsDashboard`, `AssistantPage`, `AssistantFooterBar`, and
-`RunPane`'s waitForCompletion still use `{ scope: "all" }` or
-`{ scope: "job" }` — the latter is correct as-is. The former three
-are the global event-log views that the SCOPE.md explicitly leaves
-alone for this job; they don't drive workspace-scoped state and they
-all live on pages that span workspaces. Stage 7 or a follow-up may
-revisit `JobsDashboard` once the dashboard learns to filter to the
-active workspace.
+1. Concrete `WriteDispatcher` impls in `codeless-runtime`:
+   - `ApproveEditsWriteDispatcher` — inserts an
+     `AssistantActionCard` row (either reusing `EditScope` for
+     job-scope writes or introducing a new `FsWrite` variant for
+     workspace writes).
+   - `BypassWriteDispatcher` — calls the host fs adapter directly
+     for workspace writes and `update_job_scope` (or the wider
+     `write_job_file` after the paused-job guard) for job-scope.
+2. Wire `register_assistant_thread_write_tools` into the planner /
+   `agent_chat` registry construction path so the per-thread mode
+   is read on every dispatch and the tools come and go with the
+   row.
+3. The mode dropdown in `/assistant` (stage 7's UI deliverable),
+   bound to the existing `assistant.setThreadMode` RPC.
 
 ## Verify
 
-- `pnpm -C ui/codeless-ui typecheck` — clean.
-- `pnpm -C ui/codeless-ui test` — 135 passed, 27 files.
-- `pnpm -C ui/codeless-ui lint` — no eslint configured (no-op).
 - `cargo fmt --check` — clean.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
-- `cargo test --workspace --no-fail-fast` — green. One flaky
-  `git_diff::tests::missing_base_ref_is_distinct_error` on a single
-  hot run; passes in isolation and on rerun. Unrelated to this stage.
+- `cargo test -p codeless-tools` — all suites green (45 fs:: lib
+  tests including the new write-tool + dispatcher + sandbox cases;
+  9 fs_tools integration tests including the four stage-6 mode +
+  job-scope assertions; pre-existing suites unaffected).
+- `cargo test -p codeless-runtime --lib rpc::assistant` — 65
+  pre-existing assistant tests green; no regression from this
+  stage (no runtime files were touched).
 
-## What stage 7 picks up
+## Worktree quirk (inherited from stage 3)
 
-- Deep-link router: read `?workspace=<repo_id>` on load, write it on
-  every `setActive` via `history.replaceState`. Stage 6 wired the
-  store's `setActive` so refresh-survival becomes a router change,
-  not a store change.
-- Tauri webview smoke: stage 6's changes ride the shared UI tree, so
-  `TauriIpcClient` callers see the new `fs.*` shape too. Run a
-  `--native-window` boot at the end of stage 7 to confirm the
-  desktop shell still loads against the same wire.
-- A small drift risk lives in `wire.ts` (the manual file) vs
-  `generated/wire.ts`: the manual file's `FsReadResult` still has the
-  binary / toolarge variants the server doesn't emit. Stage 6 left
-  it alone because the editor's state machine still branches on the
-  kinds, but a future stage either deletes the manual file or
-  promotes its variants into specta.
-
-## Known follow-ups (not in this stage)
-
-- `JobsDashboard` still uses `{ scope: "all" }`; per-workspace
-  filtering of the jobs list is a stage 7+ decision.
-- The mock client's `subscribe` `repo` branch peeks at `repo_id` via
-  a cast because mock envelopes don't carry one. When stage 7's
-  router tests need workspace-scoped mock events, tighten this.
-- `methods.ts`'s opening comment still mentions stage-15 of the UI
-  conversion loop; the `fs.*` types are now generated, so a future
-  cleanup pass can shorten the preamble.
+The local `ai-runner/src/types.rs` was synced from the canonical
+copy under `/home/user/code/rust/codeless-workspace/ai-runner` and
+the sibling worktree's `workspace` pointer retargeted at this
+worktree. Both fixes are environment-only; neither lands in this
+worktree's git tree. The stage-7 session will inherit the same
+setup unless the worktree is rebuilt from scratch.
