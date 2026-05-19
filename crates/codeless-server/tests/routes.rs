@@ -77,6 +77,7 @@ async fn server_info_returns_configured_snapshot_without_token() {
         claude: None,
         available_cli_runners: Vec::new(),
         feature_flags: Default::default(),
+        rest_url: None,
     };
     let state = AppState::new(rpc, TOKEN).with_server_info(info.clone());
     let app = build_router(state);

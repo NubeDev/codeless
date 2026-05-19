@@ -138,6 +138,7 @@ pub async fn boot() -> Result<BootResult, BootError> {
         claude: claude_status,
         available_cli_runners,
         feature_flags: ServerFeatureFlags::default(),
+        rest_url: None,
     });
 
     Ok(BootResult {

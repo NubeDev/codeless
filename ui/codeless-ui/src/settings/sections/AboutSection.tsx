@@ -1,7 +1,15 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+
 import { Button } from "@/components/ui/button";
+import { useRpc } from "@/lib/rpc";
 import { useAppInfo, useExternalOpener } from "@/lib/shell";
 import { useUpdater } from "@/modules/updater";
-import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
+import {
+  CheckmarkCircle01Icon,
+  CopyIcon,
+  GithubIcon,
+  Globe02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SectionHeader } from "../components/SectionHeader";
 
@@ -11,6 +19,22 @@ const WEBSITE = "https://codeless.app";
 export function AboutSection() {
   const { name, version, buildLabel } = useAppInfo();
   const { openUrl } = useExternalOpener();
+  const rpc = useRpc();
+  const [restUrl, setRestUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    rpc
+      .serverInfo()
+      .then((info) => {
+        if (!cancelled) setRestUrl(info.rest_url ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setRestUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc]);
   const { status, check, install } = useUpdater({ autoCheck: false });
   const checking = status.kind === "checking";
   const downloading = status.kind === "downloading";
@@ -63,6 +87,18 @@ export function AboutSection() {
 
         <dt className="text-muted-foreground">Bundle ID</dt>
         <dd className="font-mono text-[11.5px]">app.crynta.codeless</dd>
+
+        <dt className="text-muted-foreground">REST endpoint</dt>
+        <dd className="flex items-center gap-2">
+          {restUrl ? (
+            <>
+              <span className="font-mono text-[11.5px]">{restUrl}</span>
+              <CopyButton value={restUrl} />
+            </>
+          ) : (
+            <span className="text-muted-foreground">unavailable</span>
+          )}
+        </dd>
 
         <dt className="text-muted-foreground">License</dt>
         <dd>Apache 2.0</dd>
@@ -133,5 +169,42 @@ export function AboutSection() {
         ) : null}
       </div>
     </div>
+  );
+}
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+  const onCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard access can be denied in restricted contexts; fall
+      // back to a no-op rather than throwing into the React tree.
+    }
+  }, [value]);
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    };
+  }, []);
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+      aria-label="Copy"
+    >
+      <HugeiconsIcon
+        icon={copied ? CheckmarkCircle01Icon : CopyIcon}
+        size={12}
+        strokeWidth={1.75}
+      />
+    </button>
   );
 }

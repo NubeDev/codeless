@@ -33,4 +33,5 @@ codeless-types = { path = "../codeless-types" }
 codeless-rpc = { path = "../codeless-rpc" }
 codeless-runtime = { path = "../codeless-runtime" }
 codeless-adapters-host = { path = "../codeless-adapters-host" }
+codeless-server = { path = "../codeless-server" }
 ai-runner = { path = "../../../ai-runner" }

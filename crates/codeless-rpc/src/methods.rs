@@ -629,6 +629,16 @@ pub struct ServerInfo {
     /// the field and crashing the UI deserialisation.
     #[serde(default)]
     pub feature_flags: ServerFeatureFlags,
+    /// Loopback REST endpoint exposed alongside this runtime. The
+    /// Tauri desktop shell embeds `codeless-server` on an ephemeral
+    /// `127.0.0.1` port so external tools (scripts, AI agents) can
+    /// reach the same in-process runtime over HTTP without spawning a
+    /// second `codeless serve`. `None` for hosts that do not expose a
+    /// REST surface (the bare `codeless serve` path leaves this
+    /// `None` because the server itself *is* the REST surface and the
+    /// bind address is already public in its launch banner).
+    #[serde(default)]
+    pub rest_url: Option<String>,
 }
 
 /// Capability bits the runtime advertises to the UI at boot. Each
@@ -663,6 +673,7 @@ impl Default for ServerInfo {
             claude: None,
             available_cli_runners: Vec::new(),
             feature_flags: ServerFeatureFlags::default(),
+            rest_url: None,
         }
     }
 }

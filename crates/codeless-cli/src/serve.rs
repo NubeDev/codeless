@@ -666,6 +666,12 @@ fn build_server_info(
         // patch-counter row rather than display a number that the
         // runtime cannot back.
         feature_flags: ServerFeatureFlags::default(),
+        // `codeless serve` is itself the REST surface; the bound
+        // address is logged in the launch banner so a separate
+        // `rest_url` field would be redundant. Only the desktop
+        // shell, which embeds the server as a sidecar to its IPC
+        // transport, populates this.
+        rest_url: None,
     }
 }
 

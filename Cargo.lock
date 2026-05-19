@@ -1176,6 +1176,7 @@ dependencies = [
  "codeless-adapters-host",
  "codeless-rpc",
  "codeless-runtime",
+ "codeless-server",
  "codeless-types",
  "directories",
  "futures-util",
