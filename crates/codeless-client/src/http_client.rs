@@ -21,14 +21,14 @@ use codeless_rpc::{
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     RestartServerArgs, RestartServerResult, ResumeJobArgs, RevertScopePatchArgs,
     RevertScopePatchResult, RpcError, RpcResult, RpcServer, ScopePatchActionResult,
-    SetChatAdapterEnabledArgs, SetJobPolicyArgs, SetRunnerEnabledArgs, Since, StartJobArgs,
-    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
-    UpdateChatMessageDeliveryArgs, UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs,
-    UpdateJobTemplateResult, UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult,
-    UploadChatAttachmentArgs, UploadChatAttachmentResult, UpsertPersonaArgs,
-    ValidateChatAdapterSecretsArgs, ValidateChatAdapterSecretsResult, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult, WorkspaceError, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    SetAssistantThreadModeArgs, SetAssistantThreadModeResult, SetChatAdapterEnabledArgs,
+    SetJobPolicyArgs, SetRunnerEnabledArgs, Since, StartJobArgs, StopActiveArgs, StopActiveResult,
+    StopJobArgs, StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobScopeArgs,
+    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
+    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
+    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateChatAdapterSecretsArgs,
+    ValidateChatAdapterSecretsResult, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review};
 use futures_util::StreamExt;
@@ -452,6 +452,13 @@ impl RpcServer for HttpRpcClient {
 
     async fn delete_assistant_thread(&self, args: DeleteAssistantThreadArgs) -> RpcResult<()> {
         self.call_void("delete_assistant_thread", &args).await
+    }
+
+    async fn set_assistant_thread_mode(
+        &self,
+        args: SetAssistantThreadModeArgs,
+    ) -> RpcResult<SetAssistantThreadModeResult> {
+        self.call("set_assistant_thread_mode", &args).await
     }
 
     async fn upload_assistant_attachment(

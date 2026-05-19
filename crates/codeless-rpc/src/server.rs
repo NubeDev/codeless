@@ -28,12 +28,13 @@ use crate::methods::{
     OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, ScopePatchActionResult,
-    SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs,
-    SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobArgs, UpdateJobScopeArgs,
-    UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult,
-    WriteJobFileArgs, WriteJobFileResult,
+    SetAssistantThreadModeArgs, SetAssistantThreadModeResult, SetJobPolicyArgs, StartJobArgs,
+    StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateChatMessageDeliveryArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UpsertPersonaArgs, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
+    WriteJobFileResult,
 };
 use crate::subscribe::{EventFilter, EventStream, Since};
 use codeless_types::AssistantThread;
@@ -464,6 +465,18 @@ pub trait RpcServer: Send + Sync + 'static {
     /// in the same call so blobs do not outlive the row. `NotFound`
     /// for an unknown id — the UI surfaces this as "already deleted".
     async fn delete_assistant_thread(&self, args: DeleteAssistantThreadArgs) -> RpcResult<()>;
+
+    /// Flip a thread's filesystem-tool permission posture (job
+    /// `assistant-fs-tools`). The mode is server-owned (R4) and read
+    /// at every tool dispatch; the UI dropdown lands in a later
+    /// stage and only mirrors this value. `NotFound` for an unknown
+    /// thread id; the wire enum already rejects unknown mode strings
+    /// before the handler runs. `updated_at` is not bumped — a
+    /// permission flip is not a conversational event.
+    async fn set_assistant_thread_mode(
+        &self,
+        args: SetAssistantThreadModeArgs,
+    ) -> RpcResult<SetAssistantThreadModeResult>;
 
     /// Upload a binary blob into an assistant thread's attachments
     /// directory. The runtime decodes the base64 body, writes the file

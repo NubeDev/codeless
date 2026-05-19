@@ -37,7 +37,7 @@ pub use adapter::{
 pub use assistant::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantMessage, AssistantMessageRole,
-    AssistantThread, AttachmentRef,
+    AssistantThread, AssistantThreadMode, AttachmentRef,
 };
 pub use auto_bypass::AutoBypassPolicy;
 pub use chat::{ChatBinding, ChatMessage, ChatRole, ChatTransport};

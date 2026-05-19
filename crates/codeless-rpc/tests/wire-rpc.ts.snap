@@ -261,12 +261,51 @@ export type AssistantThread = {
 	 *  silent fallback.
 	 */
 	persona_id: string,
+	/**
+	 *  Filesystem-tool permission posture for this thread (job
+	 *  `assistant-fs-tools`). Default `read-only`; the planner's
+	 *  tool list and write-tool dispatch are gated on this column
+	 *  server-side. Mutated through `assistant.setThreadMode`.
+	 */
+	mode?: AssistantThreadMode,
 	created_at: UnixMillis,
 	updated_at: UnixMillis,
 };
 
 //Identity of one conversational thread on the /assistant surface.
 export type AssistantThreadId = string;
+
+/**
+ *  Filesystem-tool permission posture for one assistant thread (job
+ *  `assistant-fs-tools`, SCOPE.md "Decisions" D1). Stored on
+ *  `assistant_threads.mode` and consulted server-side every time the
+ *  planner dispatches a tool call; a client cannot upgrade itself by
+ *  reporting a different mode on the wire (SCOPE.md "Constraints" —
+ *  "UI hints, server enforces"). The three variants map onto the
+ *  well-known Claude Code / Copilot CLI / Codex vocabulary so a user
+ *  carrying one mental model arrives without retraining.
+ */
+export type AssistantThreadMode = 
+/**
+ *  Read-only: write tools are not registered on the planner's
+ *  tool list at all (D8). A stale client that still attempts a
+ *  write call receives a typed reject server-side as
+ *  defence-in-depth.
+ */
+"read-only" | 
+/**
+ *  Approve-edits: each `fs.write` / `fs.edit` surfaces as an
+ *  `AssistantActionCard` and runs only after the user confirms
+ *  via the existing `confirm_assistant_action` dispatcher.
+ */
+"approve-edits" | 
+/**
+ *  Bypass: writes execute immediately, no action card. The
+ *  `.codeless/jobs/<name>/` route-through-`jobs.updateScope`
+ *  special case (D3) still applies in this mode — the
+ *  paused-job rule is a runtime invariant, not a permission.
+ */
+"bypass";
 
 /**
  *  Per-job auto-bypass policy. When set, a stage that fails under a
@@ -1569,6 +1608,32 @@ export type ServerInfo = {
 	 *  bind address is already public in its launch banner).
 	 */
 	rest_url?: string | null,
+};
+
+/**
+ *  `assistant.setThreadMode` (job `assistant-fs-tools` stage 3).
+ *  Flip a thread's filesystem-tool permission posture to one of the
+ *  three `AssistantThreadMode` variants. The mode is consulted
+ *  server-side on every tool dispatch (SCOPE.md "Constraints" — "UI
+ *  hints, server enforces"), so a stale client cannot keep
+ *  approve-edits / bypass behaviour after the operator dropped the
+ *  thread back to read-only.
+ * 
+ *  `NotFound` for an unknown thread id. `updated_at` is *not* bumped
+ *  — switching permission posture is not a conversational event and
+ *  must not re-sort the rail. The wire form for `mode` is one of
+ *  `read-only` / `approve-edits` / `bypass`; a serde decode failure
+ *  (typo, unknown variant) surfaces before the handler runs, so the
+ *  SQLite column never sees an out-of-band string.
+ */
+export type SetAssistantThreadModeArgs = {
+	thread_id: AssistantThreadId,
+	mode: AssistantThreadMode,
+};
+
+export type SetAssistantThreadModeResult = {
+	thread_id: AssistantThreadId,
+	mode: AssistantThreadMode,
 };
 
 /**

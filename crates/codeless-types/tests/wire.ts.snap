@@ -286,12 +286,51 @@ export type AssistantThread = {
 	 *  silent fallback.
 	 */
 	persona_id: string,
+	/**
+	 *  Filesystem-tool permission posture for this thread (job
+	 *  `assistant-fs-tools`). Default `read-only`; the planner's
+	 *  tool list and write-tool dispatch are gated on this column
+	 *  server-side. Mutated through `assistant.setThreadMode`.
+	 */
+	mode?: AssistantThreadMode,
 	created_at: UnixMillis,
 	updated_at: UnixMillis,
 };
 
 //Identity of one conversational thread on the /assistant surface.
 export type AssistantThreadId = string;
+
+/**
+ *  Filesystem-tool permission posture for one assistant thread (job
+ *  `assistant-fs-tools`, SCOPE.md "Decisions" D1). Stored on
+ *  `assistant_threads.mode` and consulted server-side every time the
+ *  planner dispatches a tool call; a client cannot upgrade itself by
+ *  reporting a different mode on the wire (SCOPE.md "Constraints" —
+ *  "UI hints, server enforces"). The three variants map onto the
+ *  well-known Claude Code / Copilot CLI / Codex vocabulary so a user
+ *  carrying one mental model arrives without retraining.
+ */
+export type AssistantThreadMode = 
+/**
+ *  Read-only: write tools are not registered on the planner's
+ *  tool list at all (D8). A stale client that still attempts a
+ *  write call receives a typed reject server-side as
+ *  defence-in-depth.
+ */
+"read-only" | 
+/**
+ *  Approve-edits: each `fs.write` / `fs.edit` surfaces as an
+ *  `AssistantActionCard` and runs only after the user confirms
+ *  via the existing `confirm_assistant_action` dispatcher.
+ */
+"approve-edits" | 
+/**
+ *  Bypass: writes execute immediately, no action card. The
+ *  `.codeless/jobs/<name>/` route-through-`jobs.updateScope`
+ *  special case (D3) still applies in this mode — the
+ *  paused-job rule is a runtime invariant, not a permission.
+ */
+"bypass";
 
 export type AttachWorkspaceArgs = {
 	repo_id: RepoId,

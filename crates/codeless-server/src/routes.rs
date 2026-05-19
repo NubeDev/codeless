@@ -26,13 +26,13 @@ use codeless_rpc::{
     OverridePreCheckAndResumeArgs, PauseJobArgs, PostJobMessageArgs, ReadJobFileArgs,
     ReadJobFileResult, RejectScopePatchArgs, RemoveRepoArgs, RerunJobArgs, ResetJobArgs,
     ResumeJobArgs, RevertScopePatchArgs, RevertScopePatchResult, RpcError, ScopePatchActionResult,
-    ServerInfo, SetJobPolicyArgs, StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs,
-    StopReviewArgs, SubmitJobArgs, UpdateChatMessageDeliveryArgs, UpdateJobArgs,
-    UpdateJobScopeArgs, UpdateJobScopeResult, UpdateJobTemplateArgs, UpdateJobTemplateResult,
-    UploadAssistantAttachmentArgs, UploadAssistantAttachmentResult, UploadChatAttachmentArgs,
-    UploadChatAttachmentResult, UpsertPersonaArgs, ValidateWorkspacePathArgs,
-    ValidateWorkspacePathResult, WriteHandoverArgs, WriteHandoverResult, WriteJobFileArgs,
-    WriteJobFileResult,
+    ServerInfo, SetAssistantThreadModeArgs, SetAssistantThreadModeResult, SetJobPolicyArgs,
+    StartJobArgs, StopActiveArgs, StopActiveResult, StopJobArgs, StopReviewArgs, SubmitJobArgs,
+    UpdateChatMessageDeliveryArgs, UpdateJobArgs, UpdateJobScopeArgs, UpdateJobScopeResult,
+    UpdateJobTemplateArgs, UpdateJobTemplateResult, UploadAssistantAttachmentArgs,
+    UploadAssistantAttachmentResult, UploadChatAttachmentArgs, UploadChatAttachmentResult,
+    UpsertPersonaArgs, ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WriteHandoverArgs,
+    WriteHandoverResult, WriteJobFileArgs, WriteJobFileResult,
 };
 use codeless_types::{AssistantThread, ChatBinding, ChatMessage, Job, Persona, Repo, Review};
 use serde_json::Value;
@@ -119,6 +119,10 @@ pub(crate) fn router(state: AppState) -> Router {
         .route(
             "/rpc/delete_assistant_thread",
             post(delete_assistant_thread),
+        )
+        .route(
+            "/rpc/set_assistant_thread_mode",
+            post(set_assistant_thread_mode),
         )
         .route(
             "/rpc/upload_assistant_attachment",
@@ -772,6 +776,17 @@ async fn delete_assistant_thread(
         .delete_assistant_thread(args)
         .await
         .map(|()| Json(Value::Null))
+        .map_err(map_err)
+}
+
+async fn set_assistant_thread_mode(
+    State(st): State<AppState>,
+    Json(args): Json<SetAssistantThreadModeArgs>,
+) -> HandlerResult<SetAssistantThreadModeResult> {
+    st.rpc
+        .set_assistant_thread_mode(args)
+        .await
+        .map(Json)
         .map_err(map_err)
 }
 

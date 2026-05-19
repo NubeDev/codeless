@@ -1,6 +1,6 @@
 use codeless_types::{
     AssistantAttachment, AssistantMessage, AssistantMessageId, AssistantThread, AssistantThreadId,
-    UnixMillis,
+    AssistantThreadMode, UnixMillis,
 };
 
 use super::codec::{
@@ -12,17 +12,38 @@ use super::SqliteStore;
 impl SqliteStore {
     pub async fn insert_assistant_thread(&self, thread: &AssistantThread) -> sqlx::Result<()> {
         sqlx::query(
-            "INSERT INTO assistant_threads (id, title, persona_id, created_at, updated_at) \
-             VALUES (?,?,?,?,?)",
+            "INSERT INTO assistant_threads \
+             (id, title, persona_id, mode, created_at, updated_at) \
+             VALUES (?,?,?,?,?,?)",
         )
         .bind(thread.id.to_string())
         .bind(&thread.title)
         .bind(&thread.persona_id)
+        .bind(thread.mode.as_wire())
         .bind(thread.created_at.0)
         .bind(thread.updated_at.0)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Flip an assistant thread's `mode` column (job
+    /// `assistant-fs-tools` stage 3). Returns `true` when a row was
+    /// updated; `false` lets the RPC distinguish "no such thread"
+    /// from "mode unchanged" without a second `SELECT`. `updated_at`
+    /// is *not* bumped — switching permission posture is not a
+    /// conversational event and should not re-sort the rail.
+    pub async fn set_assistant_thread_mode(
+        &self,
+        id: AssistantThreadId,
+        mode: AssistantThreadMode,
+    ) -> sqlx::Result<bool> {
+        let res = sqlx::query("UPDATE assistant_threads SET mode = ? WHERE id = ?")
+            .bind(mode.as_wire())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     pub async fn get_assistant_thread(

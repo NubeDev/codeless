@@ -12,17 +12,18 @@ use codeless_types::{
     AdapterError, AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
     AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId,
-    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, ChatAdapterKind,
-    ChatAdapterRow, ChatAdapterSecretProblem, ChatBinding, ChatMessage, ChatRole, ChatTransport,
-    CostCents, DetachPolicy, DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry,
-    FsEntryKind, GitAuth, Job, JobId, JobStatus, ListChatAdaptersResult, ListRunnersResult,
-    ListWorkspacesResult, MessageId, PausePoint, PausePointId, PausePointPosition,
-    PausePointTarget, PreCheckOutcome, ProposedScopePatch, Repo, RepoId, RestartServerArgs,
-    RestartServerResult, Review, ReviewId, ReviewStatus, ReviewVerdict, RunnerRow, ScopePatch,
-    ScopePatchId, ScopePatchKind, ScopePatchTarget, SetChatAdapterEnabledArgs,
-    SetRunnerEnabledArgs, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
-    TodoSelector, UnixMillis, ValidateChatAdapterSecretsArgs, ValidateChatAdapterSecretsResult,
-    ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
+    AssistantThreadMode, AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace,
+    AttachmentRef, ChatAdapterKind, ChatAdapterRow, ChatAdapterSecretProblem, ChatBinding,
+    ChatMessage, ChatRole, ChatTransport, CostCents, DetachPolicy, DetachWorkspaceArgs, Event,
+    EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId, JobStatus,
+    ListChatAdaptersResult, ListRunnersResult, ListWorkspacesResult, MessageId, PausePoint,
+    PausePointId, PausePointPosition, PausePointTarget, PreCheckOutcome, ProposedScopePatch, Repo,
+    RepoId, RestartServerArgs, RestartServerResult, Review, ReviewId, ReviewStatus, ReviewVerdict,
+    RunnerRow, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget,
+    SetChatAdapterEnabledArgs, SetRunnerEnabledArgs, Stage, StageId, StageStatus, StopReason, Task,
+    TaskId, TaskStatus, TodoSelector, UnixMillis, ValidateChatAdapterSecretsArgs,
+    ValidateChatAdapterSecretsResult, ValidateWorkspacePathArgs, ValidateWorkspacePathResult,
+    WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
 use specta_typescript::{BigIntExportBehavior, Typescript};
@@ -67,6 +68,7 @@ fn collect() -> TypeCollection {
         .register_mut::<AssistantMessageId>()
         .register_mut::<AssistantAttachmentId>()
         .register_mut::<AssistantThread>()
+        .register_mut::<AssistantThreadMode>()
         .register_mut::<AssistantMessage>()
         .register_mut::<AssistantMessageRole>()
         .register_mut::<AssistantAttachment>()
