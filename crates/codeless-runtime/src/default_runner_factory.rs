@@ -110,31 +110,50 @@ impl RunnerFactory for DefaultRunnerFactory {
         // missing prompt is most likely a YAML-template job whose
         // stages list carries the real work. Branch on `template_yaml`
         // first: a parseable template means the multi-stage
-        // `TemplateRunner` (claude-backed) is the right choice
-        // regardless of the `runner` field — the user's template said
-        // "drive these stages," and the runner string is the
-        // transport, not the choice.
+        // `TemplateRunner` is the right driver. The per-stage runner
+        // inside `TemplateRunner` is selected by `job.runner` so a
+        // user who picked Copilot on the Submit dialog actually gets
+        // the Copilot CLI instead of being silently downgraded to
+        // claude. When neither the requested CLI nor claude is
+        // enabled the template falls through to `MockRunner` so the
+        // iterate-loop UI still drives.
         if let Some(template_src) = job.template_yaml.as_ref() {
             match JobTemplate::parse_yaml(template_src) {
-                Ok(template) if self.config.claude => {
-                    let mut runner = TemplateRunner::new(template)
-                        .with_store(self.store.clone())
-                        .with_pending_operator_comment(pending_operator_comment.clone());
-                    if let Some(sp) = compose_system_prompt(
-                        self.claude_system_prompt.as_deref(),
-                        job.system_prompt.as_deref(),
-                    ) {
-                        runner = runner.with_system_prompt(sp);
-                    }
-                    if let Some(ref mcp) = self.mcp_binary_path {
-                        runner = runner.with_mcp_binary(mcp.clone());
-                    }
-                    return Some(Arc::new(runner));
-                }
                 Ok(template) => {
+                    let runner_kind = match job.runner.as_str() {
+                        "copilot" if self.config.copilot => Some("copilot"),
+                        "claude" if self.config.claude => Some("claude"),
+                        // Any other `runner` value (anthropic / codex
+                        // / unrecognised) falls back to claude when
+                        // claude is available — TemplateRunner only
+                        // teaches the per-stage flow to claude and
+                        // copilot today.
+                        _ if self.config.claude => Some("claude"),
+                        _ => None,
+                    };
+                    if let Some(kind) = runner_kind {
+                        let mut runner = TemplateRunner::new(template)
+                            .with_runner_kind(kind)
+                            .with_store(self.store.clone())
+                            .with_pending_operator_comment(pending_operator_comment.clone());
+                        if let Some(m) = job.model.as_deref() {
+                            runner = runner.with_model(m);
+                        }
+                        if let Some(sp) = compose_system_prompt(
+                            self.claude_system_prompt.as_deref(),
+                            job.system_prompt.as_deref(),
+                        ) {
+                            runner = runner.with_system_prompt(sp);
+                        }
+                        if let Some(ref mcp) = self.mcp_binary_path {
+                            runner = runner.with_mcp_binary(mcp.clone());
+                        }
+                        return Some(Arc::new(runner));
+                    }
                     tracing::info!(
                         stages = template.stages.len(),
-                        "running template via mock runner (claude disabled)"
+                        requested_runner = %job.runner,
+                        "running template via mock runner (requested runner disabled and claude disabled)"
                     );
                     let runner = TemplateRunner::new(template)
                         .with_mock_runner()

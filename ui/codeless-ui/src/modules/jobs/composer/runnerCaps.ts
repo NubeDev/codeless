@@ -43,8 +43,22 @@ export const RUNNER_CAPS: Record<string, RunnerCapabilities> = {
   copilot: {
     supportsModel: true,
     supportsPermission: false,
-    supportsEffort: false,
-    models: [],
+    // Copilot CLI accepts `--effort {low,medium,high,xhigh}`; expose
+    // the standard three (xhigh stays out — the runtime doesn't map
+    // it and codeless's effort vocabulary is low/medium/high).
+    supportsEffort: true,
+    // GitHub Copilot CLI selects the upstream model via
+    // `copilot --model <id>`. The list mirrors the models offered
+    // in the Copilot Chat picker for the developer's plan; entries
+    // the account lacks entitlement for fail at runner-build time
+    // with the upstream "Access denied by policy" message.
+    models: [
+      { id: "auto", label: "Auto" },
+      { id: "claude-opus-4.6", label: "Claude Opus 4.6" },
+      { id: "claude-opus-4.7", label: "Claude Opus 4.7" },
+      { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
+      { id: "gpt-5.4", label: "GPT-5.4" },
+    ],
     defaultPermissionMode: null,
   },
 };

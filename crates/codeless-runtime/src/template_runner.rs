@@ -61,6 +61,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::auto_bypass_guard::ThrashingGuard;
 use crate::claude_runner::ClaudeRunnerAdapter;
+use crate::copilot_runner::CopilotRunnerAdapter;
 use crate::diff_verify::{
     fail_reason as diff_verify_fail_reason, verify_handover, DiffVerifyOutcome,
 };
@@ -126,6 +127,20 @@ pub struct TemplateRunner {
     /// per-stage `ClaudeRunnerAdapter` so codeless-registered tools
     /// are available via MCP (stdio transport).
     pub mcp_binary_path: Option<String>,
+    /// Which per-stage runner adapter to instantiate. `"claude"`
+    /// (default) preserves historical behaviour and gets every
+    /// codeless integration (system prompt, resume-id, MCP, store);
+    /// `"copilot"` routes each stage through `CopilotRunnerAdapter`
+    /// so the user's runner pick on the Job actually reaches the
+    /// upstream Copilot CLI. Any other value falls back to claude
+    /// so older callers that did not set this keep working.
+    pub runner_kind: String,
+    /// Per-job model override forwarded to whichever per-stage
+    /// adapter is built. The claude branch already reads this from
+    /// the job row via the factory; copilot needs it threaded
+    /// through here because `CopilotRunnerAdapter::with_model` is
+    /// the only knob it exposes today.
+    pub model: Option<String>,
 }
 
 impl TemplateRunner {
@@ -138,6 +153,8 @@ impl TemplateRunner {
             thrashing_guard: None,
             pending_operator_comment: None,
             mcp_binary_path: None,
+            runner_kind: "claude".to_owned(),
+            model: None,
         }
     }
 
@@ -187,6 +204,23 @@ impl TemplateRunner {
     pub fn with_mcp_binary(mut self, path: impl Into<String>) -> Self {
         let s = path.into();
         self.mcp_binary_path = if s.is_empty() { None } else { Some(s) };
+        self
+    }
+
+    /// Select which per-stage runner adapter to use. Empty / unknown
+    /// values fall back to claude so older callers keep working.
+    pub fn with_runner_kind(mut self, kind: impl Into<String>) -> Self {
+        let s = kind.into();
+        self.runner_kind = if s.is_empty() { "claude".to_owned() } else { s };
+        self
+    }
+
+    /// Forward the per-job `model` override to the per-stage adapter
+    /// that supports it (claude reads its own from the job row;
+    /// copilot reads this).
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        let s = model.into();
+        self.model = if s.is_empty() { None } else { Some(s) };
         self
     }
 
@@ -998,6 +1032,20 @@ impl Runner for TemplateRunner {
                         }
                     }
                     RunnerOutcome::Completed
+                } else if self.runner_kind == "copilot" {
+                    // Copilot CLI is single-prompt and stateless from
+                    // codeless's point of view: no system-prompt knob,
+                    // no resume-id, no MCP stdio bridge, no store
+                    // round-trip for the docs-trio flip. The per-stage
+                    // handover write still happens via the runtime's
+                    // stage-completion path; what differs is only that
+                    // the upstream model invocation is `copilot -p`
+                    // instead of `claude`.
+                    let mut adapter = CopilotRunnerAdapter::new(prompt, task_id);
+                    if let Some(m) = &self.model {
+                        adapter = adapter.with_model(m.clone());
+                    }
+                    adapter.run(sub_ctx).await
                 } else {
                     let mut adapter = ClaudeRunnerAdapter::new(prompt, task_id);
                     // Per-stage persona instructions override the

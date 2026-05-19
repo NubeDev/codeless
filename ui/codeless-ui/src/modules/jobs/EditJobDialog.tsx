@@ -19,32 +19,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useRpc, type AutoBypassPolicy, type Job, type ServerInfo } from "@/lib/rpc";
+import {
+  EFFORT_LEVELS as COMPOSER_EFFORT_LEVELS,
+  PERMISSION_MODES,
+  RUNNER_CAPS,
+  SERVER_PICK,
+} from "./composer/runnerCaps";
 
-const PERMISSION_MODES: { id: string; label: string }[] = [
-  { id: "bypass", label: "Bypass" },
-  { id: "accept_edits", label: "Accept edits" },
-  { id: "plan", label: "Plan" },
-  { id: "default", label: "Default" },
-];
-
+// `runnerCaps.EFFORT_LEVELS` is the canonical low/medium/high list
+// shared with `SubmitJobDialog`. EditJob also needs a "no override"
+// row so the user can clear an effort previously set on the job —
+// that row is local to this dialog because Submit defaults to
+// "server picks" via `SERVER_PICK` instead.
 const NO_EFFORT = "__none__";
-
 const EFFORT_LEVELS: { id: string; label: string }[] = [
   { id: NO_EFFORT, label: "Default (no extra thinking)" },
-  { id: "low", label: "Low — think" },
-  { id: "medium", label: "Medium — think hard" },
-  { id: "high", label: "High — ultrathink" },
+  ...COMPOSER_EFFORT_LEVELS,
 ];
-
-const RUNNER_MODELS: Record<string, { id: string; label: string }[]> = {
-  claude: [
-    { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
-    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
-  ],
-};
-
-const SERVER_PICK = "__server_default__";
 
 // Auto-bypass policy picker — mirrors `SubmitJobDialog` so the
 // operator sees the same menu whether they are creating the job
@@ -150,7 +141,8 @@ export function EditJobDialog({ job, open, onOpenChange, onSaved }: Props) {
     Math.round(parseFloat(wallClockMin || "0") * 60_000),
   );
 
-  const models = RUNNER_MODELS[runner] ?? [];
+  const caps = RUNNER_CAPS[runner];
+  const models = caps?.models ?? [];
 
   const policyCustomTrimmed = customComment.trim();
   const policyCustomValid =
@@ -277,7 +269,7 @@ export function EditJobDialog({ job, open, onOpenChange, onSaved }: Props) {
             </div>
 
             {/* Model */}
-            {models.length > 0 && (
+            {caps?.supportsModel && models.length > 0 && (
               <div className="grid gap-1.5">
                 <Label>Model</Label>
                 <Select value={model} onValueChange={setModel}>
@@ -299,7 +291,7 @@ export function EditJobDialog({ job, open, onOpenChange, onSaved }: Props) {
             )}
 
             {/* Permission */}
-            {runner === "claude" && (
+            {caps?.supportsPermission && (
               <div className="grid gap-1.5">
                 <Label>Permission</Label>
                 <Select
@@ -324,7 +316,7 @@ export function EditJobDialog({ job, open, onOpenChange, onSaved }: Props) {
             )}
 
             {/* Effort */}
-            {runner === "claude" && (
+            {caps?.supportsEffort && (
               <div className="grid gap-1.5">
                 <Label>Effort</Label>
                 <Select value={effort} onValueChange={setEffort}>
