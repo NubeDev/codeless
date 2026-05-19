@@ -9,6 +9,8 @@ goal: |
   `.codeless/jobs/<name>/` always route through `jobs.updateScope`
   regardless of mode, so the paused-job rule cannot be bypassed.
 
+docs:
+  - CHAT.md
 stages:
   - resolve open questions in SCOPE.md — confirm the three mode names (bias read-only / approve-edits / bypass to match Claude Code), confirm thread-mode storage (column on assistant_threads), confirm the .codeless/jobs/<name>/ special case routes through jobs.updateScope even in bypass; record decisions in SCOPE.md
   - REVIEW prerequisite decisions before code lands
