@@ -853,6 +853,32 @@ gated on Linux proof.
 - M11: the user-facing exit criterion. If two tabs cross-talk,
   the milestone has not landed.
 
+## Known issues
+
+### Worktree root is not in the fs jail
+
+Status: fixed in 168cb7f
+
+Per-job worktrees live under `~/.codeless/worktrees/<job-id>` (CLI)
+or `<workspace>/.codeless/worktrees/<job-id>` (desktop), both of
+which sit outside the workspace root that seeds `HostFs` at boot.
+Without an explicit `host_fs.add_root(&worktree_base)`, the
+`agent_chat` RPC refuses any job whose `cwd` points into the
+worktree base with `invalid_argument: agent_chat cwd is outside
+the configured fs roots` (reject site:
+`crates/codeless-runtime/src/rpc/chat.rs:76`).
+
+- **Where it bites.** Opening the per-job chat panel for any
+  running job whose worktree was provisioned by the runtime. Fix
+  registers the worktree base with `HostFs` after
+  `create_dir_all` and before `runtime.with_fs(...)` in both
+  hosts: `crates/codeless-cli/src/serve.rs:413-422` (already on
+  the branch before this job started) and
+  `crates/codeless-tauri-desktop/src/boot.rs:161-169` (added in
+  168cb7f). The two call sites share the same shape; surfacing
+  errors uses `BootError::FsRoot` on the desktop side and the
+  surrounding `anyhow` context on the CLI side.
+
 ## Open questions
 
 1. **System tray on Linux.** Tauri 2's tray plugin works on

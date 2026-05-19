@@ -557,6 +557,43 @@ mod tests {
         assert_eq!(fs_adapter.roots().len(), 2);
     }
 
+    /// Regression for "agent_chat cwd is outside the configured fs
+    /// roots" when a per-job worktree base lives outside the bootstrap
+    /// workspace root. The host hooks `agent_chat` through
+    /// `is_path_allowed`, so this test pins the post-`add_root` shape
+    /// the boot fix relies on: a path under the registered worktree
+    /// base is allowed; a sibling directory next to it is not.
+    #[tokio::test]
+    async fn is_path_allowed_accepts_paths_under_added_worktree_root_and_rejects_siblings() {
+        let workspace = tempdir().unwrap();
+        let parent = tempdir().unwrap();
+        let worktree_base = parent.path().join("worktrees");
+        let sibling = parent.path().join("not-worktrees");
+        fs::create_dir_all(&worktree_base).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+
+        let host_fs = HostFs::new(workspace.path()).unwrap();
+        host_fs.add_root(&worktree_base).unwrap();
+
+        let job_cwd = worktree_base.join("job-abc");
+        fs::create_dir_all(&job_cwd).unwrap();
+        assert!(
+            host_fs.is_path_allowed(&job_cwd),
+            "{} should be allowed under added worktree root {}",
+            job_cwd.display(),
+            worktree_base.display(),
+        );
+
+        let sibling_cwd = sibling.join("job-xyz");
+        fs::create_dir_all(&sibling_cwd).unwrap();
+        assert!(
+            !host_fs.is_path_allowed(&sibling_cwd),
+            "{} sits next to (not under) {} and must be refused",
+            sibling_cwd.display(),
+            worktree_base.display(),
+        );
+    }
+
     #[tokio::test]
     async fn empty_adapter_denies_everything() {
         let fs_adapter = HostFs::empty();

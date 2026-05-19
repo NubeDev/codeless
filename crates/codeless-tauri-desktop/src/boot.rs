@@ -158,6 +158,15 @@ pub async fn boot(workspace_root: PathBuf) -> Result<BootResult, BootError> {
             tracing::warn!(error = %e, "boot: could not list attached_workspaces");
         }
     }
+    // Per-job worktrees live under `paths.worktree_base` (outside the
+    // workspace root), so without an explicit `add_root` here the
+    // agent_chat RPC rejects any job whose cwd points into the
+    // worktree base with `cwd is outside the configured fs roots`.
+    // `create_dir_all(&worktree_base)` above guarantees the directory
+    // exists, which `HostFs::add_root` requires for canonicalisation.
+    host_fs
+        .add_root(&worktree_base)
+        .map_err(|e| BootError::FsRoot(format!("{}: {e}", worktree_base.display())))?;
 
     let runtime = runtime
         .with_fs(Arc::new(host_fs))
