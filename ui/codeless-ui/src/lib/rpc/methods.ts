@@ -76,6 +76,8 @@ import type {
   PluginListEntry,
   PluginUiContribution,
   PluginUiExposeEntry,
+  SetAssistantThreadModeArgs,
+  SetAssistantThreadModeResult,
 } from "./wire";
 import type {
   AttachWorkspaceArgs,
@@ -788,6 +790,15 @@ export interface RpcMethodMap {
   cancel_assistant_action: {
     args: CancelAssistantActionArgs;
     result: CancelAssistantActionResult;
+  };
+  // Per-thread filesystem-tool permission posture (job
+  // `assistant-fs-tools`). The mode is the server's authoritative
+  // value (R4); the UI dropdown calls this method and re-reads the
+  // thread row to display the result — it never trusts a local
+  // optimistic cache.
+  set_assistant_thread_mode: {
+    args: SetAssistantThreadModeArgs;
+    result: SetAssistantThreadModeResult;
   };
 
   // Workspace-attach surface (DOCS/WORKSPACE-ATTACH.md M3). The

@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { CommonChat } from "@/modules/chat";
 import { PluginSlot } from "@/lib/plugin-host";
 import { useAssistantFocus } from "./focusStore";
+import { ThreadModeDropdown } from "./ThreadModeDropdown";
 
 // Stage-6 `/assistant` surface. Two-pane layout: a thread-list rail on
 // the left, the selected thread's `CommonChat` on the right. Threads
@@ -213,25 +214,34 @@ export function AssistantPage() {
       </section>
 
       {/*
-        Plugin UI federation slot — DOCS/plugins/PLUGIN-UI-FEDERATION.md
-        § Slot vocabulary, row "assistant-panel". Mounted unconditionally
-        at the right of the Assistant page; the slot renders nothing
-        when no plugin contributes to it (R6 fallback path). When the
-        active thread's persona belongs to a plugin and that plugin's
-        manifest declares an `assistant-panel` exposed module, the SDK
-        lazy-loads it inside a per-contributor error boundary so a
-        misbehaving plugin can never blank the chat pane.
+        Right-rail context panel — ASSISTANT-SCOPE §1. Hosts the
+        per-thread filesystem permission dropdown (job
+        `assistant-fs-tools` stage 7) and the plugin federation slot
+        below it. Mounted only when a thread is selected so neither
+        renders against a null `threadId`.
 
-        `threadId` is forwarded as a prop alongside the SDK's
-        `slotArg` — the plugin's `AssistantPanel` author API is
-        documented alongside the SDK.
+        Plugin UI federation slot — DOCS/plugins/PLUGIN-UI-FEDERATION.md
+        § Slot vocabulary, row "assistant-panel". The slot renders
+        nothing when no plugin contributes to it (R6 fallback path).
+        When the active thread's persona belongs to a plugin and that
+        plugin's manifest declares an `assistant-panel` exposed
+        module, the SDK lazy-loads it inside a per-contributor error
+        boundary so a misbehaving plugin can never blank the chat
+        pane. `threadId` is forwarded as a prop alongside the SDK's
+        `slotArg`.
       */}
       {selected && (
-        <PluginSlot
-          id="assistant-panel"
-          threadId={selected.id}
-          fallback={null}
-        />
+        <aside className="flex w-64 min-w-[16rem] flex-col gap-3 border-l border-border/60 bg-card p-3">
+          <ThreadModeDropdown
+            thread={selected}
+            onChanged={() => void refresh(selected.id)}
+          />
+          <PluginSlot
+            id="assistant-panel"
+            threadId={selected.id}
+            fallback={null}
+          />
+        </aside>
       )}
     </div>
   );
