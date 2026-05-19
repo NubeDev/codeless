@@ -164,13 +164,18 @@ model:
 
 ### Auth on loopback
 
-Default: off. The launcher binds the REST sidecar on
-`127.0.0.1:0`; the loopback check in
+**Default: on.** The launcher binds the REST sidecar on
+`127.0.0.1:0` and generates a random per-boot bearer token. The
+token reaches the browser tab via URL fragment (never sent to the
+server, never logged) and is stashed in `sessionStorage`. See
+§Security for the full mitigation set; this overrides the
+loopback-default-off behaviour today's `codeless-cli serve` uses.
+
+`--no-token` exists as an opt-out for trusted single-user systems
+where the token prompt is friction; the launcher prints a warning
+on every boot when set. The loopback bearer-gate bypass in
 [`../codeless-cli/src/serve.rs`](../codeless-cli/src/serve.rs)
-already disables the bearer gate for loopback binds. Browser tabs
-on `http://127.0.0.1:<port>` connect with no token prompt.
-`--require-token` stays as the opt-in for users who want the
-token flow locally.
+applies only to `codeless-cli serve`, not to the launcher.
 
 ## Security
 
@@ -641,6 +646,17 @@ doesn't change once frozen.
 - **Browser blocks the `xdg-open` due to sandboxing.** Print the
   URL and continue. Tray menu offers "Open in browser" as a
   retry.
+- **Wayland + sandboxed Firefox/Chrome (Snap, Flatpak).**
+  `xdg-open` returns `0` (the desktop portal accepts the call),
+  but the sandboxed browser may silently fail to open
+  `127.0.0.1:<port>` URLs due to portal restrictions on local
+  network access. The launcher cannot detect this — spawn-returned-0
+  is the only signal it gets. Document: the success signal is
+  spawn-returned-0; if no tab appears, the user copies the URL
+  from the tray menu (or from stderr in headless mode). If this
+  surfaces in dogfood, the mitigation is to print the URL
+  unconditionally alongside the spawn, not to gate it on a
+  "did the browser open?" check that doesn't exist.
 - **User opens DevTools / saves as PWA.** Supported — it's just a
   web page on localhost. PWA-installability is a nice-to-have, not
   in scope for this milestone.
@@ -649,18 +665,67 @@ doesn't change once frozen.
   `ssh -L <port>:127.0.0.1:<port>` and a browser on their own
   machine. The launcher does not need to know it's headless.
 
+## Dogfood path — three decoupled projects
+
+The doc as originally written bundled three projects together:
+
+- **Project A — Fix the cross-talk bug.** The user-facing outcome.
+  Server-side `repo_id` scoping + storage contract + UI passes
+  `EventFilter::Repo(activeRepoId)` on every `subscribe`. Lands on
+  the existing Tauri shell with one window. Dogfoodable as
+  `codeless-cli serve --require-token` + two browser tabs against
+  `http://127.0.0.1:N/#token=...`. **This is what gets "many
+  repos at once" working.**
+- **Project B — Launcher delivery.** Tauri shell becomes a tray-
+  resident launcher that opens the user's browser. Revert
+  per-slug data-dir; migration shim. Polish layer.
+- **Project C — Harden public-loopback HTTP.** `codeless-server`
+  gets Host allowlist, CORS lockdown, random prefix, fragment
+  token. Required for B; not required for A (the existing
+  `--require-token` flow is fine for dogfood between trusted
+  tabs on the same machine).
+
+**Shortest path to dogfooding "many repos at once":**
+
+1. Land **M2** (publish-site audit). Tells you whether the
+   `repo_id` scoping work is real or expanding.
+2. Land **M3** (background-tab SSE cursor) + **M5** (`EventFilter`
+   scoping) + **M6** (`list_jobs` + read RPC tightening). Server
+   filters by repo at fan-out.
+3. Land **M4** (tab-local storage contract). Block before any
+   two-tab dogfood — otherwise `localStorage` leakage reintroduces
+   the cross-talk symptom at the browser layer.
+4. **Dogfood.** Run `codeless-cli serve --require-token`, open two
+   browser tabs at the URL with the token, point each at a
+   different attached workspace, work. No launcher, no tray, no
+   migration, no §Security mitigations beyond the existing token
+   gate (the dogfood tabs are trusted; the Host allowlist /
+   fragment-token work is for the launcher distribution case).
+   Validate the M4 contract under real load.
+5. Then build **M7** (security hardening) + **M8–M10** (launcher
+   + UI flip) as the polish layer that makes single-binary
+   distribution work for non-developers.
+
+The shortest path is days, not weeks. Bundling A + B + C is what
+makes this a multi-week project; decoupling them gets the user
+outcome first.
+
 ## Milestones
 
 Status legend: `[x]` done, `[~]` partial, `[ ]` not started.
 
 Linux is the platform that gates the design. macOS and Windows
-ship after milestone 9 lands green on Linux.
+ship after the Linux exit test (M10) lands green. Project tags
+(A/B/C) match §"Dogfood path" — A is the dogfood-blocking set; A
+done is "many repos at once" working.
 
 1. `[ ]` **Decisions.** Confirm browser-launcher over
    single-instance; lock the migration approach; lock the
    security defaults from §Security. This doc captures the
    choice; the implementation job's stage 1 records the final
    answers.
+
+   *Project A.*
 2. `[ ]` **Publish-site audit.** Walk every
    `EventBus::publish(...)` in `codeless-runtime`; confirm each
    event carries a `repo_id` (or is library-scope). Land any
@@ -669,84 +734,124 @@ ship after milestone 9 lands green on Linux.
    validates or invalidates the "6 RPCs, 1 day" estimate** —
    if events without a `repo_id` show up here, the scope
    expands and the rest of the milestones replan.
-3. `[ ]` **Per-tab storage audit.** Grep the Terax-derived UI
-   for `localStorage`, `sessionStorage`, `persist(`. For each
-   hit, classify as library-level (keep) or tab-level (move to
-   in-memory or `sessionStorage`). Land the moves. This blocks
-   milestone 6 — cross-tab state leakage in `localStorage`
-   reintroduces exactly the "two views share state" symptom
-   the launcher is supposed to fix.
-4. `[ ]` **Security hardening of `codeless-server`.** Land the
-   §Security mitigations: `Host` allowlist middleware, CORS
-   lockdown, random URL path prefix at boot. Tests: a request
-   with `Host: evil.com` gets `421`; a `fetch` from a
-   non-matching `Origin` is rejected; a request to the
-   non-prefixed root path returns `404`. **Loopback
-   default-off auth depends on this; do not flip the launcher
-   default until this is green.**
-5. `[ ]` **`EventFilter` + `subscribe` scoping.** Add
-   `repo_id` + `EventScope` to `EventFilter`. Server-side
-   filter at fan-out. UI passes `activeRepoId` on every
-   `subscribe` and opens a parallel `Library` subscription for
-   the picker.
+
+   *Project A. Gate on the whole plan.*
+3. `[ ]` **Background-tab SSE cursor verification.** 10-line
+   test: open a `subscribe` SSE connection, drop it, reconnect
+   with the last `Since` cursor, assert no events missed and
+   no duplicates. If the existing cursor doesn't survive
+   disconnect, fix that **here**, not at M9 — it's a runtime
+   bug regardless of the launcher.
+
+   *Project A.*
+4. `[ ]` **Tab-local storage contract.** Land the §UI changes
+   "hard rule" with the ESLint/CI grep. Move existing
+   `localStorage` tab-scoped state to `sessionStorage` or
+   in-memory zustand. Library state goes through `RpcClient`.
+   **Blocks dogfood** — `localStorage` leakage reintroduces
+   the cross-talk symptom at the browser layer.
+
+   *Project A.*
+5. `[ ]` **`EventFilter` sum-type + `subscribe` scoping.**
+   Collapse `EventFilter` to `enum { Repo(RepoId), Library }`
+   per §RPC additions. Server-side filter at fan-out. UI
+   passes `EventFilter::Repo(activeRepoId)` on every
+   `subscribe` and opens a parallel `Library` subscription.
+   `TauriIpcClient` updated to the same wire.
+
+   *Project A.*
 6. `[ ]` **`list_jobs` + other read RPCs.** Tighten semantics
    per §RPC additions. Audit table from §"Other RPCs touched"
    lands here.
-7. `[ ]` **Revert per-workspace data-dir patch.** Restore
+
+   *Project A.*
+
+   ---
+
+   **Dogfood gate (A complete).** Run `codeless-cli serve
+   --require-token`, open two browser tabs at the URL with
+   the token, point each at a different attached workspace.
+   Verify no cross-talk in events, jobs, files. Use the
+   product like this for at least a week before starting
+   Project B/C. If the M4 contract leaks anything tab-scoped,
+   fix here, not after the launcher.
+
+   ---
+
+7. `[ ]` **Security hardening of `codeless-server`.** Land the
+   §Security mitigations: `Host` allowlist middleware, CORS
+   lockdown, random URL path prefix at boot, fragment-token
+   delivery, `0600` on `launcher.url`. Tests: a request with
+   `Host: evil.com` gets `421`; a `fetch` from a non-matching
+   `Origin` is rejected; a request to the non-prefixed root
+   path returns `404`. **Required for M8** — do not flip the
+   launcher to a browser-tab UX without this.
+
+   *Project C.*
+8. `[ ]` **Revert per-workspace data-dir patch.** Restore
    global `~/.codeless/codeless.sqlite`. Write the migration
-   shim (§Migration). Delete the slug-derivation code in
-   [`src/boot.rs`](./src/boot.rs).
-8. `[ ]` **Launcher mode (Linux).** Tauri shell boots runtime
+   shim (§Migration) including the worktree path rewrite.
+   Delete the slug-derivation code in [`src/boot.rs`](./src/boot.rs).
+
+   *Project B.*
+9. `[ ]` **Launcher mode (Linux).** Tauri shell boots runtime
    + REST, opens browser via `xdg-open`, drops native webview,
    installs tray icon (with the headless-fallback path from
-   §Lifecycle questions). Add `--native-window` and
-   `--no-browser` flags. Port-file second-launch detection.
-   `SIGTERM` drains in-flight jobs the same way tray-`Quit`
-   does.
-9. `[ ]` **UI shell-detection flip + deep-link router.**
-   Default `RpcClient` impl becomes `HttpSseClient` when not
-   in a Tauri webview. Read `?workspace=<repo_id>` on initial
-   load; `history.replaceState` on every `setActive` to keep
-   the URL in sync. Background-tab reconnect: when the SSE
-   channel closes (browser throttles backgrounded tabs), the
-   client replays from the last `Since` cursor — verify this
-   already works against `subscribe`'s existing cursor
-   support.
-10. `[ ]` **Linux exit test.** Two Firefox tabs against two
+   §Lifecycle questions). Add `--native-window`, `--no-browser`,
+   `--no-token` flags. `flock(2)` port-file second-launch
+   detection. `SIGTERM` runs the drain pinned in §"Shutdown
+   drain semantics".
+
+   *Project B.*
+10. `[ ]` **UI shell-detection flip + deep-link router.**
+    Default `RpcClient` impl becomes `HttpSseClient` when not
+    in a Tauri webview. Read `?workspace=<repo_id>` from
+    `window.location.search` **pre-hydration**;
+    `history.replaceState` on every `setActive` to keep the
+    URL in sync. Fragment-token bootstrap (read on first load,
+    move to `sessionStorage`, clear from URL).
+
+    *Project B + C.*
+11. `[ ]` **Linux exit test.** Two Firefox tabs against two
     different workspaces; submit a job in each; assert tab A's
     event stream does not contain tab B's `JobStarted` /
     `StageStarted` envelopes. Background one tab for 30s,
-    foreground it, assert no missed events. Headless-launcher
-    re-run opens a tab. `SIGTERM` to the launcher PID drains
-    cleanly.
-11. `[ ]` **macOS + Windows.** Deferred until milestone 10 is
-    green. Covers: `open <url>` / `cmd /c start "" <url>`,
-    macOS dock `Reopen` handler, Windows tray semantics,
+    foreground it, assert no missed events (validates M3
+    under real conditions). Headless-launcher re-run opens a
+    tab. `SIGTERM` to the launcher PID drains within 30s or
+    force-exits with status 1.
+12. `[ ]` **macOS + Windows.** Deferred until M11 is green.
+    Covers: `open <url>` / `cmd /c start "" <url>`, macOS dock
+    `Reopen` handler, Windows tray semantics, port-file lock
+    mechanism (likely `F_OFD_SETLK` / `LockFileEx`),
     code-signing question (see §"Open questions" #3).
 
-Milestones 1–10 are the Linux-proven path. Each is
-independently shippable; the gates are stated above (storage
-audit blocks 8; security blocks default-off auth; publish-site
-audit replans 5–6 if events lack `repo_id`).
+Project A (M1–M6) is the dogfood-blocking set. Project B + C
+(M7–M11) is the polish layer that makes single-binary
+distribution work for non-developers. M12 is platform expansion
+gated on Linux proof.
 
 **Exit tests.**
-- Milestone 4: `curl -H 'Host: evil.com'` → `421`;
-  cross-origin `fetch` → rejected; root path without prefix →
-  `404`.
-- Milestone 5: `subscribe(EventFilter { repo_id: Some(r1),
-  scope: Repo })` does not receive events tagged `r2`, and
-  vice versa. Library-scope subscription receives
-  `workspace_attached(r2)` while tab is scoped to `r1`.
-- Milestone 7: migration shim test fixture — populate two
-  `~/.codeless/workspaces/<slug>/codeless.sqlite` files, run
-  boot, assert global DB has the union of attached rows and
-  the source dirs are renamed `.migrated`.
-- Milestone 8: launcher second-launch test — `cargo run`
-  twice in series; assert second invocation exits cleanly and
-  opens a tab against the first launcher's URL. Stale
-  port-file with dead PID is overwritten.
-- Milestone 10: the user-facing exit criterion. If two tabs
-  cross-talk, the milestone has not landed.
+- M3: SSE reconnect with last `Since` cursor replays missed
+  events with no duplicates.
+- M5: `subscribe(EventFilter::Repo(r1))` does not receive
+  events tagged `r2`, and vice versa. `EventFilter::Library`
+  subscription receives `workspace_attached(r2)` while tab is
+  scoped to `r1`.
+- M7: `curl -H 'Host: evil.com'` → `421`; cross-origin `fetch`
+  → rejected; root path without prefix → `404`; `stat
+  ~/.codeless/launcher.url` shows mode `0600`.
+- M8: migration shim test fixture — populate two
+  `~/.codeless/workspaces/<slug>/codeless.sqlite` files
+  matching `migration_v2_input.sql`, run boot, assert global
+  DB has the union of attached rows, worktree dirs are moved,
+  source dirs renamed `.migrated`.
+- M9: launcher second-launch test — `cargo run` twice in
+  series; assert second invocation exits cleanly and opens a
+  tab against the first launcher's URL. Stale port-file with
+  released `flock` is overwritten.
+- M11: the user-facing exit criterion. If two tabs cross-talk,
+  the milestone has not landed.
 
 ## Open questions
 
@@ -791,13 +896,14 @@ audit replans 5–6 if events lack `repo_id`).
    tab can RPC into is worth building). The experiment is
    cheap; the answer determines whether the launcher's default
    UX is acceptable.
-6. **Background-tab SSE throttling.** Browsers throttle or
-   suspend background tabs' JS and may close idle SSE
-   connections. The UI must replay from the last `Since`
-   cursor on reconnect; the existing `subscribe` cursor
-   support should cover this. Verify during milestone 9 — if
-   it doesn't, the fix is on the client side (cursor +
-   reconnect loop), not the server.
+6. **Background-tab SSE throttling — promoted to M3.** Was an
+   open question; now a milestone in its own right. Browsers
+   throttle or suspend background tabs' JS and may close idle
+   SSE connections; the cursor-replay path has to work. If
+   the existing `subscribe` cursor doesn't survive disconnect,
+   the fix is on the client side (cursor + reconnect loop)
+   and the runtime — same code either way, doesn't change the
+   doc.
 
 ## References
 
