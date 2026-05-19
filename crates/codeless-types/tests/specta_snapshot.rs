@@ -9,16 +9,19 @@
 use std::path::PathBuf;
 
 use codeless_types::{
-    AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
+    AdapterError, AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantAttachmentId, AssistantMessage,
     AssistantMessageId, AssistantMessageRole, AssistantThread, AssistantThreadId,
-    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, ChatBinding,
-    ChatMessage, ChatRole, ChatTransport, CostCents, DetachPolicy, DetachWorkspaceArgs, Event,
-    EventCursor, EventEnvelope, FsEntry, FsEntryKind, GitAuth, Job, JobId, JobStatus,
+    AttachWorkspaceArgs, AttachWorkspaceResult, AttachedWorkspace, AttachmentRef, ChatAdapterKind,
+    ChatAdapterRow, ChatAdapterSecretProblem, ChatBinding, ChatMessage, ChatRole, ChatTransport,
+    CostCents, DetachPolicy, DetachWorkspaceArgs, Event, EventCursor, EventEnvelope, FsEntry,
+    FsEntryKind, GitAuth, Job, JobId, JobStatus, ListChatAdaptersResult, ListRunnersResult,
     ListWorkspacesResult, MessageId, PausePoint, PausePointId, PausePointPosition,
-    PausePointTarget, PreCheckOutcome, ProposedScopePatch, Repo, RepoId, Review, ReviewId,
-    ReviewStatus, ReviewVerdict, ScopePatch, ScopePatchId, ScopePatchKind, ScopePatchTarget, Stage,
-    StageId, StageStatus, StopReason, Task, TaskId, TaskStatus, TodoSelector, UnixMillis,
+    PausePointTarget, PreCheckOutcome, ProposedScopePatch, Repo, RepoId, RestartServerArgs,
+    RestartServerResult, Review, ReviewId, ReviewStatus, ReviewVerdict, RunnerRow, ScopePatch,
+    ScopePatchId, ScopePatchKind, ScopePatchTarget, SetChatAdapterEnabledArgs,
+    SetRunnerEnabledArgs, Stage, StageId, StageStatus, StopReason, Task, TaskId, TaskStatus,
+    TodoSelector, UnixMillis, ValidateChatAdapterSecretsArgs, ValidateChatAdapterSecretsResult,
     ValidateWorkspacePathArgs, ValidateWorkspacePathResult, WorkspaceError, WorkspaceProblem,
 };
 use specta::TypeCollection;
@@ -89,7 +92,20 @@ fn collect() -> TypeCollection {
         .register_mut::<ChatTransport>()
         .register_mut::<ChatRole>()
         .register_mut::<ChatMessage>()
-        .register_mut::<ChatBinding>();
+        .register_mut::<ChatBinding>()
+        .register_mut::<ChatAdapterKind>()
+        .register_mut::<ChatAdapterRow>()
+        .register_mut::<RunnerRow>()
+        .register_mut::<ListChatAdaptersResult>()
+        .register_mut::<ListRunnersResult>()
+        .register_mut::<SetChatAdapterEnabledArgs>()
+        .register_mut::<SetRunnerEnabledArgs>()
+        .register_mut::<ValidateChatAdapterSecretsArgs>()
+        .register_mut::<ValidateChatAdapterSecretsResult>()
+        .register_mut::<ChatAdapterSecretProblem>()
+        .register_mut::<RestartServerArgs>()
+        .register_mut::<RestartServerResult>()
+        .register_mut::<AdapterError>();
     types
 }
 

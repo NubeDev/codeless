@@ -4,6 +4,7 @@
 //! `codeless-client`, and adding host-only deps (tokio, std::process,
 //! sqlx, ...) here would break that path.
 
+pub mod adapter;
 pub mod allowed_tools;
 pub mod assistant;
 pub mod auto_bypass;
@@ -27,6 +28,12 @@ pub mod time;
 pub mod todo;
 pub mod workspace;
 
+pub use adapter::{
+    AdapterError, ChatAdapterKind, ChatAdapterRow, ChatAdapterSecretProblem,
+    ListChatAdaptersResult, ListRunnersResult, RestartServerArgs, RestartServerResult, RunnerRow,
+    SetChatAdapterEnabledArgs, SetRunnerEnabledArgs, ValidateChatAdapterSecretsArgs,
+    ValidateChatAdapterSecretsResult,
+};
 pub use assistant::{
     AssistantAction, AssistantActionCard, AssistantActionStatus, AssistantAttachment,
     AssistantAttachmentCard, AssistantAttachmentCardItem, AssistantMessage, AssistantMessageRole,

@@ -246,6 +246,16 @@ fn map_err(err: RpcError) -> (StatusCode, String) {
             serde_json::to_string(&payload)
                 .expect("WorkspaceError always serialises (derive Serialize)"),
         ),
+        // `Adapter(AdapterError)` rides the same 409 channel as
+        // `Workspace`: structural conflicts the client must resolve
+        // (re-validate secrets, force a restart, …) rather than
+        // generic server failures. The JSON body carries the typed
+        // variant so the UI branches without string-matching.
+        RpcError::Adapter(payload) => (
+            StatusCode::CONFLICT,
+            serde_json::to_string(&payload)
+                .expect("AdapterError always serialises (derive Serialize)"),
+        ),
         RpcError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
     }
 }
