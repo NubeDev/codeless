@@ -924,3 +924,170 @@ the halt-commit shape of stages 1, 4, 5, and 6.
   the current tree gives the user nothing to review — no
   manifest output, no test transcript, no tar-safety results —
   and will itself halt.
+
+## Stage 10 — imported-from chip + manifest viewer + ordinal verification  `[!]` halted on same chain
+
+Stage 10 is "add imported-from chip on imported Jobs plus read-only
+manifest viewer; verify `[run]` on an imported Job creates ordinal
+max+1 against destination HEAD."
+
+### Re-verification this stage
+
+```
+$ ls crates/codeless-runtime/src/job_export 2>&1
+ls: cannot access 'crates/codeless-runtime/src/job_export': No such file or directory
+
+$ ls crates/codeless-runtime/migrations/ | grep -i run
+0002_job_runner_overrides.sql                # no `runs` table migration
+
+$ grep -n "ExportJob\|ImportJob\|InspectJobBundle" crates/codeless-rpc/src/*.rs
+(no matches)
+
+$ grep -rn "imported_from\|importedFrom" crates/codeless-runtime/migrations/*.sql \
+       crates/codeless-rpc/src/*.rs crates/codeless-types/src/*.rs
+(no matches)
+```
+
+Stages 8 and 9 landed real UI files (`JobPage` Export button,
+`ImportJobDialog`, TS-only `export_job` / `import_job` /
+`inspect_job_bundle` declarations in `ui/codeless-ui/src/lib/rpc/methods.ts`),
+but the matching server surface still does not exist. The
+`ImportJobDialog` calls into RPC names the server returns
+`MethodNotFound` for; that already violates R4 ("no half-finished
+implementations") and stage 10 cannot deepen the violation.
+
+### Why this stage cannot land
+
+Stage 10 needs four things, all of which depend on absent
+foundations:
+
+1. **An `imported_from` field on the `Job` row.** A chip in the
+   UI saying "imported from `acme-app` @ `abc1234`" needs the
+   destination Job row to carry the source manifest's identity. No
+   migration adds an `imported_from` (or `imported_from_workspace`,
+   `imported_from_repo_url`, `imported_from_commit`) column. No
+   `Job` wire type field is generated for it (verified above against
+   `ui/codeless-ui/src/lib/rpc/generated/wire.ts` — `Job` ends at
+   the `pending_operator_comment` / `precheck_override_once` set
+   landed in 0015 / 0016). Adding the column under (A) writes to a
+   shape (B) re-shapes via the `jobs`/`runs` split, so the
+   migration would be rewritten when (B) merges — and the chip's
+   data source would point at a column the post-(B) world relocates.
+2. **A persisted manifest blob attached to imported Jobs.** A
+   "read-only manifest viewer" on the Job page needs to display the
+   `JobBundleManifest` (per
+   `ui/codeless-ui/src/lib/rpc/methods.ts:894–915`) the source
+   workspace emitted. Two designs are possible — both blocked:
+   - **A.** The importer writes the manifest into the destination
+     repo's `.codeless/jobs/<name>/manifest.imported.json` and the
+     viewer reads it via `fs_read_file`. The importer doesn't
+     exist (stage 5 halted), so no file is ever written. Wiring a
+     viewer that always renders "no manifest found" is the
+     half-finished implementation R4 forbids.
+   - **B.** The importer writes the manifest into a new
+     `jobs.imported_manifest_json` column and the viewer reads it
+     via a new RPC. The column and RPC don't exist; the importer
+     doesn't write to either.
+3. **A `runs` table to assert "ordinal max+1 against destination
+   HEAD" against.** This stage's own scope sentence requires
+   verifying that after import, the next `start_job` (`[run]`)
+   inserts a `runs` row with `ordinal = COALESCE(MAX(ordinal), 0)
+   + 1` over the *imported* runs in the destination workspace. The
+   `runs` table does not exist (verified again above). The
+   pre-(B) `jobs` row has no per-attempt ordinal; the post-(B)
+   world owns this assertion via `UNIQUE (job_id, ordinal)` on
+   `runs`. Asserting it against the current schema asserts nothing.
+4. **A `[run]` entrypoint that picks up the imported template.**
+   The "verify" half of the stage needs to drive an end-to-end
+   path: import → click Run → observe a new Run row appended with
+   ordinal `max+1`. With no importer (stage 5) and no `runs` table
+   (B), neither bookend exists. Even a UI-only assertion using
+   `useJob` plus the existing `start_job` RPC would observe the
+   pre-(B) "one implicit Run collapsed into `jobs.status`" shape
+   — the post-(B) reshape deletes the test.
+
+Per `WORKFLOW.md` §"Precondition check" and repo `CLAUDE.md` R4
+("no half-finished implementations"), halt with `[!]`. No source
+files were edited this stage.
+
+### What lands when stage 10 is re-fired
+
+Re-fire happens only after (B) merges and stages 4 + 5 + 6 + 7 land
+real source. At that point the stage adds, in one commit:
+
+1. **`jobs.imported_from_*` columns** (migration `00NN_job_imported_from.sql`
+   under the post-(B) jobs shape): `imported_from_workspace_name TEXT`,
+   `imported_from_repo_url TEXT`, `imported_from_repo_commit TEXT`,
+   `imported_from_job_id TEXT`, `imported_at INTEGER`,
+   `imported_manifest_json TEXT NOT NULL`. The importer in stage 5
+   fills all six on insert. `imported_manifest_json` is the verbatim
+   `manifest.json` bytes — chip + viewer read it without a second
+   RPC.
+2. **`Job` wire fields** in `codeless-types::Job` mirroring the
+   six columns. `specta::Type` re-derives; the TS bundle
+   regenerates in the same commit so `ui/codeless-ui/src/lib/rpc/generated/wire.ts`
+   gains `imported_from_*` and `imported_manifest_json` on
+   `type Job`.
+3. **`<ImportedFromChip />`** under
+   `ui/codeless-ui/src/modules/jobs/`: renders nothing when
+   `job.imported_from_workspace_name` is null; otherwise renders a
+   compact chip near the Job title (next to the existing status
+   pill) reading "imported from <workspace> @ <short-sha>" with a
+   tooltip showing the full source URL + commit + import timestamp.
+   Click opens the manifest viewer (item 4). One unit test:
+   absent-when-null, present-when-set.
+4. **`<JobManifestViewerDialog />`** under
+   `ui/codeless-ui/src/modules/jobs/`: read-only modal that
+   parses `job.imported_manifest_json` and renders it as a labelled
+   field table (the same fields `ImportJobDialog`'s preview block
+   already renders — extract a shared `<ManifestSummary />` to
+   reuse, per R3). No mutating actions. Closes on Escape /
+   backdrop click. One unit test: renders the manifest fields,
+   renders "no manifest" fallback when the JSON is malformed
+   (defensive, not expected in practice).
+5. **`JobPage` wiring**: render `<ImportedFromChip />` near the
+   page title; gate the "Open manifest" action on
+   `job.imported_from_workspace_name != null`. Existing layout
+   tests update to assert chip presence on a fixture imported Job.
+6. **Ordinal max+1 verification** as a runtime integration test in
+   `crates/codeless-runtime/tests/job_export_imported_run.rs`:
+   - Build a fixture bundle (re-use the stage-7 round-trip helper)
+     with 3 Runs at ordinals 1, 2, 3.
+   - Import into a scratch workspace via `import_job`.
+   - Assert the destination `runs` table contains exactly those
+     three rows with ordinals 1, 2, 3 and statuses preserved
+     (terminal — stage 6's gate is upstream).
+   - Drive `start_job` against the imported `JobId`.
+   - Assert the new `runs` row carries `ordinal = 4` and
+     `(job_id, ordinal)` uniqueness held.
+   - Assert `events.run_id` for the new Run points at the new row,
+     not at any imported Run's id.
+   The test name and shape pair with stage 7's round-trip test;
+   together they cover "import preserves history" and "run after
+   import extends history."
+7. **Closing trio**: `cargo test --workspace` green, `cargo clippy
+   --workspace --all-targets -- -D warnings` green, `cargo fmt
+   --check` green; `pnpm --filter codeless-ui test` green;
+   `pnpm --filter codeless-ui lint` green. Commit via
+   `./bin/mani --config mani.yaml run commit/push --projects
+   codeless` from the workspace root.
+
+### Verify
+
+No source diff this stage. `cargo` / `pnpm` checks not run (no
+code touched). Commit: session-doc update + handover only,
+matching the halt-commit shape of stages 1, 4, 5, 6, 7.
+
+### Open questions specific to this halt
+
+- Six of ten stages (1, 4, 5, 6, 7, 10) have now halted on the same
+  (B) + stage-4/5/6 chain. Stages 8–9 *did* land UI in advance of
+  the server (calling RPCs the server returns `MethodNotFound`
+  for), so the loop is already carrying one R4 violation forward;
+  stage 10 not deepening it is the only consistent choice with
+  prior halts.
+- The job has now exhausted its ten stages with the foundation
+  unmerged. Operator should either (a) merge JOB-WORKFLOW (B) and
+  re-fire stages 4 → 10 in sequence under a fresh session, or (b)
+  excise stages 8–9's premature UI from the branch so the next
+  iteration starts clean.

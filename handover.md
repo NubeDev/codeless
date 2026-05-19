@@ -1,83 +1,82 @@
-# job-export — stage 7 `[!]` halted on (B) + stage-4/5/6 chain
+# job-export — stage 10 `[!]` halted on (B) + stage-4/5/6 chain
 
-Stage 7 ("add round-trip property test (export then import into
-scratch workspace, assert row body equality and ordering) and
-tar-safety unit tests") halted before any code landed. The full
-stage 7 record — re-verification, why no test can land, and the
-file-by-file plan for re-fire — is in
+Stage 10 ("add imported-from chip on imported Jobs plus read-only
+manifest viewer; verify `[run]` on an imported Job creates ordinal
+max+1 against destination HEAD") halted before any code landed. The
+full stage 10 record — re-verification, why no chip / viewer / test
+can land, and the file-by-file plan for re-fire — is in
 [`DOCS/sessions/2026-05-19-job-export.md`](DOCS/sessions/2026-05-19-job-export.md)
-under "Stage 7 — round-trip property test + tar-safety units
-`[!]` halted on same chain".
+under "Stage 10 — imported-from chip + manifest viewer + ordinal
+verification `[!]` halted on same chain".
 
 ## Why halted (the short version)
 
-Stage 7 writes tests against modules that do not exist. Re-verified
-this session:
+Stage 10 builds against four absent foundations. Re-verified this
+session:
 
 1. **JOB-WORKFLOW (B) not merged.** `ls
    crates/codeless-runtime/migrations/ | grep -i run` returns only
-   `0002_job_runner_overrides.sql`. No `runs` table, no
-   `events.run_id`, no `jobs.handover_md`. The round-trip
-   assertion's `runs` row-body equality has no columns to
-   compare.
+   `0002_job_runner_overrides.sql`. No `runs` table, so the "next
+   `[run]` writes `ordinal = MAX(ordinal) + 1`" assertion has
+   nothing to assert against.
 2. **No `job_export` runtime module.** `ls
    crates/codeless-runtime/src/job_export` → no such directory.
-   Stages 4 (walker + serializer) and 5 (importer) and 6 (RPCs)
-   never produced source — every commit in their slot was
-   session-doc + handover only.
-3. **No `tar_safety` to unit-test.** The guards listed in
-   `.codeless/jobs/job-export/SCOPE.md` §"Importer guards" have
-   no implementation file. Writing the rejection tests against an
-   absent module is meaningless.
-4. **No wire types.** `grep -rl "ExportJob\|ImportJob\|
-   InspectJobBundle" crates/codeless-rpc/src` → zero hits. The
-   property test's pre/post row comparison has no defined shape.
+   Stages 4 (walker + serializer), 5 (importer), 6 (RPCs), 7
+   (round-trip tests) never produced source.
+3. **No `imported_from` field anywhere.** `grep -rn
+   "imported_from\|importedFrom" crates/codeless-runtime/migrations
+   crates/codeless-rpc/src crates/codeless-types/src` → zero. The
+   chip + viewer have no data source on the destination Job row.
+4. **Stages 8–9 already shipped UI that the server can't answer.**
+   `ImportJobDialog.tsx` and the `export_job` / `import_job` /
+   `inspect_job_bundle` TS RPC declarations exist; the matching
+   server methods do not. The loop is already carrying one R4
+   half-finished-implementation violation forward; stage 10 not
+   deepening it is the only consistent choice with stages 1, 4, 5,
+   6, 7.
 
-Per `WORKFLOW.md` §"Precondition check" and repo `CLAUDE.md` R4,
-halt with `[!]`. No source touched.
+## What lands when stage 10 is re-fired
 
-## What lands when stage 7 is re-fired (after (B) + stages 4, 5, 6)
+Re-fire only after (B) merges and stages 4 + 5 + 6 + 7 land real
+source. Single-commit deliverable:
 
-Detailed in the session doc; one-line summary:
+1. Migration adding `jobs.imported_from_workspace_name`,
+   `imported_from_repo_url`, `imported_from_repo_commit`,
+   `imported_from_job_id`, `imported_at`, `imported_manifest_json`
+   (verbatim manifest bytes — chip + viewer read it without a
+   second RPC).
+2. `codeless-types::Job` gains those six fields; specta regen
+   updates `ui/codeless-ui/src/lib/rpc/generated/wire.ts`.
+3. `<ImportedFromChip />` + `<JobManifestViewerDialog />` under
+   `ui/codeless-ui/src/modules/jobs/`; shared
+   `<ManifestSummary />` extracted from `ImportJobDialog`'s
+   preview block (R3). `JobPage` renders the chip near the title;
+   click opens the viewer.
+4. `crates/codeless-runtime/tests/job_export_imported_run.rs`:
+   import a 3-Run fixture bundle, drive `start_job`, assert the
+   new `runs` row carries `ordinal = 4` and `(job_id, ordinal)`
+   uniqueness held, and that `events.run_id` for the new Run
+   points at the new row id (not at any imported Run's id).
+5. Closing trio: `cargo test --workspace` green, `cargo clippy
+   --workspace --all-targets -- -D warnings` green, `cargo fmt
+   --check` green; `pnpm --filter codeless-ui test` + `lint` green.
 
-1. `crates/codeless-runtime/tests/job_export_roundtrip.rs` —
-   `proptest!` generates fixture Job + 1–4 terminal Runs with
-   varied Stage / Task / Todo / Event / Review counts; exports
-   to `TempDir`; imports into fresh in-memory SQLite + scratch
-   `WorkspaceId`; asserts row-body equality on immutable columns
-   and ordering on `(run.ordinal, stage.ordinal, task.ordinal,
-   todo.ordinal)` plus `events.cursor` re-keying preserves order.
-   Skips runtime-state columns (`tasks.lease_holder`,
-   `tasks.lease_expires_at`).
-2. Unit tests beside `crates/codeless-runtime/src/job_export/
-   tar_safety.rs` — one per guard: absolute path, `..` segment,
-   symlink entry, off-layout entry, per-entry size cap, total
-   uncompressed cap. Each builds a minimal tar via
-   `tar::Builder`, runs the safety check, asserts the exact
-   `ImportError::TarSafety { kind, path }` variant.
-3. Closing trio (`cargo test/clippy/fmt` all green); commit via
-   `./bin/mani --config mani.yaml run commit/push --projects
-   codeless` from the workspace root.
+## State of the job
 
-## What you need to know
+Ten of ten stages have now fired against the same unresolved chain.
+Six halted clean (1, 4, 5, 6, 7, 10); stages 8 + 9 landed UI in
+advance of the server it calls. The job has exhausted its stage
+list with the foundation unmerged.
 
-- Branch `codeless/job-export`; worktree at
-  `/home/user/.codeless/worktrees/job-01KRZR5E2X039M469HKZ0NQMBM`.
-  Halt commits in this job have used raw `git` (no `mani.yaml` in
-  this inner-repo worktree). Switch to mani from the workspace
-  root the first time real code lands.
-- Stage 8 is the mid-job REVIEW gate. Firing it against the
-  current tree gives the user no manifest output, no transcript,
-  no tar-safety results — it will itself halt. Operator should
-  not advance to stage 8 until stages 4 + 5 + 6 + 7 have all
-  landed real source.
+Operator should either:
 
-## Open questions
+- **(a)** merge JOB-WORKFLOW (B), then re-fire stages 4 → 10 in a
+  fresh session in order; or
+- **(b)** revert stages 8 + 9's premature UI commits
+  (`86144a2`, `2de4369`) so the next iteration starts from a clean
+  base where every RPC the UI calls has a server impl.
 
-- Five consecutive stages (1, 4, 5, 6, 7) have now halted on the
-  same chain. Until the operator gates firing on `[ -d
-  crates/codeless-runtime/src/job_export ]` or on the (B)
-  migrations grep, every fire burns a session for no work.
-- Who owns JOB-WORKFLOW (B) and what is the ETA? Stages 7–10
-  remain dormant until it merges and stages 4 + 5 + 6 produce
-  source.
+Either way, gating loop firing on `[ -d
+crates/codeless-runtime/src/job_export ]` or on the (B)
+migrations grep would have saved six full sessions; consider it
+for the next chain of dependent stages.
