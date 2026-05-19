@@ -433,7 +433,30 @@ user can copy-paste it".
   degraded mode; it is the documented fallback. `Quit` becomes
   `kill <pid>` against the PID stored in
   `~/.codeless/launcher.url`; the launcher catches `SIGTERM` and
-  drains in-flight jobs the same way the tray's `Quit` does.
+  runs the same drain as the tray's `Quit` (defined below).
+
+### Shutdown drain semantics
+
+Tray `Quit` and `SIGTERM` are the same code path. Pinned:
+
+1. Stop accepting new RPC subscribe / submit calls (`503` on the
+   REST surface, `Unavailable` on the in-process RPC).
+2. Send `Cancel` to every running job. The driver loop forwards
+   to the runner, which closes its PTY / streams.
+3. Wait up to **30 seconds** for `StageEnded` (or terminal status)
+   on each cancelled job. Timer is per-launcher, not per-job —
+   the whole drain is bounded at 30s, not 30s × N.
+4. If the timer expires with jobs still running, log each
+   non-terminated job ID with `level=warn target=shutdown.drain`
+   and **force-exit with status 1**. The next launcher boot
+   replays from the last checkpoint via the existing
+   `job_driver_loop::replay_backlog` path.
+5. If all jobs drain before the timer, exit status 0.
+
+`SIGKILL` skips all of the above (kernel cannot run user code);
+that's the user's choice and the replay path handles it. The 30s
+timeout is a chosen number, not a measured one — revisit if dogfood
+shows jobs that legitimately need longer to checkpoint.
 - **What if the user runs the binary twice?** The second launch
   detects the port-file (see below), opens a new tab against the
   existing launcher's URL, and exits. This is single-instance,
@@ -526,24 +549,47 @@ A small boot shim:
 
 1. On launcher boot, look for
    `~/.codeless/workspaces/*/codeless.sqlite`.
-2. For each found file, open it read-only, `SELECT repo_id,
-   fs_root_canonical, fs_root_display, attached_at FROM
-   attached_workspaces`, `INSERT OR IGNORE` each row into the
-   global `~/.codeless/codeless.sqlite`. Same for the `repos`
-   rows the attached rows depend on.
-3. Rename the source dir to `<slug>.migrated` so a re-run is a
+2. **Run the standard migration suite on each old DB before
+   reading.** The schema in old per-slug DBs may have drifted by
+   the time this shim runs (the 2026-05-19 patch landed yesterday
+   but milestone 7 is weeks away). Open each old DB with the
+   normal `InProcessRpc::with_file` path, which runs the migration
+   chain, then read. If the old DB is at a schema version the
+   shim's reader code doesn't support, log + skip + leave the dir
+   in place; the user can re-attach by hand for that one.
+3. `SELECT repo_id, fs_root_canonical, fs_root_display, attached_at
+   FROM attached_workspaces` and the dependency rows from `repos`.
+   `INSERT OR IGNORE` each row into the global
+   `~/.codeless/codeless.sqlite` (also at the latest schema).
+4. **Worktree path rewrite.** Old worktrees lived under
+   `~/.codeless/workspaces/<slug>/worktrees/<job-id>`. The global
+   DB's `jobs` rows reference those paths as absolutes. The shim
+   walks the old `jobs` table, computes the new path
+   (`~/.codeless/worktrees/<job-id>`), `mv`s the directory, and
+   rewrites the stored path in the global DB to match. Job IDs
+   are globally unique so collision is impossible; if the new
+   path already exists, the shim refuses and surfaces an error
+   (means the user has two old DBs claiming the same job ID —
+   they have to pick one).
+5. Rename the source dir to `<slug>.migrated` so a re-run is a
    no-op and the user can `rm -rf` if they wish.
-4. Worktrees stay where they are; their job-id-keyed names are
-   globally unique so cross-mapping is unnecessary.
 
-This costs ~50 lines of Rust and saves the user from re-attaching
-every workspace they created in the last day. The peer review
+This costs ~100 lines of Rust (not 50, given the worktree-path
+rewrite) and saves the user from re-attaching every workspace they
+created since the per-slug patch landed. The peer review
 recommended writing this; this doc adopts that recommendation.
 
 The pre-2026-05-19 `~/.local/share/codeless/codeless.sqlite` is
-discarded by policy (predates the workspace concept; whatever lives
-there is from CLI dogfood runs where re-attach is trivial). The
-boot shim does not touch it.
+discarded by policy (predates the workspace concept; whatever
+lives there is from CLI dogfood runs where re-attach is trivial).
+The boot shim does not touch it.
+
+**Schema-freeze the old shape now.** Capture the
+`attached_workspaces` + `repos` + `jobs` schema at the 2026-05-19
+patch's HEAD as a fixed `migration_v2_input.sql` test fixture; the
+shim is tested against that fixture, not against a moving target.
+The fixture lives in the implementation job's test data and
+doesn't change once frozen.
 
 ## Cross-cutting rules (must hold)
 
