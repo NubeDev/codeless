@@ -863,65 +863,101 @@ resumes, and is annoyed).
   step's Run — no first-class "pause Plan" yet. Revisit once
   Plans have UI (P3).
 
-## TODO — precheck rules reference
+## Precheck rules
 
-> Status: **rules exist in code, not in this doc**. Today the
-> precheck that runs at REVIEW gates auto-fails handovers for
-> reasons the template author cannot see anywhere in JOB-WORKFLOW,
-> JOB-MODEL, or JOB-DIR. The next agent debugging an auto-fail
-> ends up reading the runtime source to find out why. Document
-> the rules here so the contract is visible to the people writing
-> against it.
+The diff-verify precheck runs at every REVIEW gate (and at every
+stage handover, before the gate is even consulted). It enforces a
+**semantics** layer on top of the four-section handover format. A
+failed rule below is what produces a `pre-check-failed` stage
+outcome with a `Detail:` line naming the rule. The rules are
+numbered so a precheck failure can reference `precheck rule #N`
+and the operator can look it up here without grepping the runtime.
 
-### Why this matters
+### Precheck rule #1 — `Done` ↔ diff cross-check
 
-The handover contract today is described as a **format** — the
-four sections (`Done` / `Next` / `What you need to know` /
-`Open questions`). The precheck enforces a **semantics** layer on
-top of that format, and the gap between the two is where surprise
-auto-fails come from. The fix is not to weaken the precheck — it
-is to make the rules first-class.
+Every **path-shaped** token under the `Done` section must appear
+in the stage's git diff. The rule exists to stop the agent from
+claiming work it did not do. A survey stage that reads
+`crates/codeless-tools/src/schedule/` and lists it under `Done`
+fails the rule — those paths are not in the diff because nothing
+was written there.
 
-### Rules to write up (best understood from observed behaviour)
+The load-bearing piece is the **path-shape filter**: which `Done`
+tokens count as a path that has to appear in the diff. The filter
+runs in three layers and a token must survive all three to be
+checked against the diff:
 
-At minimum, this section needs:
+1. **Shape heuristic** (`looks_path_like` in
+   `crates/codeless-runtime/src/diff_verify.rs`). String-level —
+   strips backticks, requires either an extension or an internal
+   slash, rejects obvious non-paths.
+2. **Diff-prefix allow-list.** The token must start with a prefix
+   *derived from the current diff's file list*: the first segment
+   of every diff entry (`crates/`, `ui/`, `DOCS/`), every
+   two-segment prefix when the entry is at least three deep
+   (`crates/codeless-runtime/`), and the literal filename for any
+   repo-root entry the diff actually touched this run
+   (`Cargo.toml`, `mani.yaml`). The allow-list is **per-run**, not
+   hard-coded — adding a new top-level directory does not need a
+   precheck patch.
+3. **Worktree-resolve fallback.** If the token misses the
+   diff-prefix allow-list, it survives the filter only if it
+   resolves to an existing file under the worktree at check time.
+   This deliberately admits unchanged-but-existing files the
+   agent legitimately read; the diff-presence check then flags the
+   bullet as a no-op claim, which is the correct verdict.
+   Absolute paths and `..` parent-traversal components are
+   rejected at this layer — neither can meaningfully resolve
+   "under" the worktree, and both are common shapes for tokens
+   leaked from stack traces or sibling worktree paths.
 
-1. **`Done` ↔ diff cross-check.** Every path-shaped token under
-   `Done` must appear in the stage's git diff. The rule exists to
-   stop the agent from claiming work it didn't do. A survey stage
-   that reads `crates/codeless-tools/src/schedule/` and lists it
-   under `Done` auto-fails — those paths are not in the diff
-   because nothing was written there.
-2. **Section presence.** All four sections must be present, in
-   order, with the exact headings. An empty section is fine; a
-   missing one is a fail.
-3. **`Done` for read-only stages.** Stages that produced zero
-   source diff (survey, design, REVIEW-prep) put **the docs they
-   wrote** under `Done`, and **the things they read** under
-   `What you need to know`. The closing-trio `git` todo for these
-   stages is `committed handover.md only` — not `skipped — no
-   diff`, because the handover itself is the diff.
-4. Other rules the precheck enforces today that aren't in this
-   list yet — the next agent writing this section should grep the
-   runtime for the precheck implementation and lift the full set,
-   then come back and update this list.
+Tokens that survive neither (2) nor (3) drop before the
+diff-presence check, so dotted RPC-method tokens
+(`tool.call`, `rest_proxy.path`, `metadata_json.delivery.slack`)
+and absolute leaked paths
+(`/home/user/.codeless/worktrees/ai-runner/Cargo.toml`) stop
+manufacturing FAILs on prose that never named a real worktree
+path. Genuine missing paths — a token that starts with `crates/`
+under a diff that touched another `crates/` file but never
+created the claimed one — still fail the rule as they did before.
 
-### What lands in code
+This rule was hardened (not rewritten) by the
+`auto-bypass-hardening` job. A fuller diff-verify overhaul (e.g.
+moving the tokenizer to a Markdown-aware parser, or supporting
+glob-shaped Done bullets) is a separate job; the current rule is
+the minimum needed to kill the four real-world false positives
+observed in jobs `01KRX4ZPF10J3QZ35R5GK8336X` and
+`01KRXH0RYTT6EYGF435WPQS70Q`.
 
-Nothing new — this is a docs-only TODO. The runtime already
-enforces these rules. The deliverable is a `### Precheck rules`
-subsection inside the existing "How feedback flows through the
-prompt assembler" section (or a sibling section if it grows past
-~30 lines), with each rule numbered so a precheck failure can
-reference `precheck rule #1` and the user / agent can look it up.
+### Precheck rule #2 — section presence
 
-### Out of scope for this TODO
+All four handover sections must be present, in order, with the
+exact headings (`Done`, `Next`, `What you need to know`,
+`Open questions`). An empty section is fine — use `- (none)` —
+but a missing section is a fail.
 
-- Changing what the precheck enforces. The semantics are right;
-  only the documentation is wrong.
-- Per-rule failure messages in the UI. Worth doing but separate —
-  a precheck failure should link to the rule's anchor in this
-  doc; the wording lives in the runtime.
+### Precheck rule #3 — `Done` for read-only stages
+
+Stages that produced zero source diff (survey, design, REVIEW-prep)
+put **the docs they wrote** under `Done`, and **the things they
+read** under `What you need to know`. The closing-trio `git` todo
+for these stages is `committed handover.md only` — not `skipped —
+no diff`, because the handover itself is the diff.
+
+The shape these stages should follow lives in the
+["handover schema for read-only stages"](#todo--handover-schema-for-read-only-stages)
+TODO below.
+
+### What is not in this list yet
+
+Other rules the precheck implementation enforces that aren't
+written up here: the next agent who debugs a precheck failure
+whose `Detail:` line does not match rule #1 / #2 / #3 should grep
+`crates/codeless-runtime/src/diff_verify.rs` and the surrounding
+module for the missing rule, then add it here with a number that
+follows on. Per-rule failure messages in the UI are out of scope
+for this section — the runtime owns the wording, this doc owns
+the rule's name and rationale.
 
 ## TODO — handover schema for read-only stages
 
