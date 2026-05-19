@@ -8,6 +8,7 @@
 //! Hosted-mode (`--core`, `--token`) and the `tail` / `session` verbs
 //! land in later phases.
 
+mod chat_adapter_registry;
 mod cost;
 mod demo;
 mod job;

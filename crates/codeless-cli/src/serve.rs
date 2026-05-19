@@ -16,7 +16,7 @@ use codeless_rpc::{ClaudeStatus, RpcServer, RunnerInfo, ServerFeatureFlags, Serv
 use codeless_runtime::compose_system_prompt;
 use codeless_runtime::{
     spawn_job_driver_loop, spawn_notifier, spawn_plan_engine_subscriber, spawn_stage_recorder,
-    DefaultRunnerFactory, InProcessRpc, WebhookConfig, WebhookNotifier,
+    DefaultRunnerFactory, InProcessRpc, RunnerConfig, WebhookConfig, WebhookNotifier,
 };
 use codeless_server::{
     load_bearer_token, serve_with_extra_shutdown, AppState, AuthMode, TokenLoadError,
@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use crate::chat_adapter_registry::ChatAdapterRegistry;
 use crate::rpc_open;
 
 #[derive(Debug, Args)]
@@ -628,10 +629,7 @@ async fn run_server(
         let anthropic_api_key = store.get("anthropic_api_key").map(str::to_owned);
         let claude_system_prompt = store.get("claude_system_prompt").map(str::to_owned);
         let factory = Arc::new(DefaultRunnerFactory {
-            enable_claude: effective.claude_enabled,
-            enable_anthropic: effective.anthropic_enabled,
-            enable_codex: effective.codex_enabled,
-            enable_copilot: effective.copilot_enabled,
+            config: RunnerConfig::from_effective(&effective),
             anthropic_api_key,
             claude_system_prompt,
             store: rpc.store().clone(),
@@ -644,66 +642,14 @@ async fn run_server(
         )
     };
 
-    // Slack adapter is opt-in via `--enable-slack`. Missing tokens
-    // produce a warning rather than a hard failure so the rest of the
-    // server still boots — the bot is additive to the runtime and the
-    // operator should be able to land Slack later by setting two
-    // secrets and restarting. The handle stays alive in this scope so
-    // the spawned task is not dropped before `serve_with_shutdown`
-    // returns; process exit is the teardown path.
-    let _slack = if effective.slack_enabled {
-        match codeless_slack::SlackConfig::from_secrets(&store) {
-            Ok(cfg) => {
-                eprintln!(
-                    "codeless-server: slack adapter enabled (channel={})",
-                    cfg.channel_id.as_deref().unwrap_or("unset"),
-                );
-                // The dispatcher reaches the in-process runtime via
-                // the same `RpcServer` handle the HTTP transport
-                // serves; commands typed in Slack hit the exact same
-                // code path as the web UI. Cloning is cheap (the
-                // handle is an `Arc<dyn RpcServer>`).
-                Some(codeless_slack::SlackBot::spawn(cfg, state.rpc.clone()))
-            }
-            Err(err) => {
-                eprintln!("codeless-server: --enable-slack ignored: {err}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Telegram adapter is opt-in via `--enable-telegram`. Mirrors
-    // the Slack arm above: a missing token logs a warning and the
-    // rest of the server still boots, and the handle stays in scope
-    // so the spawned long-poll task is not dropped before
-    // `serve_with_shutdown` returns.
-    let _telegram = if effective.telegram_enabled {
-        match codeless_telegram::TelegramConfig::from_secrets(&store) {
-            Ok(cfg) => {
-                eprintln!(
-                    "codeless-server: telegram adapter enabled (chat={})",
-                    cfg.chat_id.as_deref().unwrap_or("unset"),
-                );
-                match codeless_telegram::TelegramBot::spawn(cfg, state.rpc.clone()) {
-                    Ok(bot) => Some(bot),
-                    Err(err) => {
-                        eprintln!(
-                            "codeless-server: --enable-telegram ignored: api init failed: {err}"
-                        );
-                        None
-                    }
-                }
-            }
-            Err(err) => {
-                eprintln!("codeless-server: --enable-telegram ignored: {err}");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // Boot every enabled chat adapter as one unit. The registry walks
+    // the closed `(slack, telegram)` set the effective registry holds
+    // today; missing secrets and per-adapter init failures stay
+    // warnings (the bots are additive, never load-bearing). The handle
+    // stays in scope so the spawned long-poll / Socket Mode tasks are
+    // not dropped before `serve_with_shutdown` returns; process exit
+    // is the teardown path.
+    let _chat_adapters = ChatAdapterRegistry::spawn(&effective, &store, state.rpc.clone());
 
     let port_file = args.port_file.clone();
     // Drain the listener on either Ctrl-C *or* a successful

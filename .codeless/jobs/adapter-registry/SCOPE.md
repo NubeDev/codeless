@@ -101,11 +101,14 @@ without restart) is also a separate, later job per the doc.
   before Apply (modal work is in the UI follow-up job, not here —
   but the partition must be correct so the modal has truthful
   inputs).
-- Lifting the Slack / Telegram adapter spawn and the
+- [x] Lifting the Slack / Telegram adapter spawn and the
   `DefaultRunnerFactory` config out of `serve.rs` into a boot-time
   `ChatAdapterRegistry` and `RunnerConfig`, both driven by the new
   tables. No behavioural change beyond the source of truth; existing
   adapter and runner code is not refactored.
+  _Landed: `crates/codeless-cli/src/chat_adapter_registry.rs` +
+  `RunnerConfig` / `DefaultRunnerFactory.config` in
+  `crates/codeless-runtime/src/default_runner_factory.rs`._
 - Exit tests (from WORKSPACE-ATTACH.md §"Exit tests"):
   1. [x] Write-then-fsync-then-restart ordering: a unit test that
      crashes the process between secrets-write and the restart

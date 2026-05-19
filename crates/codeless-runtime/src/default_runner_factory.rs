@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use codeless_types::{CostCents, Event, Job, TaskId, TaskStatus};
 
+use crate::adapter_registry::EffectiveAdapterRegistry;
 use crate::anthropic_runner::AnthropicRunnerAdapter;
 use crate::claude_runner::{parse_permission_mode, ClaudeRunnerAdapter};
 use crate::codex_runner::CodexRunnerAdapter;
@@ -28,6 +29,44 @@ use crate::store::SqliteStore;
 use crate::template::JobTemplate;
 use crate::template_runner::TemplateRunner;
 
+/// Boot-time view of the four runner enable bits. Hosts read this from
+/// `runner_config` (via `EffectiveAdapterRegistry`) and hand it to
+/// `DefaultRunnerFactory`; tests construct it directly. Splitting it out
+/// keeps the factory's public surface free of free-floating booleans the
+/// stage-1 adapter-registry work was designed to retire and gives the
+/// future Settings → Adapters page a single struct to round-trip
+/// through.
+#[derive(Debug, Clone, Default)]
+pub struct RunnerConfig {
+    pub claude: bool,
+    pub anthropic: bool,
+    pub codex: bool,
+    pub copilot: bool,
+}
+
+impl RunnerConfig {
+    /// Project the relevant slice of `EffectiveAdapterRegistry` (which
+    /// also carries the chat-adapter bits) onto the runner enable set.
+    /// This is the boot-time path: `codeless serve` reads the table
+    /// once, projects it here, and passes the result into the factory.
+    pub fn from_effective(effective: &EffectiveAdapterRegistry) -> Self {
+        Self {
+            claude: effective.claude_enabled,
+            anthropic: effective.anthropic_enabled,
+            codex: effective.codex_enabled,
+            copilot: effective.copilot_enabled,
+        }
+    }
+
+    /// True when any *real* runner is enabled. Used by the factory to
+    /// decide whether to gate `mock`: when at least one real runner is
+    /// on, a `runner: "mock"` submission returns `None` and the driver
+    /// fails the job loudly rather than silently running a no-op.
+    pub fn any_real(&self) -> bool {
+        self.claude || self.anthropic || self.codex || self.copilot
+    }
+}
+
 /// Built-in runner factory. `mock` is gated off when any real runner
 /// is enabled. `claude` and `anthropic` need configuration the host
 /// must supply (the `claude` binary on PATH, the Anthropic API key);
@@ -35,10 +74,9 @@ use crate::template_runner::TemplateRunner;
 /// adapter surfaces the auth failure at run time as
 /// `RunnerOutcome::Failed`.
 pub struct DefaultRunnerFactory {
-    pub enable_claude: bool,
-    pub enable_anthropic: bool,
-    pub enable_codex: bool,
-    pub enable_copilot: bool,
+    /// Which runners the factory will build. Sourced from the
+    /// `runner_config` table at boot; tests construct this directly.
+    pub config: RunnerConfig,
     pub anthropic_api_key: Option<String>,
     /// Optional override for the claude headless system prompt. When
     /// set, replaces the built-in default in
@@ -58,7 +96,7 @@ pub struct DefaultRunnerFactory {
 
 impl DefaultRunnerFactory {
     pub fn real_runner_enabled(&self) -> bool {
-        self.enable_claude || self.enable_anthropic || self.enable_codex || self.enable_copilot
+        self.config.any_real()
     }
 }
 
@@ -78,7 +116,7 @@ impl RunnerFactory for DefaultRunnerFactory {
         // transport, not the choice.
         if let Some(template_src) = job.template_yaml.as_ref() {
             match JobTemplate::parse_yaml(template_src) {
-                Ok(template) if self.enable_claude => {
+                Ok(template) if self.config.claude => {
                     let mut runner = TemplateRunner::new(template)
                         .with_store(self.store.clone())
                         .with_pending_operator_comment(pending_operator_comment.clone());
@@ -123,7 +161,7 @@ impl RunnerFactory for DefaultRunnerFactory {
             "mock" if !real_runner_enabled => {
                 Some(Arc::new(MockRunner::new(demo_mock_script(&prompt))))
             }
-            "claude" if self.enable_claude => {
+            "claude" if self.config.claude => {
                 let mut adapter = ClaudeRunnerAdapter::new(prompt, TaskId::new());
                 if let Some(sp) = compose_system_prompt(
                     self.claude_system_prompt.as_deref(),
@@ -149,19 +187,19 @@ impl RunnerFactory for DefaultRunnerFactory {
                 }
                 Some(Arc::new(adapter))
             }
-            "anthropic" if self.enable_anthropic => {
+            "anthropic" if self.config.anthropic => {
                 let mut adapter = AnthropicRunnerAdapter::new(prompt, TaskId::new());
                 adapter.api_key = self.anthropic_api_key.clone();
                 Some(Arc::new(adapter))
             }
-            "codex" if self.enable_codex => {
+            "codex" if self.config.codex => {
                 let mut adapter = CodexRunnerAdapter::new(prompt, TaskId::new());
                 if let Some(m) = job.model.as_deref() {
                     adapter = adapter.with_model(m);
                 }
                 Some(Arc::new(adapter))
             }
-            "copilot" if self.enable_copilot => {
+            "copilot" if self.config.copilot => {
                 let mut adapter = CopilotRunnerAdapter::new(prompt, TaskId::new());
                 if let Some(m) = job.model.as_deref() {
                     adapter = adapter.with_model(m);

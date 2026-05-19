@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use codeless_adapters_host::{HostFs, SecretStore, WorktreeManager};
 use codeless_rpc::{RunnerInfo, ServerFeatureFlags, ServerInfo};
-use codeless_runtime::{attached_workspaces, DefaultRunnerFactory, InProcessRpc};
+use codeless_runtime::{attached_workspaces, DefaultRunnerFactory, InProcessRpc, RunnerConfig};
 
 /// Errors that prevent the desktop shell from booting.
 #[derive(Debug, thiserror::Error)]
@@ -105,10 +105,12 @@ pub async fn boot() -> Result<BootResult, BootError> {
     let runtime = Arc::new(runtime);
 
     let runner_factory = Arc::new(DefaultRunnerFactory {
-        enable_claude: true,
-        enable_anthropic: true,
-        enable_codex: false,
-        enable_copilot: false,
+        config: RunnerConfig {
+            claude: true,
+            anthropic: true,
+            codex: false,
+            copilot: false,
+        },
         anthropic_api_key,
         claude_system_prompt,
         store: runtime.store().clone(),

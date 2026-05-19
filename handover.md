@@ -1,134 +1,109 @@
-# adapter-registry — stage 7 → stage 8
+# adapter-registry — stage 8 → stage 9 (REVIEW gate)
 
-Stage 7 landed. `restart_server` is the sixth RPC of stage 1; the
-RPC partitions running jobs into resumable / killed, refuses unless
-`force = true`, and branches on the three execution contexts
-(`SupervisedCli` exits 75 `EX_TEMPFAIL`, `TauriDesktop` exits 0 for
-the shell to respawn, `Bare` returns `AdapterError::RestartUnsupervised`
-with a copy-pasteable hint). `codeless serve --respawn-on-exit`
-self-watcher wraps the bare case so the in-terminal path can opt into
-supervised behaviour without external tooling.
+Stage 8 landed. The Slack and Telegram adapter spawn no longer lives
+inline in `codeless-cli/src/serve.rs`; the four `enable_*: bool`
+fields on `DefaultRunnerFactory` are gone too. Both groups are now
+fed from the SQLite tables (`chat_adapters`, `runner_config`) via a
+single boot-time projection.
 
-## What landed in stage 7
+## What landed in stage 8
 
-- `crates/codeless-runtime/src/rpc/restart.rs`:
-  - `RestartContext` (`SupervisedCli` | `TauriDesktop` | `Bare`).
-  - `RestartTrigger` (Arc-shared `Notify` + state mutex; cheap to
-    clone; remembers the desired exit code so the CLI's `run_server`
-    can return the right `ExitCode` after the listener drains).
-  - `EX_TEMPFAIL = 75`, `RESUMABLE_WINDOW = 30s`.
-  - `partition_running_jobs` walks `SqliteStore::list_jobs` →
-    `list_stages_for_job`; resumable iff
-    `is_resumable_runner(runner_id)` (template-driven set: `mock`,
-    `anthropic`) AND the latest `started_at` / `ended_at` across the
-    job's stage rows is within `RESUMABLE_WINDOW`.
-- `RpcServer::restart_server` lives behind the same bearer gate as
-  every other RPC; in-process impl in
-  `crates/codeless-runtime/src/rpc/restart.rs::restart_server`.
-- HTTP wire-up (`crates/codeless-server/src/routes.rs`) + HTTP client
-  (`crates/codeless-client/src/http_client.rs`). The route handler
-  accepts a missing body (the UI's "restart now" button has no
-  payload other than `force=false`) via `Option<Json<RestartServerArgs>>`.
-- `crates/codeless-adapters-host/src/respawn.rs`:
-  - `SUPERVISED_ENV = "CODELESS_SUPERVISED"` (env-var marker so the
-    runtime constructor picks `SupervisedCli`).
-  - `supervise(child_argv)` spawns `current_exe()` with the supplied
-    argv until the child exits with anything other than 75. The
-    `--respawn-on-exit` flag is stripped before the child sees it.
-  - R1-gated: this is the only new `std::process::Command` outside
-    `codeless-adapters-host` (grep verified).
+- `crates/codeless-runtime/src/default_runner_factory.rs`:
+  - New `RunnerConfig { claude, anthropic, codex, copilot }` struct
+    with `RunnerConfig::from_effective(&EffectiveAdapterRegistry)` and
+    `any_real()`.
+  - `DefaultRunnerFactory.enable_*` fields collapsed into a single
+    `config: RunnerConfig`. Match arms (`"claude" if self.config.claude
+    => ...` etc.) walk the same set; `real_runner_enabled()` now reads
+    `self.config.any_real()`.
+- `crates/codeless-runtime/src/lib.rs`: re-exports `RunnerConfig`
+  alongside `DefaultRunnerFactory`.
+- `crates/codeless-cli/src/chat_adapter_registry.rs` (new):
+  - `ChatAdapterRegistry { slack, telegram }` holds the spawned bot
+    handles for the process lifetime.
+  - `ChatAdapterRegistry::spawn(&effective, &store, rpc)` walks the
+    closed `(slack, telegram)` set the effective registry exposes
+    today and spawns one background task per enabled row. Missing
+    secrets and per-adapter init failures keep producing the same
+    `--enable-<kind> ignored: <reason>` warnings the inline code did,
+    so operators see no diagnostic regression.
+  - Lives in `codeless-cli` because the runtime crate does not (and,
+    per stage 8 scope, should not) depend on `codeless-slack` /
+    `codeless-telegram`; R1 isolation is preserved.
 - `crates/codeless-cli/src/serve.rs`:
-  - `--respawn-on-exit` flag wired through `ServeArgs`.
-  - `handle()` enters the supervise loop when the flag is set and the
-    `CODELESS_SUPERVISED` marker is absent.
-  - `run_server()` picks `RestartContext` from env (`CODELESS_SUPERVISED`
-    / `INVOCATION_ID` → `SupervisedCli`; `CODELESS_TAURI_SIDECAR` →
-    `TauriDesktop`; else `Bare`).
-  - `serve_with_extra_shutdown` (new helper in `codeless-server::lib`)
-    selects on Ctrl-C *and* the restart trigger; after the listener
-    drains the CLI exits with the trigger's `desired_exit_code` so
-    the supervisor sees 75.
-- `RestartServerArgs` + `RestartServerResult` gained `Default` so the
-  route's "no body = default args" path compiles cleanly.
-- Re-exports from `codeless-runtime::lib`:
-  `RestartContext`, `RestartTrigger`, `EX_TEMPFAIL`, `RESUMABLE_WINDOW`.
+  - The two `if effective.<kind>_enabled { ... }` blocks are replaced
+    by `let _chat_adapters = ChatAdapterRegistry::spawn(&effective,
+    &store, state.rpc.clone());` (one statement, identical lifetime
+    semantics).
+  - `DefaultRunnerFactory` is constructed with
+    `config: RunnerConfig::from_effective(&effective)` — the same set
+    of bits the old four `enable_*` literals carried, sourced through
+    the table.
+  - `--enable-slack` / `--enable-telegram` / `--enable-claude` /
+    `--enable-anthropic` / `--enable-codex` / `--enable-copilot` all
+    keep working as idempotent upsert shims via
+    `codeless_runtime::adapter_registry::upsert_chat_adapter` /
+    `upsert_runner` (no change from stage 3).
+- `crates/codeless-tauri-desktop/src/boot.rs`: the desktop shell
+  constructs `DefaultRunnerFactory` with `RunnerConfig { claude:
+  true, anthropic: true, codex: false, copilot: false }` instead of
+  the four literal bool fields. Same enabled set as before.
 
-### Integration test
+## Behaviour
 
-`crates/codeless-runtime/tests/restart_server_partition.rs` — 5
-tests, all green:
+- `--enable-slack` removed from `codeless serve`, row left
+  `enabled=true` in `chat_adapters`: adapter still spawns at boot
+  (`ChatAdapterRegistry::spawn` reads the row, the inline conditional
+  is gone). Same shape for Telegram.
+- `--enable-claude` removed, `runner_config.claude.enabled = true`:
+  factory still builds `ClaudeRunnerAdapter` for `runner: "claude"`
+  jobs (the match arm reads `self.config.claude`).
+- A flag re-passed on a later boot still wins (upsert behaviour from
+  stage 3 is unchanged); the table is consulted *after* the upsert so
+  the flag is a one-shot bootstrap, not state.
 
-1. `partition_splits_running_jobs_by_runner_and_recency` — seeds
-   three Running jobs (recent-mock = resumable, recent-claude =
-   killed, stale-anthropic = killed) and asserts the partition.
-2. `force_true_proceeds_past_running_jobs` — confirms the trigger
-   fires with `EX_TEMPFAIL` under `SupervisedCli` when `force=true`.
-3. `bare_context_returns_unsupervised_hint` — bare context refuses
-   and the hint mentions `--respawn-on-exit`.
-4. `tauri_desktop_context_fires_with_exit_code_zero` — Tauri
-   context arms the trigger with exit code 0.
-5. `empty_running_set_proceeds_without_force` — no running jobs
-   means `force=false` still proceeds.
-
-### Validations run
+## Validations run
 
 - `cargo build --workspace` — green.
-- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean
+  (one transient `dead_code` on `ChatAdapterRegistry.{slack,
+  telegram}` is silenced field-by-field with `#[allow(dead_code)]`
+  rather than struct-wide so future fields keep warning).
 - `cargo fmt --check` — clean after one auto-format pass.
-- `cargo test -p codeless-runtime` (incl. the new partition test)
-  — green.
-- `cargo test -p codeless-types -p codeless-rpc -p codeless-server
-  -p codeless-client -p codeless-adapters-host --lib --tests` —
-  green (the three pre-existing `git_commit` / `git_diff` cwd-race
-  flakes still fail under parallel `cargo test --workspace`, pass
-  with `--test-threads=1`; see prior session handover — not in this
-  stage's blast radius).
+- `cargo test --workspace --no-fail-fast -- --test-threads=4` —
+  fully green.
+- R1 grep on stage-touched files (`crates/codeless-cli/src/chat_adapter_registry.rs`):
+  no `tokio::process` / `std::process::Command` introductions.
 
-## What stage 8 owns
+## What stage 9 owns
 
-Lift the Slack / Telegram adapter spawn calls out of
-`codeless-cli/src/serve.rs` (currently lines ~570–630) into a
-boot-time `ChatAdapterRegistry` driven by the `chat_adapters` table,
-and lift the `DefaultRunnerFactory.enable_*` fields into a
-`RunnerConfig` driven by the `runner_config` table. The `--enable-*`
-flags keep working as upsert shims. No behavioural change beyond the
-source of truth.
+REVIEW gate. Server-side milestones complete; the registry surface
+the UI follow-up consumes is now end-to-end:
 
-The validate-cache contract (process-lifetime, cleared on restart)
-is now load-bearing for stage 8: after a restart the registry
-re-reads SQLite, the cache is empty, and the operator must
-re-validate before re-enabling. The decision is recorded in
-`DOCS/SCOPE.md` §"Adapter registry, stage 1".
+- Boot reads `chat_adapters` / `runner_config` (stage 3).
+- Six RPCs end-to-end with validate-before-enable coupling (stages
+  5–6).
+- `restart_server` partitions and re-execs (stage 7).
+- Slack / Telegram spawn and runner factory both source-of-truth on
+  SQLite, with `--enable-*` flags reduced to upsert shims (stage 8).
 
-## Pointers for stage 8
-
-- `crates/codeless-cli/src/serve.rs` lines ~570–630 (Slack /
-  Telegram spawn) — wrap these in a `ChatAdapterRegistry` that
-  iterates `list_chat_adapters` rows.
-- `crates/codeless-runtime/src/default_runner_factory.rs` —
-  introduce `RunnerConfig` and have `DefaultRunnerFactory` read it
-  rather than the four `enable_*` bool fields.
-- `crates/codeless-runtime/src/adapter_registry.rs` already exposes
-  `load_effective` — keep it as the single boot read.
-- R1 boundary: any new `tokio::process` / `std::process::Command`
-  outside `codeless-adapters-host` is a build break against the rule
-  in `CLAUDE.md`.
+Gmail adapter and stage 2 (hot-reload via `Arc<ArcSwap<…>>` /
+`AtomicBool`) remain follow-up jobs per `DOCS/WORKSPACE-ATTACH.md`
+§"TODO — adapter registry". The Settings → Adapters UI is a separate
+follow-up consuming the wire types stage 5 added to `codeless-types`.
 
 ## Out-of-scope reminders carried forward
 
-- All UI work (Settings → Adapters page, confirm modal that renders
-  the partition) stays in the follow-up UI job.
+- All UI work stays in the follow-up UI job.
 - `codeless-gmail` crate, OAuth PKCE host wiring, and the
   refresh-token rotation `secrets_changed` event are in the
   follow-up Gmail job.
-- Stage 2 (hot-reload via `Arc<ArcSwap<…>>` / `AtomicBool`) stays
-  deferred until the trigger conditions in
+- Stage 2 (hot-reload) stays deferred until the trigger conditions in
   `DOCS/WORKSPACE-ATTACH.md` fire.
-- The desktop shell's sidecar broker (the code that actually kills
-  and respawns the child Tauri-side) stays out of scope; this stage
-  shipped only the runtime contract.
+- The desktop shell's sidecar broker (the Tauri-side code that kills
+  and respawns the child) stays out of scope.
 
 ## Open questions
 
-- (none for stage 7; the four open questions are resolved in
+- (none for stage 8; the four open questions are resolved in
   `DOCS/SCOPE.md` §"Adapter registry, stage 1").
