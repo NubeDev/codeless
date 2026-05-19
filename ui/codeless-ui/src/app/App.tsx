@@ -52,6 +52,7 @@ import {
   type ShortcutHandlers,
 } from "@/modules/shortcuts";
 import { StatusBar } from "@/modules/statusbar";
+import { useWorkspacesStore } from "@/modules/workspaces/store";
 import { MAX_PANES_PER_TAB, useTabs, useWorkspaceCwd } from "@/modules/tabs";
 import {
   disposeSession,
@@ -206,11 +207,15 @@ export default function App() {
   const closeInlineSettings = useInlineSettingsStore((s) => s.hide);
   const [home, setHome] = useState<string | null>(null);
   const [pendingCloseTab, setPendingCloseTab] = useState<number | null>(null);
+  const activeRepoId = useWorkspacesStore((s) => s.activeRepoId);
   useEffect(() => {
     // Prefer the shell's home dir; if the shell has no notion of one
-    // (browser / mobile), fall back to the runtime's workspace cwd
-    // via `fs_cwd`. The explorer root sticks to this until a terminal
-    // tab broadcasts a different cwd via OSC 7.
+    // (browser / mobile), fall back to the active workspace's
+    // `fs_root` via `fs_cwd(repo_id)`. The runtime jails `fs.*` to
+    // the attached workspace, so the call needs the active `repo_id`
+    // and only runs once a workspace has been attached. The explorer
+    // root sticks to this until a terminal tab broadcasts a
+    // different cwd via OSC 7.
     let cancelled = false;
     void (async () => {
       try {
@@ -223,8 +228,12 @@ export default function App() {
       } catch {
         // fall through to RPC
       }
+      if (!activeRepoId) {
+        if (!cancelled) setHome(null);
+        return;
+      }
       try {
-        const { path } = await rpc.call("fs_cwd", {});
+        const { path } = await rpc.call("fs_cwd", { repo_id: activeRepoId });
         if (!cancelled) setHome(path);
       } catch {
         if (!cancelled) setHome(null);
@@ -233,7 +242,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [paths, rpc]);
+  }, [paths, rpc, activeRepoId]);
 
   // Esc closes the inline settings overlay. Bound at the window level
   // so it works regardless of focus within the panel; gated on `open`
@@ -915,6 +924,7 @@ export default function App() {
                 <div className="h-full border-r border-border/60 bg-card">
                   <FileExplorer
                     rootPath={explorerRoot}
+                    repoId={activeRepoId}
                     onOpenFile={handleOpenFile}
                     onPathRenamed={handlePathRenamed}
                     onPathDeleted={handlePathDeleted}

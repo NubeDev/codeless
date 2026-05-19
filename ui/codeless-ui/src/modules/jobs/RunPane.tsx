@@ -938,7 +938,7 @@ export function JobChat({
     let cancelled = false;
     setWorktreeMissing(null);
     rpc
-      .call("fs_stat", { path: job.worktree_path })
+      .call("fs_stat", { repo_id: job.repo_id, path: job.worktree_path })
       .then((r) => {
         if (cancelled) return;
         setWorktreeMissing(r.kind === null);

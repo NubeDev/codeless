@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import { useRpc } from "@/lib/rpc/provider";
+import { useWorkspacesStore } from "@/modules/workspaces/store";
 
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
@@ -173,8 +174,13 @@ export function AiComposerProvider({ children }: ProviderProps) {
     setPickedCommands((prev) => prev.filter((c) => c.name !== name));
 
   const attachFileByPath = async (path: string) => {
+    const repoId = useWorkspacesStore.getState().activeRepoId;
+    if (!repoId) return;
     try {
-      const result = await rpc.call("fs_read_file", { path, byte_limit: null });
+      const result = await rpc.call("fs_read_file", {
+        repo_id: repoId,
+        path,
+      });
       if (result.kind !== "text") {
         console.warn("attachFileByPath: skipped non-text file", path, result);
         return;

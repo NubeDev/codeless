@@ -112,7 +112,7 @@ class FixtureRpcClient implements RpcClient {
     const handler = (env: EventEnvelope) => {
       if (filter.scope === "all") {
         onEvent(env);
-      } else if (env.job_id === filter.job_id) {
+      } else if (filter.scope === "job" && env.job_id === filter.job_id) {
         onEvent(env);
       }
     };

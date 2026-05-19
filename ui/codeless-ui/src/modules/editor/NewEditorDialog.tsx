@@ -13,6 +13,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
 import { useRpc } from "@/lib/rpc/provider";
+import { useWorkspacesStore } from "@/modules/workspaces/store";
 
 type Props = {
   open: boolean;
@@ -33,6 +34,7 @@ export function NewEditorDialog({
   onCreated,
 }: Props) {
   const rpc = useRpc();
+  const activeRepoId = useWorkspacesStore((s) => s.activeRepoId);
   const [name, setName] = useState("untitled.txt");
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -66,11 +68,16 @@ export function NewEditorDialog({
       setError("No workspace root");
       return;
     }
+    if (!activeRepoId) {
+      setError("No active workspace");
+      return;
+    }
     const path = trimmed.startsWith("/")
       ? trimmed
       : joinPath(rootPath, trimmed);
     try {
       await rpc.call("fs_create_file", {
+        repo_id: activeRepoId,
         path,
         content: null,
         overwrite: false,

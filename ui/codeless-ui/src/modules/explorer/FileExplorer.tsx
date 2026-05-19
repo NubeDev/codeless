@@ -25,9 +25,15 @@ import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { useFileTree } from "./lib/useFileTree";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
 import { useExternalOpener } from "@/lib/shell";
+import type { RepoId } from "@/lib/rpc/wire";
 
 type Props = {
   rootPath: string | null;
+  /** Active workspace id; every `fs.*` call is scoped to it. When
+   *  `null` the explorer renders its empty state — the runtime
+   *  refuses unscoped `fs.*` calls and the picker hasn't picked a
+   *  workspace yet. */
+  repoId: RepoId | null;
   onOpenFile: (path: string, pin?: boolean) => void;
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
@@ -42,6 +48,7 @@ function basename(path: string): string {
 
 export function FileExplorer({
   rootPath,
+  repoId,
   onOpenFile,
   onPathRenamed,
   onPathDeleted,
@@ -49,7 +56,7 @@ export function FileExplorer({
   onAttachToAgent,
 }: Props) {
   const opener = useExternalOpener();
-  const tree = useFileTree(rootPath, { onPathRenamed, onPathDeleted });
+  const tree = useFileTree(rootPath, repoId, { onPathRenamed, onPathDeleted });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -245,6 +252,7 @@ export function FileExplorer({
       <ExplorerSearch
         ref={searchRef}
         rootPath={rootPath}
+        repoId={repoId}
         onOpenFile={onOpenFile}
         open={isSearchOpen}
         onRequestClose={() => setIsSearchOpen(false)}

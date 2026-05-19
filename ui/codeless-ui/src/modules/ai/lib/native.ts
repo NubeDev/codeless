@@ -9,11 +9,28 @@
 
 import type { RpcClient } from "@/lib/rpc/client";
 import type {
+  RepoId,
   ShellBgEntry,
   ShellBgLogChunk,
   ShellCommandOutput,
   ShellSessionRunOutput,
 } from "@/lib/rpc/wire";
+import { useWorkspacesStore } from "@/modules/workspaces/store";
+
+// `fs.*` calls are jailed to the active workspace server-side; the
+// agent tools read the picker's `activeRepoId` at call time rather
+// than capture it at boot, so a workspace switch while a long-running
+// tool sequence is in flight retargets the next call without
+// reconfiguring the client.
+function activeRepoIdOrThrow(): RepoId {
+  const id = useWorkspacesStore.getState().activeRepoId;
+  if (!id) {
+    throw new Error(
+      "native: no active workspace — attach a workspace before calling fs.*",
+    );
+  }
+  return id;
+}
 
 export type ReadResult =
   | { kind: "text"; content: string; size: number }
@@ -75,7 +92,10 @@ function relTo(root: string, path: string): string {
 
 export const native = {
   readFile: async (path: string): Promise<ReadResult> => {
-    const r = await rpc().call("fs_read_file", { path, byte_limit: null });
+    const r = await rpc().call("fs_read_file", {
+      repo_id: activeRepoIdOrThrow(),
+      path,
+    });
     if (r.kind === "text") {
       return {
         kind: "text",
@@ -94,14 +114,15 @@ export const native = {
 
   writeFile: async (path: string, content: string): Promise<void> => {
     await rpc().call("fs_write_file", {
+      repo_id: activeRepoIdOrThrow(),
       path,
       content,
-      create_parents: false,
     });
   },
 
   createFile: async (path: string): Promise<void> => {
     await rpc().call("fs_create_file", {
+      repo_id: activeRepoIdOrThrow(),
       path,
       content: null,
       overwrite: false,
@@ -109,11 +130,18 @@ export const native = {
   },
 
   createDir: async (path: string): Promise<void> => {
-    await rpc().call("fs_create_dir", { path, recursive: true });
+    await rpc().call("fs_create_dir", {
+      repo_id: activeRepoIdOrThrow(),
+      path,
+      recursive: true,
+    });
   },
 
   readDir: async (path: string): Promise<DirEntry[]> => {
-    const { entries } = await rpc().call("fs_read_dir", { path });
+    const { entries } = await rpc().call("fs_read_dir", {
+      repo_id: activeRepoIdOrThrow(),
+      path,
+    });
     return entries.map((e) => ({
       name: e.name,
       kind: e.kind,
@@ -134,6 +162,7 @@ export const native = {
     // adapter accepts the array directly; this matches the existing
     // API shape until the codegen step replaces native.ts entirely.
     const r = await rpc().call("fs_search", {
+      repo_id: activeRepoIdOrThrow(),
       root: params.root,
       query: params.pattern,
       case_sensitive: !(params.caseInsensitive ?? false),
@@ -158,6 +187,7 @@ export const native = {
     maxResults?: number;
   }): Promise<GlobResponse> => {
     const r = await rpc().call("fs_glob", {
+      repo_id: activeRepoIdOrThrow(),
       root: params.root,
       pattern: params.pattern,
       max_results: params.maxResults ?? null,

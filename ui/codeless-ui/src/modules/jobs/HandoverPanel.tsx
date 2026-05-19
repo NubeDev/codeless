@@ -53,8 +53,8 @@ export function HandoverPanel({ job }: Props) {
       for (const path of candidates) {
         try {
           const result = (await rpc.call("fs_read_file", {
+            repo_id: job.repo_id,
             path,
-            byte_limit: null,
           })) as unknown as
             | { kind: "text"; content: string }
             | { kind: "binary" }

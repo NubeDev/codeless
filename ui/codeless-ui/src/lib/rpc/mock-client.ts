@@ -508,7 +508,7 @@ export class MockRpcClient implements RpcClient {
       case "fs_read_file": {
         const a = args as RpcArgs<"fs_read_file">;
         const node = this.fsRequireFile(a.path);
-        const limit = a.byte_limit ?? MOCK_FS_READ_LIMIT_DEFAULT;
+        const limit = MOCK_FS_READ_LIMIT_DEFAULT;
         const size = byteLength(node.content);
         if (size > limit) {
           return { kind: "toolarge", size, limit } as RpcResultOf<M>;
@@ -525,8 +525,7 @@ export class MockRpcClient implements RpcClient {
         const a = args as RpcArgs<"fs_write_file">;
         const parent = parentPath(a.path);
         if (!this.fs.has(parent)) {
-          if (a.create_parents) this.fsMkdirRecursive(parent);
-          else throw new RpcError("not_found", `parent ${parent}`);
+          throw new RpcError("not_found", `parent ${parent}`);
         }
         const existing = this.fs.get(a.path);
         if (existing && existing.kind === "dir") {
@@ -1246,9 +1245,24 @@ export class MockRpcClient implements RpcClient {
   }
 
   subscribe(filter: EventFilter, _since?: Since): AsyncIterable<EventEnvelope> {
+    // Library scope deliberately silences job-payload events — the
+    // mock has no notion of "repo-only events" so it falls back to the
+    // server's filter contract: anything not addressed to a job is
+    // either repo-scope or library-scope. Repo scope matches by
+    // `repo_id` if the envelope carries one (mock envelopes don't
+    // today; this is a forward-compat hook).
     const matches = (env: EventEnvelope) => {
-      if (filter.scope === "all") return true;
-      return env.job_id === filter.job_id;
+      switch (filter.scope) {
+        case "all":
+          return true;
+        case "job":
+          return env.job_id === filter.job_id;
+        case "repo":
+          return (env as unknown as { repo_id?: string }).repo_id ===
+            filter.repo_id;
+        case "library":
+          return env.job_id == null;
+      }
     };
     return makeIterable((push, _close) => {
       const handler = (env: EventEnvelope) => {

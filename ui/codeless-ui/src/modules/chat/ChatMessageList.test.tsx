@@ -52,7 +52,8 @@ class StreamingRpcClient extends MockRpcClient {
     _since?: Since,
   ): AsyncIterable<EventEnvelope> {
     const matches = (env: EventEnvelope) =>
-      filter.scope === "all" || env.job_id === filter.job_id;
+      filter.scope === "all" ||
+      (filter.scope === "job" && env.job_id === filter.job_id);
     const queue: EventEnvelope[] = [];
     const waiters: Array<(v: IteratorResult<EventEnvelope>) => void> = [];
     let done = false;
