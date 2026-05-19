@@ -483,6 +483,179 @@ async fn driver_provisions_worktree_when_root_set() {
     );
 }
 
+/// Regression for the "agent_chat cwd is outside the configured fs
+/// roots" rejection that fired the moment a user opened the per-job
+/// chat panel for any job whose worktree lived under the configured
+/// `--worktree-root`. Both hosts now `host_fs.add_root(worktree_base)`
+/// at boot; this test pins the CLI side of that fix end-to-end:
+/// boot the server with `--worktree-root`, drive a mock job to
+/// `Completed` so the worktree actually exists on disk, then POST
+/// `agent_chat` with `cwd` set to that worktree path and assert the
+/// call is not rejected with the fs-roots message. The downstream
+/// runner spawn is detached and the wire id `claude` is enough to
+/// get past `parse_cli_runner_id` regardless of whether the CLI
+/// binary is installed on the test host — what we're guarding is
+/// the cwd-jail branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_chat_cwd_under_worktree_root_is_not_rejected_by_fs_jail() {
+    let dir = TempDir::new().unwrap();
+    let secrets = dir.path().join("secrets.toml");
+    let db = dir.path().join("codeless.db");
+    let wt_root = dir.path().join("worktrees");
+    let repo_path = dir.path().join("source-repo");
+
+    std::fs::create_dir_all(&repo_path).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&repo_path)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "demo@example.com"]);
+    git(&["config", "user.name", "Demo"]);
+    std::fs::write(repo_path.join("README.md"), b"hi\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    let mut store = SecretStore::open(&secrets).unwrap();
+    store.set("core_bearer_token", TOKEN).unwrap();
+    store.save().unwrap();
+
+    let rpc = InProcessRpc::with_file(&db).await.unwrap();
+    let repo = rpc
+        .add_repo(AddRepoArgs {
+            name: "fs-jail-demo".into(),
+            clone_url: format!("file://{}", repo_path.display()),
+            default_branch: "master".into(),
+            local_path: repo_path.display().to_string(),
+            git_auth: GitAuth::Token {
+                env_var: "GITHUB_TOKEN".into(),
+            },
+            concurrency_cap: None,
+            default_runner: None,
+        })
+        .await
+        .unwrap();
+    drop(rpc);
+
+    let mut server = Command::new(BIN)
+        .args([
+            "--secrets-file",
+            secrets.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "serve",
+            "--bind",
+            "127.0.0.1:0",
+            "--fs-root",
+            repo_path.to_str().unwrap(),
+            "--worktree-root",
+            wt_root.to_str().unwrap(),
+        ])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let stderr = server.stderr.take().unwrap();
+    let (tx, rx) = mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let addr = (|| -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Ok(line) = rx.recv_timeout(Duration::from_millis(500)) {
+                if let Some(idx) = line.find("listening on http://") {
+                    return line[idx + "listening on http://".len()..]
+                        .trim()
+                        .to_string();
+                }
+            }
+        }
+        let _ = server.kill();
+        panic!("server did not bind");
+    })();
+
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let submit_text = client
+        .post(format!("{base}/rpc/submit_job"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({
+            "repo_id": repo.id.to_string(),
+            "prompt": "hi",
+            "template_yaml": null,
+            "runner": "mock",
+            "branch": "",
+            "workspace_mode": "worktree",
+            "cost_cap_cents": 0,
+            "wall_clock_cap_ms": 60000,
+            "start_immediately": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let submit: serde_json::Value = serde_json::from_str(&submit_text)
+        .unwrap_or_else(|e| panic!("submit_job non-JSON: {e}: {submit_text}"));
+    let job_id = submit["id"].as_str().unwrap().to_string();
+
+    let observed = poll_until_terminal(&client, &base, &job_id, Duration::from_secs(10)).await;
+    assert_eq!(
+        observed["status"], "completed",
+        "mock job should complete so the worktree exists on disk: {observed}"
+    );
+    let worktree_path = observed["worktree_path"]
+        .as_str()
+        .expect("driver records worktree_path on the completed job")
+        .to_owned();
+    assert!(
+        std::path::Path::new(&worktree_path).is_dir(),
+        "worktree dir should exist on disk: {worktree_path}"
+    );
+
+    let chat_text = client
+        .post(format!("{base}/rpc/agent_chat"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({
+            "runner": "claude",
+            "prompt": "noop",
+            "session_id": job_id,
+            "cwd": worktree_path,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let chat_resp: serde_json::Value = serde_json::from_str(&chat_text)
+        .unwrap_or_else(|e| panic!("agent_chat non-JSON: {e}: body={chat_text}"));
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = reader.join();
+
+    let error_message = chat_resp
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    assert!(
+        !error_message.contains("cwd is outside the configured fs roots"),
+        "agent_chat rejected a worktree-base cwd as outside fs roots; \
+         worktree_path={worktree_path} response={chat_resp}",
+    );
+}
+
 // Keep `Arc<InProcessRpc>` import in scope for future expansion of
 // the test suite without churn on the import list.
 #[allow(dead_code)]
