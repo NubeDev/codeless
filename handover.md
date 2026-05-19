@@ -1,98 +1,91 @@
-# job-export — stage 2 `[x]` design lock; stage 3 is the REVIEW gate
+# job-export — stage 5 `[!]` halted on (B) + missing stage-4 chain
 
-Stage 2 ("design bundle layout and manifest.json schema_version 1
-against DOCS/SCOPE-JOB-EXPORT.md; lock the secrets denylist and
-per-entry size caps") landed as paper-only. The frozen design lives
-in [`.codeless/jobs/job-export/BUNDLE-DESIGN.md`](.codeless/jobs/job-export/BUNDLE-DESIGN.md).
-The (B) precondition that halted stage 1 is still in effect — re-grep
-this session confirmed no `runs` migration on disk — and continues to
-block implementation stages 4–7. Stages 2 and 3 are paper and can
-proceed.
+Stage 5 ("implement importer with tar-streaming, path-traversal
+guards, batched SQLite inserts in one transaction, and
+ImportConflictPolicy (Refuse default)") halted before any code
+landed. The full stage 5 record — re-verification, three blockers,
+and a file-by-file plan for the agent that picks this up — is in
+[`DOCS/sessions/2026-05-19-job-export.md`](DOCS/sessions/2026-05-19-job-export.md)
+under "Stage 5 — importer  `[!]` halted on (B) + stage-4 chain".
 
-## What stage 2 produced
+## Why halted (the short version)
 
-- `.codeless/jobs/job-export/BUNDLE-DESIGN.md` — ten sections that
-  freeze the bundle file shape, the directory layout, the
-  `manifest.json` schema_version 1 field contract, the per-Run
-  `run.json` field set + JSONL stream sort/drop rules, the secrets
-  denylist regex set, the size cap constants table, the open-question
-  resolutions (OQ-1…OQ-5 from `DOCS/SCOPE-JOB-EXPORT.md` plus OQ-D
-  and OQ-E from this stage), the refuse-to-export preconditions, the
-  README cover-note outline, and the inheritance contract for stages
-  3–7.
-- `DOCS/sessions/2026-05-19-job-export.md` — extended with the stage 2
-  record including the (B) re-verification, the deliverable summary,
-  and the locked answers to every open question.
+Two preconditions are still unmet:
 
-No `crates/`, no `ui/`, no migrations touched. `cargo` not run.
+1. **JOB-WORKFLOW (B) not merged.** Re-grepped this session:
+   `crates/codeless-runtime/migrations/` is unchanged at 27 files
+   (0001…0028 minus 0018); no migration creates a `runs` table; no
+   migration adds `template_snapshot`, `handover_snapshot`,
+   `events.run_id`, or `jobs.handover_md`. Stages 1 and 4 halted on
+   the same finding; nothing has moved.
+2. **Stage 4 (walker + serializer) source does not exist.**
+   `ls crates/codeless-runtime/src/job_export` → no such directory.
+   The commit titled `stage 3: implement codeless-runtime
+   job_export walker plus serializer …` (`92e844c`) is doc-only:
+   `git show --stat 92e844c` lists one file (a handover). The loop
+   runner appears to have re-fired stage 4 under a renumbered title
+   without producing the `manifest.rs` / `walker.rs` / `serializer.rs`
+   / `tar_writer.rs` / `limits.rs` / `denylist.rs` modules that the
+   importer must consume.
 
-## Locked answers (so stage 3 REVIEW has the diff in one place)
+The importer reads the bundle stage 4 emits and writes into the
+post-(B) schema. With neither in place, every concrete piece of
+stage 5 — JSONL deserialization, batched inserts into `runs` /
+`events.run_id`, `inspect_job_bundle` manifest validation — has no
+target. Per repo `CLAUDE.md` R4 and `WORKFLOW.md` §"Precondition
+check", halt with `[!]`; do not commit a partial implementation
+with a TODO. No `importer.rs` / `tar_safety.rs` / `inspect.rs` were
+created.
 
-- **Size caps.** 200 MiB / bundle, 10 MiB / entry. Per-kind sub-caps
-  for manifest, README, template, handover, notes, `run.json`, JSONL
-  lines. 1024 Runs/bundle, 500k events/Run. Constants in
-  `codeless-runtime/src/job_export/limits.rs` once stage 4 lands.
-- **Output path.** Jailed under `attached_workspaces.fs_root_canonical`
-  via canonicalised prefix check.
-- **Events monotonicity.** SQLite `AUTOINCREMENT` confirms; (B)
-  re-keys `events.job_id → events.run_id` only.
-- **Handover destination.** `jobs.handover_md` (post-(B)); first new
-  Run snapshots like any other.
-- **Secrets denylist.** Case-insensitive substring regex set:
-  `token`, `secret`, `api[_-]?key`, `pass(word|wd)`,
-  `private[_-]?key`, `credential`, `bearer`, `auth[_-]?header`.
-  Applied to column names only (payload contents not scanned in E1).
-  Re-verified: zero current schema columns match.
-- **`scheduled_pause_points`** and **payload-content scanning** are
-  both **out for E1** — logged for E2 with rationale.
+## What lands when stage 5 is re-fired (after stages 4 + (B))
 
-## What stage 3 (the REVIEW gate) must do
+Full plan is in the session doc. Headline points:
 
-Stage 3 is read-only paper: the human reviews the design before stage
-4 starts writing serializer code. Per
-[`.codeless/jobs/job-export/WORKFLOW.md`](.codeless/jobs/job-export/WORKFLOW.md#review-gates)
-the REVIEW packet must include:
+- New files under `crates/codeless-runtime/src/job_export/`:
+  `tar_safety.rs` (strict allow-list of bundle paths, hostile-tar
+  fixtures), `inspect.rs` (manifest-only read, size cap check,
+  `schema_version == 1`), `importer.rs` (streaming tar decode,
+  one-transaction SQLite write, FK rewrite map keyed on source IDs,
+  conflict policy dispatch).
+- For E1 only `ImportConflictPolicy::Refuse` is wired; `Suffix` and
+  `Replace` return `ImportError::UnsupportedConflictPolicy`. Default
+  in the RPC arg type is `Refuse`.
+- `lease_holder` / `lease_expires_at` written as NULL.
+  `worktree_path_source` (renamed from `worktree_path` by stage 4)
+  is read for forensics but not written; destination Run allocates
+  its own path on first run.
+- Crate boundary (R1): `tar`, `flate2`, `sqlx`, `ulid` all stay in
+  `codeless-runtime`. The wire types in `codeless-rpc::methods`
+  (`ImportJobArgs`, `ImportJobResult`, `ImportConflictPolicy`,
+  `ImportWarning`, `ImportError`) are reused verbatim.
+- Tests with the code (R5): tar-safety hostile fixtures, inspect
+  edge cases, importer refuse-on-collision + FK-rewrite correctness.
+  The round-trip property test stays in stage 7.
 
-1. The exact `manifest.json` shape — already in
-   `BUNDLE-DESIGN.md` §3.
-2. The bundle directory layout — `BUNDLE-DESIGN.md` §2.
-3. The three RPC signatures — already in
-   `DOCS/SCOPE-JOB-EXPORT.md` §"RPC surface"; the design doc does not
-   restate them. Stage 3's handover should quote them so the
-   reviewer has one place to look.
-4. The secrets denylist — `BUNDLE-DESIGN.md` §4.
-5. The conflict-policy enum with wired/stubbed notes —
-   `DOCS/SCOPE-JOB-EXPORT.md` §"Conflict & rename rules"; for E1 only
-   `Refuse` is wired end-to-end. Stage 3's handover should restate
-   this.
+## Pointers for the next session
 
-Stage 3 itself produces only `handover.md` + an updated session doc
-that present the above to the reviewer. No source files change. If
-the reviewer requests changes, stage 3 amends `BUNDLE-DESIGN.md` and
-records the diff in the session doc before passing stage 4.
+- Design lock: [`.codeless/jobs/job-export/BUNDLE-DESIGN.md`](.codeless/jobs/job-export/BUNDLE-DESIGN.md) §§3–6 are
+  load-bearing for the importer (manifest schema, JSONL field set,
+  denylist columns, size caps).
+- Stage-by-stage record: [`DOCS/sessions/2026-05-19-job-export.md`](DOCS/sessions/2026-05-19-job-export.md).
+  Stage 4's "what stage 4 will do once (B) lands" checklist must run
+  to completion before stage 5 fires; the stage-5 plan added this
+  session is conditional on that.
+- Branch: `codeless/job-export`. Inner-repo worktree only — no
+  `mani.yaml` here, so this halt commit uses raw `git` matching the
+  prior halt commits. The first code-bearing stage must switch to
+  `./bin/mani --config mani.yaml run commit/push --projects codeless`
+  from the workspace root.
 
-## What stage 4 will need (after REVIEW approval) — still blocked
+## Open questions
 
-Stage 4 builds the walker + serializer in
-`crates/codeless-runtime/src/job_export/` (one file per concept per
-R3: `walker.rs`, `serializer.rs`, `manifest.rs`, `limits.rs`,
-plus tests). It cannot start until JOB-WORKFLOW (B) merges; the
-walker reads `runs`, the serializer writes
-`template_snapshot` / `handover_snapshot` from the Run row, and the
-round-trip test in stage 7 needs at least one immutable Run row in
-the dev `codeless.db` to chew on.
-
-The unblock checklist from the prior handover still applies; nothing
-about stage 2's design changes it.
-
-## Verify
-
-- No source diff. New / updated docs only:
-  `.codeless/jobs/job-export/BUNDLE-DESIGN.md` (new),
-  `DOCS/sessions/2026-05-19-job-export.md` (appended), this
-  `handover.md` (rewritten for stage 3).
-- `cargo fmt --check`, `cargo clippy --workspace --all-targets --
-  -D warnings`, `cargo test --workspace` — **not run** (no code
-  touched).
-- Per `WORKFLOW.md` closing trio for a read-only stage that produced
-  no source diff: handover + session doc + design doc committed only.
+- Is JOB-WORKFLOW (B) being worked on in a parallel session? If so,
+  who owns it and what is the ETA? Stages 4–7 of `job-export` are
+  dormant until it merges.
+- Should the loop runner be told to stop firing implementation
+  stages 4–7 until (B) is in? Each fire costs a session and produces
+  the same halt commit shape.
+- The `92e844c` commit titled `stage 3: implement …` is mislabelled
+  (it is doc-only). The operator may want the loop runner to skip
+  duplicate stage titles, or to detect that the named source files
+  are still absent before re-numbering the next stage.

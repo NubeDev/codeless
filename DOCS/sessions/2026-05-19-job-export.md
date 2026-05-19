@@ -430,3 +430,197 @@ For the next agent that picks this up after (B) merges:
 No source diff. `cargo` checks not run (no code touched). Commit:
 session doc update + handover only, mirroring stage 1's halt commit
 shape.
+
+## Stage 5 — importer  `[!]` halted on (B) + stage-4 chain
+
+Stage 5 is "implement importer with tar-streaming, path-traversal
+guards, batched SQLite inserts in one transaction, and
+ImportConflictPolicy (Refuse default)."
+
+This is the second implementation stage. It depends transitively on
+JOB-WORKFLOW (B) *and* directly on the stage-4 walker/serializer
+module that has not yet been written. Both preconditions are still
+unmet this session.
+
+### Re-verification this stage
+
+```
+$ ls crates/codeless-runtime/migrations/ | wc -l
+27   # 0001..0028 with 0018 skipped — unchanged
+
+$ rg -l 'CREATE TABLE\s+runs\b|template_snapshot|handover_snapshot|handover_md' \
+      crates/codeless-runtime/migrations/
+(no matches)
+
+$ ls crates/codeless-runtime/src/job_export 2>&1
+ls: cannot access 'crates/codeless-runtime/src/job_export': No such file or directory
+```
+
+There is no `runs` table, no `events.run_id`, no `jobs.handover_md`,
+and no `codeless-runtime/src/job_export/` module. Stage 4 (the
+walker + serializer) shipped a halt commit on its own pass and has
+not been re-run since (B) is still not in flight). Git log between
+stage-4-halt and now:
+
+```
+$ git log --oneline 27dca3d..HEAD
+92e844c stage 3: implement codeless-runtime job_export walker plus serializer ...
+```
+
+That `stage 3:` commit (`92e844c`) is **session-doc/handover-only**
+(`git show --stat` lists one file, the prior handover). No source
+landed; the loop runner appears to have re-fired stage 4 under the
+wrong title. The walker, serializer, manifest structs, denylist
+helper, tar writer, and `export_job` entrypoint described in the
+stage-2 design lock (`BUNDLE-DESIGN.md`) and the stage-4 plan above
+still do not exist on disk.
+
+### Why this stage cannot land
+
+The importer reads the bundle that stage 4 emits and writes into the
+post-(B) schema. Three concrete blockers, any one fatal:
+
+1. **No JSONL contract to parse.** The locked `run.json` /
+   `stages.jsonl` / `tasks.jsonl` / `todos.jsonl` / `events.jsonl` /
+   `reviews.jsonl` shapes live in `BUNDLE-DESIGN.md` as a paper
+   spec. Stage 4 was supposed to commit them as serde structs in
+   `crates/codeless-runtime/src/job_export/manifest.rs` +
+   `serializer.rs`. The importer's first responsibility is to
+   deserialize those exact structs with `deny_unknown_fields`; with
+   no struct definitions in tree, writing the importer either (a)
+   duplicates the spec inline — and bakes a *second* source of
+   truth that drifts from the eventual serializer, violating R4 —
+   or (b) emits empty parser stubs that read nothing, which is the
+   "half-finished implementation with TODO" R4 explicitly forbids.
+2. **No destination table to insert into.** `ImportJobArgs` expects
+   to write Run rows with `template_snapshot` / `handover_snapshot`
+   and event rows keyed by `run_id`. The destination schema today
+   has neither. A batched insert transaction over `runs` /
+   `events.run_id` cannot be written against a schema that lacks
+   those targets; faking it against the pre-(B) `jobs` row would
+   bind the importer to a column set (B) is about to delete.
+3. **No `inspect_job_bundle` companion.** BUNDLE-DESIGN §6 and
+   `SCOPE-JOB-EXPORT.md` §"RPC surface" require manifest validation
+   (size caps, schema_version check) to land before any row writes.
+   That validation reuses the `Manifest` struct from stage 4. Same
+   missing dependency.
+
+`WORKFLOW.md` §"Precondition check (stage 1)" — *"Do not try to
+scaffold around it; the bundle layout depends on immutable Run
+rows."* — and repo `CLAUDE.md` R4 — *"If you cannot complete a
+stage, mark it `[!]` in the active session doc and halt. Do not
+commit a partial implementation with a TODO."* — together force the
+halt. No `importer.rs` / `tar_safety.rs` files were created this
+stage.
+
+### What stage 5 will do once stage 4 has landed (post-(B))
+
+For the agent that picks this up after the walker + serializer are
+on disk:
+
+1. Re-verify: (a) `runs` table exists with the BUNDLE-DESIGN §3
+   column set; (b) `events.run_id` is wired; (c) `jobs.handover_md`
+   exists; (d) `crates/codeless-runtime/src/job_export/{manifest,
+   walker, serializer, tar_writer, limits, denylist}.rs` all exist
+   and `cargo test --workspace -p codeless-runtime` is green.
+2. Add to `crates/codeless-runtime/src/job_export/`:
+   - `tar_safety.rs` — the path-traversal guard used by every tar
+     entry. Rejects: absolute paths (`Path::is_absolute`), any
+     component equal to `..` or `.`, any non-file-non-dir entry kind
+     (symlink / hardlink / device / fifo), entries whose
+     `tar::Entry::path()` resolves outside the expected fixed set
+     `{manifest.json, README.md, template.yaml, handover.md,
+     notes/<basename>.md, runs/<4-digit-ordinal>/run.json,
+     runs/<4-digit-ordinal>/stages.jsonl, …reviews.jsonl,
+     runs/<4-digit-ordinal>/artifacts/<basename>}`. Pattern is a
+     strict allow-list, not a deny-list. Unit-tested per R5 with
+     hostile fixtures: absolute-path entry, `..` parent escape,
+     symlink, long-name overflow, NUL byte, mixed-case dupes on
+     case-insensitive FS.
+   - `inspect.rs` — the `inspect_job_bundle` entrypoint: open the
+     gzip stream, read `manifest.json` *only* (skip past it without
+     decoding subsequent entries), validate `schema_version == 1`,
+     enforce `MAX_BUNDLE_BYTES` against the file size on disk before
+     opening, enforce `MAX_MANIFEST_BYTES` while reading. Returns
+     `Manifest` + the on-disk byte count + computed warnings (repo
+     SHA mismatch deferred to importer where workspace context is
+     known). Never writes to SQLite, never reads past the manifest
+     entry. Unit-tested with: valid manifest, wrong schema_version,
+     oversize manifest, truncated gzip, manifest not first entry.
+   - `importer.rs` — the `import_job` entrypoint per
+     `SCOPE-JOB-EXPORT.md` §"RPC surface". Flow:
+     a. Run `inspect_job_bundle` to validate the manifest and enforce
+        bundle-level caps.
+     b. Resolve the destination workspace by `WorkspaceId`; refuse if
+        not attached.
+     c. Resolve `imported_name` from `rename_to ??
+        manifest.source.job_name`. Look up an existing Job by
+        `(workspace_id, name)` and apply `ImportConflictPolicy`. For
+        E1 only `Refuse` is wired — `Suffix` and `Replace` return
+        `ImportError::UnsupportedConflictPolicy { policy }`. Default
+        in the RPC arg type is `Refuse` (per E1 scope: "single
+        workspace, Refuse default").
+     d. Stream-decode the tar (`tar::Archive::entries`) — never
+        materialise the whole bundle in RAM, never `Archive::unpack`.
+        For each entry: `tar_safety::validate` → match the expected
+        path → buffer up to the per-kind cap from `limits.rs` →
+        deserialize the per-line JSON into the stage-4 struct.
+        Enforce `MAX_ENTRY_BYTES`, the per-kind sub-caps, the
+        `MAX_RUNS_PER_BUNDLE` / `MAX_EVENTS_PER_RUN` counters.
+     e. Open one SQLite transaction
+        (`sqlx::SqliteConnection::begin`). Insert in dependency
+        order: Job row → Runs → Stages → Tasks → Todos → Reviews →
+        Events. Use `INSERT ... ` against fresh ULIDs generated by
+        `ulid::Ulid::new()` (R6 — never reuse the source IDs). Keep
+        a `HashMap<SourceId, DestId>` per table to rewrite foreign
+        keys as later rows insert. Batched: `INSERT INTO events ...
+        VALUES (?, ?, ..), (?, ?, ..), ...` chunked at 500 rows per
+        statement to stay under SQLite's 999-parameter default
+        without bumping `PRAGMA max_compound_select`.
+     f. Write the user-facing files (`.codeless/jobs/<name>.yaml`,
+        `handover.md`, `notes/*.md`) under the workspace's
+        `fs_root_canonical`. Re-use the tar-safety jail logic so a
+        bundle that names `notes/../../etc/passwd` can't escape.
+     g. Drop `lease_holder` / `lease_expires_at` (write NULL).
+        Rewrite `worktree_path` in `run.json` — already renamed to
+        `worktree_path_source` by stage 4 — to NULL on the
+        destination side; the next Run will allocate its own.
+     h. Commit the transaction; on any failure inside the closure,
+        SQLx rolls back and the importer surfaces an `ImportError`
+        with the offending entry path. Files written to the worktree
+        before the failure are cleaned up by the rollback closure.
+     i. Build `ImportJobResult { job_id, imported_name, run_count,
+        warnings }`. Warnings include: source repo SHA mismatch
+        (compared against the destination's currently-attached repo
+        HEAD), excluded artifacts referenced by reviews, note
+        filename collisions (suffixed `-imported`).
+   - Wire `ImportError` variants in `codeless-rpc` per the scope doc
+     (`JobNameExists { existing_job_id }`, `SchemaVersionMismatch`,
+     `BundleTooLarge`, `EntryTooLarge`, `PathTraversal { entry }`,
+     `WorkspaceNotAttached`, `UnsupportedConflictPolicy`).
+3. Tests live with the code per R5:
+   - `tar_safety` unit tests (hostile fixtures, above).
+   - `inspect` unit tests (above).
+   - `importer` unit tests: refuse-on-name-collision, schema_version
+     mismatch, oversize bundle, malformed JSONL line, FK rewrite
+     correctness across Stage → Task → Todo → Event chain.
+   - Round-trip integration test reserved for stage 7 (per
+     WORKFLOW.md); stage 5 ships unit + small-bundle integration.
+4. Crate boundary check (R1): `tar`, `flate2`, `sqlx`, `ulid` all
+   stay in `codeless-runtime`. Nothing leaks into `codeless-rpc` /
+   `-types` / `-client`. The wire types from
+   `codeless-rpc::methods` (`ImportJobArgs`, `ImportJobResult`,
+   `ImportConflictPolicy`, `ImportWarning`) are reused verbatim;
+   the runtime owns the implementation.
+5. `cargo test --workspace` green, `cargo clippy --workspace
+   --all-targets -- -D warnings` green, `cargo fmt --check` green.
+   Commit via `./bin/mani --config mani.yaml run commit/push
+   --projects codeless` from the workspace root.
+6. Hand over to stage 6 (RPC wiring).
+
+### Verify
+
+No source diff this stage. `cargo` checks not run (no code touched).
+Commit: session doc update + handover only, mirroring stages 1, 4's
+halt commit shape. The `stage 3: …` commit between this and the
+prior halt is doc-only and does not change the precondition state.
