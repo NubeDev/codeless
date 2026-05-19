@@ -792,6 +792,7 @@ impl Runner for TemplateRunner {
                                         self.store.as_deref(),
                                         &ctx,
                                         Some(FailureClass::PreCheckFailed),
+                                        Some(&failure_reason),
                                     )
                                     .await
                                     {
@@ -1063,6 +1064,7 @@ impl Runner for TemplateRunner {
                             self.store.as_deref(),
                             &ctx,
                             Some(failure_class),
+                            Some(&reason),
                         )
                         .await
                         {
@@ -1249,6 +1251,7 @@ impl Runner for TemplateRunner {
                                     self.store.as_deref(),
                                     &ctx,
                                     Some(FailureClass::ReviewPatchInvalid),
+                                    Some(&failure_reason),
                                 )
                                 .await
                                 {
@@ -1337,6 +1340,7 @@ impl Runner for TemplateRunner {
                             self.store.as_deref(),
                             &ctx,
                             Some(FailureClass::ReviewFail),
+                            Some(&failure_reason),
                         )
                         .await
                         {
@@ -1422,6 +1426,7 @@ impl Runner for TemplateRunner {
                             self.store.as_deref(),
                             &ctx,
                             Some(FailureClass::ReviewUnparseable),
+                            Some(&reason),
                         )
                         .await
                         {
@@ -1616,6 +1621,7 @@ impl Runner for TemplateRunner {
                             self.store.as_deref(),
                             &ctx,
                             Some(failure_class),
+                            Some(&reason),
                         )
                         .await
                         {
@@ -2007,6 +2013,7 @@ async fn classify_stage_failure(
     store: Option<&SqliteStore>,
     ctx: &RunnerContext,
     failure_class: Option<FailureClass>,
+    failure_detail: Option<&str>,
 ) -> FailureAction {
     if ctx.cancel.is_cancelled() {
         return FailureAction::Halt;
@@ -2041,11 +2048,23 @@ async fn classify_stage_failure(
     match job.auto_bypass_policy {
         Some(policy) => {
             let policy_name = policy.policy_name().to_string();
-            // Stage 8 will load the prior stage row and thread a
-            // `PriorFailure` here; stage 7 keeps the call shape
-            // identical to today by passing `None`, which the
-            // widened `policy_comment` reproduces byte-for-byte.
-            let comment = crate::auto_bypass_policy::policy_comment(&policy, None);
+            // Thread the just-failed stage's `failure_class` +
+            // `failure_detail` into `policy_comment` so the next
+            // stage's prompt names the concrete reason auto-bypass
+            // fired. The two values are the same ones the call site
+            // just stamped onto the `StageCompleted{Failed}`
+            // envelope and that the StageRecorder will persist onto
+            // the stages row; passing them in-memory avoids racing
+            // the recorder's async writeback on the row that has
+            // just been emitted. `None` falls through to the bare
+            // canned paragraph — Q4's "no prior failure on record"
+            // contract — and the widened `policy_comment` reproduces
+            // the pre-stage-7 wire shape byte-for-byte.
+            let prior = failure_class.map(|class| crate::auto_bypass_policy::PriorFailure {
+                class,
+                detail: failure_detail.unwrap_or("").to_string(),
+            });
+            let comment = crate::auto_bypass_policy::policy_comment(&policy, prior.as_ref());
             let thrash_guard_applies = policy.thrash_guard_applies();
             FailureAction::AutoBypass {
                 policy_name,
@@ -2747,8 +2766,13 @@ mod tests {
     async fn classify_halts_when_no_policy_set() {
         let (store, job_id) = seed_store_with_policy(None, None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
-            .await
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
         {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
@@ -2760,8 +2784,13 @@ mod tests {
         let (store, job_id) =
             seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Quick), None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
-            .await
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
         {
             FailureAction::AutoBypass {
                 policy_name,
@@ -2790,8 +2819,13 @@ mod tests {
         let (store, job_id) =
             seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Relentless), None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
-            .await
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
         {
             FailureAction::AutoBypass {
                 policy_name,
@@ -2815,8 +2849,13 @@ mod tests {
         )
         .await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
-            .await
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
         {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
@@ -2832,8 +2871,13 @@ mod tests {
         let mut ctx = test_runner_context(job_id).await;
         ctx.cancel = CancellationToken::new();
         ctx.cancel.cancel();
-        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
-            .await
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
         {
             FailureAction::Halt => {}
             other => panic!("expected Halt, got {other:?}"),
@@ -2854,6 +2898,7 @@ mod tests {
             Some(store.as_ref()),
             &ctx,
             Some(FailureClass::InfrastructureError),
+            None,
         )
         .await
         {
@@ -2877,8 +2922,13 @@ mod tests {
         let (store, job_id) =
             seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Quick), None).await;
         let ctx = test_runner_context(job_id).await;
-        match classify_stage_failure(Some(store.as_ref()), &ctx, Some(FailureClass::RunnerError))
-            .await
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::RunnerError),
+            None,
+        )
+        .await
         {
             FailureAction::AutoBypass { policy_name, .. } => {
                 assert_eq!(policy_name, "Quick");
@@ -2890,6 +2940,69 @@ mod tests {
             job.stop_reason.is_none(),
             "non-infra runner error must not stamp stop_reason"
         );
+    }
+
+    /// Stage 8 contract: when classify_stage_failure decides
+    /// `AutoBypass`, the returned `comment` (which the runner threads
+    /// into the next stage's prompt as `next_stage_prefix`) must
+    /// carry the just-failed stage's `failure_class` + `failure_detail`
+    /// in the Q4-pinned fenced block. The classifier is the single
+    /// site where the failed-stage classification flows into
+    /// `policy_comment`, so pinning the threading here is the
+    /// integration-shaped guard: the same call shape every runtime
+    /// emit site uses, exercised against a real store + a synthetic
+    /// detail, asserting the wire form of the threaded block.
+    #[tokio::test]
+    async fn classify_threads_failure_class_and_detail_into_bypass_comment() {
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Quick), None).await;
+        let ctx = test_runner_context(job_id).await;
+        let detail = "diff touches src/foo.rs but Done lists src/bar.rs";
+        match classify_stage_failure(
+            Some(store.as_ref()),
+            &ctx,
+            Some(FailureClass::PreCheckFailed),
+            Some(detail),
+        )
+        .await
+        {
+            FailureAction::AutoBypass {
+                policy_name,
+                comment,
+                ..
+            } => {
+                assert_eq!(policy_name, "Quick");
+                assert!(
+                    comment.starts_with(crate::auto_bypass_policy::QUICK),
+                    "bypass comment must lead with the canned policy paragraph: {comment}"
+                );
+                let want_block = format!(
+                    "\n\n```\nPrevious-stage failure: pre-check-failed\nDetail: {detail}\n```"
+                );
+                assert!(
+                    comment.ends_with(&want_block),
+                    "bypass comment must end with the Q4 fenced block, got: {comment}"
+                );
+            }
+            other => panic!("expected AutoBypass with threaded block, got {other:?}"),
+        }
+    }
+
+    /// Stage 8 contract (b): `None` failure_class — the no-prior-
+    /// failure path — falls through to the bare canned paragraph
+    /// byte-for-byte, so the existing string-pin contracts elsewhere
+    /// in the runtime still hold after the signature widened.
+    #[tokio::test]
+    async fn classify_emits_bare_policy_text_when_failure_class_none() {
+        let (store, job_id) =
+            seed_store_with_policy(Some(codeless_types::AutoBypassPolicy::Cheap), None).await;
+        let ctx = test_runner_context(job_id).await;
+        match classify_stage_failure(Some(store.as_ref()), &ctx, None, None).await {
+            FailureAction::AutoBypass { comment, .. } => {
+                assert_eq!(comment, crate::auto_bypass_policy::CHEAP);
+            }
+            other => panic!("expected AutoBypass for runner error, got {other:?}"),
+        }
     }
 
     #[test]
