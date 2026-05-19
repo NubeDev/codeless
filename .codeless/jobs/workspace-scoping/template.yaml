@@ -1,0 +1,22 @@
+name: workspace-scoping
+goal: |
+  Make the codeless UI workspace-aware end-to-end so that two browser
+  tabs viewing two attached workspaces show only their own jobs, only
+  their own file trees, only their own live event streams, and survive
+  a refresh on the correct workspace. Today subscribe is unscoped, fs.*
+  is rooted at a global path, and the picker does not drive the file
+  explorer; this job lands milestones 5, 6, and 9 from
+  crates/codeless-tauri-desktop/BROWSER-LAUNCHER.md as one shippable
+  branch.
+
+stages:
+  - audit every EventBus::publish call site and produce the publish-site report — list each event kind, whether the published Event already carries a repo_id (or is library-scope), and the call site path:line — output committed as DOCS/EVENT-PUBLISH-AUDIT.md so the REVIEW gate has something concrete to read
+  - REVIEW publish-site audit — confirm scope is "thread repo_id through these N events" not "redesign the event bus"; if any non-library event lacks a repo_id, decide here whether to add it in this job or split a separate job
+  - add Repo { repo_id } and Library variants to EventFilter in codeless-rpc; keep All as deprecated-but-present for the global event log view; update RpcServer::subscribe signature and the in-process + http transports; unit tests cover the filter at the fan-out layer with a MockRunner harness
+  - thread repo_id through the fs.* RPCs (fs_cwd, fs_read_dir, fs_read_file, fs_write_file and any siblings); server resolves repo_id to the attached workspace's fs_root and uses that as the jail root for the call; reject calls with an unknown or detached repo_id; add a fs_root_for_repo helper on the runtime so future RPCs reuse it
+  - REVIEW server-side scoping — at this point both subscribe and fs.* are workspace-scoped on the wire; confirm the API shape against BROWSER-LAUNCHER.md §"RPC additions" and lock it before touching the UI
+  - update the UI's RpcClient call sites to pass activeRepoId on every subscribe and every fs.* call; open a parallel Library-scope subscription for the workspace picker; the file explorer rehydrates when activeRepoId changes
+  - read ?workspace=<repo_id> from window.location on initial load and pre-populate activeRepoId; call history.replaceState on every setActive so refresh, share-link, and browser-back land on the correct workspace; verify no regression in deep-link behaviour for the existing Tauri webview path
+  - per-tab storage audit — grep the Terax-derived UI for localStorage, sessionStorage, and zustand persist; classify each hit as library-level (shared across tabs is correct) or tab-level (must move to in-memory or sessionStorage); land the moves so cross-tab state leakage does not reintroduce the symptom this job is meant to fix
+  - REVIEW end-to-end smoke — two Firefox tabs at two attached workspaces, submit a job in each, assert tab A's event stream does not see tab B's StageStarted; refresh each tab and assert the workspace is preserved; record the result in DOCS/WORKSPACE-SCOPING-SMOKE.md
+  - final cleanup — update DOCS/UI-ARCHITECTURE.md and BROWSER-LAUNCHER.md to mark milestones 5, 6, 9 as [x], note any deviations from the original scope, and confirm R1/R2/R3 hold (no tokio::process leak, no @tauri-apps imports outside the shell zone, single UI tree)
