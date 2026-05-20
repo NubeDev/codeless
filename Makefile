@@ -39,7 +39,20 @@ BACKEND_PORT  = $(word 2,$(subst :, ,$(BACKEND_BIND)))
 CARGO_CMD := cargo run -p codeless-cli --
 PNPM_CMD  := pnpm -C ui/codeless-ui
 
-.PHONY: start stop kill restart backend ui backend-fg ui-fg demo-seed logs status clean help ci
+# Vendored, codeless-patched `ai-runner` lives in the OUTER
+# codeless-workspace repo, one level above this checkout. Every crate
+# under crates/ depends on it via `path = "../../../ai-runner"`. Cloning
+# `codeless` on its own (without codeless-workspace) leaves that path
+# dangling — and even with the workspace present, an out-of-date copy
+# can be missing patched files like src/runners/copilot.rs (PATCH-003).
+# The `ai-runner` target below makes the dependency self-healing so a
+# fresh `git clone` of just this repo can `make backend` and Just Work.
+AI_RUNNER_DIR     := ../ai-runner
+AI_RUNNER_SENTINEL := $(AI_RUNNER_DIR)/src/runners/copilot.rs
+AI_RUNNER_REPO    ?= https://github.com/NubeDev/codeless-workspace
+AI_RUNNER_BRANCH  ?= main
+
+.PHONY: start stop kill restart backend ui backend-fg ui-fg demo-seed logs status clean help ci ai-runner ai-runner-check ai-runner-update
 
 help:
 	@echo "codeless dev:"
@@ -49,8 +62,10 @@ help:
 	@echo "  make status      who is running"
 	@echo "  make logs        tail backend + UI logs"
 	@echo "  make ci          fmt --check + clippy -D warnings + test --workspace"
+	@echo "  make ai-runner   ensure ../ai-runner/ is present (with codeless patches)"
+	@echo "  make ai-runner-update  re-sync ../ai-runner/ from $(AI_RUNNER_REPO)"
 
-ci:
+ci: ai-runner-check
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo test --workspace
@@ -64,6 +79,70 @@ ci:
 
 $(DEV_DIR):
 	@mkdir -p $(DEV_DIR)
+
+# Sparse-clone just the `ai-runner/` subtree of the outer
+# codeless-workspace repo into `../ai-runner/`. We do this instead of
+# making the user clone the whole workspace because:
+#   - the workspace also contains DOCS/, mani.yaml, scripts/, runs/
+#     which a downstream consumer of `codeless` does not need;
+#   - vendoring as a submodule was explicitly rejected (see workspace
+#     .gitignore comment about gitlinks);
+#   - `cargo` resolves `../../../ai-runner` purely by filesystem layout,
+#     so any local copy at that path satisfies the dep.
+# If `../ai-runner` already exists we leave it alone — the operator may
+# be using a working copy (e.g. the full codeless-workspace checkout)
+# and we must not blow that away.
+ai-runner: $(AI_RUNNER_SENTINEL)
+
+$(AI_RUNNER_SENTINEL):
+	@if [ -e $(AI_RUNNER_DIR) ] && [ ! -f $(AI_RUNNER_SENTINEL) ]; then \
+	    echo "error: $(AI_RUNNER_DIR) exists but is missing patched files"; \
+	    echo "       (no $(AI_RUNNER_SENTINEL))."; \
+	    echo "       Run 'make ai-runner-update' to re-sync from $(AI_RUNNER_REPO),"; \
+	    echo "       or replace $(AI_RUNNER_DIR) with a fresh checkout."; \
+	    exit 1; \
+	fi
+	@echo "fetching ai-runner from $(AI_RUNNER_REPO) (branch $(AI_RUNNER_BRANCH))"
+	@tmp=$$(mktemp -d) && trap "rm -rf $$tmp" EXIT && \
+	    git clone --depth 1 --filter=blob:none --sparse \
+	        --branch $(AI_RUNNER_BRANCH) \
+	        $(AI_RUNNER_REPO) $$tmp/ws >/dev/null 2>&1 && \
+	    git -C $$tmp/ws sparse-checkout set ai-runner >/dev/null && \
+	    mv $$tmp/ws/ai-runner $(AI_RUNNER_DIR)
+	@test -f $(AI_RUNNER_SENTINEL) || { \
+	    echo "error: clone succeeded but $(AI_RUNNER_SENTINEL) is still missing."; \
+	    echo "       The branch $(AI_RUNNER_BRANCH) of $(AI_RUNNER_REPO) may be stale."; \
+	    exit 1; \
+	}
+	@echo "ai-runner ready at $(AI_RUNNER_DIR) (with codeless patches)"
+
+# Cheap precondition check: fails loud rather than auto-fetching. Wired
+# into `ci` so CI noticeably breaks on a broken layout instead of
+# silently failing later inside cargo with a cryptic path error.
+ai-runner-check:
+	@if [ ! -f $(AI_RUNNER_SENTINEL) ]; then \
+	    echo "error: $(AI_RUNNER_SENTINEL) is missing."; \
+	    echo "       crates in this repo depend on path '../../../ai-runner'."; \
+	    echo "       Run 'make ai-runner' to fetch it from $(AI_RUNNER_REPO)."; \
+	    exit 1; \
+	fi
+
+# Force re-sync. Refuses if the existing directory has uncommitted git
+# state — the operator might be hacking on ai-runner in place and we
+# would lose their work. Plain non-git directories (from a previous
+# sparse clone) are safe to replace.
+ai-runner-update:
+	@if [ -d $(AI_RUNNER_DIR)/.git ]; then \
+	    if ! git -C $(AI_RUNNER_DIR) diff --quiet HEAD -- 2>/dev/null; then \
+	        echo "error: $(AI_RUNNER_DIR) has uncommitted changes; refusing to overwrite."; \
+	        exit 1; \
+	    fi; \
+	    echo "note: $(AI_RUNNER_DIR) is a git checkout; leaving it in place."; \
+	    echo "      Pull updates manually: git -C $(AI_RUNNER_DIR) pull --ff-only"; \
+	    exit 0; \
+	fi
+	@rm -rf $(AI_RUNNER_DIR)
+	@$(MAKE) ai-runner
 
 # Seed the demo DB only when it does not exist. Subsequent `make start`
 # runs reuse whatever rows the operator has accumulated. Running this
@@ -80,7 +159,7 @@ demo-seed: | $(DEV_DIR)
 # session so closing the terminal does not deliver SIGHUP. `disown`
 # would be enough on bash but breaks under POSIX sh; setsid is the
 # portable choice and avoids the `nohup ... &` log-file dance.
-backend: | $(DEV_DIR) $(DB)
+backend: ai-runner-check | $(DEV_DIR) $(DB)
 	@if [ -f $(BACKEND_PID) ] && kill -0 $$(cat $(BACKEND_PID)) 2>/dev/null; then \
 	    echo "backend already running (pid $$(cat $(BACKEND_PID)))"; \
 	    exit 0; \
@@ -130,7 +209,7 @@ start: backend ui
 # Foreground variants for when you want to watch a single component in
 # isolation (e.g. attaching a debugger, running with RUST_LOG=debug).
 # They never touch the PID files so `make stop` will not interfere.
-backend-fg: | $(DEV_DIR) $(DB)
+backend-fg: ai-runner-check | $(DEV_DIR) $(DB)
 	$(CARGO_CMD) --db $(DB) serve --bind $(BACKEND_BIND) --fs-root "$(FS_ROOT)" --enable-claude
 
 ui-fg:
