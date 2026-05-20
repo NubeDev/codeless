@@ -68,6 +68,29 @@ git clone https://github.com/NubeDev/codeless.git
 do not clone rubix-agent yourself. Patches applied to it are logged
 in [`../../ai-runner.PATCHES.md`](../../ai-runner.PATCHES.md).
 
+### If you cloned `codeless` on its own
+
+The inner `codeless` repo path-deps `../../../ai-runner` (see every
+`crates/*/Cargo.toml`), but the vendored, codeless-patched
+`ai-runner/` tree only exists inside the outer `codeless-workspace`
+repo. Cloning just `https://github.com/NubeDev/codeless` leaves that
+path dangling, and even a stale copy of `ai-runner/` may be missing
+codeless-only patches like `src/runners/copilot.rs` (PATCH-003),
+which produces the symptom "the Copilot runner source isn't there."
+
+Fix from inside the `codeless/` checkout:
+
+```sh
+make ai-runner          # sparse-clones ai-runner/ from codeless-workspace
+make ai-runner-update   # force re-sync (safe; refuses to clobber a git checkout)
+```
+
+`make ai-runner-check` is wired as a prerequisite of `make backend`,
+`make backend-fg`, and `make ci`, so a fresh clone fails loudly with
+the fix command rather than emitting a cryptic cargo path error.
+Override the source with `AI_RUNNER_REPO=...` / `AI_RUNNER_BRANCH=...`
+if you maintain a fork.
+
 ## Build
 
 From inside `codeless-workspace/codeless/`:
@@ -116,6 +139,11 @@ registering a repo via RPC.
   `~/code/rust/ai-ui/`. Clone it (above) at exactly that relative
   position; the path-dep is `../../../../ai-ui` from inside
   `crates/codeless-server/`.
+- **`failed to read .../ai-runner/Cargo.toml`** or **`copilot.rs`
+  missing from `ai-runner/src/runners/`** — `codeless` was cloned
+  without the outer `codeless-workspace`, or the vendored copy is
+  pre-PATCH-003. Run `make ai-runner` from the `codeless/` repo
+  root; see "If you cloned `codeless` on its own" above.
 - **`Failed to resolve import "@codeless/plugin-ui-sdk"`** — UI
   dependencies were never installed. Run
   `pnpm -C ui/codeless-ui install`.
