@@ -50,7 +50,7 @@ PNPM_CMD  := pnpm -C ui/codeless-ui
 AI_RUNNER_DIR     := ../ai-runner
 AI_RUNNER_SENTINEL := $(AI_RUNNER_DIR)/src/runners/copilot.rs
 AI_RUNNER_REPO    ?= https://github.com/NubeDev/codeless-workspace
-AI_RUNNER_BRANCH  ?= main
+AI_RUNNER_BRANCH  ?= master
 
 .PHONY: start stop kill restart backend ui backend-fg ui-fg demo-seed logs status clean help ci ai-runner ai-runner-check ai-runner-update
 
