@@ -33,6 +33,45 @@ use std::path::{Component, Path};
 
 use codeless_types::Handover;
 
+/// Expand shell-style brace patterns in a path token into the set of
+/// concrete paths they denote. Only single-level, comma-separated
+/// alternatives are supported (`{a,b,c}`); nested braces are not
+/// expanded (they are rare enough in practice that rejecting the token
+/// outright is acceptable).
+///
+/// Returns `None` if the token contains no brace pattern, signalling
+/// the caller to treat it as a literal path. Returns `Some(vec)` with
+/// the expanded paths otherwise.
+fn expand_braces(token: &str) -> Option<Vec<String>> {
+    // If the token contains other glob metacharacters, it is a pattern
+    // (e.g. `*.test.tsx`, `.{web,desktop}.tsx`) not a real brace
+    // expansion of concrete paths.
+    if token.contains('*') || token.contains('?') || token.contains('[') || token.contains(']') {
+        return None;
+    }
+    let open = token.find('{')?;
+    let close = token[open..].find('}').map(|i| i + open)?;
+    let prefix = &token[..open];
+    let suffix = &token[close + 1..];
+    let alternatives = &token[open + 1..close];
+    // Reject nested braces.
+    if alternatives.contains('{') || alternatives.contains('}') {
+        return None;
+    }
+    // A brace expansion of concrete paths requires a directory context
+    // (contains a slash) so that `.{web,desktop}.tsx` (no slash, starts
+    // with dot) stays rejected as a glob pattern rather than expanding
+    // into nonsense paths like `.web.tsx`.
+    if !token.contains('/') {
+        return None;
+    }
+    let expanded: Vec<String> = alternatives
+        .split(',')
+        .map(|alt| format!("{prefix}{alt}{suffix}"))
+        .collect();
+    Some(expanded)
+}
+
 /// A path the handover claimed was touched but which the diff does not
 /// include. The `claimed` form is exactly what the bullet wrote (so the
 /// failure message points the model at its own text); `candidates` are
@@ -109,9 +148,23 @@ fn path_candidates_in(s: &str) -> Vec<String> {
             break;
         };
         let inner = after[..end].trim();
-        let had_trailing_slash = inner.ends_with('/');
-        if looks_path_like(inner, had_trailing_slash) {
-            out.push(strip_trailing_slash(inner));
+        // Brace expansion: `migrations/{up,down}.sql` becomes two
+        // concrete paths. Each expanded path is independently checked
+        // for path-likeness.
+        if let Some(expanded) = expand_braces(inner) {
+            for ep in expanded {
+                let had_trailing = ep.ends_with('/');
+                let normalized = normalize_leading_dot(&ep);
+                if looks_path_like(&normalized, had_trailing) {
+                    out.push(strip_trailing_slash(&normalized));
+                }
+            }
+        } else {
+            let had_trailing_slash = inner.ends_with('/');
+            let normalized = normalize_leading_dot(inner);
+            if looks_path_like(&normalized, had_trailing_slash) {
+                out.push(strip_trailing_slash(&normalized));
+            }
         }
         rest = &after[end + 1..];
     }
@@ -134,7 +187,7 @@ fn path_candidates_in(s: &str) -> Vec<String> {
             }
             let had_trailing_slash = tok.ends_with('/');
             if looks_path_like(tok, had_trailing_slash) {
-                out.push(strip_trailing_slash(tok));
+                out.push(normalize_leading_dot(&strip_trailing_slash(tok)));
             }
         }
     }
@@ -281,6 +334,17 @@ fn strip_trailing_slash(s: &str) -> String {
     s.trim_end_matches('/').to_owned()
 }
 
+/// Strip a leading `./` that agents sometimes emit when quoting
+/// relative paths from shell output. Git's diff never produces this
+/// prefix, so normalising it here prevents a trivial mismatch.
+fn normalize_leading_dot(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("./") {
+        rest.to_owned()
+    } else {
+        s.to_owned()
+    }
+}
+
 /// Verify that every `claimed` path is matched by an entry in
 /// `diff_paths`. A diff entry matches when it is exactly equal or
 /// when the diff entry's path ends with `/<claimed>` (so the model
@@ -320,16 +384,12 @@ pub fn verify_paths_in_diff(claimed: &[String], diff_paths: &[String]) -> DiffVe
 }
 
 fn paths_match(claimed: &str, diff_entry: &str) -> bool {
-    if claimed == diff_entry {
+    let c = claimed.strip_prefix("./").unwrap_or(claimed);
+    let d = diff_entry.strip_prefix("./").unwrap_or(diff_entry);
+    if c == d {
         return true;
     }
-    // Suffix match: a bullet that names a leaf must match a diff
-    // entry whose path ends with `/<claimed>`. We do not allow the
-    // reverse (claimed-ends-with-diff) because that loosens to false
-    // matches — a claim of `runtime/src/template_runner.rs` should
-    // not be satisfied by a diff entry of `template_runner.rs` in
-    // some unrelated crate.
-    diff_entry.ends_with(&format!("/{claimed}"))
+    d.ends_with(&format!("/{c}"))
 }
 
 fn leaf_of(p: &str) -> &str {
@@ -655,6 +715,43 @@ mod tests {
             paths.is_empty(),
             "shell-glob and brace-expansion tokens must not extract as paths, got {paths:?}"
         );
+    }
+
+    #[test]
+    fn expands_brace_patterns_in_directory_paths() {
+        // The bug from 2026-05-24: agents write paths with brace
+        // expansion like `migrations/{up,down}.sql`. When the token
+        // includes a slash (directory context), the pre-check should
+        // expand it into concrete paths.
+        let done = vec![
+            "added `rubix/crates/rubix-agent/migrations/0002_history/{up,down}.sql`".into(),
+            "edited `rubix/crates/rubix-agent/src/routes/{mod.rs,tools.rs}`".into(),
+        ];
+        let paths = extract_paths_from_done(&done);
+        assert_eq!(
+            paths,
+            vec![
+                "rubix/crates/rubix-agent/migrations/0002_history/up.sql".to_string(),
+                "rubix/crates/rubix-agent/migrations/0002_history/down.sql".to_string(),
+                "rubix/crates/rubix-agent/src/routes/mod.rs".to_string(),
+                "rubix/crates/rubix-agent/src/routes/tools.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalizes_leading_dot_slash() {
+        // Agents sometimes emit `./path` from shell output. The `./`
+        // prefix should be stripped so matching against git diff works.
+        let done = vec!["ran `./rubix/scripts/lint-doc-refs.sh`".into()];
+        let paths = extract_paths_from_done(&done);
+        assert_eq!(paths, vec!["rubix/scripts/lint-doc-refs.sh".to_string()]);
+    }
+
+    #[test]
+    fn paths_match_normalizes_dot_slash() {
+        assert!(paths_match("./foo/bar.rs", "foo/bar.rs"));
+        assert!(paths_match("foo/bar.rs", "./foo/bar.rs"));
     }
 
     #[test]
