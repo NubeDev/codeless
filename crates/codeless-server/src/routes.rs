@@ -215,13 +215,6 @@ pub(crate) fn router(state: AppState) -> Router {
     // see one event per request at info level.
     let trace = TraceLayer::new_for_http();
 
-    // ai-ui surface (`/api/ai-ui/*`). Mounted only when the consumer
-    // built an `AiUiState`; merged outside the bearer middleware so the
-    // OpenUI frontend can call it without learning codeless's token —
-    // R5's loopback-bind default is what keeps single-tenant deployments
-    // safe. See `src/ai_ui.rs` for the per-route detail.
-    let ai_ui_router = state.ai_ui.is_some().then(crate::ai_ui::router);
-
     // Per-plugin `ServeDir` mounts for `/plugins/<id>/ui/*`. Mounted
     // outside the bearer gate: the bundle bytes are no more sensitive
     // than the host UI bundle the browser already loads (the bearer
@@ -234,9 +227,6 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(rpc_routes)
         .merge(events)
         .merge(unauthenticated);
-    if let Some(r) = ai_ui_router {
-        app = app.merge(r);
-    }
     if let Some(r) = plugin_ui {
         app = app.merge(r);
     }

@@ -505,10 +505,6 @@ async fn run_server(
         rpc: rpc_dyn,
         auth,
         server_info,
-        // `ai-ui` surface left unconfigured at this CLI for now —
-        // wiring `CodelessProvider` + skills dir + components.json is
-        // a follow-up. The route mount is opt-in via `with_ai_ui`.
-        ai_ui: None,
         // Plugin catalog left unattached here; production wiring will
         // hand a built `PluginCatalog` to `AppState::with_plugins`
         // once the CLI grows a `--plugins-dir` (or equivalent)
